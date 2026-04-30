@@ -195,6 +195,9 @@ def run_momentum_scanner():
             ema9 = df["EMA9"].iloc[-1]
             ema20 = df["EMA20"].iloc[-1]
 
+            if not (cp > ema9 and cp > ema20):
+                continue
+                
             trend_score = 1 if cp > ema9 and cp > ema20 else 0
 
             is_momentum = (
