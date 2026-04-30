@@ -7,9 +7,6 @@ import alpaca_trade_api as tradeapi
 from datetime import datetime, timedelta
 import pytz
 
-# ==========================================
-# الإعدادات من Render Environment Variables
-# ==========================================
 API_KEY = os.getenv("APCA_API_KEY_ID")
 SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
@@ -197,7 +194,7 @@ def run_momentum_scanner():
 
             if not (cp > ema9 and cp > ema20):
                 continue
-                
+
             trend_score = 1 if cp > ema9 and cp > ema20 else 0
 
             is_momentum = (
@@ -215,9 +212,49 @@ def run_momentum_scanner():
             if (is_momentum or is_accumulation) and symbol not in confirmed_alerts:
                 status = "تجميع لحظي 🎯" if is_accumulation else "انفجار ⚡"
 
-                t1 = cp * 1.03
-                t2 = cp * 1.06
-                sl = cp * 0.98
+                # أهداف أوضح للبوت الأول
+                quick_target = cp * 1.008
+                t1 = cp * 1.02
+                t2 = cp * 1.04
+                sl = cp * 0.985
+
+                # نوع الحركة
+                if recent_move > 2:
+                    move_type = "🔥 انفجار سريع"
+                elif recent_move > 0.7:
+                    move_type = "🚀 زخم صاعد"
+                else:
+                    move_type = "🎯 بداية / تجميع"
+
+                # سبب الحركة
+                if instant_rvol > 5 and recent_move > 2:
+                    reason = "🔥 سيولة قوية + زخم واضح"
+                elif instant_rvol > 4 and abs(recent_move) < 0.5:
+                    reason = "🎯 تجميع ذكي مع سيولة"
+                elif cp / day_high > 0.99:
+                    reason = "🚀 قريب جدًا من اختراق القمة"
+                else:
+                    reason = "⚠️ حركة نشطة لكن تحتاج متابعة"
+
+                # تقييم القوة
+                strength_score = 0
+                if instant_rvol > 5:
+                    strength_score += 1
+                if recent_move > 1.5:
+                    strength_score += 1
+                if rsi > 70:
+                    strength_score += 1
+                if cp > ema9 and cp > ema20:
+                    strength_score += 1
+                if cp / day_high >= 0.99:
+                    strength_score += 1
+
+                if strength_score >= 4:
+                    strength = "🔥 قوي جدًا"
+                elif strength_score >= 3:
+                    strength = "✅ قوي"
+                else:
+                    strength = "⚠️ متوسط"
 
                 trend_text = "فوق EMA9 و EMA20 ✅" if trend_score == 1 else "لم يؤكد المتوسطات بعد ⚠️"
 
@@ -225,12 +262,16 @@ def run_momentum_scanner():
                     f"💎 *إشارة دخول {status}*\n\n"
                     f"🎫 السهم: `{symbol}`\n"
                     f"💰 السعر: ${cp:.2f}\n\n"
+                    f"🔥 النوع: {move_type}\n"
+                    f"⭐ التقييم: {strength}\n"
+                    f"🧠 سبب الحركة: {reason}\n\n"
                     f"📊 *القوة:*\n"
                     f"💪 RSI: {rsi:.1f}\n"
                     f"⚡ RVOL لحظي: {instant_rvol:.2f}x\n"
                     f"📈 حركة 10 دقائق: {recent_move:.2f}%\n"
                     f"🛡️ التمدد: {stretch:.2f}%\n"
                     f"📌 الاتجاه: {trend_text}\n\n"
+                    f"🎯 الهدف الأقرب: ${quick_target:.2f}\n"
                     f"🎯 هدف 1: ${t1:.2f}\n"
                     f"🚀 هدف 2: ${t2:.2f}\n"
                     f"🛑 وقف الخسارة: ${sl:.2f}\n\n"
