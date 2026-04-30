@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 import pandas as pd
 import yfinance as yf
@@ -17,9 +18,13 @@ BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+GIST_ID = os.getenv("GIST_ID")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 
 confirmed_alerts = {}
+shared_alerts = {}
 saudi_tz = pytz.timezone("Asia/Riyadh")
 RUN_RADAR = True
 
@@ -43,6 +48,111 @@ def send_telegram_msg(message):
         )
     except Exception as e:
         print("Telegram error:", e, flush=True)
+
+
+def read_gist_signals():
+    if not GIST_ID or not GITHUB_TOKEN:
+        print("Gist keys missing", flush=True)
+        return []
+
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        res = requests.get(url, headers=headers, timeout=10)
+        data = res.json()
+        content = data["files"]["signals.json"]["content"]
+
+        try:
+            signals = json.loads(content)
+        except Exception:
+            signals = []
+
+        now_ts = time.time()
+
+        # نقرأ فقط إشارات آخر 20 دقيقة
+        signals = [
+            s for s in signals
+            if now_ts - float(s.get("time", 0)) < 1200
+        ]
+
+        return signals
+
+    except Exception as e:
+        print("Gist read error:", e, flush=True)
+        return []
+
+
+def save_signal_to_gist(symbol, price, signal_type):
+    if not GIST_ID or not GITHUB_TOKEN:
+        print("Gist keys missing", flush=True)
+        return
+
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        res = requests.get(url, headers=headers, timeout=10)
+        data = res.json()
+        content = data["files"]["signals.json"]["content"]
+
+        try:
+            signals = json.loads(content)
+        except Exception:
+            signals = []
+
+        now_ts = time.time()
+
+        # حذف الإشارات الأقدم من 20 دقيقة
+        signals = [
+            s for s in signals
+            if now_ts - float(s.get("time", 0)) < 1200
+        ]
+
+        signals.append({
+            "symbol": symbol,
+            "price": round(float(price), 4),
+            "type": signal_type,
+            "source": "safe_bot",
+            "time": now_ts
+        })
+
+        requests.patch(
+            url,
+            headers=headers,
+            json={
+                "files": {
+                    "signals.json": {
+                        "content": json.dumps(signals, ensure_ascii=False)
+                    }
+                }
+            },
+            timeout=10
+        )
+
+        print(f"Gist saved SAFE: {symbol}", flush=True)
+
+    except Exception as e:
+        print("Gist save error:", e, flush=True)
+
+
+def check_shared_signal(symbol):
+    signals = read_gist_signals()
+
+    for s in signals:
+        if (
+            s.get("symbol") == symbol
+            and s.get("source") == "main_bot"
+        ):
+            return True, s
+
+    return False, None
 
 
 def get_base_list():
@@ -104,7 +214,7 @@ def calculate_rsi(close, period=14):
 
 
 def run_momentum_scanner():
-    global confirmed_alerts, RUN_RADAR
+    global confirmed_alerts, shared_alerts, RUN_RADAR
 
     print("🔎 Fetching symbols for SAFE bot...", flush=True)
 
@@ -127,6 +237,11 @@ def run_momentum_scanner():
 
             confirmed_alerts = {
                 s: t for s, t in confirmed_alerts.items()
+                if now < t["expiry"]
+            }
+
+            shared_alerts = {
+                s: t for s, t in shared_alerts.items()
                 if now < t["expiry"]
             }
 
@@ -164,7 +279,6 @@ def run_momentum_scanner():
             if day_high == 0 or price_2min_ago == 0 or price_10min_ago == 0:
                 continue
 
-            # السعر والسيولة الأساسية
             recent_vol = df["Volume"].tail(5).sum()
 
             if not (0.5 <= cp <= 25):
@@ -173,24 +287,20 @@ def run_momentum_scanner():
             if recent_vol < 50000:
                 continue
 
-            # منع التمدد القوي آخر دقيقتين
             stretch = ((cp - price_2min_ago) / price_2min_ago) * 100
 
             if stretch > 1.8:
                 continue
 
-            # منع لمس القمة كثيرًا
             recent_highs = df["High"].tail(10)
             touches = (recent_highs >= day_high * 0.995).sum()
 
             if touches >= 3:
                 continue
 
-            # VWAP
             vwap = (df["Close"] * df["Volume"]).sum() / df["Volume"].sum()
             avg_5min = df["Close"].tail(5).mean()
 
-            # RSI
             rsi = calculate_rsi(df["Close"])
 
             if pd.isna(rsi) or rsi <= 55 or rsi > 85:
@@ -199,7 +309,6 @@ def run_momentum_scanner():
             recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
             instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
 
-            # EMA — شرط أقوى للبوت الثاني
             df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
             df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
 
@@ -209,7 +318,6 @@ def run_momentum_scanner():
             if not (cp > ema9 and cp > ema20 and ema9 > ema20):
                 continue
 
-            # آخر شمعة قوية
             last_open = df["Open"].iloc[-1]
             last_close = df["Close"].iloc[-1]
             last_high = df["High"].iloc[-1]
@@ -230,7 +338,6 @@ def run_momentum_scanner():
             if not strong_last_candle:
                 continue
 
-            # تأكيد الفوليوم
             vol_3 = df["Volume"].tail(3).mean()
             vol_10 = df["Volume"].tail(10).mean()
 
@@ -242,7 +349,6 @@ def run_momentum_scanner():
             if not volume_confirmed:
                 continue
 
-            # تأكيدات إضافية
             confirm_vwap = cp > vwap * 1.005
             no_short_breakdown = cp > avg_5min
             is_near_high = cp / day_high >= 0.985
@@ -253,14 +359,12 @@ def run_momentum_scanner():
             if not no_short_breakdown:
                 continue
 
-            # مسار الانفجار
             is_momentum = (
                 recent_move >= 0.7
                 and instant_rvol > 3.0
                 and is_near_high
             )
 
-            # مسار التجميع القوي
             is_accumulation = (
                 abs(recent_move) < 0.3
                 and instant_rvol > 4.5
@@ -285,6 +389,35 @@ def run_momentum_scanner():
                 t2 = cp * 1.05
                 sl = cp * 0.985
 
+                is_shared, main_signal = check_shared_signal(symbol)
+
+                if is_shared and symbol not in shared_alerts:
+                    main_price = float(main_signal.get("price", 0))
+                    price_diff = ((cp - main_price) / main_price * 100) if main_price > 0 else 0
+
+                    shared_msg = (
+                        f"🔥🔥 *تأكيد مزدوج قوي جدًا*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الآن: ${cp:.2f}\n"
+                        f"📌 ظهر في البوت الأول + بوت الدخول الأقوى\n"
+                        f"⭐ الأولوية: عالية جدًا\n\n"
+                        f"📍 سعر إشارة البوت الأول: ${main_price:.2f}\n"
+                        f"📈 الفرق من أول إشارة: {price_diff:.2f}%\n\n"
+                        f"💪 RSI: {rsi:.1f}\n"
+                        f"⚡ RVOL: {instant_rvol:.2f}x\n"
+                        f"📈 حركة 10د: {recent_move:.2f}%\n"
+                        f"🛡️ تمدد 2د: {stretch:.2f}%\n\n"
+                        f"🎯 هدف 1: ${t1:.2f}\n"
+                        f"🚀 هدف 2: ${t2:.2f}\n"
+                        f"🛑 وقف الخسارة: ${sl:.2f}\n\n"
+                        f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
+                    )
+
+                    send_telegram_msg(shared_msg)
+                    shared_alerts[symbol] = {
+                        "expiry": now + timedelta(minutes=15)
+                    }
+
                 msg = (
                     f"✅ *بوت الدخول الأقوى - إشارة مؤكدة جدًا*\n\n"
                     f"🎫 السهم: `{symbol}`\n"
@@ -306,6 +439,7 @@ def run_momentum_scanner():
                 )
 
                 send_telegram_msg(msg)
+                save_signal_to_gist(symbol, cp, status)
 
                 confirmed_alerts[symbol] = {
                     "expiry": now + timedelta(minutes=15)
