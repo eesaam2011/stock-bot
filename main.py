@@ -329,6 +329,8 @@ def run_momentum_scanner():
                     f"⚡ RVOL لحظي: {instant_rvol:.2f}x\n"
                     f"📈 حركة 10 دقائق: {recent_move:.2f}%\n"
                     f"🛡️ التمدد: {stretch:.2f}%\n"
+                    f"🔝 قمة اليوم: ${day_high:.2f}\n"
+                    f"🚀 دخول اذا اخترق: ${day_high:.2f}\n"
                     f"📌 الاتجاه: {trend_text}\n\n"
                     f"🎯 الهدف الأقرب: ${quick_target:.2f}\n"
                     f"🎯 هدف 1: ${t1:.2f}\n"
