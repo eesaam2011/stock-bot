@@ -161,6 +161,8 @@ def get_base_list():
         "BUD", "TAP", "STZ", "DEO",
         "PM", "MO",
         "CGC", "TLRY", "ACB"
+        # رحلات بحرية / كروز
+      "NCLH", "CCL", "RCL"
     ]
 
     exclude_keywords = [
