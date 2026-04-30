@@ -160,13 +160,25 @@ def get_base_list():
     headers = {"User-Agent": "Mozilla/5.0"}
 
     black_list = [
-        "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
-        "MET", "PRU", "ALL", "AIG", "CB",
-        "DKNG", "PENN", "WYNN", "LVS",
-        "BUD", "TAP", "STZ", "DEO",
-        "PM", "MO",
-        "CGC", "TLRY", "ACB"
-    ]
+    "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
+    "MET", "PRU", "ALL", "AIG", "CB",
+    "DKNG", "PENN", "WYNN", "LVS",
+    "BUD", "TAP", "STZ", "DEO",
+    "PM", "MO",
+    "CGC", "TLRY", "ACB"
+]
+
+# =========================
+# فلتر قطاعات إضافي (ذكي)
+# =========================
+exclude_keywords = [
+    "bank", "financial", "credit", "lending", "capital", "finance",
+    "insurance", "assurance",
+    "casino", "bet", "gambling", "lottery",
+    "alcohol", "beer", "wine", "spirits", "brew",
+    "tobacco", "cigarette", "smoke",
+    "cannabis", "marijuana", "weed", "thc", "cbd"
+]
 
     try:
         symbols = []
@@ -185,14 +197,15 @@ def get_base_list():
         clean_symbols = []
 
         for s in list(set(symbols)):
-            if (
-                isinstance(s, str)
-                and "." not in s
-                and "^" not in s
-                and "-" not in s
-                and s not in black_list
-            ):
-                clean_symbols.append(s)
+    if (
+        isinstance(s, str)
+        and "." not in s
+        and "^" not in s
+        and "-" not in s
+        and s not in black_list
+        and not any(keyword in s.lower() for keyword in exclude_keywords)
+    ):
+        clean_symbols.append(s)
 
         return clean_symbols
 
