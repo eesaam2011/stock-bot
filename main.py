@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 import pandas as pd
 import yfinance as yf
@@ -13,6 +14,9 @@ BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+GIST_ID = os.getenv("GIST_ID")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 
@@ -40,6 +44,63 @@ def send_telegram_msg(message):
         )
     except Exception as e:
         print("Telegram error:", e, flush=True)
+
+
+def save_signal_to_gist(symbol, price, signal_type):
+    if not GIST_ID or not GITHUB_TOKEN:
+        print("Gist keys missing", flush=True)
+        return
+
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        res = requests.get(url, headers=headers, timeout=10)
+        data = res.json()
+
+        content = data["files"]["signals.json"]["content"]
+
+        try:
+            signals = json.loads(content)
+        except Exception:
+            signals = []
+
+        now_ts = time.time()
+
+        # حذف الإشارات الأقدم من 20 دقيقة
+        signals = [
+            s for s in signals
+            if now_ts - float(s.get("time", 0)) < 1200
+        ]
+
+        signals.append({
+            "symbol": symbol,
+            "price": round(float(price), 4),
+            "type": signal_type,
+            "source": "main_bot",
+            "time": now_ts
+        })
+
+        requests.patch(
+            url,
+            headers=headers,
+            json={
+                "files": {
+                    "signals.json": {
+                        "content": json.dumps(signals, ensure_ascii=False)
+                    }
+                }
+            },
+            timeout=10
+        )
+
+        print(f"Gist saved: {symbol}", flush=True)
+
+    except Exception as e:
+        print("Gist error:", e, flush=True)
 
 
 def get_base_list():
@@ -212,13 +273,11 @@ def run_momentum_scanner():
             if (is_momentum or is_accumulation) and symbol not in confirmed_alerts:
                 status = "تجميع لحظي 🎯" if is_accumulation else "انفجار ⚡"
 
-                # أهداف أوضح للبوت الأول
                 quick_target = cp * 1.008
                 t1 = cp * 1.02
                 t2 = cp * 1.04
                 sl = cp * 0.985
 
-                # نوع الحركة
                 if recent_move > 2:
                     move_type = "🔥 انفجار سريع"
                 elif recent_move > 0.7:
@@ -226,7 +285,6 @@ def run_momentum_scanner():
                 else:
                     move_type = "🎯 بداية / تجميع"
 
-                # سبب الحركة
                 if instant_rvol > 5 and recent_move > 2:
                     reason = "🔥 سيولة قوية + زخم واضح"
                 elif instant_rvol > 4 and abs(recent_move) < 0.5:
@@ -236,7 +294,6 @@ def run_momentum_scanner():
                 else:
                     reason = "⚠️ حركة نشطة لكن تحتاج متابعة"
 
-                # تقييم القوة
                 strength_score = 0
                 if instant_rvol > 5:
                     strength_score += 1
@@ -279,6 +336,7 @@ def run_momentum_scanner():
                 )
 
                 send_telegram_msg(msg)
+                save_signal_to_gist(symbol, cp, status)
 
                 confirmed_alerts[symbol] = {
                     "expiry": now + timedelta(minutes=15)
