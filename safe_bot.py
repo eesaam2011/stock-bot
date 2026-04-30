@@ -8,9 +8,6 @@ import alpaca_trade_api as tradeapi
 from datetime import datetime, timedelta
 import pytz
 
-# ==========================================
-# الإعدادات من Render Environment Variables
-# ==========================================
 API_KEY = os.getenv("APCA_API_KEY_ID")
 SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
@@ -73,7 +70,6 @@ def read_gist_signals():
 
         now_ts = time.time()
 
-        # نقرأ فقط إشارات آخر 20 دقيقة
         signals = [
             s for s in signals
             if now_ts - float(s.get("time", 0)) < 1200
@@ -109,7 +105,6 @@ def save_signal_to_gist(symbol, price, signal_type):
 
         now_ts = time.time()
 
-        # حذف الإشارات الأقدم من 20 دقيقة
         signals = [
             s for s in signals
             if now_ts - float(s.get("time", 0)) < 1200
@@ -160,25 +155,22 @@ def get_base_list():
     headers = {"User-Agent": "Mozilla/5.0"}
 
     black_list = [
-    "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
-    "MET", "PRU", "ALL", "AIG", "CB",
-    "DKNG", "PENN", "WYNN", "LVS",
-    "BUD", "TAP", "STZ", "DEO",
-    "PM", "MO",
-    "CGC", "TLRY", "ACB"
-]
+        "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
+        "MET", "PRU", "ALL", "AIG", "CB",
+        "DKNG", "PENN", "WYNN", "LVS",
+        "BUD", "TAP", "STZ", "DEO",
+        "PM", "MO",
+        "CGC", "TLRY", "ACB"
+    ]
 
-# =========================
-# فلتر قطاعات إضافي (ذكي)
-# =========================
-exclude_keywords = [
-    "bank", "financial", "credit", "lending", "capital", "finance",
-    "insurance", "assurance",
-    "casino", "bet", "gambling", "lottery",
-    "alcohol", "beer", "wine", "spirits", "brew",
-    "tobacco", "cigarette", "smoke",
-    "cannabis", "marijuana", "weed", "thc", "cbd"
-]
+    exclude_keywords = [
+        "bank", "financial", "credit", "lending", "capital", "finance",
+        "insurance", "assurance",
+        "casino", "bet", "gambling", "lottery",
+        "alcohol", "beer", "wine", "spirits", "brew",
+        "tobacco", "cigarette", "smoke",
+        "cannabis", "marijuana", "weed", "thc", "cbd"
+    ]
 
     try:
         symbols = []
@@ -197,15 +189,15 @@ exclude_keywords = [
         clean_symbols = []
 
         for s in list(set(symbols)):
-    if (
-        isinstance(s, str)
-        and "." not in s
-        and "^" not in s
-        and "-" not in s
-        and s not in black_list
-        and not any(keyword in s.lower() for keyword in exclude_keywords)
-    ):
-        clean_symbols.append(s)
+            if (
+                isinstance(s, str)
+                and "." not in s
+                and "^" not in s
+                and "-" not in s
+                and s not in black_list
+                and not any(keyword in s.lower() for keyword in exclude_keywords)
+            ):
+                clean_symbols.append(s)
 
         return clean_symbols
 
