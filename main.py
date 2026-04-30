@@ -10,12 +10,12 @@ import pytz
 # ==========================================
 # الإعدادات من Render Environment Variables
 # ==========================================
-API_KEY = os.getenv("PKLT4AJPDSKTKUXSQDW3CMOY6L")
-SECRET_KEY = os.getenv("725DY5KSZ6TFqdc1PqPxKd3ZovAyQkTwtqq8W2qfqWdX")
-BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+API_KEY = os.getenv("APCA_API_KEY_ID")
+SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
+BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
-TELEGRAM_TOKEN = os.getenv("8425162317:AAH9l8S_rTx5gktNoG-mY0vEumYlmZdfWFg")
-TELEGRAM_CHAT_ID = os.getenv("1125387322")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 
@@ -26,7 +26,7 @@ RUN_RADAR = True
 
 def send_telegram_msg(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram keys missing")
+        print("Telegram keys missing", flush=True)
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -42,7 +42,7 @@ def send_telegram_msg(message):
             timeout=10
         )
     except Exception as e:
-        print("Telegram error:", e)
+        print("Telegram error:", e, flush=True)
 
 
 def get_base_list():
@@ -87,7 +87,7 @@ def get_base_list():
         return clean_symbols
 
     except Exception as e:
-        print("Symbol list error:", e)
+        print("Symbol list error:", e, flush=True)
         return []
 
 
@@ -106,11 +106,15 @@ def calculate_rsi(close, period=14):
 def run_momentum_scanner():
     global confirmed_alerts, RUN_RADAR
 
+    print("🔎 Fetching symbols...", flush=True)
+
     symbols = get_base_list()
     total_symbols = len(symbols)
 
+    print(f"✅ Symbols loaded: {total_symbols}", flush=True)
+
     if total_symbols == 0:
-        print("No symbols found")
+        print("No symbols found", flush=True)
         time.sleep(30)
         return
 
@@ -129,7 +133,8 @@ def run_momentum_scanner():
             print(
                 f"{now.strftime('%H:%M:%S')} | "
                 f"{index + 1}/{total_symbols} | "
-                f"Scanning {symbol} | alerts: {len(confirmed_alerts)}"
+                f"Scanning {symbol} | alerts: {len(confirmed_alerts)}",
+                flush=True
             )
 
             ticker = yf.Ticker(symbol)
@@ -184,7 +189,6 @@ def run_momentum_scanner():
             recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
             instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
 
-            # المتوسطات القريبة — ليست شرط إجباري
             df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
             df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
 
@@ -205,7 +209,6 @@ def run_momentum_scanner():
                 and cp > vwap
             )
 
-            # هنا لم نجعل EMA شرطًا قاسيًا
             if (is_momentum or is_accumulation) and symbol not in confirmed_alerts:
                 status = "تجميع لحظي 🎯" if is_accumulation else "انفجار ⚡"
 
@@ -240,10 +243,11 @@ def run_momentum_scanner():
             time.sleep(0.05)
 
         except Exception as e:
-            print(f"Error with {symbol}: {e}")
+            print(f"Error with {symbol}: {e}", flush=True)
             continue
 
 
+print("🚀 BOT STARTED", flush=True)
 send_telegram_msg("🚀 تم تشغيل رادار الأسهم على Render")
 
 while RUN_RADAR:
