@@ -160,9 +160,10 @@ def get_base_list():
         "DKNG", "PENN", "WYNN", "LVS",
         "BUD", "TAP", "STZ", "DEO",
         "PM", "MO",
-        "CGC", "TLRY", "ACB"
+        "CGC", "TLRY", "ACB",
+
         # رحلات بحرية / كروز
-      "NCLH", "CCL", "RCL"
+        "NCLH", "CCL", "RCL"
     ]
 
     exclude_keywords = [
@@ -191,17 +192,18 @@ def get_base_list():
             ).json()
 
             quotes = res["finance"]["result"][0]["quotes"]
-        for q in quotes:
-            symbol = q.get("symbol")
-            price = q.get("regularMarketPrice")
 
-            if (
-                symbol
-                and isinstance(symbol, str)
-                and price is not None
-                and 0.5 <= float(price) <= 25
-            ):
-                symbols.append(symbol)
+            for q in quotes:
+                symbol = q.get("symbol")
+                price = q.get("regularMarketPrice")
+
+                if (
+                    symbol
+                    and isinstance(symbol, str)
+                    and price is not None
+                    and 0.5 <= float(price) <= 25
+                ):
+                    symbols.append(symbol)
 
         clean_symbols = []
 
@@ -330,6 +332,21 @@ def run_momentum_scanner():
 
             recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
             instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
+
+            # =========================
+            # 🛑 فلترة القمم
+            # =========================
+            if day_high > 0 and cp >= day_high * 0.995:
+                continue
+
+            if touches >= 2:
+                continue
+
+            if rsi >= 70:
+                continue
+
+            if recent_move >= 3:
+                continue
 
             df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
             df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
