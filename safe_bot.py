@@ -186,7 +186,17 @@ def get_base_list():
             ).json()
 
             quotes = res["finance"]["result"][0]["quotes"]
-            symbols += [q["symbol"] for q in quotes if "symbol" in q]
+            for q in quotes:
+            symbol = q.get("symbol")
+            price = q.get("regularMarketPrice")
+
+            if (
+                symbol
+                and isinstance(symbol, str)
+                and price is not None
+                and 0.5 <= float(price) <= 25
+            ):
+                symbols.append(symbol)
 
         clean_symbols = []
 
