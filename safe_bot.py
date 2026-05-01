@@ -186,7 +186,7 @@ def get_base_list():
             ).json()
 
             quotes = res["finance"]["result"][0]["quotes"]
-            for q in quotes:
+        for q in quotes:
             symbol = q.get("symbol")
             price = q.get("regularMarketPrice")
 
