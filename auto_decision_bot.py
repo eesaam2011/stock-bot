@@ -258,15 +258,21 @@ def check_ready_entry(symbol, data):
         recent_highs = df["High"].tail(10)
         touches = (recent_highs >= day_high * 0.995).sum()
 
+        # =========================
+        # 🧠 دخول سريع محسّن
+        # =========================
+        near_high = cp / day_high >= 0.98
+        early_break = cp > df["High"].tail(3).max() * 0.999
+
         breakout_ready = (
-            cp >= day_high * 0.998
-            and cp > vwap
+            cp > vwap
             and cp > ema9
-            and instant_rvol >= 2.2
-            and 50 <= rsi <= 78
-            and recent_move >= 0.4
+            and instant_rvol >= 2.0
+            and 48 <= rsi <= 78
+            and recent_move >= 0.3
             and recent_move <= 3.5
             and touches < 3
+            and (near_high or early_break)
         )
 
         if not breakout_ready:
