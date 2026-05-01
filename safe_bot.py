@@ -177,7 +177,12 @@ def get_base_list():
     try:
         symbols = []
 
-        for scr_id in ["most_actives", "day_gainers"]:
+        for scr_id in [
+            "most_actives",
+            "day_gainers",
+            "undervalued_growth_stocks",
+            "small_cap_gainers"
+        ]:
             res = requests.get(
                 url,
                 params={"scrIds": scr_id, "count": 250},
