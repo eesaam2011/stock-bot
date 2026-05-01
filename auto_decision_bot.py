@@ -24,6 +24,7 @@ saudi_tz = pytz.timezone("Asia/Riyadh")
 
 watchlist = {}
 sent_alerts = {}
+active_trades = {}
 
 PRICE_MIN = 0.5
 PRICE_MAX = 25
@@ -196,12 +197,12 @@ def update_watchlist_from_radar():
 
             early_setup = (
                 PRICE_MIN <= cp <= PRICE_MAX
-                and 1.3 <= instant_rvol <= 4.5
-                and 45 <= rsi <= 68
+                and 1.5 <= instant_rvol <= 5.0
+                and 45 <= rsi <= 66
                 and cp > vwap
                 and cp > ema9
                 and cp >= day_high * 0.965
-                and recent_move < 3.0
+                and 0.15 <= recent_move < 2.5
             )
 
             if early_setup:
@@ -259,18 +260,21 @@ def check_ready_entry(symbol, data):
         touches = (recent_highs >= day_high * 0.995).sum()
 
         # =========================
-        # 🧠 دخول سريع محسّن
+        # 🧠 فلتر البداية الذكية
         # =========================
         near_high = cp / day_high >= 0.98
         early_break = cp > df["High"].tail(3).max() * 0.999
 
+        smart_start = (
+            instant_rvol >= 2.5
+            and 0.7 <= recent_move <= 2.8
+            and 50 <= rsi <= 72
+        )
+
         breakout_ready = (
             cp > vwap
             and cp > ema9
-            and instant_rvol >= 2.0
-            and 48 <= rsi <= 78
-            and recent_move >= 0.3
-            and recent_move <= 3.5
+            and smart_start
             and touches < 3
             and (near_high or early_break)
         )
@@ -310,12 +314,97 @@ def check_ready_entry(symbol, data):
             "time": datetime.now(saudi_tz)
         }
 
+        active_trades[symbol] = {
+            "entry": entry,
+            "t1": t1,
+            "t2": t2,
+            "sl": sl,
+            "time": datetime.now(saudi_tz),
+            "slow_alerted": False,
+            "run_alerted": False,
+            "stop_alerted": False
+        }
+
         watchlist[symbol]["alerted"] = True
 
         print(f"🧠 READY ENTRY SENT: {symbol}", flush=True)
 
     except Exception as e:
         print(f"Check entry error {symbol}: {e}", flush=True)
+
+
+def monitor_active_trades():
+    global active_trades
+
+    now = datetime.now(saudi_tz)
+
+    for symbol, trade in list(active_trades.items()):
+        try:
+            df = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=True)
+
+            if df.empty or len(df) < 5:
+                continue
+
+            try:
+                latest_trade = api.get_latest_trade(symbol)
+                cp = float(latest_trade.price)
+            except Exception:
+                cp = float(df["Close"].iloc[-1])
+
+            entry = trade["entry"]
+            sl = trade["sl"]
+            t1 = trade["t1"]
+            t2 = trade["t2"]
+
+            gain_pct = ((cp - entry) / entry) * 100
+            age_minutes = (now - trade["time"]).total_seconds() / 60
+
+            if cp <= sl and not trade.get("stop_alerted", False):
+                msg = (
+                    f"🛑 *خروج - كسر وقف الخسارة*\n\n"
+                    f"🎫 السهم: `{symbol}`\n"
+                    f"💰 السعر الحالي: {cp:.2f}\n"
+                    f"🚀 الدخول: {entry:.2f}\n"
+                    f"🛑 الوقف: {sl:.2f}"
+                )
+
+                send_telegram_msg(msg)
+                trade["stop_alerted"] = True
+                active_trades.pop(symbol, None)
+                continue
+
+            if age_minutes >= 5 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
+                msg = (
+                    f"⚠️ *تنبيه متابعة الصفقة*\n\n"
+                    f"🎫 السهم: `{symbol}`\n"
+                    f"💰 السعر الحالي: {cp:.2f}\n"
+                    f"🚀 الدخول: {entry:.2f}\n"
+                    f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
+                    f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
+                    f"الأفضل تشديد الوقف أو الخروج الجزئي."
+                )
+
+                send_telegram_msg(msg)
+                trade["slow_alerted"] = True
+
+            if gain_pct >= 2 and not trade.get("run_alerted", False):
+                msg = (
+                    f"🚀 *السهم انطلق بعد الدخول*\n\n"
+                    f"🎫 السهم: `{symbol}`\n"
+                    f"💰 السعر الحالي: {cp:.2f}\n"
+                    f"🚀 الدخول: {entry:.2f}\n"
+                    f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                    f"🎯 هدف 1: {t1:.2f}\n"
+                    f"🚀 هدف ثاني: {t2:.2f}\n"
+                    f"✅ يفضل رفع الوقف لحماية الربح."
+                )
+
+                send_telegram_msg(msg)
+                trade["run_alerted"] = True
+
+        except Exception as e:
+            print(f"Monitor trade error {symbol}: {e}", flush=True)
+            continue
 
 
 print("🧠 AUTO DECISION BOT STARTED", flush=True)
@@ -333,6 +422,8 @@ while True:
             if not data.get("alerted", False):
                 check_ready_entry(symbol, data)
                 time.sleep(0.05)
+
+        monitor_active_trades()
 
         time.sleep(SCAN_INTERVAL)
 
