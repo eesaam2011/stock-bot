@@ -113,7 +113,8 @@ def get_base_list():
         "DKNG", "PENN", "WYNN", "LVS",
         "BUD", "TAP", "STZ", "DEO",
         "PM", "MO",
-        "CGC", "TLRY", "ACB"
+        "CGC", "TLRY", "ACB",
+
         # رحلات بحرية / كروز
         "NCLH", "CCL", "RCL"
     ]
@@ -124,8 +125,13 @@ def get_base_list():
         for scr_id in [
             "most_actives",
             "day_gainers",
+            "small_cap_gainers",
             "undervalued_growth_stocks",
-            "small_cap_gainers"
+
+            "aggressive_small_caps",
+            "most_shorted_stocks",
+            "high_beta_stocks",
+            "growth_technology_stocks"
         ]:
             res = requests.get(
                 url,
@@ -134,18 +140,24 @@ def get_base_list():
                 timeout=10
             ).json()
 
-            quotes = res["finance"]["result"][0]["quotes"]
-        for q in quotes:
-            symbol = q.get("symbol")
-            price = q.get("regularMarketPrice")
+            data = res.get("finance", {}).get("result")
 
-            if (
-                symbol
-                and isinstance(symbol, str)
-                and price is not None
-                and 0.5 <= float(price) <= 25
-            ):
-                symbols.append(symbol)
+            if not data:
+                continue
+
+            quotes = data[0].get("quotes", [])
+
+            for q in quotes:
+                symbol = q.get("symbol")
+                price = q.get("regularMarketPrice")
+
+                if (
+                    symbol
+                    and isinstance(symbol, str)
+                    and price is not None
+                    and 0.5 <= float(price) <= 25
+                ):
+                    symbols.append(symbol)
 
         clean_symbols = []
 
