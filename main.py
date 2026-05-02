@@ -135,7 +135,7 @@ def get_base_list():
         ]:
             res = requests.get(
                 url,
-                params={"scrIds": scr_id, "count": 250},
+                params={"scrIds": scr_id, "count": 200},
                 headers=headers,
                 timeout=10
             ).json()
