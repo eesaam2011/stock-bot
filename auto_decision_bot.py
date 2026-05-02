@@ -312,6 +312,12 @@ def check_ready_entry(symbol, data):
             f"RVOL: {instant_rvol:.2f}x\n"
             f"حركة 10د: {recent_move:.2f}%\n\n"
             f"🚀 دخول الآن: {entry:.2f}\n"
+            f"🎯 هدف 1: {t1:.2f}\n"
+            f"🚀 هدف ثاني: {t2:.2f}\n"
+            f"🛑 وقف الخسارة: {sl:.2f}\n\n"
+            f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
+        )
+
 def check_ready_entry(symbol, data):
     try:
         df = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=True)
