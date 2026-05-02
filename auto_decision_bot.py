@@ -179,12 +179,18 @@ def update_watchlist_from_gist():
     signals = read_gist_signals()
 
     for s in signals:
-        if s.get("source") == "main_bot":
-            symbol = s.get("symbol")
-            price = s.get("price", 0)
+        symbol = s.get("symbol")
+        price = s.get("price", 0)
+        source = s.get("source")
 
-            if symbol:
-                add_to_watchlist(symbol, "رادار مبكر (البوت الأول)", price)
+        if not symbol:
+            continue
+
+        if source == "main_bot":
+            add_to_watchlist(symbol, "رادار مبكر (البوت الأول)", price)
+
+        elif source == "safe_bot":
+            add_to_watchlist(symbol, "تأكيد قوي (البوت الثاني)", price)
 
 
 def update_watchlist_from_radar():
@@ -272,9 +278,21 @@ def check_ready_entry(symbol, data):
         recent_highs = df["High"].tail(10)
         touches = (recent_highs >= day_high * 0.995).sum()
 
+        last_open = float(df["Open"].iloc[-1])
         last_close = float(df["Close"].iloc[-1])
+        last_high = float(df["High"].iloc[-1])
+        last_low = float(df["Low"].iloc[-1])
+
         prev_close = float(df["Close"].iloc[-2])
         prev_high = float(df["High"].iloc[-2])
+
+        candle_range = last_high - last_low
+
+        if candle_range <= 0:
+            return
+
+        upper_wick_pct = (last_high - last_close) / candle_range
+        close_position = (last_close - last_low) / candle_range
 
         real_breakout = (
             last_close > prev_high
@@ -295,11 +313,29 @@ def check_ready_entry(symbol, data):
             and cp >= day_high * 0.975
         )
 
+        fake_breakout_risk = (
+            upper_wick_pct >= 0.45
+            and close_position < 0.55
+            and instant_rvol >= 2.5
+        )
+
+        repeated_rejection = (
+            touches >= 2
+            and close_position < 0.60
+            and not real_breakout
+        )
+
+        distribution_risk = (
+            fake_breakout_risk
+            or repeated_rejection
+        )
+
         advanced_entry = (
             cp > vwap
             and cp > ema9
             and touches < 3
             and not overextended
+            and not (distribution_risk and not real_breakout)
             and (real_breakout or early_entry)
         )
 
@@ -325,6 +361,7 @@ def check_ready_entry(symbol, data):
             f"RSI: {rsi:.1f}\n"
             f"RVOL: {instant_rvol:.2f}x\n"
             f"حركة 10د: {recent_move:.2f}%\n\n"
+            f"🛡️ فلتر التصريف: تم تجاوزه ✅\n\n"
             f"🚀 دخول الآن: {entry:.2f}\n"
             f"🎯 هدف 1: {t1:.2f}\n"
             f"🚀 هدف ثاني: {t2:.2f}\n"
