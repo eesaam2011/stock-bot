@@ -46,6 +46,24 @@ def send_telegram_msg(message):
         print("Telegram error:", e, flush=True)
 
 
+def is_trading_time():
+    now = datetime.now(saudi_tz)
+    hour = now.hour
+    minute = now.minute
+    weekday = now.weekday()  # 0=Monday, 6=Sunday
+
+    if weekday > 4:
+        return False
+
+    if hour > 10 or (hour == 10 and minute >= 30):
+        return True
+
+    if hour < 3:
+        return True
+
+    return False
+
+
 def save_signal_to_gist(symbol, price, signal_type):
     if not GIST_ID or not GITHUB_TOKEN:
         print("Gist keys missing", flush=True)
@@ -60,7 +78,6 @@ def save_signal_to_gist(symbol, price, signal_type):
 
         res = requests.get(url, headers=headers, timeout=10)
         data = res.json()
-
         content = data["files"]["signals.json"]["content"]
 
         try:
@@ -70,7 +87,6 @@ def save_signal_to_gist(symbol, price, signal_type):
 
         now_ts = time.time()
 
-        # حذف الإشارات الأقدم من 20 دقيقة
         signals = [
             s for s in signals
             if now_ts - float(s.get("time", 0)) < 1200
@@ -384,5 +400,15 @@ print("🚀 BOT STARTED", flush=True)
 send_telegram_msg("🚀 تم تشغيل رادار الأسهم على Render")
 
 while RUN_RADAR:
-    run_momentum_scanner()
-    time.sleep(10)
+    try:
+        if not is_trading_time():
+            print("⏸️ خارج وقت التشغيل - البوت ينتظر", flush=True)
+            time.sleep(300)
+            continue
+
+        run_momentum_scanner()
+        time.sleep(10)
+
+    except Exception as e:
+        print("Main loop error:", e, flush=True)
+        time.sleep(10)
