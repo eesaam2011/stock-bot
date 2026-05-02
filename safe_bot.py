@@ -47,6 +47,24 @@ def send_telegram_msg(message):
         print("Telegram error:", e, flush=True)
 
 
+def is_trading_time():
+    now = datetime.now(saudi_tz)
+    hour = now.hour
+    minute = now.minute
+    weekday = now.weekday()  # 0=Monday, 6=Sunday
+
+    if weekday > 4:
+        return False
+
+    if hour > 10 or (hour == 10 and minute >= 30):
+        return True
+
+    if hour < 3:
+        return True
+
+    return False
+
+
 def read_gist_signals():
     if not GIST_ID or not GITHUB_TOKEN:
         print("Gist keys missing", flush=True)
@@ -506,5 +524,15 @@ print("🚀 SAFE BOT STARTED", flush=True)
 send_telegram_msg("🚀 تم تشغيل بوت الدخول الأقوى على Render")
 
 while RUN_RADAR:
-    run_momentum_scanner()
-    time.sleep(10)
+    try:
+        if not is_trading_time():
+            print("⏸️ خارج وقت التشغيل - البوت ينتظر", flush=True)
+            time.sleep(300)
+            continue
+
+        run_momentum_scanner()
+        time.sleep(10)
+
+    except Exception as e:
+        print("Main loop error:", e, flush=True)
+        time.sleep(10)
