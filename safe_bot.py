@@ -196,7 +196,12 @@ def get_base_list():
                 timeout=10
             ).json()
 
-            quotes = res["finance"]["result"][0]["quotes"]
+            data = res.get("finance", {}).get("result")
+
+        if not data:
+            continue
+
+        quotes = data[0].get("quotes", [])
 
             for q in quotes:
                 symbol = q.get("symbol")
