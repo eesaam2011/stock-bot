@@ -196,14 +196,14 @@ def get_base_list():
                 timeout=10
             ).json()
 
-            data = res.get("finance", {}).get("result")
+        data = res.get("finance", {}).get("result")
 
         if not data:
             continue
 
         quotes = data[0].get("quotes", [])
 
-            for q in quotes:
+        for q in quotes:
                 symbol = q.get("symbol")
                 price = q.get("regularMarketPrice")
 
