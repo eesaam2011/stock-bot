@@ -53,6 +53,24 @@ def send_telegram_msg(message):
         print("Telegram error:", e, flush=True)
 
 
+def is_trading_time():
+    now = datetime.now(saudi_tz)
+    hour = now.hour
+    minute = now.minute
+    weekday = now.weekday()  # 0=Monday, 6=Sunday
+
+    if weekday > 4:
+        return False
+
+    if hour > 10 or (hour == 10 and minute >= 30):
+        return True
+
+    if hour < 3:
+        return True
+
+    return False
+
+
 def read_gist_signals():
     if not GIST_ID or not GITHUB_TOKEN:
         return []
@@ -486,6 +504,11 @@ send_telegram_msg("🧠 تم تشغيل بوت القرار الذكي")
 
 while True:
     try:
+        if not is_trading_time():
+            print("⏸️ خارج وقت التشغيل - البوت ينتظر", flush=True)
+            time.sleep(300)
+            continue
+
         update_watchlist_from_gist()
         update_watchlist_from_radar()
         clean_old_watchlist()
