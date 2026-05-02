@@ -181,8 +181,13 @@ def get_base_list():
         for scr_id in [
             "most_actives",
             "day_gainers",
+            "small_cap_gainers",
             "undervalued_growth_stocks",
-            "small_cap_gainers"
+
+            "aggressive_small_caps",
+            "most_shorted_stocks",
+            "high_beta_stocks",
+            "growth_technology_stocks"
         ]:
             res = requests.get(
                 url,
