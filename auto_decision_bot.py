@@ -278,7 +278,6 @@ def check_ready_entry(symbol, data):
         recent_highs = df["High"].tail(10)
         touches = (recent_highs >= day_high * 0.995).sum()
 
-        last_open = float(df["Open"].iloc[-1])
         last_close = float(df["Close"].iloc[-1])
         last_high = float(df["High"].iloc[-1])
         last_low = float(df["Low"].iloc[-1])
@@ -350,13 +349,27 @@ def check_ready_entry(symbol, data):
         t2 = entry * 1.04
         sl = entry * 0.985
 
+        source_text = data.get("source", "رادار مبكر")
+
+        if "البوت الثاني" in source_text:
+            signal_grade = "A+ 🔥"
+            grade_note = "أقوى نوع: تأكيد من البوت الثاني + متابعة ذكية"
+        elif "البوت الأول" in source_text:
+            signal_grade = "A ✅"
+            grade_note = "جيد جدًا: رادار مبكر + تأكيد دخول"
+        else:
+            signal_grade = "B ⚠️"
+            grade_note = "إشارة ذاتية: جيدة لكن تحتاج حذر أكثر"
+
         msg = (
             f"🧠🔥 *بوت القرار الذكي - دخول جاهز الآن*\n\n"
             f"🎫 السهم: `{symbol}`\n"
             f"💰 السعر: {entry:.2f}\n\n"
             f"🎯 الحالة: دخول جاهز (تمت المتابعة والتأكيد)\n\n"
             f"📡 المصدر:\n"
-            f"{data.get('source', 'رادار مبكر')} + متابعة ذكية\n\n"
+            f"{source_text} + متابعة ذكية\n\n"
+            f"🏆 التصنيف: {signal_grade}\n"
+            f"🧠 ملاحظة: {grade_note}\n\n"
             f"📊 القوة:\n"
             f"RSI: {rsi:.1f}\n"
             f"RVOL: {instant_rvol:.2f}x\n"
