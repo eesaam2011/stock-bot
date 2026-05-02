@@ -269,86 +269,6 @@ def check_ready_entry(symbol, data):
         recent_highs = df["High"].tail(10)
         touches = (recent_highs >= day_high * 0.995).sum()
 
-        # =========================
-        # 🧠 فلتر البداية الذكية
-        # =========================
-        near_high = cp / day_high >= 0.98
-        early_break = cp > df["High"].tail(3).max() * 0.999
-
-        smart_start = (
-            instant_rvol >= 2.5
-            and 0.7 <= recent_move <= 2.8
-            and 50 <= rsi <= 72
-        )
-
-        breakout_ready = (
-            cp > vwap
-            and cp > ema9
-            and smart_start
-            and touches < 3
-            and (near_high or early_break)
-        )
-
-        if not breakout_ready:
-            return
-
-        if sent_alerts.get(symbol):
-            return
-
-        entry = cp
-        t1 = entry * 1.02
-        t2 = entry * 1.04
-        sl = entry * 0.985
-
-        msg = (
-            f"🧠🔥 *بوت القرار الذكي - دخول جاهز الآن*\n\n"
-            f"🎫 السهم: `{symbol}`\n"
-            f"💰 السعر: {entry:.2f}\n\n"
-            f"🎯 الحالة: دخول جاهز (تمت المتابعة والتأكيد)\n\n"
-            f"📡 المصدر:\n"
-            f"{data.get('source', 'رادار مبكر')} + متابعة ذكية\n\n"
-            f"📊 القوة:\n"
-            f"RSI: {rsi:.1f}\n"
-            f"RVOL: {instant_rvol:.2f}x\n"
-            f"حركة 10د: {recent_move:.2f}%\n\n"
-            f"🚀 دخول الآن: {entry:.2f}\n"
-            f"🎯 هدف 1: {t1:.2f}\n"
-            f"🚀 هدف ثاني: {t2:.2f}\n"
-            f"🛑 وقف الخسارة: {sl:.2f}\n\n"
-            f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
-        )
-
-def check_ready_entry(symbol, data):
-    try:
-        df = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=True)
-
-        if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
-            return
-
-        try:
-            trade = api.get_latest_trade(symbol)
-            cp = float(trade.price)
-        except Exception:
-            cp = float(df["Close"].iloc[-1])
-
-        day_high = float(df["High"].max())
-        price_10min_ago = float(df["Close"].iloc[-10])
-
-        if cp <= 0 or day_high <= 0 or price_10min_ago <= 0:
-            return
-
-        vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
-
-        df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
-        ema9 = float(df["EMA9"].iloc[-1])
-
-        rsi = calculate_rsi(df["Close"])
-        instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
-        recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
-
-        recent_highs = df["High"].tail(10)
-        touches = (recent_highs >= day_high * 0.995).sum()
-
         last_close = float(df["Close"].iloc[-1])
         prev_close = float(df["Close"].iloc[-2])
         prev_high = float(df["High"].iloc[-2])
@@ -385,6 +305,70 @@ def check_ready_entry(symbol, data):
                 real_breakout
                 or early_entry
             )
+def check_ready_entry(symbol, data):
+    try:
+        df = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=True)
+
+        if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
+            return
+
+        try:
+            trade = api.get_latest_trade(symbol)
+            cp = float(trade.price)
+        except Exception:
+            cp = float(df["Close"].iloc[-1])
+
+        day_high = float(df["High"].max())
+        price_10min_ago = float(df["Close"].iloc[-10])
+
+        if cp <= 0 or day_high <= 0 or price_10min_ago <= 0:
+            return
+
+        vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
+
+        df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+        ema9 = float(df["EMA9"].iloc[-1])
+
+        rsi = calculate_rsi(df["Close"])
+        instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
+        recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
+
+        recent_highs = df["High"].tail(10)
+        touches = (recent_highs >= day_high * 0.995).sum()
+
+        last_close = float(df["Close"].iloc[-1])
+        prev_close = float(df["Close"].iloc[-2])
+        prev_high = float(df["High"].iloc[-2])
+
+        # =========================
+        # 🔥 الفلاتر الاحترافية
+        # =========================
+
+        real_breakout = (
+            last_close > prev_high
+            and prev_close > prev_high * 0.998
+            and instant_rvol >= 2.5
+        )
+
+        overextended = (
+            rsi > 75
+            or recent_move > 3.2
+            or touches >= 3
+        )
+
+        early_entry = (
+            instant_rvol >= 2.2
+            and 0.5 <= recent_move <= 2.2
+            and 50 <= rsi <= 70
+            and cp >= day_high * 0.975
+        )
+
+        advanced_entry = (
+            cp > vwap
+            and cp > ema9
+            and touches < 3
+            and not overextended
+            and (real_breakout or early_entry)
         )
 
         if not advanced_entry:
@@ -410,7 +394,7 @@ def check_ready_entry(symbol, data):
             f"RVOL: {instant_rvol:.2f}x\n"
             f"حركة 10د: {recent_move:.2f}%\n\n"
             f"🚀 دخول الآن: {entry:.2f}\n"
-            f"🚀 هدف 1: {t1:.2f}\n"
+            f"🎯 هدف 1: {t1:.2f}\n"
             f"🚀 هدف ثاني: {t2:.2f}\n"
             f"🛑 وقف الخسارة: {sl:.2f}\n\n"
             f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
