@@ -101,17 +101,27 @@ def get_base_list():
         for scr_id in [
             "most_actives",
             "day_gainers",
+            "small_cap_gainers",
             "undervalued_growth_stocks",
-            "small_cap_gainers"
+
+            "aggressive_small_caps",
+            "most_shorted_stocks",
+            "high_beta_stocks",
+            "growth_technology_stocks"
         ]:
             res = requests.get(
                 url,
-                params={"scrIds": scr_id, "count": 250},
+                params={"scrIds": scr_id, "count": 200},
                 headers=headers,
                 timeout=10
             ).json()
 
-            quotes = res["finance"]["result"][0]["quotes"]
+            data = res.get("finance", {}).get("result")
+
+            if not data:
+                continue
+
+            quotes = data[0].get("quotes", [])
 
             for q in quotes:
                 symbol = q.get("symbol")
