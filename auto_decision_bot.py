@@ -68,7 +68,11 @@ def read_gist_signals():
         data = res.json()
         content = data["files"]["signals.json"]["content"]
 
-        signals = json.loads(content)
+        try:
+            signals = json.loads(content)
+        except Exception:
+            signals = []
+
         now_ts = time.time()
 
         return [
@@ -103,7 +107,6 @@ def get_base_list():
             "day_gainers",
             "small_cap_gainers",
             "undervalued_growth_stocks",
-
             "aggressive_small_caps",
             "most_shorted_stocks",
             "high_beta_stocks",
@@ -273,77 +276,6 @@ def check_ready_entry(symbol, data):
         prev_close = float(df["Close"].iloc[-2])
         prev_high = float(df["High"].iloc[-2])
 
-        # =========================
-        # 🧠 فلتر احترافي للدخول
-        # =========================
-
-        real_breakout = (
-            last_close > prev_high
-            and prev_close > prev_high * 0.998
-            and instant_rvol >= 2.5
-        )
-
-        overextended = (
-            rsi > 75
-            or recent_move > 3.2
-            or touches >= 3
-        )
-
-        early_entry = (
-            instant_rvol >= 2.2
-            and 0.5 <= recent_move <= 2.2
-            and 50 <= rsi <= 70
-            and cp >= day_high * 0.975
-        )
-
-        advanced_entry = (
-            cp > vwap
-            and cp > ema9
-            and touches < 3
-            and not overextended
-            and (
-                real_breakout
-                or early_entry
-            )
-def check_ready_entry(symbol, data):
-    try:
-        df = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=True)
-
-        if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
-            return
-
-        try:
-            trade = api.get_latest_trade(symbol)
-            cp = float(trade.price)
-        except Exception:
-            cp = float(df["Close"].iloc[-1])
-
-        day_high = float(df["High"].max())
-        price_10min_ago = float(df["Close"].iloc[-10])
-
-        if cp <= 0 or day_high <= 0 or price_10min_ago <= 0:
-            return
-
-        vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
-
-        df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
-        ema9 = float(df["EMA9"].iloc[-1])
-
-        rsi = calculate_rsi(df["Close"])
-        instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
-        recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
-
-        recent_highs = df["High"].tail(10)
-        touches = (recent_highs >= day_high * 0.995).sum()
-
-        last_close = float(df["Close"].iloc[-1])
-        prev_close = float(df["Close"].iloc[-2])
-        prev_high = float(df["High"].iloc[-2])
-
-        # =========================
-        # 🔥 الفلاتر الاحترافية
-        # =========================
-
         real_breakout = (
             last_close > prev_high
             and prev_close > prev_high * 0.998
@@ -423,7 +355,8 @@ def check_ready_entry(symbol, data):
 
     except Exception as e:
         print(f"Check entry error {symbol}: {e}", flush=True)
-        
+
+
 def monitor_active_trades():
     global active_trades
 
