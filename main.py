@@ -23,9 +23,13 @@ api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 confirmed_alerts = {}
 saudi_tz = pytz.timezone("Asia/Riyadh")
 RUN_RADAR = True
+SEND_TELEGRAM = False
 
 
 def send_telegram_msg(message):
+    if not SEND_TELEGRAM:
+        return
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram keys missing", flush=True)
         return
