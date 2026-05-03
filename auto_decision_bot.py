@@ -462,6 +462,13 @@ def check_ready_entry(symbol, data):
             signal_grade = "C ⚠️"
             grade_note = "تحذير: يوجد خبر سلبي حديث، يفضل الحذر الشديد أو التجاهل"
 
+        # =====================
+        # فلتر الجودة (A / A+ / A++)
+        # =====================
+        grade_clean = signal_grade.split()[0]  # إزالة الرموز
+
+        if grade_clean not in ["A", "A+", "A++"]:
+            return
         news_text = ""
         if has_strong_news:
             news_text = (
