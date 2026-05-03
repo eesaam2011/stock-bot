@@ -3,7 +3,9 @@ import time
 import json
 import html
 import requests
+import threading
 import xml.etree.ElementTree as ET
+from flask import Flask
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
@@ -26,6 +28,18 @@ NEWS_FILE = "news_signals.json"
 
 sent_news_alerts = {}
 
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "News Bot Running"
+
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
 
 def send_telegram_msg(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -44,24 +58,6 @@ def send_telegram_msg(message):
         )
     except Exception as e:
         print("Telegram error:", e, flush=True)
-
-
-def is_trading_time():
-    now = datetime.now(saudi_tz)
-    hour = now.hour
-    minute = now.minute
-    weekday = now.weekday()  # 0=Monday, 6=Sunday
-
-    if weekday > 4:
-        return False
-
-    if hour > 10 or (hour == 10 and minute >= 30):
-        return True
-
-    if hour < 3:
-        return True
-
-    return False
 
 
 def get_base_candidates():
@@ -457,16 +453,13 @@ def run_news_scanner():
     print(f"✅ News scan completed. Found: {len(strong_news)} useful news", flush=True)
 
 
+threading.Thread(target=run_web_server, daemon=True).start()
+
 print("📰 NEWS SCANNER BOT STARTED", flush=True)
 send_telegram_msg("📰 تم تشغيل بوت الأخبار")
 
 while True:
     try:
-        if not is_trading_time():
-            print("⏸️ خارج وقت التشغيل - بوت الأخبار ينتظر", flush=True)
-            time.sleep(300)
-            continue
-
         run_news_scanner()
         time.sleep(SCAN_INTERVAL)
 
