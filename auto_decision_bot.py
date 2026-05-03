@@ -30,6 +30,7 @@ PRICE_MIN = 0.5
 PRICE_MAX = 25
 WATCH_MINUTES = 45
 SCAN_INTERVAL = 20
+NEWS_FILE = "news_signals.json"
 
 
 def send_telegram_msg(message):
@@ -71,7 +72,7 @@ def is_trading_time():
     return False
 
 
-def read_gist_signals():
+def read_gist_file(filename):
     if not GIST_ID or not GITHUB_TOKEN:
         return []
 
@@ -84,23 +85,86 @@ def read_gist_signals():
 
         res = requests.get(url, headers=headers, timeout=10)
         data = res.json()
-        content = data["files"]["signals.json"]["content"]
+
+        file_data = data.get("files", {}).get(filename)
+
+        if not file_data:
+            return []
+
+        content = file_data.get("content", "[]")
 
         try:
-            signals = json.loads(content)
+            return json.loads(content)
         except Exception:
-            signals = []
-
-        now_ts = time.time()
-
-        return [
-            s for s in signals
-            if now_ts - float(s.get("time", 0)) < 1800
-        ]
+            return []
 
     except Exception as e:
-        print("Gist read error:", e, flush=True)
+        print(f"Gist read error ({filename}):", e, flush=True)
         return []
+
+
+def read_gist_signals():
+    signals = read_gist_file("signals.json")
+    now_ts = time.time()
+
+    return [
+        s for s in signals
+        if now_ts - float(s.get("time", 0)) < 1800
+    ]
+
+
+def get_stock_news(symbol):
+    news = read_gist_file(NEWS_FILE)
+    now_ts = time.time()
+
+    best_news = None
+    best_score = -999
+
+    for n in news:
+        if n.get("symbol") != symbol:
+            continue
+
+        age = now_ts - float(n.get("time", 0))
+
+        # للمضاربة: نأخذ فقط الأخبار الحديثة آخر 6 ساعات
+        if age > 21600:
+            continue
+
+        grade = n.get("news_grade")
+        score = float(n.get("news_score", 0))
+
+        if grade == "NEGATIVE":
+            return {
+                "has_news": False,
+                "has_strong_news": False,
+                "has_negative_news": True,
+                "headline": n.get("headline", ""),
+                "label": n.get("news_label", "🔴 خبر سلبي"),
+                "score": score
+            }
+
+        if grade == "STRONG" and score >= 7 and score > best_score:
+            best_news = n
+            best_score = score
+
+    if best_news:
+        return {
+            "has_news": True,
+            "has_strong_news": True,
+            "has_negative_news": False,
+            "headline": best_news.get("headline", ""),
+            "label": best_news.get("news_label", "🔥 خبر إيجابي قوي"),
+            "score": best_score
+        }
+
+    return {
+        "has_news": False,
+        "has_strong_news": False,
+        "has_negative_news": False,
+        "headline": "",
+        "label": "",
+        "score": 0
+    }
 
 
 def get_base_list():
@@ -362,6 +426,12 @@ def check_ready_entry(symbol, data):
         if sent_alerts.get(symbol):
             return
 
+        news_info = get_stock_news(symbol)
+
+        # لا نمنع الدخول بسبب الخبر السلبي تلقائيًا، لكن نخفض التصنيف ونظهر التحذير.
+        has_strong_news = news_info["has_strong_news"]
+        has_negative_news = news_info["has_negative_news"]
+
         entry = cp
         t1 = entry * 1.02
         t2 = entry * 1.04
@@ -369,15 +439,44 @@ def check_ready_entry(symbol, data):
 
         source_text = data.get("source", "رادار مبكر")
 
-        if "البوت الثاني" in source_text:
+        if "البوت الثاني" in source_text and has_strong_news:
+            signal_grade = "A++ 🔥🔥"
+            grade_note = "أقوى نوع: تأكيد من البوت الثاني + خبر قوي"
+        elif "البوت الثاني" in source_text:
             signal_grade = "A+ 🔥"
             grade_note = "أقوى نوع: تأكيد من البوت الثاني + متابعة ذكية"
+        elif "البوت الأول" in source_text and has_strong_news:
+            signal_grade = "A+ 📰🔥"
+            grade_note = "رادار مبكر + خبر قوي"
         elif "البوت الأول" in source_text:
             signal_grade = "A ✅"
             grade_note = "جيد جدًا: رادار مبكر + تأكيد دخول"
+        elif has_strong_news:
+            signal_grade = "A 📰"
+            grade_note = "إشارة ذاتية مدعومة بخبر قوي"
         else:
             signal_grade = "B ⚠️"
             grade_note = "إشارة ذاتية: جيدة لكن تحتاج حذر أكثر"
+
+        if has_negative_news:
+            signal_grade = "C ⚠️"
+            grade_note = "تحذير: يوجد خبر سلبي حديث، يفضل الحذر الشديد أو التجاهل"
+
+        news_text = ""
+        if has_strong_news:
+            news_text = (
+                f"📰 *خبر داعم:* {news_info['label']}\n"
+                f"⭐ News Score: {news_info['score']:.0f}\n"
+                f"🧠 العنوان: {news_info['headline']}\n\n"
+            )
+        elif has_negative_news:
+            news_text = (
+                f"🚨 *تحذير خبر سلبي:* {news_info['label']}\n"
+                f"⭐ News Score: {news_info['score']:.0f}\n"
+                f"🧠 العنوان: {news_info['headline']}\n\n"
+            )
+        else:
+            news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
 
         msg = (
             f"🧠🔥 *بوت القرار الذكي - دخول جاهز الآن*\n\n"
@@ -386,6 +485,7 @@ def check_ready_entry(symbol, data):
             f"🎯 الحالة: دخول جاهز (تمت المتابعة والتأكيد)\n\n"
             f"📡 المصدر:\n"
             f"{source_text} + متابعة ذكية\n\n"
+            f"{news_text}"
             f"🏆 التصنيف: {signal_grade}\n"
             f"🧠 ملاحظة: {grade_note}\n\n"
             f"📊 القوة:\n"
