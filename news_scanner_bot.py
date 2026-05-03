@@ -425,9 +425,13 @@ def run_news_scanner():
 
                 strong_news.append(news_item)
 
-                if analysis["grade"] == "STRONG" and should_alert(symbol):
+                if (
+                    analysis["grade"] == "STRONG"
+                    and analysis["score"] >= 9
+                    and should_alert(symbol)
+                ):
                     msg = (
-                        f"📰🔥 *بوت الأخبار - خبر قوي*\n\n"
+                        f"📰🔥 *بوت الأخبار - خبر قوي جدًا*\n\n"
                         f"🎫 السهم: `{symbol}`\n"
                         f"💰 السعر: {stock['price']:.2f}\n"
                         f"📈 الحركة: {stock['change_pct']:.2f}%\n"
@@ -435,7 +439,7 @@ def run_news_scanner():
                         f"🗞️ التصنيف: {analysis['label']}\n"
                         f"⭐ News Score: {analysis['score']}\n"
                         f"🧠 العنوان:\n{analysis['headline']}\n\n"
-                        f"📌 ملاحظة: هذا ليس دخول مباشر، فقط سهم عليه خبر قوي.\n"
+                        f"📌 ملاحظة: هذا ليس دخول مباشر، فقط خبر قوي جدًا.\n"
                         f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
                     )
 
