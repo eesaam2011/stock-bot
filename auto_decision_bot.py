@@ -466,7 +466,11 @@ def check_ready_entry(symbol, data):
         # فلتر الجودة (A / A+ / A++)
         # =====================
         grade_clean = signal_grade.split()[0]  # إزالة الرموز
-
+        # 🔥 تقوية إشارات A القادمة من البوت الأول
+        if grade_clean == "A" and "البوت الأول" in source_text:
+            if instant_rvol < 3 or not real_breakout:
+                return
+        
         if grade_clean not in ["A", "A+", "A++"]:
             return
         news_text = ""
