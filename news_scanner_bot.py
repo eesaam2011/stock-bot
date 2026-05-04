@@ -379,7 +379,7 @@ def should_alert(symbol):
 
     diff = (now - sent_news_alerts[symbol]).total_seconds() / 60
 
-    if diff >= 60:
+    if diff >= 180:
         sent_news_alerts[symbol] = now
         return True
 
@@ -427,7 +427,7 @@ def run_news_scanner():
 
                 if (
                     analysis["grade"] == "STRONG"
-                    and analysis["score"] >= 9
+                    and analysis["score"] >= 11
                     and should_alert(symbol)
                 ):
                     msg = (
