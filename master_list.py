@@ -26,7 +26,7 @@ BLACKLIST = [
     "BUD","TAP","STZ","DEO",
     "PM","MO",
     "CGC","TLRY","ACB",
-    "NCLH","CCL","RCL","AMC"
+    "NCLH","CCL","RCL","AMC","GPRE"
 ]
 
 SCREENS = [
