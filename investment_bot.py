@@ -1,18 +1,13 @@
 import os
 import time
 import json
-import math
 import requests
 import threading
 import pandas as pd
-import yfinance as yf
+import alpaca_trade_api as tradeapi
 from flask import Flask
 from datetime import datetime, timedelta
 import pytz
-
-# =========================
-# المتغيرات
-# =========================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -20,29 +15,31 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
+API_KEY = os.getenv("APCA_API_KEY_ID")
+SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
+BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
+
+api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
+
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
 PRICE_MIN = 0.5
 PRICE_MAX = 10
 
-YAHOO_COUNT = 200
+INVESTMENT_SYMBOL_LIMIT = 800
 
 TOP_CANDIDATES_THURSDAY = 10
 FINAL_MIN_SCORE = 65
 FINAL_MAX_PICKS = 5
 FINAL_MIN_PICKS = 3
 
-SCAN_INTERVAL = 900  # 15 دقيقة
+SCAN_INTERVAL = 900
 
 STATE_FILE = "investment_state.json"
 NEWS_FILE = "news_signals.json"
 
 MONDAY_ALERT_HOUR = 17
 MONDAY_ALERT_MINUTE = 45
-
-# =========================
-# Flask (عشان Render)
-# =========================
 
 app = Flask(__name__)
 
@@ -55,10 +52,6 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-
-# =========================
-# Telegram
-# =========================
 
 def send_telegram_msg(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -79,10 +72,6 @@ def send_telegram_msg(message):
         print("Telegram error:", e, flush=True)
 
 
-# =========================
-# GIST قراءة / حفظ
-# =========================
-
 def read_gist_file(filename, default_value):
     if not GIST_ID or not GITHUB_TOKEN:
         return default_value
@@ -95,7 +84,7 @@ def read_gist_file(filename, default_value):
         }
 
         res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()  # ✅ التصحيح هنا
+        data = res.json()
 
         file_data = data.get("files", {}).get(filename)
 
@@ -145,10 +134,6 @@ def save_gist_file(filename, content_obj):
         print(f"Save gist error {filename}:", e, flush=True)
 
 
-# =========================
-# إدارة الحالة
-# =========================
-
 def load_state():
     default_state = {
         "last_thursday_scan": "",
@@ -168,64 +153,88 @@ def load_state():
 
 def save_state(state):
     save_gist_file(STATE_FILE, state)
-  # =========================
-# جلب قائمة الأسهم
-# =========================
+
 
 def get_base_list():
-    url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    black_list = [
+        "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
+        "MET", "PRU", "ALL", "AIG", "CB",
+        "DKNG", "PENN", "WYNN", "LVS",
+        "BUD", "TAP", "STZ", "DEO",
+        "PM", "MO",
+        "CGC", "TLRY", "ACB",
+        "NCLH", "CCL", "RCL"
+    ]
 
-    symbols = []
+    try:
+        assets = api.list_assets(status="active")
+        symbols = []
 
-    for scr_id in [
-        "most_actives",
-        "day_gainers",
-        "small_cap_gainers",
-        "undervalued_growth_stocks",
-        "aggressive_small_caps",
-        "most_shorted_stocks",
-        "high_beta_stocks",
-        "growth_technology_stocks"
-    ]:
-        try:
-            res = requests.get(
-                url,
-                params={"scrIds": scr_id, "count": YAHOO_COUNT},
-                headers=headers,
-                timeout=10
-            ).json()
+        for asset in assets:
+            symbol = getattr(asset, "symbol", None)
 
-            data = res.get("finance", {}).get("result")
-            if not data:
+            if not symbol:
                 continue
 
-            quotes = data[0].get("quotes", [])
+            if (
+                getattr(asset, "tradable", False)
+                and getattr(asset, "asset_class", "") == "us_equity"
+                and isinstance(symbol, str)
+                and "." not in symbol
+                and "^" not in symbol
+                and "-" not in symbol
+                and symbol not in black_list
+            ):
+                symbols.append(symbol)
 
-            for q in quotes:
-                symbol = q.get("symbol")
-                price = q.get("regularMarketPrice")
+        return list(set(symbols))[:INVESTMENT_SYMBOL_LIMIT]
 
-                if (
-                    symbol
-                    and isinstance(symbol, str)
-                    and "." not in symbol
-                    and "^" not in symbol
-                    and "-" not in symbol
-                    and price is not None
-                    and PRICE_MIN <= float(price) <= PRICE_MAX
-                ):
-                    symbols.append(symbol)
-
-        except Exception as e:
-            print(f"Yahoo error: {e}", flush=True)
-
-    return list(set(symbols))
+    except Exception as e:
+        print("Alpaca base list error:", e, flush=True)
+        return []
 
 
-# =========================
-# RSI
-# =========================
+def get_daily_bars(symbol, days=220):
+    try:
+        end = datetime.utcnow()
+        start = end - timedelta(days=days)
+
+        bars = api.get_bars(
+            symbol,
+            tradeapi.TimeFrame.Day,
+            start=start.isoformat() + "Z",
+            end=end.isoformat() + "Z",
+            adjustment="raw"
+        ).df
+
+        if bars is None or bars.empty:
+            return pd.DataFrame()
+
+        df = bars.copy()
+
+        if "symbol" in df.columns:
+            df = df[df["symbol"] == symbol]
+
+        df = df.rename(columns={
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume"
+        })
+
+        needed = ["Open", "High", "Low", "Close", "Volume"]
+
+        for col in needed:
+            if col not in df.columns:
+                return pd.DataFrame()
+
+        return df[needed].dropna()
+
+    except Exception as e:
+        print(f"Alpaca daily bars error {symbol}: {e}", flush=True)
+        return pd.DataFrame()
+
 
 def calculate_rsi(close, period=14):
     delta = close.diff()
@@ -238,10 +247,6 @@ def calculate_rsi(close, period=14):
     rs = gain.iloc[-1] / loss.iloc[-1]
     return 100 - (100 / (1 + rs))
 
-
-# =========================
-# قراءة الأخبار من GIST
-# =========================
 
 def get_news(symbol):
     news_list = read_gist_file(NEWS_FILE, [])
@@ -256,7 +261,6 @@ def get_news(symbol):
 
         age = now - float(n.get("time", 0))
 
-        # نسمح حتى 7 أيام للاستثمار
         if age > 7 * 86400:
             continue
 
@@ -275,13 +279,23 @@ def get_news(symbol):
     return "NONE", 0, ""
 
 
-# =========================
-# تحليل السهم
-# =========================
+def get_target_timing():
+    now = datetime.now(saudi_tz)
+
+    target1_date = now + timedelta(days=7)
+    target2_date = now + timedelta(days=30)
+
+    return {
+        "target1_date": target1_date.strftime("%Y-%m-%d"),
+        "target2_date": target2_date.strftime("%Y-%m-%d"),
+        "target1_duration": "تقريبًا خلال 7 أيام",
+        "target2_duration": "تقريبًا خلال 30 يوم"
+    }
+
 
 def analyze_stock(symbol):
     try:
-        df = yf.Ticker(symbol).history(period="6mo", interval="1d")
+        df = get_daily_bars(symbol, days=220)
 
         if df.empty or len(df) < 60:
             return None
@@ -353,6 +367,8 @@ def analyze_stock(symbol):
         if score < FINAL_MIN_SCORE:
             return None
 
+        timing = get_target_timing()
+
         entry = price
         stop = min(price * 0.9, low30 * 0.98)
         t1 = price * 1.15
@@ -360,10 +376,14 @@ def analyze_stock(symbol):
 
         return {
             "symbol": symbol,
-            "entry": entry,
-            "stop": stop,
-            "t1": t1,
-            "t2": t2,
+            "entry": float(entry),
+            "stop": float(stop),
+            "t1": float(t1),
+            "t2": float(t2),
+            "target1_date": timing["target1_date"],
+            "target2_date": timing["target2_date"],
+            "target1_duration": timing["target1_duration"],
+            "target2_duration": timing["target2_duration"],
             "score": score,
             "headline": headline,
             "reasons": reasons,
@@ -374,10 +394,6 @@ def analyze_stock(symbol):
         print(f"Analyze error {symbol}: {e}", flush=True)
         return None
 
-
-# =========================
-# إرسال تنبيه الاثنين
-# =========================
 
 def send_monday():
     symbols = get_base_list()
@@ -404,7 +420,11 @@ def send_monday():
             f"دخول: {r['entry']:.2f}\n"
             f"وقف: {r['stop']:.2f}\n"
             f"هدف1: {r['t1']:.2f}\n"
+            f"تاريخ هدف1 المتوقع: {r['target1_date']}\n"
+            f"مدة هدف1: {r['target1_duration']}\n"
             f"هدف2: {r['t2']:.2f}\n"
+            f"تاريخ هدف2 المتوقع: {r['target2_date']}\n"
+            f"مدة هدف2: {r['target2_duration']}\n"
             f"نسبة: {r['score']}%\n"
         )
 
@@ -415,10 +435,11 @@ def send_monday():
 
     send_telegram_msg(msg)
 
+    state = load_state()
+    state["active_picks"] = results
+    state["last_monday_alert"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
+    save_state(state)
 
-# =========================
-# متابعة الصفقات
-# =========================
 
 def monitor():
     state = load_state()
@@ -427,7 +448,7 @@ def monitor():
     for p in picks:
         try:
             symbol = p["symbol"]
-            df = yf.Ticker(symbol).history(period="1mo")
+            df = get_daily_bars(symbol, days=45)
 
             if df.empty:
                 continue
@@ -437,18 +458,15 @@ def monitor():
 
             gain = ((price - entry) / entry) * 100
 
-            # 🚀 بداية حركة
             if gain > 5 and not p["alerts"].get("start"):
                 send_telegram_msg(f"🚀 {symbol} بدأ يتحرك")
                 p["alerts"]["start"] = True
 
-            # 🔒 رفع وقف
             if gain > 10 and not p["alerts"].get("raise"):
                 new_stop = entry * 1.02
                 send_telegram_msg(f"🔒 ارفع وقف {symbol} إلى {new_stop:.2f}")
                 p["alerts"]["raise"] = True
 
-            # 🛑 وقف
             if price <= p["stop"] and not p["alerts"].get("stop"):
                 send_telegram_msg(f"🛑 خروج {symbol}")
                 p["alerts"]["stop"] = True
@@ -460,10 +478,6 @@ def monitor():
     save_state(state)
 
 
-# =========================
-# التشغيل
-# =========================
-
 threading.Thread(target=run_web_server, daemon=True).start()
 
 print("📈 Investment Bot Started", flush=True)
@@ -472,7 +486,15 @@ while True:
     now = datetime.now(saudi_tz)
 
     try:
-        if now.weekday() == 0 and now.hour == MONDAY_ALERT_HOUR and now.minute >= MONDAY_ALERT_MINUTE:
+        state = load_state()
+        today = now.strftime("%Y-%m-%d")
+
+        if (
+            now.weekday() == 0
+            and now.hour == MONDAY_ALERT_HOUR
+            and now.minute >= MONDAY_ALERT_MINUTE
+            and state.get("last_monday_alert") != today
+        ):
             send_monday()
 
         monitor()
