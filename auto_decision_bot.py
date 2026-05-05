@@ -18,21 +18,27 @@ GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
-
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
 watchlist = {}
 sent_alerts = {}
 active_trades = {}
 
-PRICE_MIN = 0.5
+PRICE_MIN = 0.4
 PRICE_MAX = 25
+
 WATCH_MINUTES = 45
 SCAN_INTERVAL = 20
-NEWS_FILE = "news_signals.json"
 
-RADAR_BATCH_SIZE = 650
 MASTER_LIST_FILE = "master_list.json"
+NEWS_FILE = "news_signals.json"
+BOT2_FINAL_FILE = "bot2_final_results.json"
+BOT2_PRELIMINARY_FILE = "bot2_preliminary_results.json"
+
+BOT3_RESULTS_FILE = "bot3_results.json"
+BOT3_ACTIVE_TRADES_FILE = "bot3_active_trades.json"
+
+SELF_SCAN_COUNT = 400
 
 
 def send_telegram_msg(message):
@@ -40,9 +46,8 @@ def send_telegram_msg(message):
         print("Telegram keys missing", flush=True)
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
     try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(
             url,
             json={
@@ -58,9 +63,9 @@ def send_telegram_msg(message):
 
 def is_trading_time():
     now = datetime.now(saudi_tz)
+    weekday = now.weekday()
     hour = now.hour
     minute = now.minute
-    weekday = now.weekday()
 
     if weekday in [5, 6]:
         return False
@@ -72,9 +77,12 @@ def is_trading_time():
     return True
 
 
-def read_gist_file(filename):
+def read_gist_file(filename, default=None):
+    if default is None:
+        default = []
+
     if not GIST_ID or not GITHUB_TOKEN:
-        return []
+        return default
 
     try:
         url = f"https://api.github.com/gists/{GIST_ID}"
@@ -83,28 +91,63 @@ def read_gist_file(filename):
             "Accept": "application/vnd.github+json"
         }
 
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=15)
         data = res.json()
 
         file_data = data.get("files", {}).get(filename)
-
         if not file_data:
-            return []
+            return default
 
-        content = file_data.get("content", "[]")
+        content = file_data.get("content", "")
+        if not content:
+            return default
 
-        try:
-            return json.loads(content)
-        except Exception:
-            return []
+        return json.loads(content)
 
     except Exception as e:
-        print(f"Gist read error ({filename}):", e, flush=True)
-        return []
+        print(f"Gist read error ({filename}): {e}", flush=True)
+        return default
+
+
+def save_gist_file(filename, data):
+    if not GIST_ID or not GITHUB_TOKEN:
+        print("❌ GIST_ID or GITHUB_TOKEN missing", flush=True)
+        return
+
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        content = json.dumps(data, ensure_ascii=False)
+
+        res = requests.patch(
+            url,
+            headers=headers,
+            json={
+                "files": {
+                    filename: {
+                        "content": content
+                    }
+                }
+            },
+            timeout=15
+        )
+
+        if res.status_code not in [200, 201]:
+            print(f"❌ Save failed {filename}: {res.text[:300]}", flush=True)
+            return
+
+        print(f"✅ Saved {filename}", flush=True)
+
+    except Exception as e:
+        print(f"❌ Save gist error ({filename}): {e}", flush=True)
 
 
 def load_master_list():
-    data = read_gist_file(MASTER_LIST_FILE)
+    data = read_gist_file(MASTER_LIST_FILE, default=[])
 
     symbols = []
 
@@ -123,75 +166,12 @@ def load_master_list():
                 and "." not in symbol
                 and "^" not in symbol
                 and "-" not in symbol
+                and "/" not in symbol
             ):
                 symbols.append(symbol.upper().strip())
 
     symbols = list(dict.fromkeys(symbols))
-
-    return symbols[:RADAR_BATCH_SIZE]
-
-
-def read_gist_signals():
-    signals = read_gist_file("signals.json")
-    now_ts = time.time()
-
-    return [
-        s for s in signals
-        if now_ts - float(s.get("time", 0)) < 1800
-    ]
-
-
-def get_stock_news(symbol):
-    news = read_gist_file(NEWS_FILE)
-    now_ts = time.time()
-
-    best_news = None
-    best_score = -999
-
-    for n in news:
-        if n.get("symbol") != symbol:
-            continue
-
-        age = now_ts - float(n.get("time", 0))
-
-        if age > 21600:
-            continue
-
-        grade = n.get("news_grade")
-        score = float(n.get("news_score", 0))
-
-        if grade == "NEGATIVE":
-            return {
-                "has_news": False,
-                "has_strong_news": False,
-                "has_negative_news": True,
-                "headline": n.get("headline", ""),
-                "label": n.get("news_label", "🔴 خبر سلبي"),
-                "score": score
-            }
-
-        if grade == "STRONG" and score >= 7 and score > best_score:
-            best_news = n
-            best_score = score
-
-    if best_news:
-        return {
-            "has_news": True,
-            "has_strong_news": True,
-            "has_negative_news": False,
-            "headline": best_news.get("headline", ""),
-            "label": best_news.get("news_label", "🔥 خبر إيجابي قوي"),
-            "score": best_score
-        }
-
-    return {
-        "has_news": False,
-        "has_strong_news": False,
-        "has_negative_news": False,
-        "headline": "",
-        "label": "",
-        "score": 0
-    }
+    return symbols
 
 
 def get_alpaca_bars(symbol, minutes=120):
@@ -229,10 +209,7 @@ def get_alpaca_bars(symbol, minutes=120):
             if col not in df.columns:
                 return pd.DataFrame()
 
-        df = df[needed].dropna()
-        df = df.tail(minutes)
-
-        return df
+        return df[needed].dropna().tail(minutes)
 
     except Exception as e:
         print(f"Alpaca bars error {symbol}: {e}", flush=True)
@@ -249,17 +226,10 @@ def get_latest_price(symbol, df=None):
         return 0
 
 
-def get_base_list():
-    symbols = load_master_list()
-
-    if not symbols:
-        print("⚠️ Master List empty or not found", flush=True)
-        return []
-
-    return symbols
-
-
 def calculate_rsi(close, period=14):
+    if len(close) < period + 1:
+        return 50
+
     delta = close.diff()
     gain = delta.where(delta > 0, 0).rolling(window=period).mean()
     loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
@@ -271,17 +241,68 @@ def calculate_rsi(close, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def add_to_watchlist(symbol, source, price=0):
+def load_news_map():
+    news = read_gist_file(NEWS_FILE, default=[])
+    now_ts = time.time()
+    news_map = {}
+
+    if not isinstance(news, list):
+        return news_map
+
+    for n in news:
+        symbol = n.get("symbol")
+        if not symbol:
+            continue
+
+        try:
+            age = now_ts - float(n.get("time", 0))
+        except Exception:
+            age = 999999
+
+        if age > 21600:
+            continue
+
+        symbol = symbol.upper()
+        score = float(n.get("news_score", 0) or 0)
+
+        old = news_map.get(symbol)
+        if old is None or score > old.get("news_score", 0):
+            news_map[symbol] = {
+                "news_score": score,
+                "news_grade": n.get("news_grade", ""),
+                "news_label": n.get("news_label", ""),
+                "headline": n.get("headline", "")
+            }
+
+    return news_map
+
+
+def get_news_bonus(news):
+    news_score = float(news.get("news_score", 0) or 0)
+    news_grade = news.get("news_grade", "")
+
+    if news_grade == "NEGATIVE":
+        return -25
+
+    if news_score >= 18:
+        return 15
+    elif news_score >= 14:
+        return 8
+    elif news_score >= 10:
+        return 4
+
+    return 0
+
+
+def add_to_watchlist(symbol, source, price=0, bot2_grade="", bot2_score=0):
     now = datetime.now(saudi_tz)
 
     source_score = 1
 
-    if "البوت الثاني" in source:
+    if "Bot 2" in source:
+        source_score = 3
+    elif "فحص ذاتي" in source:
         source_score = 2
-    elif "البوت الأول" in source:
-        source_score = 1
-    elif "رادار مبكر ذاتي" in source:
-        source_score = 1
 
     if symbol not in watchlist:
         watchlist[symbol] = {
@@ -289,112 +310,89 @@ def add_to_watchlist(symbol, source, price=0):
             "sources": [source],
             "priority_score": source_score,
             "first_price": float(price) if price else 0,
+            "bot2_grade": bot2_grade,
+            "bot2_score": bot2_score,
             "created_at": now,
             "alerted": False
         }
 
-        print(f"🧠 Added watchlist: {symbol} | source: {source}", flush=True)
+        print(f"🧠 Added watchlist: {symbol} | {source}", flush=True)
 
     else:
         if source not in watchlist[symbol].get("sources", []):
             watchlist[symbol]["sources"].append(source)
-            watchlist[symbol]["priority_score"] = (
-                watchlist[symbol].get("priority_score", 0) + source_score
-            )
+            watchlist[symbol]["priority_score"] += source_score
 
-        watchlist[symbol]["source"] = " + ".join(
-            watchlist[symbol].get("sources", [source])
-        )
+        watchlist[symbol]["source"] = " + ".join(watchlist[symbol]["sources"])
 
-        print(
-            f"🧠 Updated watchlist: {symbol} | sources: {watchlist[symbol]['source']} | priority: {watchlist[symbol]['priority_score']}",
-            flush=True
-        )
+        if bot2_score > watchlist[symbol].get("bot2_score", 0):
+            watchlist[symbol]["bot2_score"] = bot2_score
+            watchlist[symbol]["bot2_grade"] = bot2_grade
 
 
-def update_watchlist_from_gist():
-    signals = read_gist_signals()
+def update_watchlist_from_bot2():
+    bot2_final = read_gist_file(BOT2_FINAL_FILE, default=[])
 
-    for s in signals:
-        symbol = s.get("symbol")
-        price = s.get("price", 0)
-        source = s.get("source")
+    if not isinstance(bot2_final, list):
+        return
 
+    fresh = []
+    now_ts = time.time()
+
+    for r in bot2_final:
+        symbol = r.get("symbol")
         if not symbol:
             continue
 
-        if source == "main_bot":
-            add_to_watchlist(symbol, "رادار مبكر (البوت الأول)", price)
+        grade = r.get("grade", "")
+        final_score = float(r.get("final_score", 0) or 0)
 
-        elif source == "safe_bot":
-            add_to_watchlist(symbol, "تأكيد قوي (البوت الثاني)", price)
-
-
-def rank_symbols_by_activity(symbols, max_symbols=650):
-    ranked = []
-
-    for symbol in symbols:
         try:
-            df = get_alpaca_bars(symbol, minutes=30)
+            age = now_ts - float(r.get("time", now_ts))
+        except Exception:
+            age = 0
 
-            if df.empty or len(df) < 10 or df["Volume"].sum() == 0:
+        if age > 3600:
+            continue
+
+        if grade not in ["A", "A+", "A++"]:
+            continue
+
+        fresh.append(r)
+
+    fresh = sorted(fresh, key=lambda x: x.get("final_score", 0), reverse=True)
+
+    for r in fresh[:80]:
+        add_to_watchlist(
+            r["symbol"],
+            "Bot 2 Final Result",
+            r.get("price", 0),
+            r.get("grade", ""),
+            float(r.get("final_score", 0) or 0)
+        )
+
+
+def self_scan_top_400():
+    symbols = load_master_list()[:SELF_SCAN_COUNT]
+
+    if not symbols:
+        print("⚠️ Master List empty", flush=True)
+        return
+
+    print(f"🔎 Bot 3 self scan: {len(symbols)} symbols", flush=True)
+
+    for i, symbol in enumerate(symbols, start=1):
+        try:
+            df = get_alpaca_bars(symbol, minutes=120)
+
+            if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
                 continue
 
-            cp = float(df["Close"].iloc[-1])
-            old_price = float(df["Close"].iloc[-10])
-
-            if cp <= 0 or old_price <= 0:
-                continue
+            cp = get_latest_price(symbol, df)
 
             if not (PRICE_MIN <= cp <= PRICE_MAX):
                 continue
 
-            change_pct = ((cp - old_price) / old_price) * 100
-            volume = float(df["Volume"].sum())
-
-            activity_score = abs(change_pct) + (volume / 1_000_000)
-
-            ranked.append({
-                "symbol": symbol,
-                "activity_score": activity_score
-            })
-
-            time.sleep(0.01)
-
-        except Exception as e:
-            print(f"Rank error {symbol}: {e}", flush=True)
-            continue
-
-    ranked = sorted(
-        ranked,
-        key=lambda x: x["activity_score"],
-        reverse=True
-    )
-
-    return [x["symbol"] for x in ranked[:max_symbols]]
-
-
-def update_watchlist_from_radar():
-    symbols = get_base_list()
-
-    if not symbols:
-        return
-
-    ranked_symbols = rank_symbols_by_activity(
-        symbols,
-        max_symbols=RADAR_BATCH_SIZE
-    )
-
-    print(f"🔥 Top active symbols selected: {len(ranked_symbols)}", flush=True)
-
-    for symbol in ranked_symbols:
-        try:
-            df = get_alpaca_bars(symbol, minutes=120)
-
-            if df.empty or len(df) < 25 or df["Volume"].mean() == 0:
-                continue
-
-            cp = get_latest_price(symbol, df)
             day_high = float(df["High"].max())
             vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
 
@@ -405,23 +403,25 @@ def update_watchlist_from_radar():
             df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
             ema9 = float(df["EMA9"].iloc[-1])
 
-            early_setup = (
-                PRICE_MIN <= cp <= PRICE_MAX
-                and 1.5 <= instant_rvol <= 5.0
-                and 45 <= rsi <= 66
+            self_setup = (
+                1.8 <= instant_rvol <= 6.0
+                and 48 <= rsi <= 70
                 and cp > vwap
                 and cp > ema9
                 and cp >= day_high * 0.965
-                and 0.15 <= recent_move < 2.5
+                and 0.25 <= recent_move <= 2.8
             )
 
-            if early_setup:
-                add_to_watchlist(symbol, "رادار مبكر ذاتي", cp)
+            if self_setup:
+                add_to_watchlist(symbol, "فحص ذاتي Bot 3", cp)
+
+            if i % 50 == 0:
+                print(f"🔎 Bot 3 scanned {i}/{len(symbols)}", flush=True)
 
             time.sleep(0.03)
 
         except Exception as e:
-            print(f"Radar error {symbol}: {e}", flush=True)
+            print(f"Self scan error {symbol}: {e}", flush=True)
             continue
 
 
@@ -438,12 +438,25 @@ def clean_old_watchlist():
         watchlist.pop(symbol, None)
 
 
+def grade_from_score(final_score):
+    if final_score >= 90:
+        return "A++"
+    elif final_score >= 80:
+        return "A+"
+    elif final_score >= 70:
+        return "A"
+    elif final_score >= 60:
+        return "B"
+    else:
+        return "C"
+
+
 def check_ready_entry(symbol, data):
     try:
         df = get_alpaca_bars(symbol, minutes=120)
 
         if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
-            return
+            return None
 
         cp = get_latest_price(symbol, df)
 
@@ -451,12 +464,15 @@ def check_ready_entry(symbol, data):
         price_10min_ago = float(df["Close"].iloc[-10])
 
         if cp <= 0 or day_high <= 0 or price_10min_ago <= 0:
-            return
+            return None
 
         vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
 
         df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+        df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+
         ema9 = float(df["EMA9"].iloc[-1])
+        ema20 = float(df["EMA20"].iloc[-1])
 
         rsi = calculate_rsi(df["Close"])
         instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
@@ -473,9 +489,8 @@ def check_ready_entry(symbol, data):
         prev_high = float(df["High"].iloc[-2])
 
         candle_range = last_high - last_low
-
         if candle_range <= 0:
-            return
+            return None
 
         upper_wick_pct = (last_high - last_close) / candle_range
         close_position = (last_close - last_low) / candle_range
@@ -484,12 +499,6 @@ def check_ready_entry(symbol, data):
             last_close > prev_high
             and prev_close > prev_high * 0.998
             and instant_rvol >= 2.5
-        )
-
-        overextended = (
-            rsi > 75
-            or recent_move > 3.2
-            or touches >= 3
         )
 
         early_entry = (
@@ -511,14 +520,18 @@ def check_ready_entry(symbol, data):
             and not real_breakout
         )
 
-        distribution_risk = (
-            fake_breakout_risk
-            or repeated_rejection
+        distribution_risk = fake_breakout_risk or repeated_rejection
+
+        overextended = (
+            rsi > 75
+            or recent_move > 3.2
+            or touches >= 3
         )
 
         advanced_entry = (
             cp > vwap
             and cp > ema9
+            and ema9 >= ema20 * 0.995
             and touches < 3
             and not overextended
             and not (distribution_risk and not real_breakout)
@@ -526,81 +539,91 @@ def check_ready_entry(symbol, data):
         )
 
         if not advanced_entry:
-            return
+            return None
 
         if sent_alerts.get(symbol):
-            return
+            return None
 
-        news_info = get_stock_news(symbol)
+        news_map = load_news_map()
+        news = news_map.get(symbol, {})
+        news_bonus = get_news_bonus(news)
 
-        has_strong_news = news_info["has_strong_news"]
-        has_negative_news = news_info["has_negative_news"]
+        bot2_score = float(data.get("bot2_score", 0) or 0)
+        bot2_grade = data.get("bot2_grade", "")
+
+        bot2_bonus = 0
+        if bot2_grade == "A++":
+            bot2_bonus = 15
+        elif bot2_grade == "A+":
+            bot2_bonus = 10
+        elif bot2_grade == "A":
+            bot2_bonus = 7
+        elif "Bot 2" in data.get("source", ""):
+            bot2_bonus = 5
+
+        technical_score = 0
+        technical_score += min(instant_rvol * 12, 30)
+        technical_score += min(max(recent_move, 0) * 8, 20)
+
+        if cp > vwap:
+            technical_score += 10
+        if cp > ema9:
+            technical_score += 10
+        if ema9 >= ema20 * 0.995:
+            technical_score += 8
+        if cp >= day_high * 0.975:
+            technical_score += 10
+        if real_breakout:
+            technical_score += 15
+        if 52 <= rsi <= 68:
+            technical_score += 10
+        elif 50 <= rsi < 52:
+            technical_score += 5
+
+        if fake_breakout_risk:
+            technical_score -= 15
+
+        final_score = technical_score + bot2_bonus + news_bonus
+        grade = grade_from_score(final_score)
+
+        if grade not in ["A", "A+", "A++"]:
+            return None
 
         entry = cp
         t1 = entry * 1.02
         t2 = entry * 1.04
         sl = entry * 0.985
 
-        source_text = data.get("source", "رادار مبكر")
+        news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
 
-        if "البوت الثاني" in source_text and has_strong_news:
-            signal_grade = "A++ 🔥🔥"
-            grade_note = "أقوى نوع: تأكيد من البوت الثاني + خبر قوي"
-        elif "البوت الثاني" in source_text:
-            signal_grade = "A+ 🔥"
-            grade_note = "أقوى نوع: تأكيد من البوت الثاني + متابعة ذكية"
-        elif "البوت الأول" in source_text and has_strong_news:
-            signal_grade = "A+ 📰🔥"
-            grade_note = "رادار مبكر + خبر قوي"
-        elif "البوت الأول" in source_text:
-            signal_grade = "A ✅"
-            grade_note = "جيد جدًا: رادار مبكر + تأكيد دخول"
-        elif has_strong_news:
-            signal_grade = "A 📰"
-            grade_note = "إشارة ذاتية مدعومة بخبر قوي"
-        else:
-            signal_grade = "B ⚠️"
-            grade_note = "إشارة ذاتية: جيدة لكن تحتاج حذر أكثر"
-
-        if has_negative_news:
-            signal_grade = "C ⚠️"
-            grade_note = "تحذير: يوجد خبر سلبي حديث، يفضل الحذر الشديد أو التجاهل"
-
-        grade_clean = signal_grade.split()[0]
-
-        if grade_clean == "A" and "البوت الأول" in source_text:
-            if instant_rvol < 2.5 or not real_breakout:
-                return
-
-        if grade_clean not in ["A", "A+", "A++"]:
-            return
-
-        news_text = ""
-        if has_strong_news:
+        if news_bonus > 0:
             news_text = (
-                f"📰 *خبر داعم:* {news_info['label']}\n"
-                f"⭐ News Score: {news_info['score']:.0f}\n"
-                f"🧠 العنوان: {news_info['headline']}\n\n"
+                f"📰 *خبر داعم:* {news.get('news_label', '')}\n"
+                f"⭐ News Score: {news.get('news_score', 0):.0f}\n"
+                f"🧠 العنوان: {news.get('headline', '')}\n\n"
             )
-        elif has_negative_news:
+        elif news_bonus < 0:
             news_text = (
-                f"🚨 *تحذير خبر سلبي:* {news_info['label']}\n"
-                f"⭐ News Score: {news_info['score']:.0f}\n"
-                f"🧠 العنوان: {news_info['headline']}\n\n"
+                f"🚨 *خبر سلبي:* {news.get('news_label', '')}\n"
+                f"⭐ News Score: {news.get('news_score', 0):.0f}\n"
+                f"🧠 العنوان: {news.get('headline', '')}\n\n"
             )
-        else:
-            news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
+
+        source_text = data.get("source", "Bot 3")
 
         msg = (
-            f"🧠🔥 *بوت القرار الذكي - دخول جاهز الآن*\n\n"
+            f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
             f"🎫 السهم: `{symbol}`\n"
-            f"💰 السعر: {entry:.2f}\n\n"
-            f"🎯 الحالة: دخول جاهز (تمت المتابعة والتأكيد)\n\n"
+            f"💰 السعر: {entry:.2f}\n"
+            f"🏆 التصنيف: {grade}\n\n"
             f"📡 المصدر:\n"
-            f"{source_text} + متابعة ذكية\n\n"
+            f"{source_text}\n\n"
             f"{news_text}"
-            f"🏆 التصنيف: {signal_grade}\n"
-            f"🧠 ملاحظة: {grade_note}\n\n"
+            f"📊 السكور:\n"
+            f"Final Score: {final_score:.1f}\n"
+            f"Technical Score: {technical_score:.1f}\n"
+            f"Bot2 Bonus: {bot2_bonus}\n"
+            f"News Bonus: {news_bonus}\n\n"
             f"📊 القوة:\n"
             f"RSI: {rsi:.1f}\n"
             f"RVOL: {instant_rvol:.2f}x\n"
@@ -608,7 +631,7 @@ def check_ready_entry(symbol, data):
             f"🛡️ فلتر التصريف: تم تجاوزه ✅\n\n"
             f"🚀 دخول الآن: {entry:.2f}\n"
             f"🎯 هدف 1: {t1:.2f}\n"
-            f"🚀 هدف ثاني: {t2:.2f}\n"
+            f"🚀 هدف 2: {t2:.2f}\n"
             f"🛑 وقف الخسارة: {sl:.2f}\n\n"
             f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
         )
@@ -616,7 +639,8 @@ def check_ready_entry(symbol, data):
         send_telegram_msg(msg)
 
         sent_alerts[symbol] = {
-            "time": datetime.now(saudi_tz)
+            "time": datetime.now(saudi_tz),
+            "grade": grade
         }
 
         active_trades[symbol] = {
@@ -624,6 +648,7 @@ def check_ready_entry(symbol, data):
             "t1": t1,
             "t2": t2,
             "sl": sl,
+            "grade": grade,
             "time": datetime.now(saudi_tz),
             "slow_alerted": False,
             "run_alerted": False,
@@ -632,10 +657,37 @@ def check_ready_entry(symbol, data):
 
         watchlist[symbol]["alerted"] = True
 
-        print(f"🧠 READY ENTRY SENT: {symbol}", flush=True)
+        result = {
+            "symbol": symbol,
+            "price": round(entry, 4),
+            "grade": grade,
+            "final_score": round(final_score, 2),
+            "technical_score": round(technical_score, 2),
+            "bot2_bonus": bot2_bonus,
+            "news_bonus": news_bonus,
+            "bot2_grade": bot2_grade,
+            "bot2_score": bot2_score,
+            "source": source_text,
+            "rsi": round(rsi, 2),
+            "instant_rvol": round(float(instant_rvol), 2),
+            "recent_move": round(float(recent_move), 2),
+            "entry": round(entry, 4),
+            "target_1": round(t1, 4),
+            "target_2": round(t2, 4),
+            "stop_loss": round(sl, 4),
+            "news_score": news.get("news_score", 0),
+            "news_grade": news.get("news_grade", ""),
+            "news_headline": news.get("headline", ""),
+            "time": time.time(),
+            "created_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        print(f"🧠 BOT 3 ENTRY SENT: {symbol} | {grade}", flush=True)
+        return result
 
     except Exception as e:
         print(f"Check entry error {symbol}: {e}", flush=True)
+        return None
 
 
 def monitor_active_trades():
@@ -662,7 +714,7 @@ def monitor_active_trades():
 
             if cp <= sl and not trade.get("stop_alerted", False):
                 msg = (
-                    f"🛑 *خروج - كسر وقف الخسارة*\n\n"
+                    f"🛑 *Bot 3 - خروج وقف الخسارة*\n\n"
                     f"🎫 السهم: `{symbol}`\n"
                     f"💰 السعر الحالي: {cp:.2f}\n"
                     f"🚀 الدخول: {entry:.2f}\n"
@@ -676,28 +728,30 @@ def monitor_active_trades():
 
             if age_minutes >= 5 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
                 msg = (
-                    f"⚠️ *تنبيه متابعة الصفقة*\n\n"
+                    f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
                     f"🎫 السهم: `{symbol}`\n"
                     f"💰 السعر الحالي: {cp:.2f}\n"
                     f"🚀 الدخول: {entry:.2f}\n"
                     f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
                     f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
-                    f"الأفضل تشديد الوقف أو الخروج الجزئي."
+                    f"يفضل تشديد الوقف أو الخروج الجزئي."
                 )
 
                 send_telegram_msg(msg)
                 trade["slow_alerted"] = True
 
             if gain_pct >= 2 and not trade.get("run_alerted", False):
+                new_sl = max(entry, cp * 0.985)
+
                 msg = (
-                    f"🚀 *السهم انطلق بعد الدخول*\n\n"
+                    f"🚀 *Bot 3 - السهم انطلق بعد الدخول*\n\n"
                     f"🎫 السهم: `{symbol}`\n"
                     f"💰 السعر الحالي: {cp:.2f}\n"
                     f"🚀 الدخول: {entry:.2f}\n"
                     f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
                     f"🎯 هدف 1: {t1:.2f}\n"
-                    f"🚀 هدف ثاني: {t2:.2f}\n"
-                    f"✅ يفضل رفع الوقف لحماية الربح."
+                    f"🚀 هدف 2: {t2:.2f}\n"
+                    f"✅ الوقف المقترح الآن: {new_sl:.2f}"
                 )
 
                 send_telegram_msg(msg)
@@ -708,21 +762,21 @@ def monitor_active_trades():
             continue
 
 
-print("🧠 AUTO DECISION BOT STARTED", flush=True)
-send_telegram_msg("🧠 تم تشغيل بوت القرار الذكي")
+print("🧠 BOT 3 DECISION BOT STARTED", flush=True)
+send_telegram_msg("🧠 تم تشغيل Bot 3 - القرار النهائي")
 
 while True:
     try:
         if not is_trading_time():
-            print("⏸️ خارج وقت التشغيل - البوت ينتظر", flush=True)
+            print("⏸️ خارج وقت التشغيل - Bot 3 ينتظر", flush=True)
             time.sleep(300)
             continue
 
-        update_watchlist_from_gist()
-        update_watchlist_from_radar()
+        update_watchlist_from_bot2()
+        self_scan_top_400()
         clean_old_watchlist()
 
-        print(f"📊 Watchlist size: {len(watchlist)}", flush=True)
+        print(f"📊 Bot 3 Watchlist size: {len(watchlist)}", flush=True)
 
         sorted_watchlist = sorted(
             list(watchlist.items()),
@@ -730,10 +784,40 @@ while True:
             reverse=True
         )
 
+        bot3_results = []
+
         for symbol, data in sorted_watchlist:
             if not data.get("alerted", False):
-                check_ready_entry(symbol, data)
+                result = check_ready_entry(symbol, data)
+                if result:
+                    bot3_results.append(result)
                 time.sleep(0.05)
+
+        if bot3_results:
+            old_results = read_gist_file(BOT3_RESULTS_FILE, default=[])
+            if not isinstance(old_results, list):
+                old_results = []
+
+            combined = bot3_results + old_results
+
+            deduped = {}
+            for r in combined:
+                sym = r.get("symbol")
+                if not sym:
+                    continue
+                old = deduped.get(sym)
+                if old is None or r.get("time", 0) > old.get("time", 0):
+                    deduped[sym] = r
+
+            final_saved = sorted(
+                deduped.values(),
+                key=lambda x: x.get("time", 0),
+                reverse=True
+            )[:200]
+
+            save_gist_file(BOT3_RESULTS_FILE, final_saved)
+
+        save_gist_file(BOT3_ACTIVE_TRADES_FILE, active_trades)
 
         monitor_active_trades()
 
