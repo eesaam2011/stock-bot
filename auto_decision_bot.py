@@ -32,7 +32,6 @@ SCAN_INTERVAL = 20
 NEWS_FILE = "news_signals.json"
 
 RADAR_BATCH_SIZE = 650
-radar_cursor = 0
 
 
 def send_telegram_msg(message):
