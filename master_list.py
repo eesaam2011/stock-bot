@@ -5,11 +5,11 @@ import requests
 import threading
 from flask import Flask
 
-YAHOO_COUNT = 500
+YAHOO_COUNT = 400
 
-PRICE_MIN = 0.5
+PRICE_MIN = 0.3
 PRICE_MAX = 25
-MIN_VOLUME = 300000
+MIN_VOLUME = 150000
 
 MASTER_LIST_FILE = "master_list.json"
 RUN_INTERVAL = 900  # كل 15 دقيقة
@@ -26,7 +26,7 @@ BLACKLIST = [
     "BUD","TAP","STZ","DEO",
     "PM","MO",
     "CGC","TLRY","ACB",
-    "NCLH","CCL","RCL"
+    "NCLH","CCL","RCL","AMC"
 ]
 
 SCREENS = [
