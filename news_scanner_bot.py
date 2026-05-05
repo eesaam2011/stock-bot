@@ -19,15 +19,20 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
-NEWS_SYMBOL_LIMIT = 500
-SCAN_INTERVAL = 900
+SCAN_INTERVAL = 900  # كل 15 دقيقة
 
-MASTER_LIST_FILE = "master_list.json"
 NEWS_FILE = "news_signals.json"
+
+BOT2_CANDIDATES_FILE = "bot2_news_candidates.json"
+BOT3_RESULTS_FILE = "bot3_results.json"
+INVESTMENT_NEWS_50_FILE = "investment_news_candidates_50.json"
 
 TOP_TOP_NEWS_SCORE = 18
 MAX_ALERT_NEWS_AGE_HOURS = 6
 MAX_STORE_NEWS_AGE_SECONDS = 7 * 86400
+
+SPEC_SYMBOL_LIMIT = 300
+INVESTMENT_SYMBOL_LIMIT = 50
 
 sent_news_alerts = {}
 
@@ -81,11 +86,12 @@ def read_gist_file(filename, default_value=None):
         data = res.json()
 
         file_data = data.get("files", {}).get(filename)
-
         if not file_data:
             return default_value
 
         content = file_data.get("content", "")
+        if not content:
+            return default_value
 
         try:
             return json.loads(content)
@@ -93,7 +99,7 @@ def read_gist_file(filename, default_value=None):
             return default_value
 
     except Exception as e:
-        print(f"Gist read error ({filename}):", e, flush=True)
+        print(f"Gist read error ({filename}): {e}", flush=True)
         return default_value
 
 
@@ -109,7 +115,7 @@ def save_gist_file(filename, content_obj):
             "Accept": "application/vnd.github+json"
         }
 
-        requests.patch(
+        res = requests.patch(
             url,
             headers=headers,
             json={
@@ -122,38 +128,137 @@ def save_gist_file(filename, content_obj):
             timeout=10
         )
 
+        if res.status_code not in [200, 201]:
+            print(f"Gist save failed {filename}: {res.text[:300]}", flush=True)
+            return
+
         print(f"Gist saved: {filename}", flush=True)
 
     except Exception as e:
-        print(f"Gist save error ({filename}):", e, flush=True)
+        print(f"Gist save error ({filename}): {e}", flush=True)
 
 
-def load_master_list():
-    data = read_gist_file(MASTER_LIST_FILE, [])
+def clean_symbol(symbol):
+    if not symbol or not isinstance(symbol, str):
+        return None
 
-    symbols = []
+    symbol = symbol.upper().strip()
 
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, str):
-                symbol = item
-            elif isinstance(item, dict):
-                symbol = item.get("symbol")
-            else:
-                continue
+    if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
+        return None
 
-            if (
-                symbol
-                and isinstance(symbol, str)
-                and "." not in symbol
-                and "^" not in symbol
-                and "-" not in symbol
-            ):
-                symbols.append(symbol.upper().strip())
+    if len(symbol) > 5:
+        return None
 
-    symbols = list(dict.fromkeys(symbols))
+    if not symbol.isalpha():
+        return None
 
-    return symbols[:NEWS_SYMBOL_LIMIT]
+    return symbol
+
+
+def extract_symbols_from_file(data, source_name, max_items=None):
+    results = []
+    now_ts = time.time()
+
+    if not isinstance(data, list):
+        return results
+
+    for item in data:
+        if isinstance(item, str):
+            symbol = item
+            item_time = now_ts
+            score = 0
+        elif isinstance(item, dict):
+            symbol = item.get("symbol")
+            item_time = float(item.get("time", now_ts) or now_ts)
+            score = float(
+                item.get("final_score")
+                or item.get("technical_score")
+                or item.get("score")
+                or 0
+            )
+        else:
+            continue
+
+        symbol = clean_symbol(symbol)
+        if not symbol:
+            continue
+
+        results.append({
+            "symbol": symbol,
+            "source": source_name,
+            "score": score,
+            "time": item_time
+        })
+
+    results = sorted(results, key=lambda x: (x["score"], x["time"]), reverse=True)
+
+    if max_items:
+        results = results[:max_items]
+
+    return results
+
+
+def load_news_symbols():
+    now = datetime.now(saudi_tz)
+
+    bot2_data = read_gist_file(BOT2_CANDIDATES_FILE, [])
+    bot3_data = read_gist_file(BOT3_RESULTS_FILE, [])
+
+    bot2_symbols = extract_symbols_from_file(
+        bot2_data,
+        "BOT2_SPEC",
+        max_items=SPEC_SYMBOL_LIMIT
+    )
+
+    bot3_symbols = extract_symbols_from_file(
+        bot3_data,
+        "BOT3_SPEC",
+        max_items=SPEC_SYMBOL_LIMIT
+    )
+
+    all_items = bot2_symbols + bot3_symbols
+
+    # الاستثمار: الأربعاء فقط بعد تجهيز أفضل 50
+    if now.weekday() == 2:
+        investment_data = read_gist_file(INVESTMENT_NEWS_50_FILE, [])
+        investment_symbols = extract_symbols_from_file(
+            investment_data,
+            "INVESTMENT",
+            max_items=INVESTMENT_SYMBOL_LIMIT
+        )
+        all_items += investment_symbols
+
+    deduped = {}
+
+    for item in all_items:
+        symbol = item["symbol"]
+
+        old = deduped.get(symbol)
+        if old is None:
+            deduped[symbol] = item
+        else:
+            # إذا ظهر من أكثر من مصدر نخلي المصدر مركب ونحفظ أعلى score
+            old_sources = set(str(old.get("source", "")).split("+"))
+            old_sources.add(item["source"])
+            old["source"] = "+".join(sorted(old_sources))
+            old["score"] = max(old.get("score", 0), item.get("score", 0))
+            old["time"] = max(old.get("time", 0), item.get("time", 0))
+
+    symbols = sorted(
+        deduped.values(),
+        key=lambda x: (x["score"], x["time"]),
+        reverse=True
+    )
+
+    print(
+        f"✅ Loaded news candidates: {len(symbols)} "
+        f"| Bot2: {len(bot2_symbols)} | Bot3: {len(bot3_symbols)} "
+        f"| Investment included: {now.weekday() == 2}",
+        flush=True
+    )
+
+    return symbols
 
 
 def fetch_google_news(symbol):
@@ -225,7 +330,11 @@ def analyze_news_items(items):
         "price target raised": 3,
         "short squeeze": 4,
         "receives grant": 4,
-        "secures funding": 4
+        "secures funding": 4,
+        "partnership agreement": 5,
+        "commercial agreement": 5,
+        "record revenue": 4,
+        "analyst upgrade": 4
     }
 
     negative_keywords = {
@@ -279,7 +388,11 @@ def analyze_news_items(items):
             elif age_hours > 24:
                 item_score -= 2
 
-        if item_score > total_score or not best_title:
+        if item_score > 0 and (not best_title or item_score > total_score):
+            best_title = title
+            best_age = age_hours
+
+        if not best_title:
             best_title = title
             best_age = age_hours
 
@@ -323,6 +436,9 @@ def save_news_to_gist(new_items):
     old_items = read_gist_file(NEWS_FILE, [])
     now_ts = time.time()
 
+    if not isinstance(old_items, list):
+        old_items = []
+
     old_items = [
         x for x in old_items
         if now_ts - float(x.get("time", 0)) < MAX_STORE_NEWS_AGE_SECONDS
@@ -343,21 +459,21 @@ def save_news_to_gist(new_items):
             existing_keys.add(key)
 
     save_gist_file(NEWS_FILE, merged[-1000:])
-
     print(f"News gist saved: {len(new_items)} new items", flush=True)
 
 
-def should_alert(symbol):
+def should_alert(symbol, headline):
     now = datetime.now(saudi_tz)
+    key = f"{symbol}:{headline}"
 
-    if symbol not in sent_news_alerts:
-        sent_news_alerts[symbol] = now
+    if key not in sent_news_alerts:
+        sent_news_alerts[key] = now
         return True
 
-    diff = (now - sent_news_alerts[symbol]).total_seconds() / 60
+    diff = (now - sent_news_alerts[key]).total_seconds() / 60
 
     if diff >= 240:
-        sent_news_alerts[symbol] = now
+        sent_news_alerts[key] = now
         return True
 
     return False
@@ -376,35 +492,40 @@ def is_fresh_top_top_news(analysis):
     )
 
 
+def is_spec_source(source):
+    return "BOT2_SPEC" in source or "BOT3_SPEC" in source
+
+
 def run_news_scanner():
-    print("📰 Loading symbols from Master List...", flush=True)
+    print("📰 Loading candidates from Bot2 / Bot3 / Investment...", flush=True)
 
-    symbols = load_master_list()
+    candidates = load_news_symbols()
 
-    if not symbols:
-        print("⚠️ Master List empty or not found", flush=True)
+    if not candidates:
+        print("⚠️ No news candidates found", flush=True)
         return
-
-    print(f"✅ News symbols loaded: {len(symbols)}", flush=True)
 
     useful_news = []
 
-    for i, symbol in enumerate(symbols, start=1):
+    for i, item in enumerate(candidates, start=1):
+        symbol = item["symbol"]
+        source = item.get("source", "")
+
         try:
-            print(f"📰 {i}/{len(symbols)} checking news: {symbol}", flush=True)
+            print(f"📰 {i}/{len(candidates)} checking news: {symbol} | {source}", flush=True)
 
-            items = fetch_google_news(symbol)
+            news_items = fetch_google_news(symbol)
 
-            if not items:
+            if not news_items:
                 time.sleep(0.2)
                 continue
 
-            analysis = analyze_news_items(items)
+            analysis = analyze_news_items(news_items)
 
             if analysis["grade"] in ["SUPER_STRONG", "STRONG", "MEDIUM", "NEGATIVE"]:
                 news_item = {
                     "symbol": symbol,
-                    "source": "news_bot",
+                    "source": source,
                     "news_grade": analysis["grade"],
                     "news_label": analysis["label"],
                     "news_score": analysis["score"],
@@ -415,15 +536,21 @@ def run_news_scanner():
 
                 useful_news.append(news_item)
 
-                if is_fresh_top_top_news(analysis) and should_alert(symbol):
+                # الإرسال فقط للمضاربة Bot2/Bot3، وليس Investment
+                if (
+                    is_spec_source(source)
+                    and is_fresh_top_top_news(analysis)
+                    and should_alert(symbol, analysis["headline"])
+                ):
                     msg = (
-                        f"📰🔥🔥🔥🔥 *بوت الأخبار - خبر قوي جدًا جدًا جدًا جدًا*\n\n"
+                        f"📰🔥🔥🔥🔥 *بوت الأخبار - خبر مضاربي قوي جدًا جدًا جدًا جدًا*\n\n"
                         f"🎫 السهم: `{symbol}`\n"
+                        f"📡 المصدر: {source}\n"
                         f"🗞️ التصنيف: {analysis['label']}\n"
                         f"⭐ News Score: {analysis['score']}\n"
                         f"⏱️ عمر الخبر: {analysis['age_hours']:.1f} ساعة\n\n"
                         f"🧠 العنوان:\n{analysis['headline']}\n\n"
-                        f"📌 ملاحظة: هذا ليس دخول مباشر، لكنه خبر قوي جدًا ويحتاج متابعة.\n"
+                        f"📌 ملاحظة: هذا ليس دخول مباشر، لكنه خبر قوي جدًا يرجع لـ Bot 2 / Bot 3 للتأكيد.\n"
                         f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
                     )
 
@@ -444,7 +571,7 @@ def run_news_scanner():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 print("📰 NEWS SCANNER BOT STARTED", flush=True)
-send_telegram_msg("📰 تم تشغيل بوت الأخبار")
+send_telegram_msg("📰 تم تشغيل بوت الأخبار - Bot2/Bot3 مستمر + الاستثمار الأربعاء فقط")
 
 while True:
     try:
