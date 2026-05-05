@@ -5,7 +5,7 @@ import requests
 import threading
 from flask import Flask
 
-YAHOO_COUNT = 400
+YAHOO_COUNT = 300
 
 PRICE_MIN = 0.3
 PRICE_MAX = 25
