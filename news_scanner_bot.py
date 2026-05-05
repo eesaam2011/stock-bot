@@ -1,12 +1,14 @@
 import os
 import time
 import json
+import html
 import requests
 import threading
-import pandas as pd
-import alpaca_trade_api as tradeapi
+import xml.etree.ElementTree as ET
 from flask import Flask
-from datetime import datetime, timedelta
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote_plus
 import pytz
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -15,36 +17,25 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-API_KEY = os.getenv("APCA_API_KEY_ID")
-SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
-BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
-
-api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
-
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
-PRICE_MIN = 0.5
-PRICE_MAX = 15
-
-INVESTMENT_SYMBOL_LIMIT = 800
-FINAL_MIN_SCORE = 65
-FINAL_MAX_PICKS = 5
-FINAL_MIN_PICKS = 3
-
+NEWS_SYMBOL_LIMIT = 500
 SCAN_INTERVAL = 900
 
-STATE_FILE = "investment_state.json"
+MASTER_LIST_FILE = "master_list.json"
 NEWS_FILE = "news_signals.json"
 
-THURSDAY_ALERT_HOUR = 17
-THURSDAY_ALERT_MINUTE = 45
+TOP_TOP_NEWS_SCORE = 18
+MAX_ALERT_NEWS_AGE_HOURS = 6
+
+sent_news_alerts = {}
 
 app = Flask(__name__)
 
 
 @app.route("/")
 def home():
-    return "Investment Bot Running"
+    return "News Bot Running"
 
 
 def run_web_server():
@@ -71,7 +62,7 @@ def send_telegram_msg(message):
         print("Telegram error:", e, flush=True)
 
 
-def read_gist_file(filename, default_value):
+def read_gist_file(filename, default_value=[]):
     if not GIST_ID or not GITHUB_TOKEN:
         return default_value
 
@@ -98,7 +89,7 @@ def read_gist_file(filename, default_value):
             return default_value
 
     except Exception as e:
-        print(f"Read gist error {filename}:", e, flush=True)
+        print(f"Gist read error ({filename}):", e, flush=True)
         return default_value
 
 
@@ -130,641 +121,335 @@ def save_gist_file(filename, content_obj):
         print(f"Gist saved: {filename}", flush=True)
 
     except Exception as e:
-        print(f"Save gist error {filename}:", e, flush=True)
+        print(f"Gist save error ({filename}):", e, flush=True)
 
 
-def load_state():
-    default_state = {
-        "last_weekly_universe": "",
-        "last_daily_refresh": "",
-        "last_thursday_alert": "",
-        "weekly_universe": [],
-        "active_picks": []
-    }
+def load_master_list():
+    data = read_gist_file(MASTER_LIST_FILE, [])
 
-    state = read_gist_file(STATE_FILE, default_state)
+    symbols = []
 
-    for key in default_state:
-        if key not in state:
-            state[key] = default_state[key]
-
-    return state
-
-
-def save_state(state):
-    save_gist_file(STATE_FILE, state)
-
-
-def get_daily_bars(symbol, days=220):
-    try:
-        end = datetime.utcnow()
-        start = end - timedelta(days=days)
-
-        bars = api.get_bars(
-            symbol,
-            tradeapi.TimeFrame.Day,
-            start=start.isoformat() + "Z",
-            end=end.isoformat() + "Z",
-            adjustment="raw"
-        ).df
-
-        if bars is None or bars.empty:
-            return pd.DataFrame()
-
-        df = bars.copy()
-
-        if "symbol" in df.columns:
-            df = df[df["symbol"] == symbol]
-
-        df = df.rename(columns={
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-            "volume": "Volume"
-        })
-
-        needed = ["Open", "High", "Low", "Close", "Volume"]
-
-        for col in needed:
-            if col not in df.columns:
-                return pd.DataFrame()
-
-        return df[needed].dropna()
-
-    except Exception as e:
-        print(f"Alpaca daily bars error {symbol}: {e}", flush=True)
-        return pd.DataFrame()
-
-
-def calculate_rsi(close, period=14):
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0).rolling(period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(period).mean()
-
-    if loss.iloc[-1] == 0:
-        return 100
-
-    rs = gain.iloc[-1] / loss.iloc[-1]
-    return 100 - (100 / (1 + rs))
-
-
-def get_news(symbol):
-    news_list = read_gist_file(NEWS_FILE, [])
-    now = time.time()
-
-    best = None
-    best_score = 0
-
-    for n in news_list:
-        if n.get("symbol") != symbol:
-            continue
-
-        age = now - float(n.get("time", 0))
-
-        if age > 7 * 86400:
-            continue
-
-        if n.get("news_grade") == "NEGATIVE":
-            return "NEGATIVE", 0, n.get("headline", "")
-
-        score = float(n.get("news_score", 0))
-
-        if score > best_score:
-            best = n
-            best_score = score
-
-    if best:
-        return best.get("news_grade"), best_score, best.get("headline", "")
-
-    return "NONE", 0, ""
-
-
-def is_clean_symbol(symbol):
-    if not symbol:
-        return False
-
-    if not isinstance(symbol, str):
-        return False
-
-    if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
-        return False
-
-    if len(symbol) > 5:
-        return False
-
-    if not symbol.isalpha():
-        return False
-
-    return True
-
-
-def get_all_alpaca_symbols():
-    black_list = [
-        "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
-        "MET", "PRU", "ALL", "AIG", "CB",
-        "DKNG", "PENN", "WYNN", "LVS",
-        "BUD", "TAP", "STZ", "DEO",
-        "PM", "MO",
-        "CGC", "TLRY", "ACB",
-        "NCLH", "CCL", "RCL"
-    ]
-
-    try:
-        assets = api.list_assets(status="active")
-        symbols = []
-
-        for asset in assets:
-            symbol = getattr(asset, "symbol", None)
-
-            if not is_clean_symbol(symbol):
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, str):
+                symbol = item
+            elif isinstance(item, dict):
+                symbol = item.get("symbol")
+            else:
                 continue
 
             if (
-                getattr(asset, "tradable", False)
-                and getattr(asset, "asset_class", "") == "us_equity"
-                and symbol not in black_list
+                symbol
+                and isinstance(symbol, str)
+                and "." not in symbol
+                and "^" not in symbol
+                and "-" not in symbol
             ):
-                symbols.append(symbol)
+                symbols.append(symbol.upper().strip())
 
-        return list(set(symbols))
+    symbols = list(dict.fromkeys(symbols))
+
+    return symbols[:NEWS_SYMBOL_LIMIT]
+
+
+def fetch_google_news(symbol):
+    try:
+        query = quote_plus(f"{symbol} stock")
+        url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+        headers = {"User-Agent": "Mozilla/5.0"}
+
+        res = requests.get(url, headers=headers, timeout=10)
+
+        if res.status_code != 200:
+            return []
+
+        root = ET.fromstring(res.content)
+        items = []
+
+        for item in root.findall(".//item")[:7]:
+            title = html.unescape(item.findtext("title", default="")).strip()
+            link = item.findtext("link", default="")
+            pub_date = item.findtext("pubDate", default="")
+
+            age_hours = None
+
+            try:
+                dt = parsedate_to_datetime(pub_date)
+                now_utc = datetime.now(dt.tzinfo)
+                age_hours = (now_utc - dt).total_seconds() / 3600
+            except Exception:
+                pass
+
+            if title:
+                items.append({
+                    "title": title,
+                    "link": link,
+                    "pub_date": pub_date,
+                    "age_hours": age_hours
+                })
+
+        return items
 
     except Exception as e:
-        print("Alpaca asset list error:", e, flush=True)
+        print(f"Google news error {symbol}: {e}", flush=True)
         return []
 
 
-def score_investment_universe(symbol):
-    try:
-        df = get_daily_bars(symbol, days=220)
+def analyze_news_items(items):
+    positive_keywords = {
+        "fda approval": 6,
+        "approval": 4,
+        "contract": 4,
+        "major contract": 6,
+        "partnership": 4,
+        "strategic partnership": 5,
+        "collaboration": 3,
+        "acquisition": 5,
+        "merger": 5,
+        "buyout": 7,
+        "earnings beat": 5,
+        "beats estimates": 5,
+        "raises guidance": 6,
+        "guidance raised": 6,
+        "patent": 3,
+        "launch": 3,
+        "breakthrough": 5,
+        "positive data": 6,
+        "phase 3": 5,
+        "phase 2": 3,
+        "upgrade": 3,
+        "price target raised": 3,
+        "short squeeze": 4,
+        "receives grant": 4,
+        "secures funding": 4
+    }
 
-        if df.empty or len(df) < 80:
-            return None
+    negative_keywords = {
+        "offering": 6,
+        "public offering": 7,
+        "direct offering": 7,
+        "dilution": 7,
+        "bankruptcy": 8,
+        "delisting": 8,
+        "lawsuit": 4,
+        "investigation": 5,
+        "downgrade": 4,
+        "misses estimates": 5,
+        "cuts guidance": 6,
+        "reverse split": 7,
+        "sec investigation": 8,
+        "fraud": 8
+    }
 
-        price = float(df["Close"].iloc[-1])
+    total_score = 0
+    best_title = ""
+    best_age = None
+    strongest_negative = False
+    useful_titles = []
 
-        if not (PRICE_MIN <= price <= PRICE_MAX):
-            return None
+    for item in items:
+        title = item["title"]
+        text = title.lower()
+        age_hours = item.get("age_hours")
 
-        avg_vol_30 = float(df["Volume"].tail(30).mean())
-        avg_vol_10 = float(df["Volume"].tail(10).mean())
-        avg_vol_5 = float(df["Volume"].tail(5).mean())
+        item_score = 0
 
-        if avg_vol_30 < 300000:
-            return None
+        for kw, weight in positive_keywords.items():
+            if kw in text:
+                item_score += weight
 
-        df["SMA20"] = df["Close"].rolling(20).mean()
-        df["SMA50"] = df["Close"].rolling(50).mean()
+        for kw, weight in negative_keywords.items():
+            if kw in text:
+                item_score -= weight
+                if weight >= 7:
+                    strongest_negative = True
 
-        sma20 = float(df["SMA20"].iloc[-1])
-        sma50 = float(df["SMA50"].iloc[-1])
+        if age_hours is not None:
+            if age_hours <= 1:
+                item_score += 5
+            elif age_hours <= 3:
+                item_score += 4
+            elif age_hours <= 6:
+                item_score += 3
+            elif age_hours <= 12:
+                item_score += 1
+            elif age_hours > 24:
+                item_score -= 2
 
-        rsi = calculate_rsi(df["Close"])
+        if item_score > 0:
+            useful_titles.append(title)
 
-        high30 = float(df["High"].tail(30).max())
+        if item_score > total_score or not best_title:
+            best_title = title
+            best_age = age_hours
 
-        move5 = ((price - float(df["Close"].iloc[-6])) / float(df["Close"].iloc[-6])) * 100
-        move20 = ((price - float(df["Close"].iloc[-21])) / float(df["Close"].iloc[-21])) * 100
+        total_score += item_score
 
-        vol_ratio = avg_vol_5 / max(float(df["Volume"].tail(20).mean()), 1)
-
-        news_grade, news_score, headline = get_news(symbol)
-
-        if news_grade == "NEGATIVE":
-            return None
-
-        score = 0
-
-        if price > sma20:
-            score += 12
-
-        if price > sma50:
-            score += 15
-
-        if sma20 >= sma50 * 0.97:
-            score += 8
-
-        if vol_ratio >= 1:
-            score += 10
-
-        if avg_vol_10 >= avg_vol_30 * 0.9:
-            score += 8
-
-        if 42 <= rsi <= 68:
-            score += 12
-
-        if price >= high30 * 0.85:
-            score += 12
-
-        if -8 <= move5 <= 18:
-            score += 8
-
-        if -15 <= move20 <= 45:
-            score += 6
-
-        if news_grade == "STRONG":
-            score += 15
-
-        elif news_grade == "MEDIUM":
-            score += 8
-
-        dollar_volume = price * avg_vol_30
-
-        if dollar_volume >= 5_000_000:
-            score += 8
-        elif dollar_volume >= 2_000_000:
-            score += 5
-
+    if strongest_negative:
         return {
-            "symbol": symbol,
-            "price": price,
-            "score": score,
-            "avg_vol_30": avg_vol_30,
-            "dollar_volume": dollar_volume,
-            "rsi": rsi,
-            "move5": move5,
-            "move20": move20,
-            "headline": headline
+            "grade": "NEGATIVE",
+            "label": "🔴 خبر سلبي / خطر",
+            "score": total_score,
+            "headline": best_title,
+            "age_hours": best_age
         }
 
-    except Exception as e:
-        print(f"Universe score error {symbol}: {e}", flush=True)
-        return None
-
-
-def build_weekly_universe():
-    print("🔎 Building smart weekly investment universe...", flush=True)
-
-    symbols = get_all_alpaca_symbols()
-    scored = []
-
-    for i, symbol in enumerate(symbols, start=1):
-        item = score_investment_universe(symbol)
-
-        if item:
-            scored.append(item)
-
-        if i % 100 == 0:
-            print(f"Checked {i}/{len(symbols)} | accepted: {len(scored)}", flush=True)
-
-        time.sleep(0.03)
-
-    scored = sorted(
-        scored,
-        key=lambda x: (
-            x["score"],
-            x["dollar_volume"],
-            x["avg_vol_30"]
-        ),
-        reverse=True
-    )
-
-    universe = [x["symbol"] for x in scored[:INVESTMENT_SYMBOL_LIMIT]]
-
-    print(f"✅ Weekly universe ready: {len(universe)} symbols", flush=True)
-
-    return universe
-
-
-def refresh_weekly_universe_light(current_universe):
-    print("🔄 Daily light refresh for investment universe...", flush=True)
-
-    refreshed = []
-    weak_symbols = []
-
-    for symbol in current_universe:
-        item = score_investment_universe(symbol)
-
-        if item and item["score"] >= 55:
-            refreshed.append({
-                "symbol": symbol,
-                "score": item["score"]
-            })
-        else:
-            weak_symbols.append(symbol)
-
-        time.sleep(0.03)
-
-    missing = INVESTMENT_SYMBOL_LIMIT - len(refreshed)
-
-    if missing <= 0:
-        refreshed = sorted(refreshed, key=lambda x: x["score"], reverse=True)
-        return [x["symbol"] for x in refreshed[:INVESTMENT_SYMBOL_LIMIT]]
-
-    all_symbols = get_all_alpaca_symbols()
-    existing = {x["symbol"] for x in refreshed}
-
-    replacements = []
-
-    for symbol in all_symbols:
-        if symbol in existing:
-            continue
-
-        item = score_investment_universe(symbol)
-
-        if item and item["score"] >= 60:
-            replacements.append(item)
-
-        if len(replacements) >= missing * 2:
-            break
-
-        time.sleep(0.03)
-
-    replacements = sorted(
-        replacements,
-        key=lambda x: (
-            x["score"],
-            x["dollar_volume"],
-            x["avg_vol_30"]
-        ),
-        reverse=True
-    )
-
-    for item in replacements[:missing]:
-        refreshed.append({
-            "symbol": item["symbol"],
-            "score": item["score"]
-        })
-
-    refreshed = sorted(refreshed, key=lambda x: x["score"], reverse=True)
-
-    print(
-        f"✅ Daily refresh done | kept: {len(current_universe) - len(weak_symbols)} | removed: {len(weak_symbols)} | final: {len(refreshed)}",
-        flush=True
-    )
-
-    return [x["symbol"] for x in refreshed[:INVESTMENT_SYMBOL_LIMIT]]
-
-
-def ensure_weekly_universe():
-    state = load_state()
-    now = datetime.now(saudi_tz)
-    today = now.strftime("%Y-%m-%d")
-
-    need_weekly_rebuild = False
-
-    if not state.get("weekly_universe"):
-        need_weekly_rebuild = True
-
-    # الجمعة فقط: بناء قائمة الأسبوع الجديد بعد إرسال الخميس
-    if now.weekday() == 4 and state.get("last_weekly_universe") != today:
-        need_weekly_rebuild = True
-
-    if need_weekly_rebuild:
-        universe = build_weekly_universe()
-        state["weekly_universe"] = universe
-        state["last_weekly_universe"] = today
-        state["last_daily_refresh"] = today
-        save_state(state)
-        return universe
-
-    # باقي الأيام: تحديث خفيف يومي فقط
-    if state.get("last_daily_refresh") != today:
-        universe = refresh_weekly_universe_light(state.get("weekly_universe", []))
-        state["weekly_universe"] = universe
-        state["last_daily_refresh"] = today
-        save_state(state)
-        return universe
-
-    return state.get("weekly_universe", [])
-
-
-def get_target_timing():
-    now = datetime.now(saudi_tz)
-
-    target1_date = now + timedelta(days=7)
-    target2_date = now + timedelta(days=30)
+    if total_score >= TOP_TOP_NEWS_SCORE:
+        grade = "SUPER_STRONG"
+        label = "🔥🔥🔥🔥 خبر قوي جدًا جدًا جدًا جدًا"
+    elif total_score >= 10:
+        grade = "STRONG"
+        label = "🔥 خبر قوي"
+    elif total_score >= 5:
+        grade = "MEDIUM"
+        label = "🟢 خبر متوسط"
+    elif total_score >= 1:
+        grade = "WEAK"
+        label = "⚪ خبر ضعيف"
+    else:
+        grade = "NONE"
+        label = "⚪ لا يوجد خبر مؤثر"
 
     return {
-        "target1_date": target1_date.strftime("%Y-%m-%d"),
-        "target2_date": target2_date.strftime("%Y-%m-%d"),
-        "target1_duration": "تقريبًا خلال 7 أيام",
-        "target2_duration": "تقريبًا خلال 30 يوم"
+        "grade": grade,
+        "label": label,
+        "score": total_score,
+        "headline": best_title,
+        "age_hours": best_age
     }
 
 
-def analyze_stock(symbol):
-    try:
-        df = get_daily_bars(symbol, days=220)
+def save_news_to_gist(new_items):
+    old_items = read_gist_file(NEWS_FILE, [])
+    now_ts = time.time()
 
-        if df.empty or len(df) < 60:
-            return None
+    old_items = [
+        x for x in old_items
+        if now_ts - float(x.get("time", 0)) < 86400
+    ]
 
-        price = float(df["Close"].iloc[-1])
+    merged = old_items[:]
 
-        if not (PRICE_MIN <= price <= PRICE_MAX):
-            return None
+    existing_keys = {
+        (x.get("symbol"), x.get("headline"))
+        for x in merged
+    }
 
-        avg_vol = float(df["Volume"].tail(30).mean())
+    for item in new_items:
+        key = (item.get("symbol"), item.get("headline"))
+        if key not in existing_keys:
+            merged.append(item)
+            existing_keys.add(key)
 
-        if avg_vol < 300000:
-            return None
+    save_gist_file(NEWS_FILE, merged[-500:])
 
-        df["SMA20"] = df["Close"].rolling(20).mean()
-        df["SMA50"] = df["Close"].rolling(50).mean()
-
-        sma20 = float(df["SMA20"].iloc[-1])
-        sma50 = float(df["SMA50"].iloc[-1])
-
-        rsi = calculate_rsi(df["Close"])
-
-        high30 = float(df["High"].tail(30).max())
-        low30 = float(df["Low"].tail(30).min())
-
-        move5 = ((price - float(df["Close"].iloc[-6])) / float(df["Close"].iloc[-6])) * 100
-        vol_ratio = float(df["Volume"].tail(5).mean()) / max(float(df["Volume"].tail(20).mean()), 1)
-
-        news_grade, news_score, headline = get_news(symbol)
-
-        if news_grade == "NEGATIVE":
-            return None
-
-        score = 0
-        reasons = []
-
-        if price > sma20:
-            score += 10
-            reasons.append("فوق SMA20")
-
-        if price > sma50:
-            score += 10
-            reasons.append("فوق SMA50")
-
-        if vol_ratio > 1:
-            score += 10
-            reasons.append("سيولة جيدة")
-
-        if 45 <= rsi <= 65:
-            score += 10
-            reasons.append("RSI مناسب")
-
-        if price >= high30 * 0.88:
-            score += 15
-            reasons.append("قريب اختراق")
-
-        if abs(move5) < 20:
-            score += 10
-            reasons.append("غير منفجر")
-
-        if news_grade == "STRONG":
-            score += 20
-            reasons.append("خبر قوي")
-
-        elif news_grade == "MEDIUM":
-            score += 10
-            reasons.append("خبر متوسط")
-
-        dollar_volume = price * avg_vol
-
-        if dollar_volume >= 5_000_000:
-            score += 8
-            reasons.append("سيولة دولارية قوية")
-
-        if score < FINAL_MIN_SCORE:
-            return None
-
-        timing = get_target_timing()
-
-        entry = price
-        stop = min(price * 0.9, low30 * 0.98)
-        t1 = price * 1.15
-        t2 = price * 1.35
-
-        return {
-            "symbol": symbol,
-            "entry": float(entry),
-            "stop": float(stop),
-            "t1": float(t1),
-            "t2": float(t2),
-            "target1_date": timing["target1_date"],
-            "target2_date": timing["target2_date"],
-            "target1_duration": timing["target1_duration"],
-            "target2_duration": timing["target2_duration"],
-            "score": score,
-            "headline": headline,
-            "reasons": reasons,
-            "alerts": {}
-        }
-
-    except Exception as e:
-        print(f"Analyze error {symbol}: {e}", flush=True)
-        return None
+    print(f"News gist saved: {len(new_items)} new items", flush=True)
 
 
-def send_weekly_picks():
-    symbols = ensure_weekly_universe()
+def should_alert(symbol):
+    now = datetime.now(saudi_tz)
 
-    results = []
+    if symbol not in sent_news_alerts:
+        sent_news_alerts[symbol] = now
+        return True
 
-    for i, symbol in enumerate(symbols, start=1):
-        r = analyze_stock(symbol)
+    diff = (now - sent_news_alerts[symbol]).total_seconds() / 60
 
-        if r:
-            results.append(r)
+    if diff >= 240:
+        sent_news_alerts[symbol] = now
+        return True
 
-        if i % 100 == 0:
-            print(f"Weekly analysis {i}/{len(symbols)} | results: {len(results)}", flush=True)
+    return False
 
-        time.sleep(0.03)
 
-    results = sorted(results, key=lambda x: x["score"], reverse=True)[:FINAL_MAX_PICKS]
+def is_fresh_top_top_news(analysis):
+    age_hours = analysis.get("age_hours")
 
-    if not results:
-        send_telegram_msg("📉 لا توجد فرص هذا الأسبوع")
+    if age_hours is None:
+        return False
+
+    return (
+        analysis["grade"] == "SUPER_STRONG"
+        and analysis["score"] >= TOP_TOP_NEWS_SCORE
+        and age_hours <= MAX_ALERT_NEWS_AGE_HOURS
+    )
+
+
+def run_news_scanner():
+    print("📰 Loading symbols from Master List...", flush=True)
+
+    symbols = load_master_list()
+
+    if not symbols:
+        print("⚠️ Master List empty or not found", flush=True)
         return
 
-    msg = "📈 أفضل أسهم الأسبوع\n\n"
+    print(f"✅ News symbols loaded: {len(symbols)}", flush=True)
 
-    for r in results:
-        msg += (
-            f"{r['symbol']}\n"
-            f"دخول: {r['entry']:.2f}\n"
-            f"وقف: {r['stop']:.2f}\n"
-            f"هدف1: {r['t1']:.2f}\n"
-            f"تاريخ هدف1 المتوقع: {r['target1_date']}\n"
-            f"مدة هدف1: {r['target1_duration']}\n"
-            f"هدف2: {r['t2']:.2f}\n"
-            f"تاريخ هدف2 المتوقع: {r['target2_date']}\n"
-            f"مدة هدف2: {r['target2_duration']}\n"
-            f"نسبة: {r['score']}%\n"
-        )
+    useful_news = []
 
-        if r["headline"]:
-            msg += f"📰 {r['headline']}\n"
-
-        msg += "\n"
-
-    send_telegram_msg(msg)
-
-    state = load_state()
-    state["active_picks"] = results
-    state["last_thursday_alert"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
-    save_state(state)
-
-
-def monitor():
-    state = load_state()
-    picks = state.get("active_picks", [])
-
-    for p in picks:
+    for i, symbol in enumerate(symbols, start=1):
         try:
-            symbol = p["symbol"]
-            df = get_daily_bars(symbol, days=45)
+            print(f"📰 {i}/{len(symbols)} checking news: {symbol}", flush=True)
 
-            if df.empty:
+            items = fetch_google_news(symbol)
+
+            if not items:
+                time.sleep(0.2)
                 continue
 
-            price = float(df["Close"].iloc[-1])
-            entry = float(p["entry"])
+            analysis = analyze_news_items(items)
 
-            gain = ((price - entry) / entry) * 100
+            if analysis["grade"] in ["SUPER_STRONG", "STRONG", "MEDIUM", "NEGATIVE"]:
+                news_item = {
+                    "symbol": symbol,
+                    "source": "news_bot",
+                    "news_grade": analysis["grade"],
+                    "news_label": analysis["label"],
+                    "news_score": analysis["score"],
+                    "headline": analysis["headline"],
+                    "age_hours": analysis.get("age_hours"),
+                    "time": time.time()
+                }
 
-            if gain > 5 and not p["alerts"].get("start"):
-                send_telegram_msg(f"🚀 {symbol} بدأ يتحرك")
-                p["alerts"]["start"] = True
+                useful_news.append(news_item)
 
-            if gain > 10 and not p["alerts"].get("raise"):
-                new_stop = entry * 1.02
-                send_telegram_msg(f"🔒 ارفع وقف {symbol} إلى {new_stop:.2f}")
-                p["alerts"]["raise"] = True
+                if is_fresh_top_top_news(analysis) and should_alert(symbol):
+                    msg = (
+                        f"📰🔥🔥🔥🔥 *بوت الأخبار - خبر قوي جدًا جدًا جدًا جدًا*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"🗞️ التصنيف: {analysis['label']}\n"
+                        f"⭐ News Score: {analysis['score']}\n"
+                        f"⏱️ عمر الخبر: {analysis['age_hours']:.1f} ساعة\n\n"
+                        f"🧠 العنوان:\n{analysis['headline']}\n\n"
+                        f"📌 ملاحظة: هذا ليس دخول مباشر، لكنه خبر قوي جدًا يحتاج متابعة.\n"
+                        f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
+                    )
 
-            if price <= float(p["stop"]) and not p["alerts"].get("stop"):
-                send_telegram_msg(f"🛑 خروج {symbol}")
-                p["alerts"]["stop"] = True
+                    send_telegram_msg(msg)
 
-        except Exception:
+            time.sleep(0.2)
+
+        except Exception as e:
+            print(f"News scanner error {symbol}: {e}", flush=True)
             continue
 
-    state["active_picks"] = picks
-    save_state(state)
+    if useful_news:
+        save_news_to_gist(useful_news)
+
+    print(f"✅ News scan completed. Found: {len(useful_news)} useful news", flush=True)
 
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
-print("📈 Investment Bot Started", flush=True)
+print("📰 NEWS SCANNER BOT STARTED", flush=True)
+send_telegram_msg("📰 تم تشغيل بوت الأخبار")
 
 while True:
-    now = datetime.now(saudi_tz)
-
     try:
-        state = load_state()
-        today = now.strftime("%Y-%m-%d")
-
-        ensure_weekly_universe()
-
-        # الخميس 5:45 مساءً: إرسال أفضل الأسهم
-        if (
-            now.weekday() == 3
-            and now.hour == THURSDAY_ALERT_HOUR
-            and now.minute >= THURSDAY_ALERT_MINUTE
-            and state.get("last_thursday_alert") != today
-        ):
-            send_weekly_picks()
-
-        monitor()
-
+        run_news_scanner()
         time.sleep(SCAN_INTERVAL)
 
     except Exception as e:
-        print("Main error:", e, flush=True)
+        print("News main loop error:", e, flush=True)
         time.sleep(30)
