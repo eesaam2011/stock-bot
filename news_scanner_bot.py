@@ -5,6 +5,7 @@ import html
 import requests
 import threading
 import xml.etree.ElementTree as ET
+import alpaca_trade_api as tradeapi
 from flask import Flask
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -17,11 +18,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
+API_KEY = os.getenv("APCA_API_KEY_ID")
+SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
+BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
+
+api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
+
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
 PRICE_MIN = 0.5
 PRICE_MAX = 25
-YAHOO_COUNT = 200
 NEWS_SYMBOL_LIMIT = 250
 SCAN_INTERVAL = 900  # 15 دقيقة
 NEWS_FILE = "news_signals.json"
@@ -61,9 +67,6 @@ def send_telegram_msg(message):
 
 
 def get_base_candidates():
-    url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
     black_list = [
         "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
         "MET", "PRU", "ALL", "AIG", "CB",
@@ -74,72 +77,47 @@ def get_base_candidates():
         "NCLH", "CCL", "RCL"
     ]
 
-    candidates = {}
+    candidates = []
 
-    for scr_id in [
-        "most_actives",
-        "day_gainers",
-        "small_cap_gainers",
-        "undervalued_growth_stocks",
-        "aggressive_small_caps",
-        "most_shorted_stocks",
-        "high_beta_stocks",
-        "growth_technology_stocks"
-    ]:
-        try:
-            res = requests.get(
-                url,
-                params={"scrIds": scr_id, "count": YAHOO_COUNT},
-                headers=headers,
-                timeout=10
-            ).json()
+    try:
+        assets = api.list_assets(status="active")
 
-            data = res.get("finance", {}).get("result")
-            if not data:
+        symbols = []
+
+        for asset in assets:
+            symbol = getattr(asset, "symbol", None)
+
+            if not symbol:
                 continue
 
-            quotes = data[0].get("quotes", [])
+            if (
+                getattr(asset, "tradable", False)
+                and getattr(asset, "asset_class", "") == "us_equity"
+                and isinstance(symbol, str)
+                and "." not in symbol
+                and "^" not in symbol
+                and "-" not in symbol
+                and symbol not in black_list
+            ):
+                symbols.append(symbol)
 
-            for q in quotes:
-                symbol = q.get("symbol")
-                price = q.get("regularMarketPrice")
-                volume = q.get("regularMarketVolume", 0) or 0
-                change_pct = q.get("regularMarketChangePercent", 0) or 0
+        symbols = list(set(symbols))[:NEWS_SYMBOL_LIMIT]
 
-                if (
-                    symbol
-                    and isinstance(symbol, str)
-                    and "." not in symbol
-                    and "^" not in symbol
-                    and "-" not in symbol
-                    and symbol not in black_list
-                    and price is not None
-                    and PRICE_MIN <= float(price) <= PRICE_MAX
-                ):
-                    score = abs(float(change_pct)) + (float(volume) / 1_000_000)
+        for symbol in symbols:
+            candidates.append({
+                "symbol": symbol,
+                "price": 0,
+                "volume": 0,
+                "change_pct": 0,
+                "raw_score": 0,
+                "source_list": "alpaca_assets"
+            })
 
-                    old = candidates.get(symbol)
-                    if old is None or score > old["raw_score"]:
-                        candidates[symbol] = {
-                            "symbol": symbol,
-                            "price": float(price),
-                            "volume": float(volume),
-                            "change_pct": float(change_pct),
-                            "raw_score": score,
-                            "source_list": scr_id
-                        }
+        return candidates
 
-        except Exception as e:
-            print(f"Yahoo list error {scr_id}: {e}", flush=True)
-            continue
-
-    ranked = sorted(
-        candidates.values(),
-        key=lambda x: (abs(x["change_pct"]), x["volume"], x["raw_score"]),
-        reverse=True
-    )
-
-    return ranked[:NEWS_SYMBOL_LIMIT]
+    except Exception as e:
+        print("Alpaca candidates error:", e, flush=True)
+        return []
 
 
 def fetch_google_news(symbol):
@@ -387,7 +365,7 @@ def should_alert(symbol):
 
 
 def run_news_scanner():
-    print("📰 Fetching candidates for News Scanner...", flush=True)
+    print("📰 Fetching candidates from Alpaca for News Scanner...", flush=True)
 
     candidates = get_base_candidates()
     print(f"✅ News candidates loaded: {len(candidates)}", flush=True)
@@ -425,17 +403,15 @@ def run_news_scanner():
 
                 strong_news.append(news_item)
 
+                # Telegram فقط Top Top News
                 if (
                     analysis["grade"] == "STRONG"
-                    and analysis["score"] >= 11
+                    and analysis["score"] >= 14
                     and should_alert(symbol)
                 ):
                     msg = (
-                        f"📰🔥 *بوت الأخبار - خبر قوي جدًا*\n\n"
-                        f"🎫 السهم: `{symbol}`\n"
-                        f"💰 السعر: {stock['price']:.2f}\n"
-                        f"📈 الحركة: {stock['change_pct']:.2f}%\n"
-                        f"📊 الفوليوم: {stock['volume']:,.0f}\n\n"
+                        f"📰🔥 *بوت الأخبار - خبر قوي جدًا TOP TOP*\n\n"
+                        f"🎫 السهم: `{symbol}`\n\n"
                         f"🗞️ التصنيف: {analysis['label']}\n"
                         f"⭐ News Score: {analysis['score']}\n"
                         f"🧠 العنوان:\n{analysis['headline']}\n\n"
