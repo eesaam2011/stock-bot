@@ -27,6 +27,7 @@ NEWS_FILE = "news_signals.json"
 
 TOP_TOP_NEWS_SCORE = 18
 MAX_ALERT_NEWS_AGE_HOURS = 6
+MAX_STORE_NEWS_AGE_SECONDS = 7 * 86400
 
 sent_news_alerts = {}
 
@@ -62,7 +63,10 @@ def send_telegram_msg(message):
         print("Telegram error:", e, flush=True)
 
 
-def read_gist_file(filename, default_value=[]):
+def read_gist_file(filename, default_value=None):
+    if default_value is None:
+        default_value = []
+
     if not GIST_ID or not GITHUB_TOKEN:
         return default_value
 
@@ -245,7 +249,6 @@ def analyze_news_items(items):
     best_title = ""
     best_age = None
     strongest_negative = False
-    useful_titles = []
 
     for item in items:
         title = item["title"]
@@ -275,9 +278,6 @@ def analyze_news_items(items):
                 item_score += 1
             elif age_hours > 24:
                 item_score -= 2
-
-        if item_score > 0:
-            useful_titles.append(title)
 
         if item_score > total_score or not best_title:
             best_title = title
@@ -325,7 +325,7 @@ def save_news_to_gist(new_items):
 
     old_items = [
         x for x in old_items
-        if now_ts - float(x.get("time", 0)) < 86400
+        if now_ts - float(x.get("time", 0)) < MAX_STORE_NEWS_AGE_SECONDS
     ]
 
     merged = old_items[:]
@@ -337,11 +337,12 @@ def save_news_to_gist(new_items):
 
     for item in new_items:
         key = (item.get("symbol"), item.get("headline"))
+
         if key not in existing_keys:
             merged.append(item)
             existing_keys.add(key)
 
-    save_gist_file(NEWS_FILE, merged[-500:])
+    save_gist_file(NEWS_FILE, merged[-1000:])
 
     print(f"News gist saved: {len(new_items)} new items", flush=True)
 
@@ -422,7 +423,7 @@ def run_news_scanner():
                         f"⭐ News Score: {analysis['score']}\n"
                         f"⏱️ عمر الخبر: {analysis['age_hours']:.1f} ساعة\n\n"
                         f"🧠 العنوان:\n{analysis['headline']}\n\n"
-                        f"📌 ملاحظة: هذا ليس دخول مباشر، لكنه خبر قوي جدًا يحتاج متابعة.\n"
+                        f"📌 ملاحظة: هذا ليس دخول مباشر، لكنه خبر قوي جدًا ويحتاج متابعة.\n"
                         f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
                     )
 
