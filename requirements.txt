@@ -1,5 +1,4 @@
 alpaca-trade-api
-yfinance
 pandas
 requests
 pytz 
