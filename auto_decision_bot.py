@@ -60,18 +60,18 @@ def is_trading_time():
     now = datetime.now(saudi_tz)
     hour = now.hour
     minute = now.minute
-    weekday = now.weekday()
+    weekday = now.weekday()  # 0=Monday, 6=Sunday
 
-    if weekday > 4:
+    # السبت + الأحد توقف
+    if weekday in [5, 6]:
         return False
 
-    if hour > 9 or (hour == 9 and minute >= 30):
-        return True
+    # الاثنين قبل 8:30 صباحًا توقف
+    if weekday == 0:
+        if hour < 8 or (hour == 8 and minute < 30):
+            return False
 
-    if hour < 3:
-        return True
-
-    return False
+    return True
 
 
 def read_gist_file(filename):
