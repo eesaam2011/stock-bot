@@ -3,7 +3,6 @@ import time
 import json
 import requests
 import pandas as pd
-import yfinance as yf
 import alpaca_trade_api as tradeapi
 from datetime import datetime, timedelta
 import pytz
@@ -32,6 +31,9 @@ WATCH_MINUTES = 45
 SCAN_INTERVAL = 20
 NEWS_FILE = "news_signals.json"
 
+RADAR_BATCH_SIZE = 650
+radar_cursor = 0
+
 
 def send_telegram_msg(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -58,7 +60,7 @@ def is_trading_time():
     now = datetime.now(saudi_tz)
     hour = now.hour
     minute = now.minute
-    weekday = now.weekday()  # 0=Monday, 6=Sunday
+    weekday = now.weekday()
 
     if weekday > 4:
         return False
@@ -126,7 +128,6 @@ def get_stock_news(symbol):
 
         age = now_ts - float(n.get("time", 0))
 
-        # للمضاربة: نأخذ فقط الأخبار الحديثة آخر 6 ساعات
         if age > 21600:
             continue
 
@@ -167,10 +168,64 @@ def get_stock_news(symbol):
     }
 
 
-def get_base_list():
-    url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
-    headers = {"User-Agent": "Mozilla/5.0"}
+def get_alpaca_bars(symbol, minutes=120):
+    try:
+        end = datetime.utcnow()
+        start = end - timedelta(days=1)
 
+        bars = api.get_bars(
+            symbol,
+            tradeapi.TimeFrame.Minute,
+            start=start.isoformat() + "Z",
+            end=end.isoformat() + "Z",
+            adjustment="raw"
+        ).df
+
+        if bars is None or bars.empty:
+            return pd.DataFrame()
+
+        df = bars.copy()
+
+        if "symbol" in df.columns:
+            df = df[df["symbol"] == symbol]
+
+        rename_map = {
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume"
+        }
+
+        df = df.rename(columns=rename_map)
+
+        needed = ["Open", "High", "Low", "Close", "Volume"]
+
+        for col in needed:
+            if col not in df.columns:
+                return pd.DataFrame()
+
+        df = df[needed].dropna()
+        df = df.tail(minutes)
+
+        return df
+
+    except Exception as e:
+        print(f"Alpaca bars error {symbol}: {e}", flush=True)
+        return pd.DataFrame()
+
+
+def get_latest_price(symbol, df=None):
+    try:
+        trade = api.get_latest_trade(symbol)
+        return float(trade.price)
+    except Exception:
+        if df is not None and not df.empty:
+            return float(df["Close"].iloc[-1])
+        return 0
+
+
+def get_base_list():
     black_list = [
         "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
         "MET", "PRU", "ALL", "AIG", "CB",
@@ -182,52 +237,30 @@ def get_base_list():
     ]
 
     try:
+        assets = api.list_assets(status="active")
         symbols = []
 
-        for scr_id in [
-            "most_actives",
-            "day_gainers",
-            "small_cap_gainers",
-            "undervalued_growth_stocks",
-            "aggressive_small_caps",
-            "most_shorted_stocks",
-            "high_beta_stocks",
-            "growth_technology_stocks"
-        ]:
-            res = requests.get(
-                url,
-                params={"scrIds": scr_id, "count": 200},
-                headers=headers,
-                timeout=10
-            ).json()
+        for asset in assets:
+            symbol = getattr(asset, "symbol", None)
 
-            data = res.get("finance", {}).get("result")
-
-            if not data:
+            if not symbol:
                 continue
 
-            quotes = data[0].get("quotes", [])
-
-            for q in quotes:
-                symbol = q.get("symbol")
-                price = q.get("regularMarketPrice")
-
-                if (
-                    symbol
-                    and isinstance(symbol, str)
-                    and "." not in symbol
-                    and "^" not in symbol
-                    and "-" not in symbol
-                    and symbol not in black_list
-                    and price is not None
-                    and PRICE_MIN <= float(price) <= PRICE_MAX
-                ):
-                    symbols.append(symbol)
+            if (
+                getattr(asset, "tradable", False)
+                and getattr(asset, "asset_class", "") == "us_equity"
+                and isinstance(symbol, str)
+                and "." not in symbol
+                and "^" not in symbol
+                and "-" not in symbol
+                and symbol not in black_list
+            ):
+                symbols.append(symbol)
 
         return list(set(symbols))
 
     except Exception as e:
-        print("Base list error:", e, flush=True)
+        print("Alpaca asset list error:", e, flush=True)
         return []
 
 
@@ -246,15 +279,37 @@ def calculate_rsi(close, period=14):
 def add_to_watchlist(symbol, source, price=0):
     now = datetime.now(saudi_tz)
 
+    source_score = 1
+
+    if "البوت الثاني" in source:
+        source_score = 2
+    elif "البوت الأول" in source:
+        source_score = 1
+    elif "رادار مبكر ذاتي" in source:
+        source_score = 1
+
     if symbol not in watchlist:
         watchlist[symbol] = {
             "source": source,
+            "sources": [source],
+            "priority_score": source_score,
             "first_price": float(price) if price else 0,
             "created_at": now,
             "alerted": False
         }
 
         print(f"🧠 Added watchlist: {symbol} | source: {source}", flush=True)
+
+    else:
+        if source not in watchlist[symbol].get("sources", []):
+            watchlist[symbol]["sources"].append(source)
+            watchlist[symbol]["priority_score"] = (
+                watchlist[symbol].get("priority_score", 0) + source_score
+            )
+
+        watchlist[symbol]["source"] = " + ".join(
+            watchlist[symbol].get("sources", [source])
+)
 
 
 def update_watchlist_from_gist():
@@ -274,18 +329,70 @@ def update_watchlist_from_gist():
         elif source == "safe_bot":
             add_to_watchlist(symbol, "تأكيد قوي (البوت الثاني)", price)
 
+def rank_symbols_by_activity(symbols, max_symbols=800):
+    ranked = []
 
+    for symbol in symbols:
+        try:
+            df = get_alpaca_bars(symbol, minutes=30)
+
+            if df.empty or len(df) < 10 or df["Volume"].sum() == 0:
+                continue
+
+            cp = float(df["Close"].iloc[-1])
+            old_price = float(df["Close"].iloc[-10])
+
+            if cp <= 0 or old_price <= 0:
+                continue
+
+            if not (PRICE_MIN <= cp <= PRICE_MAX):
+                continue
+
+            change_pct = ((cp - old_price) / old_price) * 100
+            volume = float(df["Volume"].sum())
+
+            activity_score = abs(change_pct) + (volume / 1_000_000)
+
+            ranked.append({
+                "symbol": symbol,
+                "activity_score": activity_score
+            })
+
+            time.sleep(0.01)
+
+        except Exception as e:
+            print(f"Rank error {symbol}: {e}", flush=True)
+            continue
+
+    ranked = sorted(
+        ranked,
+        key=lambda x: x["activity_score"],
+        reverse=True
+    )
+
+    return [x["symbol"] for x in ranked[:max_symbols]]
+    
 def update_watchlist_from_radar():
     symbols = get_base_list()
 
-    for symbol in symbols[:120]:
+    if not symbols:
+        return
+
+    ranked_symbols = rank_symbols_by_activity(
+        symbols,
+        max_symbols=RADAR_BATCH_SIZE
+    )
+
+    print(f"🔥 Top active symbols selected: {len(ranked_symbols)}", flush=True)
+
+    for symbol in ranked_symbols:
         try:
-            df = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=True)
+            df = get_alpaca_bars(symbol, minutes=120)
 
             if df.empty or len(df) < 25 or df["Volume"].mean() == 0:
                 continue
 
-            cp = float(df["Close"].iloc[-1])
+            cp = get_latest_price(symbol, df)
             day_high = float(df["High"].max())
             vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
 
@@ -331,16 +438,12 @@ def clean_old_watchlist():
 
 def check_ready_entry(symbol, data):
     try:
-        df = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=True)
+        df = get_alpaca_bars(symbol, minutes=120)
 
         if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
             return
 
-        try:
-            trade = api.get_latest_trade(symbol)
-            cp = float(trade.price)
-        except Exception:
-            cp = float(df["Close"].iloc[-1])
+        cp = get_latest_price(symbol, df)
 
         day_high = float(df["High"].max())
         price_10min_ago = float(df["Close"].iloc[-10])
@@ -428,7 +531,6 @@ def check_ready_entry(symbol, data):
 
         news_info = get_stock_news(symbol)
 
-        # لا نمنع الدخول بسبب الخبر السلبي تلقائيًا، لكن نخفض التصنيف ونظهر التحذير.
         has_strong_news = news_info["has_strong_news"]
         has_negative_news = news_info["has_negative_news"]
 
@@ -462,17 +564,15 @@ def check_ready_entry(symbol, data):
             signal_grade = "C ⚠️"
             grade_note = "تحذير: يوجد خبر سلبي حديث، يفضل الحذر الشديد أو التجاهل"
 
-        # =====================
-        # فلتر الجودة (A / A+ / A++)
-        # =====================
-        grade_clean = signal_grade.split()[0]  # إزالة الرموز
-        # 🔥 تقوية إشارات A القادمة من البوت الأول
+        grade_clean = signal_grade.split()[0]
+
         if grade_clean == "A" and "البوت الأول" in source_text:
             if instant_rvol < 2.5 or not real_breakout:
                 return
-        
+
         if grade_clean not in ["A", "A+", "A++"]:
             return
+
         news_text = ""
         if has_strong_news:
             news_text = (
@@ -543,16 +643,12 @@ def monitor_active_trades():
 
     for symbol, trade in list(active_trades.items()):
         try:
-            df = yf.Ticker(symbol).history(period="1d", interval="1m", prepost=True)
+            df = get_alpaca_bars(symbol, minutes=30)
 
             if df.empty or len(df) < 5:
                 continue
 
-            try:
-                latest_trade = api.get_latest_trade(symbol)
-                cp = float(latest_trade.price)
-            except Exception:
-                cp = float(df["Close"].iloc[-1])
+            cp = get_latest_price(symbol, df)
 
             entry = trade["entry"]
             sl = trade["sl"]
@@ -626,10 +722,16 @@ while True:
 
         print(f"📊 Watchlist size: {len(watchlist)}", flush=True)
 
-        for symbol, data in list(watchlist.items()):
-            if not data.get("alerted", False):
-                check_ready_entry(symbol, data)
-                time.sleep(0.05)
+        sorted_watchlist = sorted(
+    list(watchlist.items()),
+    key=lambda x: x[1].get("priority_score", 0),
+    reverse=True
+)
+
+for symbol, data in sorted_watchlist:
+    if not data.get("alerted", False):
+        check_ready_entry(symbol, data)
+        time.sleep(0.05)
 
         monitor_active_trades()
 
