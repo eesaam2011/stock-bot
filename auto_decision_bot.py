@@ -32,6 +32,7 @@ SCAN_INTERVAL = 20
 NEWS_FILE = "news_signals.json"
 
 RADAR_BATCH_SIZE = 650
+MASTER_LIST_FILE = "master_list.json"
 
 
 def send_telegram_msg(message):
@@ -59,13 +60,11 @@ def is_trading_time():
     now = datetime.now(saudi_tz)
     hour = now.hour
     minute = now.minute
-    weekday = now.weekday()  # 0=Monday, 6=Sunday
+    weekday = now.weekday()
 
-    # السبت + الأحد توقف
     if weekday in [5, 6]:
         return False
 
-    # الاثنين قبل 8:30 صباحًا توقف
     if weekday == 0:
         if hour < 8 or (hour == 8 and minute < 30):
             return False
@@ -102,6 +101,34 @@ def read_gist_file(filename):
     except Exception as e:
         print(f"Gist read error ({filename}):", e, flush=True)
         return []
+
+
+def load_master_list():
+    data = read_gist_file(MASTER_LIST_FILE)
+
+    symbols = []
+
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, str):
+                symbol = item
+            elif isinstance(item, dict):
+                symbol = item.get("symbol")
+            else:
+                continue
+
+            if (
+                symbol
+                and isinstance(symbol, str)
+                and "." not in symbol
+                and "^" not in symbol
+                and "-" not in symbol
+            ):
+                symbols.append(symbol.upper().strip())
+
+    symbols = list(dict.fromkeys(symbols))
+
+    return symbols[:RADAR_BATCH_SIZE]
 
 
 def read_gist_signals():
@@ -188,15 +215,13 @@ def get_alpaca_bars(symbol, minutes=120):
         if "symbol" in df.columns:
             df = df[df["symbol"] == symbol]
 
-        rename_map = {
+        df = df.rename(columns={
             "open": "Open",
             "high": "High",
             "low": "Low",
             "close": "Close",
             "volume": "Volume"
-        }
-
-        df = df.rename(columns=rename_map)
+        })
 
         needed = ["Open", "High", "Low", "Close", "Volume"]
 
@@ -225,42 +250,13 @@ def get_latest_price(symbol, df=None):
 
 
 def get_base_list():
-    black_list = [
-        "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
-        "MET", "PRU", "ALL", "AIG", "CB",
-        "DKNG", "PENN", "WYNN", "LVS",
-        "BUD", "TAP", "STZ", "DEO",
-        "PM", "MO",
-        "CGC", "TLRY", "ACB",
-        "NCLH", "CCL", "RCL"
-    ]
+    symbols = load_master_list()
 
-    try:
-        assets = api.list_assets(status="active")
-        symbols = []
-
-        for asset in assets:
-            symbol = getattr(asset, "symbol", None)
-
-            if not symbol:
-                continue
-
-            if (
-                getattr(asset, "tradable", False)
-                and getattr(asset, "asset_class", "") == "us_equity"
-                and isinstance(symbol, str)
-                and "." not in symbol
-                and "^" not in symbol
-                and "-" not in symbol
-                and symbol not in black_list
-            ):
-                symbols.append(symbol)
-
-        return list(set(symbols))
-
-    except Exception as e:
-        print("Alpaca asset list error:", e, flush=True)
+    if not symbols:
+        print("⚠️ Master List empty or not found", flush=True)
         return []
+
+    return symbols
 
 
 def calculate_rsi(close, period=14):
@@ -308,7 +304,12 @@ def add_to_watchlist(symbol, source, price=0):
 
         watchlist[symbol]["source"] = " + ".join(
             watchlist[symbol].get("sources", [source])
-)
+        )
+
+        print(
+            f"🧠 Updated watchlist: {symbol} | sources: {watchlist[symbol]['source']} | priority: {watchlist[symbol]['priority_score']}",
+            flush=True
+        )
 
 
 def update_watchlist_from_gist():
@@ -328,7 +329,8 @@ def update_watchlist_from_gist():
         elif source == "safe_bot":
             add_to_watchlist(symbol, "تأكيد قوي (البوت الثاني)", price)
 
-def rank_symbols_by_activity(symbols, max_symbols=800):
+
+def rank_symbols_by_activity(symbols, max_symbols=650):
     ranked = []
 
     for symbol in symbols:
@@ -370,7 +372,8 @@ def rank_symbols_by_activity(symbols, max_symbols=800):
     )
 
     return [x["symbol"] for x in ranked[:max_symbols]]
-    
+
+
 def update_watchlist_from_radar():
     symbols = get_base_list()
 
