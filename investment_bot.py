@@ -24,11 +24,9 @@ api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
 PRICE_MIN = 0.5
-PRICE_MAX = 10
+PRICE_MAX = 15
 
 INVESTMENT_SYMBOL_LIMIT = 800
-
-TOP_CANDIDATES_THURSDAY = 10
 FINAL_MIN_SCORE = 65
 FINAL_MAX_PICKS = 5
 FINAL_MIN_PICKS = 3
@@ -136,9 +134,10 @@ def save_gist_file(filename, content_obj):
 
 def load_state():
     default_state = {
-        "last_thursday_scan": "",
+        "last_weekly_universe": "",
+        "last_daily_refresh": "",
         "last_monday_alert": "",
-        "candidates": [],
+        "weekly_universe": [],
         "active_picks": []
     }
 
@@ -153,45 +152,6 @@ def load_state():
 
 def save_state(state):
     save_gist_file(STATE_FILE, state)
-
-
-def get_base_list():
-    black_list = [
-        "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
-        "MET", "PRU", "ALL", "AIG", "CB",
-        "DKNG", "PENN", "WYNN", "LVS",
-        "BUD", "TAP", "STZ", "DEO",
-        "PM", "MO",
-        "CGC", "TLRY", "ACB",
-        "NCLH", "CCL", "RCL"
-    ]
-
-    try:
-        assets = api.list_assets(status="active")
-        symbols = []
-
-        for asset in assets:
-            symbol = getattr(asset, "symbol", None)
-
-            if not symbol:
-                continue
-
-            if (
-                getattr(asset, "tradable", False)
-                and getattr(asset, "asset_class", "") == "us_equity"
-                and isinstance(symbol, str)
-                and "." not in symbol
-                and "^" not in symbol
-                and "-" not in symbol
-                and symbol not in black_list
-            ):
-                symbols.append(symbol)
-
-        return list(set(symbols))[:INVESTMENT_SYMBOL_LIMIT]
-
-    except Exception as e:
-        print("Alpaca base list error:", e, flush=True)
-        return []
 
 
 def get_daily_bars(symbol, days=220):
@@ -267,7 +227,7 @@ def get_news(symbol):
         if n.get("news_grade") == "NEGATIVE":
             return "NEGATIVE", 0, n.get("headline", "")
 
-        score = n.get("news_score", 0)
+        score = float(n.get("news_score", 0))
 
         if score > best_score:
             best = n
@@ -277,6 +237,302 @@ def get_news(symbol):
         return best.get("news_grade"), best_score, best.get("headline", "")
 
     return "NONE", 0, ""
+
+
+def is_clean_symbol(symbol):
+    if not symbol:
+        return False
+
+    if not isinstance(symbol, str):
+        return False
+
+    if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
+        return False
+
+    if len(symbol) > 5:
+        return False
+
+    if not symbol.isalpha():
+        return False
+
+    return True
+
+
+def get_all_alpaca_symbols():
+    black_list = [
+        "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
+        "MET", "PRU", "ALL", "AIG", "CB",
+        "DKNG", "PENN", "WYNN", "LVS",
+        "BUD", "TAP", "STZ", "DEO",
+        "PM", "MO",
+        "CGC", "TLRY", "ACB",
+        "NCLH", "CCL", "RCL"
+    ]
+
+    try:
+        assets = api.list_assets(status="active")
+        symbols = []
+
+        for asset in assets:
+            symbol = getattr(asset, "symbol", None)
+
+            if not is_clean_symbol(symbol):
+                continue
+
+            asset_class = getattr(asset, "asset_class", "")
+            tradable = getattr(asset, "tradable", False)
+
+            if (
+                tradable
+                and asset_class == "us_equity"
+                and symbol not in black_list
+            ):
+                symbols.append(symbol)
+
+        return list(set(symbols))
+
+    except Exception as e:
+        print("Alpaca asset list error:", e, flush=True)
+        return []
+
+
+def score_investment_universe(symbol):
+    try:
+        df = get_daily_bars(symbol, days=220)
+
+        if df.empty or len(df) < 80:
+            return None
+
+        price = float(df["Close"].iloc[-1])
+
+        if not (PRICE_MIN <= price <= PRICE_MAX):
+            return None
+
+        avg_vol_30 = float(df["Volume"].tail(30).mean())
+        avg_vol_10 = float(df["Volume"].tail(10).mean())
+        avg_vol_5 = float(df["Volume"].tail(5).mean())
+
+        if avg_vol_30 < 300000:
+            return None
+
+        df["SMA20"] = df["Close"].rolling(20).mean()
+        df["SMA50"] = df["Close"].rolling(50).mean()
+
+        sma20 = float(df["SMA20"].iloc[-1])
+        sma50 = float(df["SMA50"].iloc[-1])
+
+        rsi = calculate_rsi(df["Close"])
+
+        high30 = float(df["High"].tail(30).max())
+        low30 = float(df["Low"].tail(30).min())
+
+        move5 = ((price - float(df["Close"].iloc[-6])) / float(df["Close"].iloc[-6])) * 100
+        move20 = ((price - float(df["Close"].iloc[-21])) / float(df["Close"].iloc[-21])) * 100
+
+        vol_ratio = avg_vol_5 / max(float(df["Volume"].tail(20).mean()), 1)
+
+        news_grade, news_score, headline = get_news(symbol)
+
+        if news_grade == "NEGATIVE":
+            return None
+
+        score = 0
+
+        if price > sma20:
+            score += 12
+
+        if price > sma50:
+            score += 15
+
+        if sma20 >= sma50 * 0.97:
+            score += 8
+
+        if vol_ratio >= 1:
+            score += 10
+
+        if avg_vol_10 >= avg_vol_30 * 0.9:
+            score += 8
+
+        if 42 <= rsi <= 68:
+            score += 12
+
+        if price >= high30 * 0.85:
+            score += 12
+
+        if -8 <= move5 <= 18:
+            score += 8
+
+        if -15 <= move20 <= 45:
+            score += 6
+
+        if news_grade == "STRONG":
+            score += 15
+
+        elif news_grade == "MEDIUM":
+            score += 8
+
+        dollar_volume = price * avg_vol_30
+
+        if dollar_volume >= 5_000_000:
+            score += 8
+        elif dollar_volume >= 2_000_000:
+            score += 5
+
+        return {
+            "symbol": symbol,
+            "price": price,
+            "score": score,
+            "avg_vol_30": avg_vol_30,
+            "dollar_volume": dollar_volume,
+            "rsi": rsi,
+            "move5": move5,
+            "move20": move20,
+            "headline": headline
+        }
+
+    except Exception as e:
+        print(f"Universe score error {symbol}: {e}", flush=True)
+        return None
+
+
+def build_weekly_universe():
+    print("🔎 Building smart weekly investment universe...", flush=True)
+
+    symbols = get_all_alpaca_symbols()
+    scored = []
+
+    for i, symbol in enumerate(symbols, start=1):
+        try:
+            item = score_investment_universe(symbol)
+
+            if item:
+                scored.append(item)
+
+            if i % 100 == 0:
+                print(f"Checked {i}/{len(symbols)} | accepted: {len(scored)}", flush=True)
+
+            time.sleep(0.03)
+
+        except Exception as e:
+            print(f"Weekly universe error {symbol}: {e}", flush=True)
+            continue
+
+    scored = sorted(
+        scored,
+        key=lambda x: (
+            x["score"],
+            x["dollar_volume"],
+            x["avg_vol_30"]
+        ),
+        reverse=True
+    )
+
+    universe = [x["symbol"] for x in scored[:INVESTMENT_SYMBOL_LIMIT]]
+
+    print(f"✅ Weekly universe ready: {len(universe)} symbols", flush=True)
+
+    return universe
+
+
+def refresh_weekly_universe_light(current_universe):
+    print("🔄 Daily light refresh for investment universe...", flush=True)
+
+    refreshed = []
+    weak_symbols = []
+
+    for symbol in current_universe:
+        item = score_investment_universe(symbol)
+
+        if item and item["score"] >= 55:
+            refreshed.append({
+                "symbol": symbol,
+                "score": item["score"]
+            })
+        else:
+            weak_symbols.append(symbol)
+
+        time.sleep(0.03)
+
+    missing = INVESTMENT_SYMBOL_LIMIT - len(refreshed)
+
+    if missing <= 0:
+        refreshed = sorted(refreshed, key=lambda x: x["score"], reverse=True)
+        return [x["symbol"] for x in refreshed[:INVESTMENT_SYMBOL_LIMIT]]
+
+    all_symbols = get_all_alpaca_symbols()
+    existing = {x["symbol"] for x in refreshed}
+
+    replacements = []
+
+    for symbol in all_symbols:
+        if symbol in existing:
+            continue
+
+        item = score_investment_universe(symbol)
+
+        if item and item["score"] >= 60:
+            replacements.append(item)
+
+        if len(replacements) >= missing * 2:
+            break
+
+        time.sleep(0.03)
+
+    replacements = sorted(
+        replacements,
+        key=lambda x: (
+            x["score"],
+            x["dollar_volume"],
+            x["avg_vol_30"]
+        ),
+        reverse=True
+    )
+
+    for item in replacements[:missing]:
+        refreshed.append({
+            "symbol": item["symbol"],
+            "score": item["score"]
+        })
+
+    refreshed = sorted(refreshed, key=lambda x: x["score"], reverse=True)
+
+    print(
+        f"✅ Daily refresh done | kept: {len(current_universe) - len(weak_symbols)} | removed: {len(weak_symbols)} | final: {len(refreshed)}",
+        flush=True
+    )
+
+    return [x["symbol"] for x in refreshed[:INVESTMENT_SYMBOL_LIMIT]]
+
+
+def ensure_weekly_universe():
+    state = load_state()
+    now = datetime.now(saudi_tz)
+    today = now.strftime("%Y-%m-%d")
+
+    need_weekly_rebuild = False
+
+    if not state.get("weekly_universe"):
+        need_weekly_rebuild = True
+
+    if now.weekday() in [3, 4] and state.get("last_weekly_universe") != today:
+        need_weekly_rebuild = True
+
+    if need_weekly_rebuild:
+        universe = build_weekly_universe()
+        state["weekly_universe"] = universe
+        state["last_weekly_universe"] = today
+        state["last_daily_refresh"] = today
+        save_state(state)
+        return universe
+
+    if state.get("last_daily_refresh") != today:
+        universe = refresh_weekly_universe_light(state.get("weekly_universe", []))
+        state["weekly_universe"] = universe
+        state["last_daily_refresh"] = today
+        save_state(state)
+        return universe
+
+    return state.get("weekly_universe", [])
 
 
 def get_target_timing():
@@ -300,29 +556,29 @@ def analyze_stock(symbol):
         if df.empty or len(df) < 60:
             return None
 
-        price = df["Close"].iloc[-1]
+        price = float(df["Close"].iloc[-1])
 
         if not (PRICE_MIN <= price <= PRICE_MAX):
             return None
 
-        avg_vol = df["Volume"].tail(30).mean()
+        avg_vol = float(df["Volume"].tail(30).mean())
+
         if avg_vol < 300000:
             return None
 
         df["SMA20"] = df["Close"].rolling(20).mean()
         df["SMA50"] = df["Close"].rolling(50).mean()
 
-        sma20 = df["SMA20"].iloc[-1]
-        sma50 = df["SMA50"].iloc[-1]
+        sma20 = float(df["SMA20"].iloc[-1])
+        sma50 = float(df["SMA50"].iloc[-1])
 
         rsi = calculate_rsi(df["Close"])
 
-        high30 = df["High"].tail(30).max()
-        low30 = df["Low"].tail(30).min()
+        high30 = float(df["High"].tail(30).max())
+        low30 = float(df["Low"].tail(30).min())
 
-        move5 = ((price - df["Close"].iloc[-6]) / df["Close"].iloc[-6]) * 100
-
-        vol_ratio = df["Volume"].tail(5).mean() / df["Volume"].tail(20).mean()
+        move5 = ((price - float(df["Close"].iloc[-6])) / float(df["Close"].iloc[-6])) * 100
+        vol_ratio = float(df["Volume"].tail(5).mean()) / max(float(df["Volume"].tail(20).mean()), 1)
 
         news_grade, news_score, headline = get_news(symbol)
 
@@ -364,6 +620,12 @@ def analyze_stock(symbol):
             score += 10
             reasons.append("خبر متوسط")
 
+        dollar_volume = price * avg_vol
+
+        if dollar_volume >= 5_000_000:
+            score += 8
+            reasons.append("سيولة دولارية قوية")
+
         if score < FINAL_MIN_SCORE:
             return None
 
@@ -396,15 +658,20 @@ def analyze_stock(symbol):
 
 
 def send_monday():
-    symbols = get_base_list()
+    symbols = ensure_weekly_universe()
 
     results = []
 
-    for s in symbols:
-        r = analyze_stock(s)
+    for i, symbol in enumerate(symbols, start=1):
+        r = analyze_stock(symbol)
+
         if r:
             results.append(r)
-        time.sleep(0.05)
+
+        if i % 100 == 0:
+            print(f"Monday analysis {i}/{len(symbols)} | results: {len(results)}", flush=True)
+
+        time.sleep(0.03)
 
     results = sorted(results, key=lambda x: x["score"], reverse=True)[:FINAL_MAX_PICKS]
 
@@ -453,8 +720,8 @@ def monitor():
             if df.empty:
                 continue
 
-            price = df["Close"].iloc[-1]
-            entry = p["entry"]
+            price = float(df["Close"].iloc[-1])
+            entry = float(p["entry"])
 
             gain = ((price - entry) / entry) * 100
 
@@ -467,7 +734,7 @@ def monitor():
                 send_telegram_msg(f"🔒 ارفع وقف {symbol} إلى {new_stop:.2f}")
                 p["alerts"]["raise"] = True
 
-            if price <= p["stop"] and not p["alerts"].get("stop"):
+            if price <= float(p["stop"]) and not p["alerts"].get("stop"):
                 send_telegram_msg(f"🛑 خروج {symbol}")
                 p["alerts"]["stop"] = True
 
@@ -488,6 +755,8 @@ while True:
     try:
         state = load_state()
         today = now.strftime("%Y-%m-%d")
+
+        ensure_weekly_universe()
 
         if (
             now.weekday() == 0
