@@ -2,7 +2,8 @@ import os
 import time
 import json
 import requests
-import pandas as pd
+import threading
+from flask import Flask
 
 YAHOO_COUNT = 200
 
@@ -15,6 +16,8 @@ RUN_INTERVAL = 900  # كل 15 دقيقة
 
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+app = Flask(__name__)
 
 BLACKLIST = [
     "JPM","BAC","WFC","C","GS","MS","AXP","USB","TFC",
@@ -38,19 +41,20 @@ SCREENS = [
 ]
 
 
+@app.route("/")
+def home():
+    return "Master List Bot Running"
+
+
 def is_clean_symbol(symbol):
     if not isinstance(symbol, str):
         return False
-
     if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
         return False
-
     if len(symbol) > 5:
         return False
-
     if not symbol.isalpha():
         return False
-
     return True
 
 
@@ -70,7 +74,6 @@ def fetch_master_list():
             ).json()
 
             data = res.get("finance", {}).get("result")
-
             if not data:
                 continue
 
@@ -134,13 +137,6 @@ def save_master_list_to_gist(symbols):
             "Accept": "application/vnd.github+json"
         }
 
-        payload = {
-            "updated_at": time.time(),
-            "count": len(symbols),
-            "symbols": symbols
-        }
-
-        # مهم: البوتات عندك تقرأ list أو dict، لكن الأفضل هنا نحفظ list مباشرة
         content = json.dumps(symbols, ensure_ascii=False)
 
         requests.patch(
@@ -171,13 +167,22 @@ def run_once():
         print("⚠️ No symbols found, not saving", flush=True)
 
 
-print("🚀 MASTER LIST BOT STARTED", flush=True)
+def run_loop():
+    print("🚀 MASTER LIST BOT LOOP STARTED", flush=True)
 
-while True:
-    try:
-        run_once()
-        time.sleep(RUN_INTERVAL)
+    while True:
+        try:
+            run_once()
+            time.sleep(RUN_INTERVAL)
+        except Exception as e:
+            print("Main loop error:", e, flush=True)
+            time.sleep(60)
 
-    except Exception as e:
-        print("Main error:", e, flush=True)
-        time.sleep(60) 
+
+threading.Thread(target=run_loop, daemon=True).start()
+
+print("🌐 MASTER LIST WEB SERVICE STARTED", flush=True)
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port) 
