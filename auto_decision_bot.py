@@ -723,15 +723,15 @@ while True:
         print(f"📊 Watchlist size: {len(watchlist)}", flush=True)
 
         sorted_watchlist = sorted(
-    list(watchlist.items()),
-    key=lambda x: x[1].get("priority_score", 0),
-    reverse=True
-)
+            list(watchlist.items()),
+            key=lambda x: x[1].get("priority_score", 0),
+            reverse=True
+        )
 
-for symbol, data in sorted_watchlist:
-    if not data.get("alerted", False):
-        check_ready_entry(symbol, data)
-        time.sleep(0.05)
+        for symbol, data in sorted_watchlist:
+            if not data.get("alerted", False):
+                check_ready_entry(symbol, data)
+                time.sleep(0.05)
 
         monitor_active_trades()
 
