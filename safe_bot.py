@@ -56,7 +56,7 @@ def is_trading_time():
     if weekday > 4:
         return False
 
-    if hour > 10 or (hour == 10 and minute >= 30):
+    if hour > 10 or (hour == 08 and minute >= 30):
         return True
 
     if hour < 3:
