@@ -3,7 +3,6 @@ import time
 import json
 import requests
 import pandas as pd
-import yfinance as yf
 import alpaca_trade_api as tradeapi
 from datetime import datetime, timedelta
 import pytz
@@ -20,10 +19,19 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 
-confirmed_alerts = {}
-shared_alerts = {}
 saudi_tz = pytz.timezone("Asia/Riyadh")
-RUN_RADAR = True
+
+watchlist = {}
+sent_alerts = {}
+active_trades = {}
+
+PRICE_MIN = 0.5
+PRICE_MAX = 25
+WATCH_MINUTES = 45
+SCAN_INTERVAL = 20
+NEWS_FILE = "news_signals.json"
+
+RADAR_BATCH_SIZE = 800
 
 
 def send_telegram_msg(message):
@@ -51,12 +59,12 @@ def is_trading_time():
     now = datetime.now(saudi_tz)
     hour = now.hour
     minute = now.minute
-    weekday = now.weekday()  # 0=Monday, 6=Sunday
+    weekday = now.weekday()
 
     if weekday > 4:
         return False
 
-    if hour > 10 or (hour == 08 and minute >= 30):
+    if hour > 9 or (hour == 9 and minute >= 30):
         return True
 
     if hour < 3:
@@ -65,113 +73,158 @@ def is_trading_time():
     return False
 
 
+def read_gist_file(filename):
+    if not GIST_ID or not GITHUB_TOKEN:
+        return []
+
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        res = requests.get(url, headers=headers, timeout=10)
+        data = res.json()
+
+        file_data = data.get("files", {}).get(filename)
+
+        if not file_data:
+            return []
+
+        content = file_data.get("content", "[]")
+
+        try:
+            return json.loads(content)
+        except Exception:
+            return []
+
+    except Exception as e:
+        print(f"Gist read error ({filename}):", e, flush=True)
+        return []
+
+
 def read_gist_signals():
-    if not GIST_ID or not GITHUB_TOKEN:
-        print("Gist keys missing", flush=True)
-        return []
+    signals = read_gist_file("signals.json")
+    now_ts = time.time()
 
-    try:
-        url = f"https://api.github.com/gists/{GIST_ID}"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
+    return [
+        s for s in signals
+        if now_ts - float(s.get("time", 0)) < 1800
+    ]
+
+
+def get_stock_news(symbol):
+    news = read_gist_file(NEWS_FILE)
+    now_ts = time.time()
+
+    best_news = None
+    best_score = -999
+
+    for n in news:
+        if n.get("symbol") != symbol:
+            continue
+
+        age = now_ts - float(n.get("time", 0))
+
+        if age > 21600:
+            continue
+
+        grade = n.get("news_grade")
+        score = float(n.get("news_score", 0))
+
+        if grade == "NEGATIVE":
+            return {
+                "has_news": False,
+                "has_strong_news": False,
+                "has_negative_news": True,
+                "headline": n.get("headline", ""),
+                "label": n.get("news_label", "🔴 خبر سلبي"),
+                "score": score
+            }
+
+        if grade == "STRONG" and score >= 7 and score > best_score:
+            best_news = n
+            best_score = score
+
+    if best_news:
+        return {
+            "has_news": True,
+            "has_strong_news": True,
+            "has_negative_news": False,
+            "headline": best_news.get("headline", ""),
+            "label": best_news.get("news_label", "🔥 خبر إيجابي قوي"),
+            "score": best_score
         }
 
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
-        content = data["files"]["signals.json"]["content"]
-
-        try:
-            signals = json.loads(content)
-        except Exception:
-            signals = []
-
-        now_ts = time.time()
-
-        signals = [
-            s for s in signals
-            if now_ts - float(s.get("time", 0)) < 1200
-        ]
-
-        return signals
-
-    except Exception as e:
-        print("Gist read error:", e, flush=True)
-        return []
+    return {
+        "has_news": False,
+        "has_strong_news": False,
+        "has_negative_news": False,
+        "headline": "",
+        "label": "",
+        "score": 0
+    }
 
 
-def save_signal_to_gist(symbol, price, signal_type):
-    if not GIST_ID or not GITHUB_TOKEN:
-        print("Gist keys missing", flush=True)
-        return
-
+def get_alpaca_bars(symbol, minutes=120):
     try:
-        url = f"https://api.github.com/gists/{GIST_ID}"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
+        end = datetime.utcnow()
+        start = end - timedelta(days=1)
+
+        bars = api.get_bars(
+            symbol,
+            tradeapi.TimeFrame.Minute,
+            start=start.isoformat() + "Z",
+            end=end.isoformat() + "Z",
+            adjustment="raw"
+        ).df
+
+        if bars is None or bars.empty:
+            return pd.DataFrame()
+
+        df = bars.copy()
+
+        if "symbol" in df.columns:
+            df = df[df["symbol"] == symbol]
+
+        rename_map = {
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume"
         }
 
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
-        content = data["files"]["signals.json"]["content"]
+        df = df.rename(columns=rename_map)
 
-        try:
-            signals = json.loads(content)
-        except Exception:
-            signals = []
+        needed = ["Open", "High", "Low", "Close", "Volume"]
 
-        now_ts = time.time()
+        for col in needed:
+            if col not in df.columns:
+                return pd.DataFrame()
 
-        signals = [
-            s for s in signals
-            if now_ts - float(s.get("time", 0)) < 1200
-        ]
+        df = df[needed].dropna()
+        df = df.tail(minutes)
 
-        signals.append({
-            "symbol": symbol,
-            "price": round(float(price), 4),
-            "type": signal_type,
-            "source": "safe_bot",
-            "time": now_ts
-        })
-
-        requests.patch(
-            url,
-            headers=headers,
-            json={
-                "files": {
-                    "signals.json": {
-                        "content": json.dumps(signals, ensure_ascii=False)
-                    }
-                }
-            },
-            timeout=10
-        )
-
-        print(f"Gist saved SAFE: {symbol}", flush=True)
+        return df
 
     except Exception as e:
-        print("Gist save error:", e, flush=True)
+        print(f"Alpaca bars error {symbol}: {e}", flush=True)
+        return pd.DataFrame()
 
 
-def check_shared_signal(symbol):
-    signals = read_gist_signals()
-
-    for s in signals:
-        if (
-            s.get("symbol") == symbol
-            and s.get("source") == "main_bot"
-        ):
-            return True, s
-
-    return False, None
+def get_latest_price(symbol, df=None):
+    try:
+        trade = api.get_latest_trade(symbol)
+        return float(trade.price)
+    except Exception:
+        if df is not None and not df.empty:
+            return float(df["Close"].iloc[-1])
+        return 0
 
 
 def get_base_list():
-    url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
     black_list = [
         "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
         "MET", "PRU", "ALL", "AIG", "CB",
@@ -179,77 +232,34 @@ def get_base_list():
         "BUD", "TAP", "STZ", "DEO",
         "PM", "MO",
         "CGC", "TLRY", "ACB",
-
-        # رحلات بحرية / كروز
         "NCLH", "CCL", "RCL"
     ]
 
-    exclude_keywords = [
-        "bank", "financial", "credit", "lending", "capital", "finance",
-        "insurance", "assurance",
-        "casino", "bet", "gambling", "lottery",
-        "alcohol", "beer", "wine", "spirits", "brew",
-        "tobacco", "cigarette", "smoke",
-        "cannabis", "marijuana", "weed", "thc", "cbd"
-    ]
-
     try:
+        assets = api.list_assets(status="active")
         symbols = []
 
-        for scr_id in [
-            "most_actives",
-            "day_gainers",
-            "small_cap_gainers",
-            "undervalued_growth_stocks",
+        for asset in assets:
+            symbol = getattr(asset, "symbol", None)
 
-            "aggressive_small_caps",
-            "most_shorted_stocks",
-            "high_beta_stocks",
-            "growth_technology_stocks"
-        ]:
-            res = requests.get(
-                url,
-                params={"scrIds": scr_id, "count": 200},
-                headers=headers,
-                timeout=10
-            ).json()
-
-            data = res.get("finance", {}).get("result")
-
-            if not data:
+            if not symbol:
                 continue
 
-            quotes = data[0].get("quotes", [])
-
-            for q in quotes:
-                symbol = q.get("symbol")
-                price = q.get("regularMarketPrice")
-
-                if (
-                    symbol
-                    and isinstance(symbol, str)
-                    and price is not None
-                    and 0.5 <= float(price) <= 25
-                ):
-                    symbols.append(symbol)
-
-        clean_symbols = []
-
-        for s in list(set(symbols)):
             if (
-                isinstance(s, str)
-                and "." not in s
-                and "^" not in s
-                and "-" not in s
-                and s not in black_list
-                and not any(keyword in s.lower() for keyword in exclude_keywords)
+                getattr(asset, "tradable", False)
+                and getattr(asset, "asset_class", "") == "us_equity"
+                and isinstance(symbol, str)
+                and "." not in symbol
+                and "^" not in symbol
+                and "-" not in symbol
+                and symbol not in black_list
             ):
-                clean_symbols.append(s)
+                symbols.append(symbol)
 
-        return clean_symbols
+        return list(set(symbols))
 
     except Exception as e:
-        print("Symbol list error:", e, flush=True)
+        print("Alpaca asset list error:", e, flush=True)
         return []
 
 
@@ -265,273 +275,477 @@ def calculate_rsi(close, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def run_momentum_scanner():
-    global confirmed_alerts, shared_alerts, RUN_RADAR
+def add_to_watchlist(symbol, source, price=0):
+    now = datetime.now(saudi_tz)
 
-    print("🔎 Fetching symbols for SAFE bot...", flush=True)
+    source_score = 1
 
-    symbols = get_base_list()
-    total_symbols = len(symbols)
+    if "البوت الثاني" in source:
+        source_score = 2
+    elif "البوت الأول" in source:
+        source_score = 1
+    elif "رادار مبكر ذاتي" in source:
+        source_score = 1
 
-    print(f"✅ SAFE symbols loaded: {total_symbols}", flush=True)
+    if symbol not in watchlist:
+        watchlist[symbol] = {
+            "source": source,
+            "sources": [source],
+            "priority_score": source_score,
+            "first_price": float(price) if price else 0,
+            "created_at": now,
+            "alerted": False
+        }
 
-    if total_symbols == 0:
-        print("No symbols found", flush=True)
-        time.sleep(30)
-        return
+        print(f"🧠 Added watchlist: {symbol} | source: {source}", flush=True)
 
-    for index, symbol in enumerate(symbols):
-        if not RUN_RADAR:
-            break
+    else:
+        if source not in watchlist[symbol].get("sources", []):
+            watchlist[symbol]["sources"].append(source)
+            watchlist[symbol]["priority_score"] = (
+                watchlist[symbol].get("priority_score", 0) + source_score
+            )
 
+        watchlist[symbol]["source"] = " + ".join(
+            watchlist[symbol].get("sources", [source])
+        )
+
+        print(
+            f"🧠 Updated watchlist: {symbol} | sources: {watchlist[symbol]['source']} | priority: {watchlist[symbol]['priority_score']}",
+            flush=True
+        )
+
+
+def update_watchlist_from_gist():
+    signals = read_gist_signals()
+
+    for s in signals:
+        symbol = s.get("symbol")
+        price = s.get("price", 0)
+        source = s.get("source")
+
+        if not symbol:
+            continue
+
+        if source == "main_bot":
+            add_to_watchlist(symbol, "رادار مبكر (البوت الأول)", price)
+
+        elif source == "safe_bot":
+            add_to_watchlist(symbol, "تأكيد قوي (البوت الثاني)", price)
+
+
+def rank_symbols_by_activity(symbols, max_symbols=800):
+    ranked = []
+
+    for symbol in symbols:
         try:
-            now = datetime.now(saudi_tz)
+            df = get_alpaca_bars(symbol, minutes=30)
 
-            confirmed_alerts = {
-                s: t for s, t in confirmed_alerts.items()
-                if now < t["expiry"]
-            }
-
-            shared_alerts = {
-                s: t for s, t in shared_alerts.items()
-                if now < t["expiry"]
-            }
-
-            print(
-                f"{now.strftime('%H:%M:%S')} | "
-                f"{index + 1}/{total_symbols} | "
-                f"SAFE scanning {symbol} | alerts: {len(confirmed_alerts)}",
-                flush=True
-            )
-
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(period="1d", interval="1m", prepost=True)
-
-            if (
-                df.empty
-                or len(df) < 25
-                or df["Volume"].sum() == 0
-                or df["Volume"].mean() == 0
-            ):
+            if df.empty or len(df) < 10 or df["Volume"].sum() == 0:
                 continue
 
-            try:
-                trade = api.get_latest_trade(symbol)
-                cp = float(trade.price)
-            except Exception:
-                cp = float(df["Close"].iloc[-1])
+            cp = float(df["Close"].iloc[-1])
+            old_price = float(df["Close"].iloc[-10])
 
-            if cp <= 0:
+            if cp <= 0 or old_price <= 0:
                 continue
 
-            day_high = df["High"].max()
-            price_2min_ago = df["Close"].iloc[-3]
-            price_10min_ago = df["Close"].iloc[-10]
-
-            if day_high == 0 or price_2min_ago == 0 or price_10min_ago == 0:
+            if not (PRICE_MIN <= cp <= PRICE_MAX):
                 continue
 
-            recent_vol = df["Volume"].tail(5).sum()
+            change_pct = ((cp - old_price) / old_price) * 100
+            volume = float(df["Volume"].sum())
 
-            if not (0.5 <= cp <= 25):
-                continue
+            activity_score = abs(change_pct) + (volume / 1_000_000)
 
-            if recent_vol < 50000:
-                continue
+            ranked.append({
+                "symbol": symbol,
+                "activity_score": activity_score
+            })
 
-            stretch = ((cp - price_2min_ago) / price_2min_ago) * 100
-
-            if stretch > 1.8:
-                continue
-
-            recent_highs = df["High"].tail(10)
-            touches = (recent_highs >= day_high * 0.995).sum()
-
-            if touches >= 3:
-                continue
-
-            vwap = (df["Close"] * df["Volume"]).sum() / df["Volume"].sum()
-            avg_5min = df["Close"].tail(5).mean()
-
-            rsi = calculate_rsi(df["Close"])
-
-            if pd.isna(rsi) or rsi <= 55 or rsi > 85:
-                continue
-
-            recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
-            instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
-
-            if day_high > 0 and cp >= day_high * 0.995:
-                continue
-
-            if touches >= 2:
-                continue
-
-            if rsi >= 70:
-                continue
-
-            if recent_move >= 3:
-                continue
-
-            df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
-            df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
-
-            ema9 = df["EMA9"].iloc[-1]
-            ema20 = df["EMA20"].iloc[-1]
-
-            if not (cp > ema9 and cp > ema20 and ema9 > ema20):
-                continue
-
-            last_open = df["Open"].iloc[-1]
-            last_close = df["Close"].iloc[-1]
-            last_high = df["High"].iloc[-1]
-            last_low = df["Low"].iloc[-1]
-
-            last_body = abs(last_close - last_open)
-            avg_body = abs(df["Close"] - df["Open"]).tail(10).mean()
-
-            if last_high == last_low:
-                continue
-
-            strong_last_candle = (
-                last_close > last_open
-                and last_body >= avg_body * 0.8
-                and last_close >= last_low + ((last_high - last_low) * 0.70)
-            )
-
-            if not strong_last_candle:
-                continue
-
-            vol_3 = df["Volume"].tail(3).mean()
-            vol_10 = df["Volume"].tail(10).mean()
-
-            if vol_10 == 0:
-                continue
-
-            volume_confirmed = vol_3 > vol_10 * 1.20
-
-            if not volume_confirmed:
-                continue
-
-            confirm_vwap = cp > vwap * 1.005
-            no_short_breakdown = cp > avg_5min
-            is_near_high = cp / day_high >= 0.985
-
-            if not confirm_vwap:
-                continue
-
-            if not no_short_breakdown:
-                continue
-
-            is_momentum = (
-                recent_move >= 0.7
-                and instant_rvol > 3.0
-                and is_near_high
-            )
-
-            is_accumulation = (
-                abs(recent_move) < 0.3
-                and instant_rvol > 4.5
-                and cp > vwap
-                and cp > ema9
-                and cp > ema20
-            )
-
-            confirmed_entry = (
-                confirm_vwap
-                and strong_last_candle
-                and volume_confirmed
-                and no_short_breakdown
-                and touches < 3
-                and stretch <= 1.8
-            )
-
-            if confirmed_entry and (is_momentum or is_accumulation) and symbol not in confirmed_alerts:
-                status = "دخول مؤكد جدًا - تجميع لحظي 🎯" if is_accumulation else "دخول مؤكد جدًا - انفجار ⚡"
-
-                t1 = cp * 1.025
-                t2 = cp * 1.05
-                sl = cp * 0.985
-
-                is_shared, main_signal = check_shared_signal(symbol)
-
-                if is_shared and symbol not in shared_alerts:
-                    main_price = float(main_signal.get("price", 0))
-                    price_diff = ((cp - main_price) / main_price * 100) if main_price > 0 else 0
-
-                    shared_msg = (
-                        f"🔥🔥 *تأكيد مزدوج قوي جدًا*\n\n"
-                        f"🎫 السهم: `{symbol}`\n"
-                        f"💰 السعر الآن: ${cp:.2f}\n"
-                        f"📌 ظهر في البوت الأول + بوت الدخول الأقوى\n"
-                        f"⭐ الأولوية: عالية جدًا\n\n"
-                        f"📍 سعر إشارة البوت الأول: ${main_price:.2f}\n"
-                        f"📈 الفرق من أول إشارة: {price_diff:.2f}%\n\n"
-                        f"💪 RSI: {rsi:.1f}\n"
-                        f"⚡ RVOL: {instant_rvol:.2f}x\n"
-                        f"📈 حركة 10د: {recent_move:.2f}%\n"
-                        f"🛡️ تمدد 2د: {stretch:.2f}%\n\n"
-                        f"🔝 قمة اليوم: ${day_high:.2f}\n"
-                        f"🚀 دخول اذا اخترق: ${day_high:.2f}\n"
-                        f"🎯 هدف 1: ${t1:.2f}\n"
-                        f"🚀 هدف 2: ${t2:.2f}\n"
-                        f"🛑 وقف الخسارة: ${sl:.2f}\n\n"
-                        f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
-                    )
-
-                    send_telegram_msg(shared_msg)
-                    shared_alerts[symbol] = {
-                        "expiry": now + timedelta(minutes=15)
-                    }
-
-                msg = (
-                    f"✅ *بوت الدخول الأقوى - إشارة مؤكدة جدًا*\n\n"
-                    f"🎫 السهم: `{symbol}`\n"
-                    f"💰 السعر: ${cp:.2f}\n"
-                    f"💡 الحالة: {status}\n\n"
-                    f"📊 *التأكيدات:*\n"
-                    f"💪 RSI: {rsi:.1f}\n"
-                    f"⚡ RVOL لحظي: {instant_rvol:.2f}x\n"
-                    f"📈 حركة 10د: {recent_move:.2f}%\n"
-                    f"🛡️ تمدد 2د: {stretch:.2f}%\n"
-                    f"🔝 قمة اليوم: ${day_high:.2f}\n"
-                    f"🚀 دخول اذا اخترق: ${day_high:.2f}\n"
-                    f"🔝 لمس القمة: {touches}/3\n"
-                    f"📌 EMA: السعر فوق EMA9 و EMA20 و EMA9 فوق EMA20 ✅\n"
-                    f"📌 VWAP: السعر فوق VWAP ✅\n"
-                    f"🟢 آخر شمعة قوية ✅\n\n"
-                    f"🎯 هدف 1: ${t1:.2f}\n"
-                    f"🚀 هدف 2: ${t2:.2f}\n"
-                    f"🛑 وقف الخسارة: ${sl:.2f}\n\n"
-                    f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
-                )
-
-                send_telegram_msg(msg)
-                save_signal_to_gist(symbol, cp, status)
-
-                confirmed_alerts[symbol] = {
-                    "expiry": now + timedelta(minutes=15)
-                }
-
-            time.sleep(0.05)
+            time.sleep(0.01)
 
         except Exception as e:
-            print(f"Error with {symbol}: {e}", flush=True)
+            print(f"Rank error {symbol}: {e}", flush=True)
+            continue
+
+    ranked = sorted(
+        ranked,
+        key=lambda x: x["activity_score"],
+        reverse=True
+    )
+
+    return [x["symbol"] for x in ranked[:max_symbols]]
+
+
+def update_watchlist_from_radar():
+    symbols = get_base_list()
+
+    if not symbols:
+        return
+
+    ranked_symbols = rank_symbols_by_activity(
+        symbols,
+        max_symbols=RADAR_BATCH_SIZE
+    )
+
+    print(f"🔥 Top active symbols selected: {len(ranked_symbols)}", flush=True)
+
+    for symbol in ranked_symbols:
+        try:
+            df = get_alpaca_bars(symbol, minutes=120)
+
+            if df.empty or len(df) < 25 or df["Volume"].mean() == 0:
+                continue
+
+            cp = get_latest_price(symbol, df)
+            day_high = float(df["High"].max())
+            vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
+
+            rsi = calculate_rsi(df["Close"])
+            instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
+            recent_move = ((cp - df["Close"].iloc[-10]) / df["Close"].iloc[-10]) * 100
+
+            df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+            ema9 = float(df["EMA9"].iloc[-1])
+
+            early_setup = (
+                PRICE_MIN <= cp <= PRICE_MAX
+                and 1.5 <= instant_rvol <= 5.0
+                and 45 <= rsi <= 66
+                and cp > vwap
+                and cp > ema9
+                and cp >= day_high * 0.965
+                and 0.15 <= recent_move < 2.5
+            )
+
+            if early_setup:
+                add_to_watchlist(symbol, "رادار مبكر ذاتي", cp)
+
+            time.sleep(0.03)
+
+        except Exception as e:
+            print(f"Radar error {symbol}: {e}", flush=True)
             continue
 
 
-print("🚀 SAFE BOT STARTED", flush=True)
-send_telegram_msg("🚀 تم تشغيل بوت الدخول الأقوى على Render")
+def clean_old_watchlist():
+    now = datetime.now(saudi_tz)
 
-while RUN_RADAR:
+    expired = []
+
+    for symbol, data in watchlist.items():
+        if now - data["created_at"] > timedelta(minutes=WATCH_MINUTES):
+            expired.append(symbol)
+
+    for symbol in expired:
+        watchlist.pop(symbol, None)
+
+
+def check_ready_entry(symbol, data):
+    try:
+        df = get_alpaca_bars(symbol, minutes=120)
+
+        if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
+            return
+
+        cp = get_latest_price(symbol, df)
+
+        day_high = float(df["High"].max())
+        price_10min_ago = float(df["Close"].iloc[-10])
+
+        if cp <= 0 or day_high <= 0 or price_10min_ago <= 0:
+            return
+
+        vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
+
+        df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+        ema9 = float(df["EMA9"].iloc[-1])
+
+        rsi = calculate_rsi(df["Close"])
+        instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
+        recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
+
+        recent_highs = df["High"].tail(10)
+        touches = (recent_highs >= day_high * 0.995).sum()
+
+        last_close = float(df["Close"].iloc[-1])
+        last_high = float(df["High"].iloc[-1])
+        last_low = float(df["Low"].iloc[-1])
+
+        prev_close = float(df["Close"].iloc[-2])
+        prev_high = float(df["High"].iloc[-2])
+
+        candle_range = last_high - last_low
+
+        if candle_range <= 0:
+            return
+
+        upper_wick_pct = (last_high - last_close) / candle_range
+        close_position = (last_close - last_low) / candle_range
+
+        real_breakout = (
+            last_close > prev_high
+            and prev_close > prev_high * 0.998
+            and instant_rvol >= 2.5
+        )
+
+        overextended = (
+            rsi > 75
+            or recent_move > 3.2
+            or touches >= 3
+        )
+
+        early_entry = (
+            instant_rvol >= 2.2
+            and 0.5 <= recent_move <= 2.2
+            and 50 <= rsi <= 70
+            and cp >= day_high * 0.975
+        )
+
+        fake_breakout_risk = (
+            upper_wick_pct >= 0.45
+            and close_position < 0.55
+            and instant_rvol >= 2.5
+        )
+
+        repeated_rejection = (
+            touches >= 2
+            and close_position < 0.60
+            and not real_breakout
+        )
+
+        distribution_risk = (
+            fake_breakout_risk
+            or repeated_rejection
+        )
+
+        advanced_entry = (
+            cp > vwap
+            and cp > ema9
+            and touches < 3
+            and not overextended
+            and not (distribution_risk and not real_breakout)
+            and (real_breakout or early_entry)
+        )
+
+        if not advanced_entry:
+            return
+
+        if sent_alerts.get(symbol):
+            return
+
+        news_info = get_stock_news(symbol)
+
+        has_strong_news = news_info["has_strong_news"]
+        has_negative_news = news_info["has_negative_news"]
+
+        entry = cp
+        t1 = entry * 1.02
+        t2 = entry * 1.04
+        sl = entry * 0.985
+
+        source_text = data.get("source", "رادار مبكر")
+
+        if "البوت الثاني" in source_text and has_strong_news:
+            signal_grade = "A++ 🔥🔥"
+            grade_note = "أقوى نوع: تأكيد من البوت الثاني + خبر قوي"
+        elif "البوت الثاني" in source_text:
+            signal_grade = "A+ 🔥"
+            grade_note = "أقوى نوع: تأكيد من البوت الثاني + متابعة ذكية"
+        elif "البوت الأول" in source_text and has_strong_news:
+            signal_grade = "A+ 📰🔥"
+            grade_note = "رادار مبكر + خبر قوي"
+        elif "البوت الأول" in source_text:
+            signal_grade = "A ✅"
+            grade_note = "جيد جدًا: رادار مبكر + تأكيد دخول"
+        elif has_strong_news:
+            signal_grade = "A 📰"
+            grade_note = "إشارة ذاتية مدعومة بخبر قوي"
+        else:
+            signal_grade = "B ⚠️"
+            grade_note = "إشارة ذاتية: جيدة لكن تحتاج حذر أكثر"
+
+        if has_negative_news:
+            signal_grade = "C ⚠️"
+            grade_note = "تحذير: يوجد خبر سلبي حديث، يفضل الحذر الشديد أو التجاهل"
+
+        grade_clean = signal_grade.split()[0]
+
+        if grade_clean == "A" and "البوت الأول" in source_text:
+            if instant_rvol < 2.5 or not real_breakout:
+                return
+
+        if grade_clean not in ["A", "A+", "A++"]:
+            return
+
+        news_text = ""
+        if has_strong_news:
+            news_text = (
+                f"📰 *خبر داعم:* {news_info['label']}\n"
+                f"⭐ News Score: {news_info['score']:.0f}\n"
+                f"🧠 العنوان: {news_info['headline']}\n\n"
+            )
+        elif has_negative_news:
+            news_text = (
+                f"🚨 *تحذير خبر سلبي:* {news_info['label']}\n"
+                f"⭐ News Score: {news_info['score']:.0f}\n"
+                f"🧠 العنوان: {news_info['headline']}\n\n"
+            )
+        else:
+            news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
+
+        msg = (
+            f"🧠🔥 *بوت القرار الذكي - دخول جاهز الآن*\n\n"
+            f"🎫 السهم: `{symbol}`\n"
+            f"💰 السعر: {entry:.2f}\n\n"
+            f"🎯 الحالة: دخول جاهز (تمت المتابعة والتأكيد)\n\n"
+            f"📡 المصدر:\n"
+            f"{source_text} + متابعة ذكية\n\n"
+            f"{news_text}"
+            f"🏆 التصنيف: {signal_grade}\n"
+            f"🧠 ملاحظة: {grade_note}\n\n"
+            f"📊 القوة:\n"
+            f"RSI: {rsi:.1f}\n"
+            f"RVOL: {instant_rvol:.2f}x\n"
+            f"حركة 10د: {recent_move:.2f}%\n\n"
+            f"🛡️ فلتر التصريف: تم تجاوزه ✅\n\n"
+            f"🚀 دخول الآن: {entry:.2f}\n"
+            f"🎯 هدف 1: {t1:.2f}\n"
+            f"🚀 هدف ثاني: {t2:.2f}\n"
+            f"🛑 وقف الخسارة: {sl:.2f}\n\n"
+            f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
+        )
+
+        send_telegram_msg(msg)
+
+        sent_alerts[symbol] = {
+            "time": datetime.now(saudi_tz)
+        }
+
+        active_trades[symbol] = {
+            "entry": entry,
+            "t1": t1,
+            "t2": t2,
+            "sl": sl,
+            "time": datetime.now(saudi_tz),
+            "slow_alerted": False,
+            "run_alerted": False,
+            "stop_alerted": False
+        }
+
+        watchlist[symbol]["alerted"] = True
+
+        print(f"🧠 READY ENTRY SENT: {symbol}", flush=True)
+
+    except Exception as e:
+        print(f"Check entry error {symbol}: {e}", flush=True)
+
+
+def monitor_active_trades():
+    global active_trades
+
+    now = datetime.now(saudi_tz)
+
+    for symbol, trade in list(active_trades.items()):
+        try:
+            df = get_alpaca_bars(symbol, minutes=30)
+
+            if df.empty or len(df) < 5:
+                continue
+
+            cp = get_latest_price(symbol, df)
+
+            entry = trade["entry"]
+            sl = trade["sl"]
+            t1 = trade["t1"]
+            t2 = trade["t2"]
+
+            gain_pct = ((cp - entry) / entry) * 100
+            age_minutes = (now - trade["time"]).total_seconds() / 60
+
+            if cp <= sl and not trade.get("stop_alerted", False):
+                msg = (
+                    f"🛑 *خروج - كسر وقف الخسارة*\n\n"
+                    f"🎫 السهم: `{symbol}`\n"
+                    f"💰 السعر الحالي: {cp:.2f}\n"
+                    f"🚀 الدخول: {entry:.2f}\n"
+                    f"🛑 الوقف: {sl:.2f}"
+                )
+
+                send_telegram_msg(msg)
+                trade["stop_alerted"] = True
+                active_trades.pop(symbol, None)
+                continue
+
+            if age_minutes >= 5 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
+                msg = (
+                    f"⚠️ *تنبيه متابعة الصفقة*\n\n"
+                    f"🎫 السهم: `{symbol}`\n"
+                    f"💰 السعر الحالي: {cp:.2f}\n"
+                    f"🚀 الدخول: {entry:.2f}\n"
+                    f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
+                    f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
+                    f"الأفضل تشديد الوقف أو الخروج الجزئي."
+                )
+
+                send_telegram_msg(msg)
+                trade["slow_alerted"] = True
+
+            if gain_pct >= 2 and not trade.get("run_alerted", False):
+                msg = (
+                    f"🚀 *السهم انطلق بعد الدخول*\n\n"
+                    f"🎫 السهم: `{symbol}`\n"
+                    f"💰 السعر الحالي: {cp:.2f}\n"
+                    f"🚀 الدخول: {entry:.2f}\n"
+                    f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                    f"🎯 هدف 1: {t1:.2f}\n"
+                    f"🚀 هدف ثاني: {t2:.2f}\n"
+                    f"✅ يفضل رفع الوقف لحماية الربح."
+                )
+
+                send_telegram_msg(msg)
+                trade["run_alerted"] = True
+
+        except Exception as e:
+            print(f"Monitor trade error {symbol}: {e}", flush=True)
+            continue
+
+
+print("🧠 AUTO DECISION BOT STARTED", flush=True)
+send_telegram_msg("🧠 تم تشغيل بوت القرار الذكي")
+
+while True:
     try:
         if not is_trading_time():
             print("⏸️ خارج وقت التشغيل - البوت ينتظر", flush=True)
             time.sleep(300)
             continue
 
-        run_momentum_scanner()
-        time.sleep(10)
+        update_watchlist_from_gist()
+        update_watchlist_from_radar()
+        clean_old_watchlist()
+
+        print(f"📊 Watchlist size: {len(watchlist)}", flush=True)
+
+        sorted_watchlist = sorted(
+            list(watchlist.items()),
+            key=lambda x: x[1].get("priority_score", 0),
+            reverse=True
+        )
+
+        for symbol, data in sorted_watchlist:
+            try:
+                if not data.get("alerted", False):
+                    check_ready_entry(symbol, data)
+                    time.sleep(0.05)
+            except Exception as e:
+                print(f"Loop error {symbol}: {e}", flush=True)
+                continue
+
+        monitor_active_trades()
+
+        time.sleep(SCAN_INTERVAL)
 
     except Exception as e:
         print("Main loop error:", e, flush=True)
