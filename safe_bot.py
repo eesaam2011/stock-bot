@@ -392,15 +392,57 @@ def analyze_symbol(symbol, source_group):
         above_ema9 = cp > ema9
         ema_ok = ema9 >= ema20 * 0.995
 
+        last_open = float(df["Open"].iloc[-1])
         last_close = float(df["Close"].iloc[-1])
         last_high = float(df["High"].iloc[-1])
         last_low = float(df["Low"].iloc[-1])
-        prev_high = float(df["High"].iloc[-2])
+
         prev_close = float(df["Close"].iloc[-2])
+        prev_high = float(df["High"].iloc[-2])
 
         candle_range = last_high - last_low
-        close_position = ((last_close - last_low) / candle_range) if candle_range > 0 else 0.5
-        upper_wick_pct = ((last_high - last_close) / candle_range) if candle_range > 0 else 0
+
+        if candle_range <= 0:
+            return None
+
+        close_position = (last_close - last_low) / candle_range
+        upper_wick_pct = (last_high - last_close) / candle_range
+
+        last_body = abs(last_close - last_open)
+        body_ratio = last_body / candle_range if candle_range > 0 else 0
+
+        last_3_volume = float(df["Volume"].tail(3).mean())
+        prev_10_volume = float(df["Volume"].tail(13).head(10).mean())
+
+        volume_acceleration = last_3_volume >= prev_10_volume * 1.6
+
+        strong_candle = (
+            close_position >= 0.65
+            and upper_wick_pct <= 0.35
+            and body_ratio >= 0.35
+        )
+
+        vwap_reclaim = (
+            float(df["Close"].iloc[-2]) < vwap
+            and last_close > vwap
+        )
+
+        ema_reclaim = (
+            float(df["Close"].iloc[-2]) < ema9
+            and last_close > ema9
+        )
+
+        behavior_change = (
+            recent_move >= 0.35
+            and volume_acceleration
+            and strong_candle
+        )
+
+        new_money_flow = (
+            cp > vwap
+            and cp > ema9
+            and volume_acceleration
+        )
 
         real_breakout = (
             last_close > prev_high
@@ -419,6 +461,9 @@ def analyze_symbol(symbol, source_group):
             or recent_move > 3.5
         )
 
+        # =========================
+        # STRONG MODE - يبقى قريب من الحالي
+        # =========================
         strong_setup = (
             source_group == "STRONG"
             and instant_rvol >= 2.0
@@ -431,15 +476,25 @@ def analyze_symbol(symbol, source_group):
             and not fake_breakout_risk
         )
 
+        # =========================
+        # RADAR MODE - استيقاظ مبكر
+        # أقل اعتمادًا على الهاي اليومي
+        # وأكثر اعتمادًا على تغير السلوك والسيولة
+        # =========================
         radar_setup = (
             source_group == "RADAR"
-            and instant_rvol >= 1.45
-            and 0.10 <= recent_move <= 2.5
+            and 1.7 <= instant_rvol <= 6.0
+            and 0.25 <= recent_move <= 2.8
             and 45 <= rsi <= 68
-            and cp >= vwap * 0.995
-            and cp >= ema9 * 0.995
-            and cp >= day_high * 0.955
+            and cp > vwap
+            and cp > ema9
+            and ema_ok
+            and volume_acceleration
+            and strong_candle
+            and new_money_flow
+            and (vwap_reclaim or ema_reclaim or behavior_change)
             and not overextended
+            and not fake_breakout_risk
         )
 
         if not strong_setup and not radar_setup:
@@ -456,7 +511,7 @@ def analyze_symbol(symbol, source_group):
             technical_score += 10
         if ema_ok:
             technical_score += 8
-        if near_high:
+        if near_high and source_group == "STRONG":
             technical_score += 10
         if real_breakout:
             technical_score += 12
@@ -471,6 +526,19 @@ def analyze_symbol(symbol, source_group):
 
         if source_group == "RADAR":
             technical_score += 8
+
+            if volume_acceleration:
+                technical_score += 10
+            if strong_candle:
+                technical_score += 8
+            if vwap_reclaim:
+                technical_score += 8
+            if ema_reclaim:
+                technical_score += 6
+            if behavior_change:
+                technical_score += 10
+            if new_money_flow:
+                technical_score += 8
 
         plan = calculate_trade_plan(cp)
 
@@ -489,6 +557,12 @@ def analyze_symbol(symbol, source_group):
             "dollar_volume_10m": round(float(dollar_volume), 2),
             "real_breakout": bool(real_breakout),
             "fake_breakout_risk": bool(fake_breakout_risk),
+            "volume_acceleration": bool(volume_acceleration),
+            "strong_candle": bool(strong_candle),
+            "vwap_reclaim": bool(vwap_reclaim),
+            "ema_reclaim": bool(ema_reclaim),
+            "behavior_change": bool(behavior_change),
+            "new_money_flow": bool(new_money_flow),
             "technical_score": round(float(technical_score), 2),
             "entry": plan["entry"],
             "target_1": plan["target_1"],
@@ -602,11 +676,20 @@ def send_bot2_alert(signal):
         )
 
     source_group = signal.get("source_group", "")
+
+    mode_text = (
+        "🟡 RADAR MODE - استيقاظ مبكر"
+        if source_group == "RADAR"
+        else
+        "🟢 STRONG MODE - زخم قوي"
+    )
+
     source_text = "Radar Scanner - 400 الثانية" if source_group == "RADAR" else "Strong Scanner - أول 400"
 
     msg = (
         f"🟢🔥 *Bot 2 - فرصة قوية*\n\n"
         f"🎫 السهم: `{symbol}`\n"
+        f"{mode_text}\n"
         f"💰 السعر: {signal.get('price', 0):.2f}\n"
         f"🏆 التصنيف: {grade}\n"
         f"📡 المصدر: {source_text}\n\n"
@@ -619,6 +702,13 @@ def send_bot2_alert(signal):
         f"RSI: {signal.get('rsi', 0):.1f}\n"
         f"RVOL: {signal.get('instant_rvol', 0):.2f}x\n"
         f"حركة 10د: {signal.get('recent_move', 0):.2f}%\n\n"
+        f"🧪 إشارات الاستيقاظ:\n"
+        f"Volume Acceleration: {signal.get('volume_acceleration', False)}\n"
+        f"Strong Candle: {signal.get('strong_candle', False)}\n"
+        f"VWAP Reclaim: {signal.get('vwap_reclaim', False)}\n"
+        f"EMA Reclaim: {signal.get('ema_reclaim', False)}\n"
+        f"Behavior Change: {signal.get('behavior_change', False)}\n"
+        f"New Money Flow: {signal.get('new_money_flow', False)}\n\n"
         f"🚀 دخول مقترح: {signal.get('entry', 0):.2f}\n"
         f"🎯 هدف 1: {signal.get('target_1', 0):.2f}\n"
         f"🚀 هدف 2: {signal.get('target_2', 0):.2f}\n"
@@ -644,7 +734,7 @@ def send_bot2_alert(signal):
         "stop_alerted": False
     }
 
-    print(f"📩 Bot 2 alert sent: {symbol} | {grade}", flush=True)
+    print(f"📩 Bot 2 alert sent: {symbol} | {grade} | {source_group}", flush=True)
 
 
 # =========================
