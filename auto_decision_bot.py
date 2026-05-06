@@ -752,7 +752,7 @@ def monitor_active_trades():
                 active_trades.pop(symbol, None)
                 continue
 
-            if age_minutes >= 5 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
+            if age_minutes >= 30 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
                 if can_send_trade_alerts():
                     msg = (
                         f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
