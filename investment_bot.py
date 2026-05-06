@@ -25,7 +25,7 @@ saudi_tz = pytz.timezone("Asia/Riyadh")
 PRICE_MIN = 1.0
 PRICE_MAX = 15.0
 
-WEEKEND_TOP_N = 350
+WEEKEND_TOP_N = 500
 NEWS_TOP_N = 50
 FINAL_MAX_PICKS = 5
 FINAL_MIN_PICKS = 3
@@ -39,7 +39,7 @@ THURSDAY_ALERT_MINUTE = 0
 STATE_FILE = "investment_state.json"
 NEWS_FILE = "news_signals.json"
 
-INVESTMENT_350_FILE = "investment_350_candidates.json"
+INVESTMENT_500_FILE = "investment_500_candidates.json"
 INVESTMENT_NEWS_50_FILE = "investment_news_candidates_50.json"
 INVESTMENT_FINAL_FILE = "investment_final_results.json"
 INVESTMENT_ACTIVE_FILE = "investment_active_trades.json"
@@ -148,7 +148,7 @@ def load_state():
         "last_news_50": "",
         "last_thursday_alert": "",
         "last_monitor": "",
-        "weekend_350": [],
+        "weekend_500": [],
         "reviewed_results": [],
         "news_50": [],
         "final_picks": [],
@@ -567,8 +567,8 @@ def investment_score(symbol, use_news=False, deep=False):
         return None
 
 
-def build_weekend_350():
-    print("🔎 Building weekend investment 350 from Nasdaq...", flush=True)
+def build_weekend_500():
+    print("🔎 Investment Bot - Building weekend 500 from Nasdaq...", flush=True)
 
     symbols = get_nasdaq_symbols_from_alpaca()
     scored = []
@@ -590,32 +590,32 @@ def build_weekend_350():
         reverse=True
     )
 
-    top350 = scored[:WEEKEND_TOP_N]
+    top500 = scored[:WEEKEND_TOP_N]
 
-    save_gist_file(INVESTMENT_350_FILE, top350)
+    save_gist_file(INVESTMENT_500_FILE, top500)
 
     state = load_state()
-    state["weekend_350"] = top350
+    state["weekend_500"] = top500
     state["last_weekend_build"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
     state["reviewed_results"] = []
     state["news_50"] = []
     state["final_picks"] = []
     save_state(state)
 
-    print(f"✅ Weekend 350 ready: {len(top350)}", flush=True)
-    return top350
+    print(f"✅ Investment Bot - Weekend 500 ready: {len(top500)}", flush=True)
+    return top500
 
 
-def deep_review_350():
+def deep_review_500():
     state = load_state()
-    candidates = state.get("weekend_350", [])
+    candidates = state.get("weekend_500", [])
 
     if not candidates:
-        candidates = read_gist_file(INVESTMENT_350_FILE, [])
+        candidates = read_gist_file(INVESTMENT_500_FILE, [])
 
     symbols = [x["symbol"] for x in candidates if x.get("symbol")]
 
-    print(f"🔍 Deep review 350: {len(symbols)}", flush=True)
+    print(f"🔍 Investment Bot - Deep review 500: {len(symbols)}", flush=True)
 
     reviewed = []
 
@@ -640,7 +640,7 @@ def deep_review_350():
     state["last_deep_review"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
     save_state(state)
 
-    print(f"✅ Deep review done: {len(reviewed)}", flush=True)
+    print(f"✅ Investment Bot - Deep review done: {len(reviewed)}", flush=True)
     return reviewed
 
 
@@ -649,7 +649,7 @@ def prepare_news_50():
     reviewed = state.get("reviewed_results", [])
 
     if not reviewed:
-        reviewed = deep_review_350()
+        reviewed = deep_review_500()
 
     news_50 = sorted(
         reviewed,
@@ -674,7 +674,7 @@ def prepare_news_50():
     state["last_news_50"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
     save_state(state)
 
-    print(f"✅ News 50 prepared: {len(news_50)}", flush=True)
+    print(f"✅ Investment Bot - News 50 prepared: {len(news_50)}", flush=True)
     return news_50
 
 
@@ -697,7 +697,7 @@ def build_final_picks():
 
     symbols = [x["symbol"] for x in news_50 if x.get("symbol")]
 
-    print(f"🏁 Building final picks from news 50: {len(symbols)}", flush=True)
+    print(f"🏁 Investment Bot - Building final picks from news 50: {len(symbols)}", flush=True)
 
     final = []
 
@@ -739,10 +739,14 @@ def send_thursday_alert():
     picks = build_final_picks()
 
     if len(picks) < FINAL_MIN_PICKS:
-        send_telegram_msg("📉 لا توجد فرص استثمارية كافية هذا الأسبوع")
+        send_telegram_msg(
+            "📈 *Investment Bot - البوت الاستثماري*\n\n"
+            "📉 لا توجد فرص استثمارية كافية هذا الأسبوع."
+        )
         return
 
-    msg = "📈 *Investment Bot - أفضل فرص 2 إلى 4 أسابيع*\n\n"
+    msg = "📈 *Investment Bot - البوت الاستثماري*\n"
+    msg += "🏆 *أفضل فرص استثمارية لمدة 2 إلى 4 أسابيع*\n\n"
 
     for r in picks:
         msg += (
@@ -809,7 +813,8 @@ def monitor_active_picks():
 
             if news_grade == "NEGATIVE" and not alerts.get("negative_news"):
                 send_telegram_msg(
-                    f"🚨 *Investment Bot - خبر سلبي*\n\n"
+                    f"📈 *Investment Bot - البوت الاستثماري*\n"
+                    f"🚨 *خبر سلبي على صفقة استثمارية*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"📰 {headline}\n\n"
@@ -819,7 +824,8 @@ def monitor_active_picks():
 
             if price <= stop and not alerts.get("stop"):
                 send_telegram_msg(
-                    f"🛑 *Investment Bot - كسر وقف الخسارة*\n\n"
+                    f"📈 *Investment Bot - البوت الاستثماري*\n"
+                    f"🛑 *كسر وقف الخسارة*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"🚀 الدخول: {entry:.2f}\n"
@@ -829,7 +835,8 @@ def monitor_active_picks():
 
             if gain >= 5 and not alerts.get("start"):
                 send_telegram_msg(
-                    f"🚀 *Investment Bot - بدأ يتحرك*\n\n"
+                    f"📈 *Investment Bot - البوت الاستثماري*\n"
+                    f"🚀 *بدأ التحرك*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"📈 الربح الحالي: {gain:.2f}%"
@@ -840,7 +847,8 @@ def monitor_active_picks():
                 new_stop = max(entry * 1.02, price * 0.92)
 
                 send_telegram_msg(
-                    f"🔒 *Investment Bot - رفع وقف مقترح*\n\n"
+                    f"📈 *Investment Bot - البوت الاستثماري*\n"
+                    f"🔒 *رفع وقف مقترح*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"📈 الربح الحالي: {gain:.2f}%\n\n"
@@ -854,7 +862,8 @@ def monitor_active_picks():
                 new_stop = max(entry * 1.05, price * 0.90)
 
                 send_telegram_msg(
-                    f"🎯 *Investment Bot - وصل هدف 1*\n\n"
+                    f"📈 *Investment Bot - البوت الاستثماري*\n"
+                    f"🎯 *وصل هدف 1*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"🎯 هدف 1: {t1:.2f}\n\n"
@@ -866,7 +875,8 @@ def monitor_active_picks():
 
             if price >= t2 and not alerts.get("target2"):
                 send_telegram_msg(
-                    f"🚀 *Investment Bot - وصل هدف 2*\n\n"
+                    f"📈 *Investment Bot - البوت الاستثماري*\n"
+                    f"🚀 *وصل هدف 2*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"🚀 هدف 2: {t2:.2f}\n\n"
@@ -881,7 +891,8 @@ def monitor_active_picks():
 
             if weakness and not alerts.get("weakness"):
                 send_telegram_msg(
-                    f"⚠️ *Investment Bot - ضعف فني*\n\n"
+                    f"📈 *Investment Bot - البوت الاستثماري*\n"
+                    f"⚠️ *ضعف فني*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"📊 RSI: {rsi:.1f}\n"
@@ -912,15 +923,16 @@ def run_scheduler():
     today = now.strftime("%Y-%m-%d")
     state = load_state()
 
-    # الجمعة + السبت + الأحد: بناء 350
+    # الجمعة + السبت + الأحد:
+    # الجمعة بناء أولي، السبت إعادة بناء/تحسين، الأحد ترتيب نهائي قبل الاثنين
     if now.weekday() in [4, 5, 6]:
         if state.get("last_weekend_build") != today:
-            build_weekend_350()
+            build_weekend_500()
 
     # الاثنين والثلاثاء: مراجعة عميقة
     if now.weekday() in [0, 1]:
         if state.get("last_deep_review") != today:
-            deep_review_350()
+            deep_review_500()
 
     # الأربعاء صباحًا: تجهيز أفضل 50 للأخبار
     if now.weekday() == 2 and now.hour >= 8:
@@ -954,7 +966,7 @@ def run_scheduler():
 threading.Thread(target=run_web_server, daemon=True).start()
 
 print("📈 Investment Bot Started", flush=True)
-send_telegram_msg("📈 تم تشغيل Investment Bot - النظام الأسبوعي الجديد")
+send_telegram_msg("📈 *Investment Bot - البوت الاستثماري*\n\nتم تشغيل النظام الأسبوعي الجديد.")
 
 while True:
     try:
