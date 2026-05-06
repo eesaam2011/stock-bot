@@ -33,7 +33,6 @@ SCAN_INTERVAL = 20
 MASTER_LIST_FILE = "master_list.json"
 NEWS_FILE = "news_signals.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
-BOT2_PRELIMINARY_FILE = "bot2_preliminary_results.json"
 
 BOT3_RESULTS_FILE = "bot3_results.json"
 BOT3_ACTIVE_TRADES_FILE = "bot3_active_trades.json"
@@ -59,6 +58,28 @@ def send_telegram_msg(message):
         )
     except Exception as e:
         print("Telegram error:", e, flush=True)
+
+
+def can_send_trade_alerts():
+    now = datetime.now(saudi_tz)
+    hour = now.hour
+    minute = now.minute
+    weekday = now.weekday()
+
+    if weekday in [5, 6]:
+        return False
+
+    current_minutes = hour * 60 + minute
+
+    # ⛔ من 10:40 مساءً إلى 11:15 مساءً بتوقيت السعودية
+    if 22 * 60 + 40 <= current_minutes <= 23 * 60 + 15:
+        return False
+
+    # ⛔ من 2:00 ليلًا إلى 10:00 صباحًا بتوقيت السعودية
+    if 2 * 60 <= current_minutes <= 10 * 60:
+        return False
+
+    return True
 
 
 def is_trading_time():
@@ -345,7 +366,6 @@ def update_watchlist_from_bot2():
             continue
 
         grade = r.get("grade", "")
-        final_score = float(r.get("final_score", 0) or 0)
 
         try:
             age = now_ts - float(r.get("time", now_ts))
@@ -611,6 +631,36 @@ def check_ready_entry(symbol, data):
 
         source_text = data.get("source", "Bot 3")
 
+        result = {
+            "symbol": symbol,
+            "price": round(entry, 4),
+            "grade": grade,
+            "final_score": round(final_score, 2),
+            "technical_score": round(technical_score, 2),
+            "bot2_bonus": bot2_bonus,
+            "news_bonus": news_bonus,
+            "bot2_grade": bot2_grade,
+            "bot2_score": bot2_score,
+            "source": source_text,
+            "rsi": round(rsi, 2),
+            "instant_rvol": round(float(instant_rvol), 2),
+            "recent_move": round(float(recent_move), 2),
+            "entry": round(entry, 4),
+            "target_1": round(t1, 4),
+            "target_2": round(t2, 4),
+            "stop_loss": round(sl, 4),
+            "news_score": news.get("news_score", 0),
+            "news_grade": news.get("news_grade", ""),
+            "news_headline": news.get("headline", ""),
+            "time": time.time(),
+            "created_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        if not can_send_trade_alerts():
+            print(f"🔕 Bot 3 alert muted by schedule: {symbol} | {grade}", flush=True)
+            watchlist[symbol]["alerted"] = True
+            return result
+
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
             f"🎫 السهم: `{symbol}`\n"
@@ -657,31 +707,6 @@ def check_ready_entry(symbol, data):
 
         watchlist[symbol]["alerted"] = True
 
-        result = {
-            "symbol": symbol,
-            "price": round(entry, 4),
-            "grade": grade,
-            "final_score": round(final_score, 2),
-            "technical_score": round(technical_score, 2),
-            "bot2_bonus": bot2_bonus,
-            "news_bonus": news_bonus,
-            "bot2_grade": bot2_grade,
-            "bot2_score": bot2_score,
-            "source": source_text,
-            "rsi": round(rsi, 2),
-            "instant_rvol": round(float(instant_rvol), 2),
-            "recent_move": round(float(recent_move), 2),
-            "entry": round(entry, 4),
-            "target_1": round(t1, 4),
-            "target_2": round(t2, 4),
-            "stop_loss": round(sl, 4),
-            "news_score": news.get("news_score", 0),
-            "news_grade": news.get("news_grade", ""),
-            "news_headline": news.get("headline", ""),
-            "time": time.time(),
-            "created_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
-        }
-
         print(f"🧠 BOT 3 ENTRY SENT: {symbol} | {grade}", flush=True)
         return result
 
@@ -713,48 +738,51 @@ def monitor_active_trades():
             age_minutes = (now - trade["time"]).total_seconds() / 60
 
             if cp <= sl and not trade.get("stop_alerted", False):
-                msg = (
-                    f"🛑 *Bot 3 - خروج وقف الخسارة*\n\n"
-                    f"🎫 السهم: `{symbol}`\n"
-                    f"💰 السعر الحالي: {cp:.2f}\n"
-                    f"🚀 الدخول: {entry:.2f}\n"
-                    f"🛑 الوقف: {sl:.2f}"
-                )
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🛑 *Bot 3 - خروج وقف الخسارة*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"🛑 الوقف: {sl:.2f}"
+                    )
+                    send_telegram_msg(msg)
 
-                send_telegram_msg(msg)
                 trade["stop_alerted"] = True
                 active_trades.pop(symbol, None)
                 continue
 
             if age_minutes >= 5 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
-                msg = (
-                    f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
-                    f"🎫 السهم: `{symbol}`\n"
-                    f"💰 السعر الحالي: {cp:.2f}\n"
-                    f"🚀 الدخول: {entry:.2f}\n"
-                    f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
-                    f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
-                    f"يفضل تشديد الوقف أو الخروج الجزئي."
-                )
+                if can_send_trade_alerts():
+                    msg = (
+                        f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
+                        f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
+                        f"يفضل تشديد الوقف أو الخروج الجزئي."
+                    )
+                    send_telegram_msg(msg)
 
-                send_telegram_msg(msg)
                 trade["slow_alerted"] = True
 
             if gain_pct >= 2 and not trade.get("run_alerted", False):
                 new_sl = max(entry, cp * 0.985)
 
-                msg = (
-                    f"🚀 *Bot 3 - السهم انطلق بعد الدخول*\n\n"
-                    f"🎫 السهم: `{symbol}`\n"
-                    f"💰 السعر الحالي: {cp:.2f}\n"
-                    f"🚀 الدخول: {entry:.2f}\n"
-                    f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
-                    f"🎯 هدف 1: {t1:.2f}\n"
-                    f"🚀 هدف 2: {t2:.2f}\n"
-                    f"✅ الوقف المقترح الآن: {new_sl:.2f}"
-                )
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🚀 *Bot 3 - السهم انطلق بعد الدخول*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                        f"🎯 هدف 1: {t1:.2f}\n"
+                        f"🚀 هدف 2: {t2:.2f}\n"
+                        f"✅ الوقف المقترح الآن: {new_sl:.2f}"
+                    )
+                    send_telegram_msg(msg)
 
-                send_telegram_msg(msg)
                 trade["run_alerted"] = True
 
         except Exception as e:
