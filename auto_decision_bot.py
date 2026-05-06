@@ -71,11 +71,9 @@ def can_send_trade_alerts():
 
     current_minutes = hour * 60 + minute
 
-    # ⛔ من 10:40 مساءً إلى 11:15 مساءً بتوقيت السعودية
     if 22 * 60 + 40 <= current_minutes <= 23 * 60 + 15:
         return False
 
-    # ⛔ من 2:00 ليلًا إلى 10:00 صباحًا بتوقيت السعودية
     if 2 * 60 <= current_minutes <= 10 * 60:
         return False
 
@@ -413,7 +411,6 @@ def self_scan_top_400():
             if not (PRICE_MIN <= cp <= PRICE_MAX):
                 continue
 
-            day_high = float(df["High"].max())
             vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
 
             rsi = calculate_rsi(df["Close"])
@@ -423,13 +420,55 @@ def self_scan_top_400():
             df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
             ema9 = float(df["EMA9"].iloc[-1])
 
+            last_open = float(df["Open"].iloc[-1])
+            last_close = float(df["Close"].iloc[-1])
+            last_high = float(df["High"].iloc[-1])
+            last_low = float(df["Low"].iloc[-1])
+
+            candle_range = last_high - last_low
+            if candle_range <= 0:
+                continue
+
+            close_position = (last_close - last_low) / candle_range
+            upper_wick_pct = (last_high - last_close) / candle_range
+            body_ratio = abs(last_close - last_open) / candle_range
+
+            last_3_volume = float(df["Volume"].tail(3).mean())
+            prev_10_volume = float(df["Volume"].tail(13).head(10).mean())
+
+            volume_acceleration = last_3_volume >= prev_10_volume * 1.6
+
+            strong_candle = (
+                close_position >= 0.65
+                and upper_wick_pct <= 0.35
+                and body_ratio >= 0.35
+            )
+
+            vwap_reclaim = (
+                float(df["Close"].iloc[-2]) < vwap
+                and last_close > vwap
+            )
+
+            ema_reclaim = (
+                float(df["Close"].iloc[-2]) < ema9
+                and last_close > ema9
+            )
+
+            behavior_change = (
+                recent_move >= 0.35
+                and volume_acceleration
+                and strong_candle
+            )
+
             self_setup = (
                 1.8 <= instant_rvol <= 6.0
                 and 48 <= rsi <= 70
                 and cp > vwap
                 and cp > ema9
-                and cp >= day_high * 0.965
-                and 0.25 <= recent_move <= 2.8
+                and 0.30 <= recent_move <= 2.8
+                and volume_acceleration
+                and strong_candle
+                and (vwap_reclaim or ema_reclaim or behavior_change)
             )
 
             if self_setup:
@@ -501,6 +540,7 @@ def check_ready_entry(symbol, data):
         recent_highs = df["High"].tail(10)
         touches = (recent_highs >= day_high * 0.995).sum()
 
+        last_open = float(df["Open"].iloc[-1])
         last_close = float(df["Close"].iloc[-1])
         last_high = float(df["High"].iloc[-1])
         last_low = float(df["Low"].iloc[-1])
@@ -514,18 +554,33 @@ def check_ready_entry(symbol, data):
 
         upper_wick_pct = (last_high - last_close) / candle_range
         close_position = (last_close - last_low) / candle_range
+        body_ratio = abs(last_close - last_open) / candle_range
+
+        last_3_volume = float(df["Volume"].tail(3).mean())
+        prev_10_volume = float(df["Volume"].tail(13).head(10).mean())
+
+        volume_acceleration = last_3_volume >= prev_10_volume * 1.6
+
+        strong_candle = (
+            close_position >= 0.68
+            and upper_wick_pct <= 0.30
+            and body_ratio >= 0.35
+        )
+
+        vwap_reclaim = (
+            float(df["Close"].iloc[-2]) < vwap
+            and last_close > vwap
+        )
+
+        ema_reclaim = (
+            float(df["Close"].iloc[-2]) < ema9
+            and last_close > ema9
+        )
 
         real_breakout = (
             last_close > prev_high
             and prev_close > prev_high * 0.998
             and instant_rvol >= 2.5
-        )
-
-        early_entry = (
-            instant_rvol >= 2.2
-            and 0.5 <= recent_move <= 2.2
-            and 50 <= rsi <= 70
-            and cp >= day_high * 0.975
         )
 
         fake_breakout_risk = (
@@ -548,6 +603,22 @@ def check_ready_entry(symbol, data):
             or touches >= 3
         )
 
+        ready_to_alert = (
+            real_breakout
+            or (
+                instant_rvol >= 2.5
+                and recent_move >= 0.65
+                and 50 <= rsi <= 70
+                and cp > vwap
+                and cp > ema9
+                and ema9 >= ema20 * 0.995
+                and volume_acceleration
+                and strong_candle
+                and (vwap_reclaim or ema_reclaim)
+                and not fake_breakout_risk
+            )
+        )
+
         advanced_entry = (
             cp > vwap
             and cp > ema9
@@ -555,7 +626,7 @@ def check_ready_entry(symbol, data):
             and touches < 3
             and not overextended
             and not (distribution_risk and not real_breakout)
-            and (real_breakout or early_entry)
+            and ready_to_alert
         )
 
         if not advanced_entry:
@@ -591,10 +662,16 @@ def check_ready_entry(symbol, data):
             technical_score += 10
         if ema9 >= ema20 * 0.995:
             technical_score += 8
-        if cp >= day_high * 0.975:
-            technical_score += 10
         if real_breakout:
             technical_score += 15
+        if volume_acceleration:
+            technical_score += 8
+        if strong_candle:
+            technical_score += 8
+        if vwap_reclaim:
+            technical_score += 6
+        if ema_reclaim:
+            technical_score += 6
         if 52 <= rsi <= 68:
             technical_score += 10
         elif 50 <= rsi < 52:
@@ -645,6 +722,12 @@ def check_ready_entry(symbol, data):
             "rsi": round(rsi, 2),
             "instant_rvol": round(float(instant_rvol), 2),
             "recent_move": round(float(recent_move), 2),
+            "volume_acceleration": bool(volume_acceleration),
+            "strong_candle": bool(strong_candle),
+            "vwap_reclaim": bool(vwap_reclaim),
+            "ema_reclaim": bool(ema_reclaim),
+            "ready_to_alert": bool(ready_to_alert),
+            "real_breakout": bool(real_breakout),
             "entry": round(entry, 4),
             "target_1": round(t1, 4),
             "target_2": round(t2, 4),
@@ -678,6 +761,13 @@ def check_ready_entry(symbol, data):
             f"RSI: {rsi:.1f}\n"
             f"RVOL: {instant_rvol:.2f}x\n"
             f"حركة 10د: {recent_move:.2f}%\n\n"
+            f"🧪 تأكيد الدخول:\n"
+            f"Real Breakout: {real_breakout}\n"
+            f"Volume Acceleration: {volume_acceleration}\n"
+            f"Strong Candle: {strong_candle}\n"
+            f"VWAP Reclaim: {vwap_reclaim}\n"
+            f"EMA Reclaim: {ema_reclaim}\n"
+            f"Ready To Alert: {ready_to_alert}\n\n"
             f"🛡️ فلتر التصريف: تم تجاوزه ✅\n\n"
             f"🚀 دخول الآن: {entry:.2f}\n"
             f"🎯 هدف 1: {t1:.2f}\n"
