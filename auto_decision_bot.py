@@ -778,7 +778,17 @@ def check_ready_entry(symbol, data):
             and not (hidden_distribution and not real_breakout)
             and ready_to_alert
         )
+# =========================
+        # FILTER WEAK EARLY WAKE-UP
+        # =========================
 
+        if (
+            "EARLY WAKE-UP" in entry_stage
+            and instant_rvol < 2.5
+            and not real_breakout
+        ):
+            return None
+            
         if not advanced_entry:
             return None
 
