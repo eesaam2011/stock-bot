@@ -877,7 +877,7 @@ def check_ready_entry(symbol, data):
             t2 = entry * 1.04
             t3 = entry * 1.06
 
-            sl = entry * 0.985
+        sl = entry * 0.985
 
         news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
 
