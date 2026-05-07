@@ -27,7 +27,7 @@ saudi_tz = pytz.timezone("Asia/Riyadh")
 PRICE_MIN = 0.4
 PRICE_MAX = 25
 
-SCAN_INTERVAL = 60
+SCAN_INTERVAL = 180
 MASTER_LIST_FILE = "master_list.json"
 NEWS_FILE = "news_signals.json"
 
