@@ -1025,82 +1025,129 @@ def monitor_active_trades():
                         f"يفضل تشديد الوقف أو الخروج الجزئي."
                     )
                     send_telegram_msg(msg)
+def monitor_active_trades():
+    global active_trades
 
-                trade["slow_alerted"] = True
+    for symbol, trade in list(active_trades.items()):
+        try:
+            df = get_alpaca_bars(symbol, minutes=30)
 
-            # هدف 1
-            if cp >= t1 and not trade.get("target1_alerted", False):
-                new_sl = max(entry, cp * 0.985)
-                trade["sl"] = round(new_sl, 4)
+            if df.empty or len(df) < 5:
+                continue
+
+            cp = get_latest_price(symbol, df)
+
+            entry = trade["entry"]
+            sl = trade["sl"]
+            t1 = trade["t1"]
+            t2 = trade["t2"]
+            t3 = trade.get("t3", entry * 1.07)
+
+            gain_pct = ((cp - entry) / entry) * 100
+            age_minutes = get_trade_age_minutes(trade)
+
+            # =========================
+            # STOP LOSS
+            # =========================
+            if cp <= sl and not trade.get("stop_alerted", False):
 
                 if can_send_trade_alerts():
                     msg = (
-                        f"🎯 *Bot 3 - وصل هدف 1*\n\n"
+                        f"🛑 *Bot 3 - خروج وقف الخسارة*\n\n"
                         f"🎫 السهم: `{symbol}`\n"
                         f"💰 السعر الحالي: {cp:.2f}\n"
                         f"🚀 الدخول: {entry:.2f}\n"
-                        f"🎯 هدف 1: {t1:.2f}\n"
+                        f"🛑 الوقف: {sl:.2f}"
+                    )
+
+                    send_telegram_msg(msg)
+
+                trade["stop_alerted"] = True
+                active_trades.pop(symbol, None)
+                continue
+
+            # =========================
+            # SLOW TRADE
+            # =========================
+            if age_minutes >= 30 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
+
+                if can_send_trade_alerts():
+                    msg = (
+                        f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
+                        f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
+                        f"يفضل تشديد الوقف أو الخروج الجزئي."
+                    )
+
+                    send_telegram_msg(msg)
+
+                trade["slow_alerted"] = True
+
+            # =========================
+            # TARGET 1
+            # =========================
+            if cp >= t1 and not trade.get("target1_alerted", False):
+
+                new_sl = max(entry, cp * 0.988)
+
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🎯 *Bot 3 - تم الوصول لهدف 1*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
                         f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
                         f"✅ الوقف المقترح الآن: {new_sl:.2f}\n"
-                        f"📌 الهدف التالي: {t2:.2f}"
+                        f"🚀 السيولة ما زالت إيجابية."
                     )
+
                     send_telegram_msg(msg)
 
                 trade["target1_alerted"] = True
 
-            # هدف 2
+            # =========================
+            # TARGET 2
+            # =========================
             if cp >= t2 and not trade.get("target2_alerted", False):
-                new_sl = max(t1, cp * 0.985)
-                trade["sl"] = round(new_sl, 4)
 
-                if strong_momentum_after_target:
-                    action_text = "🔥 الزخم والسيولة ما زالت جيدة، ممكن الاستمرار مع رفع الوقف."
-                else:
-                    action_text = "⚠️ الزخم هدأ، يفضل جني جزء من الربح أو تشديد الوقف."
+                new_sl = max(t1, cp * 0.989)
 
                 if can_send_trade_alerts():
                     msg = (
-                        f"🚀 *Bot 3 - وصل هدف 2*\n\n"
+                        f"🚀 *Bot 3 - تم الوصول لهدف 2*\n\n"
                         f"🎫 السهم: `{symbol}`\n"
                         f"💰 السعر الحالي: {cp:.2f}\n"
-                        f"🚀 الدخول: {entry:.2f}\n"
-                        f"🎯 هدف 2: {t2:.2f}\n"
                         f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
                         f"✅ الوقف المقترح الآن: {new_sl:.2f}\n"
-                        f"🔥 هدف 3: {t3:.2f}\n\n"
-                        f"{action_text}"
+                        f"🔥 الزخم ما زال قوي — يمكن الاستمرار."
                     )
+
                     send_telegram_msg(msg)
 
                 trade["target2_alerted"] = True
 
-            # هدف 3
+            # =========================
+            # TARGET 3
+            # =========================
             if cp >= t3 and not trade.get("target3_alerted", False):
-                new_sl = max(t2, cp * 0.985)
-                trade["sl"] = round(new_sl, 4)
 
-                if strong_momentum_after_target:
-                    action_text = "🔥 السيولة ما زالت داخلة، ممكن الاستمرار بجزء بسيط مع وقف متحرك."
-                else:
-                    action_text = "✅ وصل هدف 3، يفضل جني أغلب الربح أو رفع الوقف بقوة."
+                new_sl = max(t2, cp * 0.99)
 
                 if can_send_trade_alerts():
                     msg = (
-                        f"🔥 *Bot 3 - وصل هدف 3*\n\n"
+                        f"🔥 *Bot 3 - تم الوصول لهدف 3*\n\n"
                         f"🎫 السهم: `{symbol}`\n"
                         f"💰 السعر الحالي: {cp:.2f}\n"
-                        f"🚀 الدخول: {entry:.2f}\n"
-                        f"🔥 هدف 3: {t3:.2f}\n"
                         f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
-                        f"✅ الوقف المقترح الآن: {new_sl:.2f}\n\n"
-                        f"{action_text}"
+                        f"✅ الوقف المقترح الآن: {new_sl:.2f}\n"
+                        f"🚀 السهم ما زال يحتفظ بالزخم."
                     )
+
                     send_telegram_msg(msg)
 
                 trade["target3_alerted"] = True
-
-            # حفظ التحديثات
-            active_trades[symbol] = trade
 
         except Exception as e:
             print(f"Monitor trade error {symbol}: {e}", flush=True)
