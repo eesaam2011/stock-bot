@@ -4,7 +4,7 @@ import json
 import requests
 import pandas as pd
 import alpaca_trade_api as tradeapi
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytz
 
 API_KEY = os.getenv("APCA_API_KEY_ID")
@@ -72,7 +72,6 @@ def can_send_trade_alerts():
     if 22 * 60 + 40 <= current_minutes <= 23 * 60 + 15:
         return False
 
-    # ⛔ من 2:00 ليلًا إلى 11:00 صباحًا بتوقيت السعودية
     if 2 * 60 <= current_minutes <= 11 * 60:
         return False
 
@@ -193,14 +192,14 @@ def load_master_list():
 
 def get_alpaca_bars(symbol, minutes=120):
     try:
-        end = datetime.utcnow()
+        end = datetime.now(timezone.utc)
         start = end - timedelta(days=1)
 
         bars = api.get_bars(
             symbol,
             tradeapi.TimeFrame.Minute,
-            start=start.isoformat() + "Z",
-            end=end.isoformat() + "Z",
+            start=start.isoformat(),
+            end=end.isoformat(),
             adjustment="raw"
         ).df
 
@@ -506,6 +505,111 @@ def grade_from_score(final_score):
         return "C"
 
 
+def detect_hidden_distribution(df, instant_rvol, recent_move, real_breakout):
+    try:
+        if df.empty or len(df) < 20:
+            return {
+                "hidden_distribution": False,
+                "distribution_score": 0,
+                "distribution_reasons": []
+            }
+
+        recent = df.tail(8).copy()
+
+        opens = recent["Open"]
+        highs = recent["High"]
+        lows = recent["Low"]
+        closes = recent["Close"]
+        volumes = recent["Volume"]
+
+        candle_range = (highs - lows).replace(0, 0.000001)
+        body = (closes - opens).abs()
+        upper_wicks = highs - closes
+
+        close_position = (closes - lows) / candle_range
+        upper_wick_pct = upper_wicks / candle_range
+        body_ratio = body / candle_range
+
+        distribution_score = 0
+        reasons = []
+
+        if instant_rvol >= 3.0 and recent_move < 0.75:
+            distribution_score += 15
+            reasons.append("ضعف استجابة السعر رغم RVOL عالي")
+
+        upper_wick_count = ((upper_wick_pct >= 0.40) & (close_position < 0.60)).sum()
+        if upper_wick_count >= 3:
+            distribution_score += 18
+            reasons.append("ذيول علوية متكررة")
+
+        avg_range_pct = ((highs - lows) / closes).mean() * 100
+        vol_now = volumes.tail(3).mean()
+        vol_prev = volumes.head(5).mean()
+
+        if vol_now >= vol_prev * 1.5 and avg_range_pct < 0.45:
+            distribution_score += 12
+            reasons.append("فوليوم قوي لكن spread ضعيف")
+
+        higher_highs = highs.iloc[-1] > highs.iloc[-3]
+        weak_close = closes.iloc[-1] < highs.iloc[-1] * 0.995 and close_position.iloc[-1] < 0.60
+
+        if higher_highs and weak_close and not real_breakout:
+            distribution_score += 15
+            reasons.append("Higher High بدون متابعة قوية")
+
+        last_move = ((closes.iloc[-1] - closes.iloc[-4]) / closes.iloc[-4]) * 100
+        prev_move = ((closes.iloc[-4] - closes.iloc[-8]) / closes.iloc[-8]) * 100
+
+        if instant_rvol >= 2.5 and last_move < prev_move * 0.45 and prev_move > 0.5:
+            distribution_score += 12
+            reasons.append("تقلص الزخم رغم استمرار RVOL")
+
+        recent_high = highs.iloc[-5:-1].max()
+        breakout_failed = (
+            highs.iloc[-1] >= recent_high
+            and closes.iloc[-1] < recent_high
+            and close_position.iloc[-1] < 0.55
+            and not real_breakout
+        )
+
+        if breakout_failed:
+            distribution_score += 18
+            reasons.append("فشل متابعة الاختراق")
+
+        rise_speed = max(closes.tail(8).max() - closes.tail(8).min(), 0)
+        drop_speed = max(highs.tail(4).max() - closes.iloc[-1], 0)
+
+        if rise_speed > 0 and drop_speed / rise_speed >= 0.65:
+            distribution_score += 10
+            reasons.append("هبوط سريع مقارنة بالصعود")
+
+        high_volume_weak_body = (
+            vol_now >= vol_prev * 1.5
+            and body_ratio.tail(3).mean() < 0.28
+            and close_position.tail(3).mean() < 0.60
+        )
+
+        if high_volume_weak_body:
+            distribution_score += 12
+            reasons.append("فوليوم عالي مع جسم شموع ضعيف")
+
+        hidden_distribution = distribution_score >= 40
+
+        return {
+            "hidden_distribution": hidden_distribution,
+            "distribution_score": distribution_score,
+            "distribution_reasons": reasons
+        }
+
+    except Exception as e:
+        print(f"Hidden distribution error: {e}", flush=True)
+        return {
+            "hidden_distribution": False,
+            "distribution_score": 0,
+            "distribution_reasons": []
+        }
+
+
 def check_ready_entry(symbol, data):
     try:
         df = get_alpaca_bars(symbol, minutes=120)
@@ -593,6 +697,17 @@ def check_ready_entry(symbol, data):
 
         distribution_risk = fake_breakout_risk or repeated_rejection
 
+        hidden_dist = detect_hidden_distribution(
+            df,
+            instant_rvol,
+            recent_move,
+            real_breakout
+        )
+
+        hidden_distribution = hidden_dist["hidden_distribution"]
+        distribution_score = hidden_dist["distribution_score"]
+        distribution_reasons = hidden_dist["distribution_reasons"]
+
         overextended = (
             rsi > 75
             or recent_move > 3.2
@@ -622,6 +737,7 @@ def check_ready_entry(symbol, data):
             and touches < 3
             and not overextended
             and not (distribution_risk and not real_breakout)
+            and not (hidden_distribution and not real_breakout)
             and ready_to_alert
         )
 
@@ -676,6 +792,9 @@ def check_ready_entry(symbol, data):
         if fake_breakout_risk:
             technical_score -= 15
 
+        distribution_penalty = min(distribution_score, 30)
+        technical_score -= distribution_penalty
+
         final_score = technical_score + bot2_bonus + news_bonus
         grade = grade_from_score(final_score)
 
@@ -709,6 +828,11 @@ def check_ready_entry(symbol, data):
             watchlist[symbol]["alerted"] = True
             return None
 
+        dist_reasons_text = (
+            ", ".join(distribution_reasons[:3])
+            if distribution_reasons else "None"
+        )
+
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
             f"🎫 السهم: `{symbol}`\n"
@@ -721,7 +845,8 @@ def check_ready_entry(symbol, data):
             f"Final Score: {final_score:.1f}\n"
             f"Technical Score: {technical_score:.1f}\n"
             f"Bot2 Bonus: {bot2_bonus}\n"
-            f"News Bonus: {news_bonus}\n\n"
+            f"News Bonus: {news_bonus}\n"
+            f"Distribution Penalty: {distribution_penalty}\n\n"
             f"📊 القوة:\n"
             f"RSI: {rsi:.1f}\n"
             f"RVOL: {instant_rvol:.2f}x\n"
@@ -732,7 +857,10 @@ def check_ready_entry(symbol, data):
             f"Strong Candle: {strong_candle}\n"
             f"VWAP Reclaim: {vwap_reclaim}\n"
             f"EMA Reclaim: {ema_reclaim}\n"
-            f"Ready To Alert: {ready_to_alert}\n\n"
+            f"Ready To Alert: {ready_to_alert}\n"
+            f"Hidden Distribution: {hidden_distribution}\n"
+            f"Distribution Score: {distribution_score}\n"
+            f"Distribution Reasons: {dist_reasons_text}\n\n"
             f"🛡️ فلتر التصريف: تم تجاوزه ✅\n\n"
             f"🚀 دخول الآن: {entry:.2f}\n"
             f"🎯 هدف 1: {t1:.2f}\n"
