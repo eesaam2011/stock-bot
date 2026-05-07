@@ -34,6 +34,7 @@ NEWS_FILE = "news_signals.json"
 BOT2_PRELIMINARY_FILE = "bot2_preliminary_results.json"
 BOT2_NEWS_CANDIDATES_FILE = "bot2_news_candidates.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
+BOT2_ACTIVE_TRADES_FILE = "bot2_active_trades.json"
 
 STRONG_COUNT = 400
 RADAR_COUNT = 400
@@ -76,11 +77,9 @@ def can_send_trade_alerts():
 
     current_minutes = hour * 60 + minute
 
-    # ⛔ من 10:40 مساءً إلى 11:15 مساءً بتوقيت السعودية
     if 22 * 60 + 40 <= current_minutes <= 23 * 60 + 15:
         return False
 
-    # ⛔ من 2:00 ليلًا إلى 11:10 صباحًا بتوقيت السعودية
     if 2 * 60 <= current_minutes <= 11 * 60 + 10:
         return False
 
@@ -160,6 +159,22 @@ def save_gist_file(filename, data):
         print(f"❌ Save gist error ({filename}): {e}", flush=True)
 
 
+def load_active_trades_from_gist():
+    global active_trades
+
+    saved = read_gist_file(
+        BOT2_ACTIVE_TRADES_FILE,
+        default={}
+    )
+
+    if isinstance(saved, dict):
+        active_trades = saved
+        print(f"✅ Restored Bot 2 active trades: {len(active_trades)}", flush=True)
+    else:
+        active_trades = {}
+        print("⚠️ No valid Bot 2 active trades found", flush=True)
+
+
 # =========================
 # TIME
 # =========================
@@ -180,6 +195,15 @@ def is_trading_time():
         return True
 
     return False
+
+
+def get_trade_age_minutes(trade):
+    trade_time = trade.get("time", time.time())
+
+    try:
+        return (time.time() - float(trade_time)) / 60
+    except Exception:
+        return 0
 
 
 # =========================
@@ -461,9 +485,6 @@ def analyze_symbol(symbol, source_group):
             or recent_move > 3.5
         )
 
-        # =========================
-        # STRONG MODE - يبقى قريب من الحالي
-        # =========================
         strong_setup = (
             source_group == "STRONG"
             and instant_rvol >= 2.0
@@ -476,11 +497,6 @@ def analyze_symbol(symbol, source_group):
             and not fake_breakout_risk
         )
 
-        # =========================
-        # RADAR MODE - استيقاظ مبكر
-        # أقل اعتمادًا على الهاي اليومي
-        # وأكثر اعتمادًا على تغير السلوك والسيولة
-        # =========================
         radar_setup = (
             source_group == "RADAR"
             and 1.7 <= instant_rvol <= 6.0
@@ -719,7 +735,7 @@ def send_bot2_alert(signal):
     send_telegram_msg(msg)
 
     sent_alerts[symbol] = {
-        "time": datetime.now(saudi_tz),
+        "time": time.time(),
         "grade": grade
     }
 
@@ -728,7 +744,7 @@ def send_bot2_alert(signal):
         "t1": signal.get("target_1"),
         "t2": signal.get("target_2"),
         "sl": signal.get("stop_loss"),
-        "time": datetime.now(saudi_tz),
+        "time": time.time(),
         "slow_alerted": False,
         "run_alerted": False,
         "stop_alerted": False
@@ -743,8 +759,6 @@ def send_bot2_alert(signal):
 
 def monitor_active_trades():
     global active_trades
-
-    now = datetime.now(saudi_tz)
 
     for symbol, trade in list(active_trades.items()):
         try:
@@ -764,7 +778,7 @@ def monitor_active_trades():
                 continue
 
             gain_pct = ((cp - entry) / entry) * 100
-            age_minutes = (now - trade["time"]).total_seconds() / 60
+            age_minutes = get_trade_age_minutes(trade)
 
             if cp <= sl and not trade.get("stop_alerted", False):
                 if can_send_trade_alerts():
@@ -884,6 +898,8 @@ def run_bot2_once():
 # MAIN LOOP
 # =========================
 
+load_active_trades_from_gist()
+
 print("🟢 BOT 2 STARTED", flush=True)
 send_telegram_msg("🟢 تم تشغيل Bot 2 بنظام Strong/Radar + News Bonus")
 
@@ -896,6 +912,8 @@ while True:
 
         run_bot2_once()
         monitor_active_trades()
+
+        save_gist_file(BOT2_ACTIVE_TRADES_FILE, active_trades)
 
         time.sleep(SCAN_INTERVAL)
 
