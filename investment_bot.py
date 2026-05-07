@@ -918,28 +918,47 @@ def monitor_active_picks():
     save_gist_file(INVESTMENT_ACTIVE_FILE, updated)
 
 
+def load_active_picks_from_gist():
+    state = load_state()
+
+    saved_active = read_gist_file(
+        INVESTMENT_ACTIVE_FILE,
+        []
+    )
+
+    if isinstance(saved_active, list) and len(saved_active) > 0:
+        state["active_picks"] = saved_active
+        save_state(state)
+
+        print(
+            f"✅ Restored investment active picks: {len(saved_active)}",
+            flush=True
+        )
+
+    else:
+        print(
+            "⚠️ No investment active picks found",
+            flush=True
+        )
+
+
 def run_scheduler():
     now = datetime.now(saudi_tz)
     today = now.strftime("%Y-%m-%d")
     state = load_state()
 
-    # الجمعة + السبت + الأحد:
-    # الجمعة بناء أولي، السبت إعادة بناء/تحسين، الأحد ترتيب نهائي قبل الاثنين
     if now.weekday() in [4, 5, 6]:
         if state.get("last_weekend_build") != today:
             build_weekend_500()
 
-    # الاثنين والثلاثاء: مراجعة عميقة
     if now.weekday() in [0, 1]:
         if state.get("last_deep_review") != today:
             deep_review_500()
 
-    # الأربعاء صباحًا: تجهيز أفضل 50 للأخبار
     if now.weekday() == 2 and now.hour >= 8:
         if state.get("last_news_50") != today:
             prepare_news_50()
 
-    # الخميس 4 عصرًا: إرسال أفضل 3-5
     if (
         now.weekday() == 3
         and now.hour == THURSDAY_ALERT_HOUR
@@ -948,7 +967,6 @@ def run_scheduler():
     ):
         send_thursday_alert()
 
-    # متابعة كل 4 ساعات للنتائج النهائية
     last_monitor = state.get("last_monitor", "")
     should_monitor = True
 
@@ -964,6 +982,8 @@ def run_scheduler():
 
 
 threading.Thread(target=run_web_server, daemon=True).start()
+
+load_active_picks_from_gist()
 
 print("📈 Investment Bot Started", flush=True)
 send_telegram_msg("📈 *Investment Bot - البوت الاستثماري*\n\nتم تشغيل النظام الأسبوعي الجديد.")
