@@ -81,7 +81,7 @@ def can_send_trade_alerts():
         return False
 
     # ⛔ من 2:00 ليلًا إلى 10:00 صباحًا بتوقيت السعودية
-    if 2 * 60 <= current_minutes <= 11 * 60:
+    if 2 * 60 <= current_minutes <= 11 * 60 + 10:
         return False
 
     return True
