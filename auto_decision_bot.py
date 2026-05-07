@@ -907,35 +907,139 @@ while True:
         for symbol, data in sorted_watchlist:
             if not data.get("alerted", False):
                 result = check_ready_entry(symbol, data)
-                if result:
-                    bot3_results.append(result)
+def monitor_active_trades():
+    global active_trades
+
+    now = datetime.now(saudi_tz)
+
+    for symbol, trade in list(active_trades.items()):
+        try:
+            df = get_alpaca_bars(symbol, minutes=30)
+
+            if df.empty or len(df) < 5:
+                continue
+
+            cp = get_latest_price(symbol, df)
+
+            entry = trade["entry"]
+            sl = trade["sl"]
+            t1 = trade["t1"]
+            t2 = trade["t2"]
+
+            gain_pct = ((cp - entry) / entry) * 100
+            age_minutes = (now - trade["time"]).total_seconds() / 60
+
+            if cp <= sl and not trade.get("stop_alerted", False):
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🛑 *Bot 3 - خروج وقف الخسارة*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"🛑 الوقف: {sl:.2f}"
+                    )
+                    send_telegram_msg(msg)
+
+                trade["stop_alerted"] = True
+                active_trades.pop(symbol, None)
+                continue
+
+            if age_minutes >= 30 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
+                if can_send_trade_alerts():
+                    msg = (
+                        f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
+                        f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
+                        f"يفضل تشديد الوقف أو الخروج الجزئي."
+                    )
+                    send_telegram_msg(msg)
+
+                trade["slow_alerted"] = True
+
+            if gain_pct >= 2 and not trade.get("run_alerted", False):
+                new_sl = max(entry, cp * 0.985)
+
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🚀 *Bot 3 - السهم انطلق بعد الدخول*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                        f"🎯 هدف 1: {t1:.2f}\n"
+                        f"🚀 هدف 2: {t2:.2f}\n"
+                        f"✅ الوقف المقترح الآن: {new_sl:.2f}"
+                    )
+                    send_telegram_msg(msg)
+
+                trade["run_alerted"] = True
+
+        except Exception as e:
+            print(f"Monitor trade error {symbol}: {e}", flush=True)
+            continue
+
+
+def load_active_trades_from_gist():
+    global active_trades
+
+    saved = read_gist_file(
+        BOT3_ACTIVE_TRADES_FILE,
+        default={}
+    )
+
+    if isinstance(saved, dict):
+        active_trades = saved
+
+        print(
+            f"✅ Restored active trades: {len(active_trades)}",
+            flush=True
+        )
+
+    else:
+        active_trades = {}
+
+        print(
+            "⚠️ No valid active trades found",
+            flush=True
+        )
+
+
+load_active_trades_from_gist()
+
+print("🧠 BOT 3 DECISION BOT STARTED", flush=True)
+send_telegram_msg("🧠 تم تشغيل Bot 3 - القرار النهائي")
+
+while True:
+    try:
+        if not is_trading_time():
+            print("⏸️ خارج وقت التشغيل - Bot 3 ينتظر", flush=True)
+            time.sleep(300)
+            continue
+
+        update_watchlist_from_bot2()
+        self_scan_top_400()
+        clean_old_watchlist()
+
+        print(f"📊 Bot 3 Watchlist size: {len(watchlist)}", flush=True)
+
+        sorted_watchlist = sorted(
+            list(watchlist.items()),
+            key=lambda x: x[1].get("priority_score", 0),
+            reverse=True
+        )
+
+        for symbol, data in sorted_watchlist:
+            if not data.get("alerted", False):
+                check_ready_entry(symbol, data)
                 time.sleep(0.05)
 
-        if bot3_results:
-            old_results = read_gist_file(BOT3_RESULTS_FILE, default=[])
-            if not isinstance(old_results, list):
-                old_results = []
-
-            combined = bot3_results + old_results
-
-            deduped = {}
-            for r in combined:
-                sym = r.get("symbol")
-                if not sym:
-                    continue
-                old = deduped.get(sym)
-                if old is None or r.get("time", 0) > old.get("time", 0):
-                    deduped[sym] = r
-
-            final_saved = sorted(
-                deduped.values(),
-                key=lambda x: x.get("time", 0),
-                reverse=True
-            )[:200]
-
-            save_gist_file(BOT3_RESULTS_FILE, final_saved)
-
-        save_gist_file(BOT3_ACTIVE_TRADES_FILE, active_trades)
+        save_gist_file(
+            BOT3_ACTIVE_TRADES_FILE,
+            active_trades
+        )
 
         monitor_active_trades()
 
