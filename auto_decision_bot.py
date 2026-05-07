@@ -854,10 +854,30 @@ def check_ready_entry(symbol, data):
             return None
 
         entry = cp
-        t1 = entry * 1.02
-        t2 = entry * 1.04
-        t3 = entry * 1.07
-        sl = entry * 0.985
+
+        # =========================
+        # SMART TARGETS
+        # =========================
+
+        if entry < 2:
+
+            t1 = entry + 0.04
+            t2 = entry + 0.08
+            t3 = entry + 0.12
+
+        elif entry < 5:
+
+            t1 = entry + 0.07
+            t2 = entry + 0.12
+            t3 = entry + 0.18
+
+        else:
+
+            t1 = entry * 1.02
+            t2 = entry * 1.04
+            t3 = entry * 1.06
+
+            sl = entry * 0.985
 
         news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
 
