@@ -1010,17 +1010,79 @@ def monitor_active_trades():
                 active_trades.pop(symbol, None)
                 continue
 
+            # =========================
+            # SMART TRADE FOLLOW-UP
+            # =========================
             if age_minutes >= 30 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
+
+                weak_trade = (
+                    cp < vwap
+                    or cp < ema9
+                    or instant_rvol < 1.2
+                    or close_position < 0.45
+                    or upper_wick_pct > 0.50
+                )
+
+                healthy_but_slow = (
+                    cp > vwap
+                    and cp > ema9
+                    and instant_rvol >= 1.5
+                    and close_position >= 0.55
+                )
+
                 if can_send_trade_alerts():
-                    msg = (
-                        f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
-                        f"🎫 السهم: `{symbol}`\n"
-                        f"💰 السعر الحالي: {cp:.2f}\n"
-                        f"🚀 الدخول: {entry:.2f}\n"
-                        f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
-                        f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
-                        f"يفضل تشديد الوقف أو الخروج الجزئي."
-                    )
+
+                    # =========================
+                    # HEALTHY BUT SLOW
+                    # =========================
+                    if healthy_but_slow:
+
+                        msg = (
+                            f"🟡 *Bot 3 - السهم هادئ لكن صحي*\n\n"
+                            f"🎫 السهم: `{symbol}`\n"
+                            f"💰 السعر الحالي: {cp:.2f}\n"
+                            f"🚀 الدخول: {entry:.2f}\n"
+                            f"📊 الحركة الحالية: {gain_pct:.2f}%\n\n"
+                            f"✅ السعر فوق VWAP\n"
+                            f"✅ السعر فوق EMA9\n"
+                            f"✅ السيولة ما زالت إيجابية\n\n"
+                            f"🧠 السهم لم ينطلق بقوة بعد،"
+                            f" لكن الزخم لا يزال جيدًا."
+                        )
+
+                    # =========================
+                    # WEAK TRADE
+                    # =========================
+                    elif weak_trade:
+
+                        msg = (
+                            f"⚠️ *Bot 3 - ضعف واضح بعد الدخول*\n\n"
+                            f"🎫 السهم: `{symbol}`\n"
+                            f"💰 السعر الحالي: {cp:.2f}\n"
+                            f"🚀 الدخول: {entry:.2f}\n"
+                            f"📊 الحركة الحالية: {gain_pct:.2f}%\n\n"
+                            f"❌ ضعف في الزخم أو السيولة\n"
+                            f"❌ السهم بدأ يفقد القوة\n\n"
+                            f"يفضل:\n"
+                            f"• تشديد الوقف\n"
+                            f"أو\n"
+                            f"• الخروج الجزئي/الكامل حسب الشارت"
+                        )
+
+                    # =========================
+                    # NORMAL SLOW MESSAGE
+                    # =========================
+                    else:
+
+                        msg = (
+                            f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
+                            f"🎫 السهم: `{symbol}`\n"
+                            f"💰 السعر الحالي: {cp:.2f}\n"
+                            f"🚀 الدخول: {entry:.2f}\n"
+                            f"📊 الحركة الحالية: {gain_pct:.2f}%\n\n"
+                            f"السهم لم يتحرك بقوة حتى الآن."
+                        )
+
                     send_telegram_msg(msg)
 
                 trade["slow_alerted"] = True
