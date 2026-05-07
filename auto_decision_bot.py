@@ -804,6 +804,7 @@ def check_ready_entry(symbol, data):
         entry = cp
         t1 = entry * 1.02
         t2 = entry * 1.04
+        t3 = entry * 1.07
         sl = entry * 0.985
 
         news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
@@ -865,6 +866,7 @@ def check_ready_entry(symbol, data):
             f"🚀 دخول الآن: {entry:.2f}\n"
             f"🎯 هدف 1: {t1:.2f}\n"
             f"🚀 هدف 2: {t2:.2f}\n"
+            f"🔥 هدف 3: {t3:.2f}\n"
             f"🛑 وقف الخسارة: {sl:.2f}\n\n"
             f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
         )
@@ -880,12 +882,16 @@ def check_ready_entry(symbol, data):
             "entry": entry,
             "t1": t1,
             "t2": t2,
+            "t3": t3,
             "sl": sl,
             "grade": grade,
             "time": time.time(),
             "slow_alerted": False,
             "run_alerted": False,
-            "stop_alerted": False
+            "stop_alerted": False,
+            "target1_alerted": False,
+            "target2_alerted": False,
+            "target3_alerted": False
         }
 
         watchlist[symbol]["alerted"] = True
@@ -905,40 +911,7 @@ def get_trade_age_minutes(trade):
         return 0
 
 
-def monitor_active_trades():
-    global active_trades
 
-    for symbol, trade in list(active_trades.items()):
-        try:
-            df = get_alpaca_bars(symbol, minutes=30)
-
-            if df.empty or len(df) < 5:
-                continue
-
-            cp = get_latest_price(symbol, df)
-
-            entry = trade["entry"]
-            sl = trade["sl"]
-            t1 = trade["t1"]
-            t2 = trade["t2"]
-
-            gain_pct = ((cp - entry) / entry) * 100
-            age_minutes = get_trade_age_minutes(trade)
-
-            if cp <= sl and not trade.get("stop_alerted", False):
-                if can_send_trade_alerts():
-                    msg = (
-                        f"🛑 *Bot 3 - خروج وقف الخسارة*\n\n"
-                        f"🎫 السهم: `{symbol}`\n"
-                        f"💰 السعر الحالي: {cp:.2f}\n"
-                        f"🚀 الدخول: {entry:.2f}\n"
-                        f"🛑 الوقف: {sl:.2f}"
-                    )
-                    send_telegram_msg(msg)
-
-                trade["stop_alerted"] = True
-                active_trades.pop(symbol, None)
-                continue
 
             if age_minutes >= 30 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
                 if can_send_trade_alerts():
@@ -977,7 +950,162 @@ def monitor_active_trades():
             print(f"Monitor trade error {symbol}: {e}", flush=True)
             continue
 
+def monitor_active_trades():
+    global active_trades
 
+    for symbol, trade in list(active_trades.items()):
+        try:
+            df = get_alpaca_bars(symbol, minutes=30)
+
+            if df.empty or len(df) < 10:
+                continue
+
+            cp = get_latest_price(symbol, df)
+
+            entry = float(trade["entry"])
+            sl = float(trade["sl"])
+            t1 = float(trade["t1"])
+            t2 = float(trade["t2"])
+            t3 = float(trade.get("t3", entry * 1.07))
+
+            gain_pct = ((cp - entry) / entry) * 100
+            age_minutes = get_trade_age_minutes(trade)
+
+            vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
+            df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+            ema9 = float(df["EMA9"].iloc[-1])
+
+            rsi = calculate_rsi(df["Close"])
+            instant_rvol = df["Volume"].tail(3).mean() / max(df["Volume"].mean(), 1)
+
+            last_close = float(df["Close"].iloc[-1])
+            last_open = float(df["Open"].iloc[-1])
+            last_high = float(df["High"].iloc[-1])
+            last_low = float(df["Low"].iloc[-1])
+
+            candle_range = last_high - last_low
+            close_position = ((last_close - last_low) / candle_range) if candle_range > 0 else 0.5
+            upper_wick_pct = ((last_high - last_close) / candle_range) if candle_range > 0 else 0.5
+
+            strong_momentum_after_target = (
+                cp > vwap
+                and cp > ema9
+                and instant_rvol >= 1.8
+                and 50 <= rsi <= 78
+                and close_position >= 0.55
+                and upper_wick_pct <= 0.45
+            )
+
+            # خروج وقف الخسارة
+            if cp <= sl and not trade.get("stop_alerted", False):
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🛑 *Bot 3 - خروج وقف الخسارة*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"🛑 الوقف: {sl:.2f}"
+                    )
+                    send_telegram_msg(msg)
+
+                trade["stop_alerted"] = True
+                active_trades.pop(symbol, None)
+                continue
+
+            # السهم بطيء بعد الدخول
+            if age_minutes >= 30 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
+                if can_send_trade_alerts():
+                    msg = (
+                        f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"📊 الحركة بعد الدخول: {gain_pct:.2f}%\n\n"
+                        f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
+                        f"يفضل تشديد الوقف أو الخروج الجزئي."
+                    )
+                    send_telegram_msg(msg)
+
+                trade["slow_alerted"] = True
+
+            # هدف 1
+            if cp >= t1 and not trade.get("target1_alerted", False):
+                new_sl = max(entry, cp * 0.985)
+                trade["sl"] = round(new_sl, 4)
+
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🎯 *Bot 3 - وصل هدف 1*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"🎯 هدف 1: {t1:.2f}\n"
+                        f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                        f"✅ الوقف المقترح الآن: {new_sl:.2f}\n"
+                        f"📌 الهدف التالي: {t2:.2f}"
+                    )
+                    send_telegram_msg(msg)
+
+                trade["target1_alerted"] = True
+
+            # هدف 2
+            if cp >= t2 and not trade.get("target2_alerted", False):
+                new_sl = max(t1, cp * 0.985)
+                trade["sl"] = round(new_sl, 4)
+
+                if strong_momentum_after_target:
+                    action_text = "🔥 الزخم والسيولة ما زالت جيدة، ممكن الاستمرار مع رفع الوقف."
+                else:
+                    action_text = "⚠️ الزخم هدأ، يفضل جني جزء من الربح أو تشديد الوقف."
+
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🚀 *Bot 3 - وصل هدف 2*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"🎯 هدف 2: {t2:.2f}\n"
+                        f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                        f"✅ الوقف المقترح الآن: {new_sl:.2f}\n"
+                        f"🔥 هدف 3: {t3:.2f}\n\n"
+                        f"{action_text}"
+                    )
+                    send_telegram_msg(msg)
+
+                trade["target2_alerted"] = True
+
+            # هدف 3
+            if cp >= t3 and not trade.get("target3_alerted", False):
+                new_sl = max(t2, cp * 0.985)
+                trade["sl"] = round(new_sl, 4)
+
+                if strong_momentum_after_target:
+                    action_text = "🔥 السيولة ما زالت داخلة، ممكن الاستمرار بجزء بسيط مع وقف متحرك."
+                else:
+                    action_text = "✅ وصل هدف 3، يفضل جني أغلب الربح أو رفع الوقف بقوة."
+
+                if can_send_trade_alerts():
+                    msg = (
+                        f"🔥 *Bot 3 - وصل هدف 3*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"🔥 هدف 3: {t3:.2f}\n"
+                        f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                        f"✅ الوقف المقترح الآن: {new_sl:.2f}\n\n"
+                        f"{action_text}"
+                    )
+                    send_telegram_msg(msg)
+
+                trade["target3_alerted"] = True
+
+            # حفظ التحديثات
+            active_trades[symbol] = trade
+
+        except Exception as e:
+            print(f"Monitor trade error {symbol}: {e}", flush=True)
+            continue
+            
 def load_active_trades_from_gist():
     global active_trades
 
