@@ -910,11 +910,10 @@ def get_trade_age_minutes(trade):
     except Exception:
         return 0
 
-
-
-
             if age_minutes >= 30 and gain_pct < 0.5 and not trade.get("slow_alerted", False):
+                
                 if can_send_trade_alerts():
+
                     msg = (
                         f"⚠️ *Bot 3 - متابعة الصفقة*\n\n"
                         f"🎫 السهم: `{symbol}`\n"
@@ -924,6 +923,7 @@ def get_trade_age_minutes(trade):
                         f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
                         f"يفضل تشديد الوقف أو الخروج الجزئي."
                     )
+
                     send_telegram_msg(msg)
 
                 trade["slow_alerted"] = True
