@@ -704,7 +704,54 @@ def check_ready_entry(symbol, data):
             or recent_move > 3.2
             or touches >= 3
         )
+        # =========================
+        # ENTRY STAGE CLASSIFICATION
+        # =========================
 
+        if (
+            recent_move <= 1.0
+            and volume_acceleration
+            and (vwap_reclaim or ema_reclaim)
+        ):
+
+            entry_stage = (
+                "🟡 EARLY WAKE-UP - بداية دخول سيولة"
+            )
+
+        elif (
+            real_breakout
+            and recent_move <= 1.8
+        ):
+
+            entry_stage = (
+                "🟢 EARLY BREAKOUT - اختراق مبكر صحي"
+            )
+
+        elif (
+            real_breakout
+            and 1.8 < recent_move <= 3.0
+            and not overextended
+        ):
+
+            entry_stage = (
+                "🔥 MOMENTUM RUNNING - الزخم مستمر"
+            )
+
+        elif (
+            recent_move > 3.0
+            or rsi >= 73
+            or touches >= 3
+        ):
+
+            entry_stage = (
+                "⚠️ LATE ENTRY RISK - الدخول متأخر نسبيًا"
+            )
+
+        else:
+
+            entry_stage = (
+                "🟢 CONFIRMED ENTRY - دخول مؤكد"
+        )
         ready_to_alert = (
             real_breakout
             or (
@@ -830,6 +877,7 @@ def check_ready_entry(symbol, data):
             f"🎫 السهم: `{symbol}`\n"
             f"💰 السعر: {entry:.2f}\n"
             f"🏆 التصنيف: {grade}\n\n"
+            f"📍 مرحلة الدخول: {entry_stage}\n"
             f"📡 المصدر:\n"
             f"{source_text}\n\n"
             f"{news_text}"
