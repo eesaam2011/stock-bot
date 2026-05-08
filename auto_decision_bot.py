@@ -934,6 +934,26 @@ def check_ready_entry(symbol, data):
             )
 
             return None
+        # =========================
+        # ROUTE HIGH DISTRIBUTION BREAKOUT TO PENDING
+        # =========================
+
+        if (
+            distribution_score >= 40
+            and (
+                "EARLY" in entry_stage
+                or recent_move < 1.0
+                or not vwap_reclaim
+            )
+        ):
+
+            add_to_pending(
+                symbol,
+                cp,
+                "اختراق مع تصريف مرتفع - يحتاج تأكيد قبل الدخول"
+            )
+
+            return None 
             
         if not advanced_entry:
             return None
