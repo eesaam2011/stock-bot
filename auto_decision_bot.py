@@ -913,6 +913,28 @@ def check_ready_entry(symbol, data):
 
             return None
 
+        # =========================
+        # ROUTE WEAK EARLY BREAKOUT TO PENDING
+        # =========================
+
+        if (
+            "EARLY BREAKOUT" in entry_stage
+            and (
+                not strong_candle
+                or not vwap_reclaim
+                or not ema_reclaim
+            )
+            and distribution_score >= 15
+        ):
+
+            add_to_pending(
+                symbol,
+                cp,
+                "اختراق مبكر لكن التأكيد غير مكتمل"
+            )
+
+            return None
+            
         if not advanced_entry:
             return None
 
