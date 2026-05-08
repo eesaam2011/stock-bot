@@ -1003,7 +1003,19 @@ def monitor_active_trades():
 
             gain_pct = ((cp - entry) / entry) * 100
             age_minutes = get_trade_age_minutes(trade)
+            # =========================
+            # REMOVE OLD TRADES AFTER 3 DAYS
+            # =========================
 
+            if age_minutes >= 4320:
+                print(
+                    f"🧹 Removed old active trade after 3 days: {symbol}",
+                    flush=True
+                )
+
+                active_trades.pop(symbol, None)
+                continue
+                
             vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
 
             df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
