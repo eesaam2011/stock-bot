@@ -23,17 +23,22 @@ saudi_tz = pytz.timezone("Asia/Riyadh")
 watchlist = {}
 sent_alerts = {}
 active_trades = {}
+last_saved_active_trades = ""
+pending_watchlist = {}
+last_saved_pending_candidates = ""
 
 PRICE_MIN = 0.4
 PRICE_MAX = 25
 
 WATCH_MINUTES = 45
-SCAN_INTERVAL = 20
+SCAN_INTERVAL = 30
+PENDING_MAX_AGE_MINUTES = 90
 
 MASTER_LIST_FILE = "master_list.json"
 NEWS_FILE = "news_signals.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
 BOT3_ACTIVE_TRADES_FILE = "bot3_active_trades.json"
+BOT3_EARLY_CANDIDATES_FILE = "bot3_early_candidates.json"
 
 SELF_SCAN_COUNT = 400
 
@@ -463,6 +468,18 @@ def self_scan_top_400():
             if self_setup:
                 add_to_watchlist(symbol, "فحص ذاتي Bot 3", cp)
 
+            elif (
+                instant_rvol >= 1.6
+                and volume_acceleration
+                and cp > ema9 * 0.995
+            ):
+
+                add_to_pending(
+                    symbol,
+                    cp,
+                    "قريب من الانفجار"
+                )
+
             if i % 50 == 0:
                 print(f"🔎 Bot 3 scanned {i}/{len(symbols)}", flush=True)
 
@@ -472,7 +489,79 @@ def self_scan_top_400():
             print(f"Self scan error {symbol}: {e}", flush=True)
             continue
 
+def add_to_pending(symbol, price, reason=""):
 
+    now = datetime.now(saudi_tz)
+
+    pending_watchlist[symbol] = {
+        "symbol": symbol,
+        "price": float(price),
+        "reason": reason,
+        "created_at": now.isoformat()
+    }
+
+    print(f"🟡 Added pending candidate: {symbol}", flush=True)
+
+def clean_old_pending_watchlist():
+
+    expired = []
+    now = datetime.now(saudi_tz)
+
+    for symbol, data in pending_watchlist.items():
+
+        try:
+            created_at = datetime.fromisoformat(
+                data["created_at"]
+            )
+
+            age_minutes = (
+                (now - created_at).total_seconds() / 60
+            )
+
+            if age_minutes >= PENDING_MAX_AGE_MINUTES:
+                expired.append(symbol)
+
+        except Exception:
+            expired.append(symbol)
+
+    for symbol in expired:
+
+        pending_watchlist.pop(symbol, None)
+
+        print(
+            f"🧹 Removed old pending candidate: {symbol}",
+            flush=True
+        )
+
+def save_pending_candidates_if_changed():
+
+    global last_saved_pending_candidates
+
+    simplified = []
+
+    for symbol, data in pending_watchlist.items():
+
+        simplified.append({
+            "symbol": symbol,
+            "price": data.get("price", 0),
+            "reason": data.get("reason", ""),
+            "created_at": data.get("created_at", "")
+        })
+
+    current_json = json.dumps(
+        simplified,
+        sort_keys=True
+    )
+
+    if current_json != last_saved_pending_candidates:
+
+        save_gist_file(
+            BOT3_EARLY_CANDIDATES_FILE,
+            simplified
+        )
+
+        last_saved_pending_candidates = current_json
+        
 def clean_old_watchlist():
     now = datetime.now(saudi_tz)
     expired = []
@@ -1239,7 +1328,8 @@ while True:
         update_watchlist_from_bot2()
         self_scan_top_400()
         clean_old_watchlist()
-
+        clean_old_pending_watchlist()
+        save_pending_candidates_if_changed()
         print(f"📊 Bot 3 Watchlist size: {len(watchlist)}", flush=True)
 
         sorted_watchlist = sorted(
@@ -1254,7 +1344,20 @@ while True:
                 time.sleep(0.05)
 
         monitor_active_trades()
-        save_gist_file(BOT3_ACTIVE_TRADES_FILE, active_trades)
+
+        current_active_trades = json.dumps(
+            active_trades,
+            sort_keys=True
+        )
+
+        if current_active_trades != last_saved_active_trades:
+
+            save_gist_file(
+                BOT3_ACTIVE_TRADES_FILE,
+                active_trades
+            )
+
+            last_saved_active_trades = current_active_trades
 
         time.sleep(SCAN_INTERVAL)
 
