@@ -238,9 +238,6 @@ def get_nasdaq_symbols_from_alpaca():
             asset_class = getattr(asset, "asset_class", "")
             tradable = getattr(asset, "tradable", False)
 
-            if exchange != "NASDAQ":
-                continue
-
             if asset_class != "us_equity":
                 continue
 
