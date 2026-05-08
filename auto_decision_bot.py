@@ -874,6 +874,24 @@ def check_ready_entry(symbol, data):
             and ready_to_alert
         )
         # =========================
+        # ROUTE RISKY EARLY WAKE-UP TO PENDING
+        # =========================
+
+        if (
+            "EARLY WAKE-UP" in entry_stage
+            and distribution_score >= 35
+            and not real_breakout
+        ):
+
+            add_to_pending(
+                symbol,
+                cp,
+                "استيقاظ مبكر لكن عليه ملاحظات تصريف - يحتاج تأكيد"
+            )
+
+            return None
+
+        # =========================
         # FILTER WEAK EARLY WAKE-UP
         # =========================
 
@@ -886,8 +904,15 @@ def check_ready_entry(symbol, data):
             )
             and not real_breakout
         ):
+
+            add_to_pending(
+                symbol,
+                cp,
+                "استيقاظ مبكر ضعيف - تحت المراقبة"
+            )
+
             return None
-            
+
         if not advanced_entry:
             return None
 
