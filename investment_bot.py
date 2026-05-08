@@ -947,7 +947,8 @@ def run_scheduler():
     state = load_state()
 
     if now.weekday() in [4, 5, 6]:
-        build_weekend_500()
+        if state.get("last_weekend_build") != today:
+            build_weekend_500()
 
     if now.weekday() in [0, 1]:
         if state.get("last_deep_review") != today:
