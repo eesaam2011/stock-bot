@@ -176,7 +176,7 @@ BLACKLIST_SYMBOLS = [
     "PM", "MO",
     "CGC", "TLRY", "ACB",
     "NCLH", "CCL", "RCL",
-    "AMC", "GPRE", "SKLZ", "PGY"
+    "AMC", "GPRE", "SKLZ", "PGY", "JELD", "TWO",
 ]
 
 BLACKLIST_KEYWORDS = [
