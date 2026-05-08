@@ -229,6 +229,7 @@ def is_blacklisted(symbol, name=""):
 def get_nasdaq_symbols_from_alpaca():
     try:
         assets = api.list_assets(status="active")
+        print(f"DEBUG raw assets: {len(assets)}", flush=True)
         symbols = []
 
         for asset in assets:
