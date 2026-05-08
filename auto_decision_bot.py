@@ -617,7 +617,9 @@ def detect_hidden_distribution(df, instant_rvol, recent_move, real_breakout):
 
         if instant_rvol >= 3.0 and recent_move < 0.75:
             distribution_score += 15
-            reasons.append("ضعف استجابة السعر رغم RVOL عالي")
+            reasons.append(
+                "السيولة عالية لكن السعر لا يستجيب بقوة"
+            )
 
         upper_wick_count = ((upper_wick_pct >= 0.40) & (close_position < 0.60)).sum()
         if upper_wick_count >= 3:
@@ -630,14 +632,18 @@ def detect_hidden_distribution(df, instant_rvol, recent_move, real_breakout):
 
         if vol_now >= vol_prev * 1.5 and avg_range_pct < 0.45:
             distribution_score += 12
-            reasons.append("فوليوم قوي لكن spread ضعيف")
+            reasons.append(
+                "فوليوم قوي لكن حركة السعر ضعيفة"
+            )
 
         higher_highs = highs.iloc[-1] > highs.iloc[-3]
         weak_close = closes.iloc[-1] < highs.iloc[-1] * 0.995 and close_position.iloc[-1] < 0.60
 
         if higher_highs and weak_close and not real_breakout:
             distribution_score += 15
-            reasons.append("Higher High بدون متابعة قوية")
+            reasons.append(
+                "قمم أعلى لكن بدون استمرار بالشراء"
+            )
 
         last_move = ((closes.iloc[-1] - closes.iloc[-4]) / closes.iloc[-4]) * 100
         prev_move = ((closes.iloc[-4] - closes.iloc[-8]) / closes.iloc[-8]) * 100
@@ -1009,7 +1015,7 @@ def check_ready_entry(symbol, data):
             f"Technical Score: {technical_score:.1f}\n"
             f"Bot2 Bonus: {bot2_bonus}\n"
             f"News Bonus: {news_bonus}\n"
-            f"Distribution Penalty: {distribution_penalty}\n\n"
+            f"خصم التصريف: {distribution_penalty}\n\n"
             f"📊 القوة:\n"
             f"RSI: {rsi:.1f}\n"
             f"RVOL: {instant_rvol:.2f}x\n"
@@ -1021,9 +1027,9 @@ def check_ready_entry(symbol, data):
             f"VWAP Reclaim: {vwap_reclaim}\n"
             f"EMA Reclaim: {ema_reclaim}\n"
             f"Ready To Alert: {ready_to_alert}\n"
-            f"Hidden Distribution: {hidden_distribution}\n"
-            f"Distribution Score: {distribution_score}\n"
-            f"Distribution Reasons: {dist_reasons_text}\n\n"
+            f"تصريف مخفي: {'نعم' if hidden_distribution else 'لا'}\n"
+            f"درجة التصريف: {distribution_score}\n"
+            f"ملاحظات التصريف: {dist_reasons_text}\n\n"
             f"🛡️ فلتر التصريف: تم تجاوزه ✅\n\n"
             f"🚀 دخول الآن: {entry:.2f}\n"
             f"🎯 هدف 1: {t1:.2f}\n"
