@@ -884,20 +884,20 @@ def run_bot2_once():
         # REMOVE OLD RESULTS (>90 MIN)
         # =========================
 
-        fresh_results = []
-        now_ts = time.time()
+    fresh_results = []
+    now_ts = time.time()
 
-        for r in final_results:
+    for r in final_results:
 
-            try:
-                age = now_ts - float(r.get("time", now_ts))
+        try:
+            age = now_ts - float(r.get("time", now_ts))
             except Exception:
                 age = 999999
 
-            if age <= 5400:
-                fresh_results.append(r)
+        if age <= 5400:
+            fresh_results.append(r)
 
-        final_results = fresh_results
+    final_results = fresh_results
     save_gist_file(BOT2_FINAL_FILE, final_results)
 
     telegram_results = [
