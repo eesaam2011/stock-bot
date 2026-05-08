@@ -571,6 +571,12 @@ def build_weekend_500():
     print("🔎 Investment Bot - Building weekend 500 from Nasdaq...", flush=True)
 
     symbols = get_nasdaq_symbols_from_alpaca()
+    print(f"DEBUG symbols loaded: {len(symbols)}", flush=True)
+
+    if not symbols:
+        print("❌ No symbols loaded from Alpaca. Check exchange filter or API keys.", flush=True)
+        return []
+        
     scored = []
 
     for i, symbol in enumerate(symbols, start=1):
