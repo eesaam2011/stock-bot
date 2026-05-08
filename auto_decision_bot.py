@@ -980,7 +980,25 @@ def check_ready_entry(symbol, data):
 
         technical_score = 0
         technical_score += min(instant_rvol * 12, 30)
-        technical_score += min(max(recent_move, 0) * 8, 20)
+        # =========================
+        # REAL PRICE EXPLOSION RESPONSE
+        # =========================
+
+        if recent_move >= 2.0:
+
+            technical_score += min(recent_move * 10, 25)
+
+        elif recent_move >= 1.2:
+
+            technical_score += min(recent_move * 7, 14)
+
+        elif recent_move >= 0.7:
+
+            technical_score += min(recent_move * 4, 8)
+
+        else:
+
+            technical_score -= 12
 
         if cp > vwap:
             technical_score += 10
