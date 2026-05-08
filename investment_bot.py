@@ -251,12 +251,6 @@ def get_nasdaq_symbols_from_alpaca():
                     flush=True
                 )
                 
-            if asset_class != "us_equity":
-                continue
-
-            if not tradable:
-                continue
-
             if not is_clean_symbol(symbol):
                 continue
 
