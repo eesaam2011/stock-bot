@@ -232,13 +232,25 @@ def get_nasdaq_symbols_from_alpaca():
         print(f"DEBUG raw assets: {len(assets)}", flush=True)
         symbols = []
 
-        for asset in assets:
+        for i, asset in enumerate(assets, start=1):
+
             symbol = getattr(asset, "symbol", "")
             name = getattr(asset, "name", "")
             exchange = getattr(asset, "exchange", "")
             asset_class = getattr(asset, "asset_class", "")
             tradable = getattr(asset, "tradable", False)
 
+            if i <= 10:
+                print(
+                    f"DEBUG asset sample: "
+                    f"symbol={symbol}, "
+                    f"exchange={exchange}, "
+                    f"asset_class={asset_class}, "
+                    f"tradable={tradable}, "
+                    f"name={name}",
+                    flush=True
+                )
+                
             if asset_class != "us_equity":
                 continue
 
