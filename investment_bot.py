@@ -229,7 +229,6 @@ def is_blacklisted(symbol, name=""):
 def get_nasdaq_symbols_from_alpaca():
     try:
         assets = api.list_assets(status="active")
-        print(f"DEBUG raw assets: {len(assets)}", flush=True)
         symbols = []
 
         for i, asset in enumerate(assets, start=1):
@@ -240,16 +239,6 @@ def get_nasdaq_symbols_from_alpaca():
             asset_class = getattr(asset, "asset_class", "")
             tradable = getattr(asset, "tradable", False)
 
-            if i <= 10:
-                print(
-                    f"DEBUG asset sample: "
-                    f"symbol={symbol}, "
-                    f"exchange={exchange}, "
-                    f"asset_class={asset_class}, "
-                    f"tradable={tradable}, "
-                    f"name={name}",
-                    flush=True
-                )
                 
             if not is_clean_symbol(symbol):
                 continue
