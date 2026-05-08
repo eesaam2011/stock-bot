@@ -891,8 +891,9 @@ def run_bot2_once():
 
         try:
             age = now_ts - float(r.get("time", now_ts))
-            except Exception:
-                age = 999999
+            
+        except Exception:
+            age = 999999
 
         if age <= 5400:
             fresh_results.append(r)
