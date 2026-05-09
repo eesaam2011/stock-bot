@@ -490,18 +490,80 @@ def self_scan_top_400():
             continue
 
 def add_to_pending(symbol, price, reason=""):
+    symbol = str(symbol).upper().strip()
+    now_ts = time.time()
 
-    now = datetime.now(saudi_tz)
+    if symbol not in pending_watchlist:
 
-    pending_watchlist[symbol] = {
-        "symbol": symbol,
-        "price": float(price),
-        "reason": reason,
-        "created_at": now.isoformat()
-    }
+        pending_watchlist[symbol] = {
+            "symbol": symbol,
+            "first_price": float(price),
+            "last_price": float(price),
+            "best_price": float(price),
 
-    print(f"🟡 Added pending candidate: {symbol}", flush=True)
+            "reason": reason,
+            "pending_score": 50,
 
+            "times_checked": 0,
+            "improve_count": 0,
+            "weak_count": 0,
+
+            "news_bonus": 0,
+
+            "first_seen": now_ts,
+            "last_update": now_ts,
+            "expires_at": now_ts + (PENDING_MAX_AGE_MINUTES * 60),
+
+            "status": "PENDING"
+        }
+
+        print(f"🟡 Added pending candidate: {symbol} | {reason}", flush=True)
+
+    else:
+
+        p = pending_watchlist[symbol]
+
+        p["last_price"] = float(price)
+        p["best_price"] = max(float(p.get("best_price", price)), float(price))
+        p["last_update"] = now_ts
+
+        if reason and reason not in str(p.get("reason", "")):
+            p["reason"] = str(p.get("reason", "")) + " | " + reason
+def update_pending_behavior(symbol, price, instant_rvol, recent_move, volume_acceleration, strong_candle, vwap_reclaim, ema_reclaim, distribution_score):
+    if symbol not in pending_watchlist:
+        return
+
+    p = pending_watchlist[symbol]
+
+    p["times_checked"] = int(p.get("times_checked", 0)) + 1
+    p["last_price"] = float(price)
+    p["best_price"] = max(float(p.get("best_price", price)), float(price))
+    p["last_update"] = time.time()
+
+    improved = (
+        instant_rvol >= 2.0
+        and recent_move >= 0.60
+        and volume_acceleration
+        and (strong_candle or vwap_reclaim or ema_reclaim)
+        and distribution_score < 40
+    )
+
+    weak = (
+        recent_move < 0.30
+        or instant_rvol < 1.4
+        or distribution_score >= 45
+    )
+
+    if improved:
+        p["improve_count"] = int(p.get("improve_count", 0)) + 1
+        p["pending_score"] = min(float(p.get("pending_score", 50)) + 8, 100)
+
+    elif weak:
+        p["weak_count"] = int(p.get("weak_count", 0)) + 1
+        p["pending_score"] = max(float(p.get("pending_score", 50)) - 10, 0)
+
+    pending_watchlist[symbol] = p
+    
 def clean_old_pending_watchlist():
 
     expired = []
@@ -793,6 +855,27 @@ def check_ready_entry(symbol, data):
         hidden_distribution = hidden_dist["hidden_distribution"]
         distribution_score = hidden_dist["distribution_score"]
         distribution_reasons = hidden_dist["distribution_reasons"]
+        if symbol in pending_watchlist:
+            update_pending_behavior(
+                symbol,
+                cp,
+                instant_rvol,
+                recent_move,
+                volume_acceleration,
+                strong_candle,
+                vwap_reclaim,
+                ema_reclaim,
+                distribution_score
+            )
+
+            pending_score = float(
+                pending_watchlist[symbol].get("pending_score", 50)
+            )
+
+            if pending_score < 40:
+                print(f"🧹 Removed weak pending: {symbol}", flush=True)
+                pending_watchlist.pop(symbol, None)
+                return None
 
         overextended = (
             rsi > 75
