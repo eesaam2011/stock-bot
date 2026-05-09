@@ -796,6 +796,9 @@ def check_ready_entry(symbol, data):
         rsi = calculate_rsi(df["Close"])
         instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
         recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
+        # استبعاد الأسهم الثقيلة بطيئة الاستجابة
+        if instant_rvol >= 3.0 and recent_move < 0.60:
+            return None
 
         recent_highs = df["High"].tail(10)
         touches = (recent_highs >= day_high * 0.995).sum()
@@ -1090,7 +1093,11 @@ def check_ready_entry(symbol, data):
             bot2_bonus = 5
 
         technical_score = 0
-        technical_score += min(instant_rvol * 12, 30)
+        technical_score += min(instant_rvol * 8, 20)
+        price_response_score = recent_move * 12
+
+        technical_score += min(price_response_score, 30)
+
         # =========================
         # REAL PRICE EXPLOSION RESPONSE
         # =========================
