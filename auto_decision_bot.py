@@ -562,6 +562,18 @@ def update_pending_behavior(symbol, price, instant_rvol, recent_move, volume_acc
         p["weak_count"] = int(p.get("weak_count", 0)) + 1
         p["pending_score"] = max(float(p.get("pending_score", 50)) - 10, 0)
 
+    if int(p.get("weak_count", 0)) >= 3:
+        print(f"🧹 Removed pending after repeated weakness: {symbol}", flush=True)
+        pending_watchlist.pop(symbol, None)
+        return
+
+    if float(p.get("pending_score", 50)) >= 75:
+        p["status"] = "HOT_PENDING"
+    elif float(p.get("pending_score", 50)) >= 55:
+        p["status"] = "ACTIVE_PENDING"
+    else:
+        p["status"] = "WEAK_PENDING"
+
     pending_watchlist[symbol] = p
     
 def clean_old_pending_watchlist():
@@ -1047,6 +1059,22 @@ def check_ready_entry(symbol, data):
         news_map = load_news_map()
         news = news_map.get(symbol, {})
         news_bonus = get_news_bonus(news)
+        if symbol in pending_watchlist:
+
+            if news_bonus < 0:
+                print(f"🧹 Removed pending due to negative news: {symbol}", flush=True)
+                pending_watchlist.pop(symbol, None)
+                return None
+
+            if news_bonus > 0:
+                p = pending_watchlist[symbol]
+                p["news_bonus"] = news_bonus
+                p["pending_score"] = min(
+                    float(p.get("pending_score", 50)) + news_bonus,
+                    100
+                )
+                p["last_update"] = time.time()
+                pending_watchlist[symbol] = p
 
         bot2_score = float(data.get("bot2_score", 0) or 0)
         bot2_grade = data.get("bot2_grade", "")
