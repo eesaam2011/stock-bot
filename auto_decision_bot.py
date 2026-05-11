@@ -797,8 +797,16 @@ def check_ready_entry(symbol, data):
         instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
         recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
         # استبعاد الأسهم الثقيلة بطيئة الاستجابة
-        if instant_rvol >= 3.0 and recent_move < 0.60:
+        early_momentum_mode = False
+
+        if instant_rvol >= 4.5 and recent_move < 0.35:
             return None
+
+        if (
+            instant_rvol >= 3.0
+            and recent_move < 0.60
+        ):
+            early_momentum_mode = True
 
         recent_highs = df["High"].tail(10)
         touches = (recent_highs >= day_high * 0.995).sum()
@@ -1203,12 +1211,18 @@ def check_ready_entry(symbol, data):
             ", ".join(distribution_reasons[:3])
             if distribution_reasons else "None"
         )
+        signal_type = (
+            "🟡 EARLY MOMENTUM - دخول مبكر"
+            if early_momentum_mode
+            else "✅ دخول مؤكد"
+        )
 
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
             f"🎫 السهم: `{symbol}`\n"
             f"💰 السعر: {entry:.2f}\n"
             f"🏆 التصنيف: {grade}\n\n"
+            f"{signal_type}\n\n"
             f"📍 مرحلة الدخول: {entry_stage}\n"
             f"📡 المصدر:\n"
             f"{source_text}\n\n"
