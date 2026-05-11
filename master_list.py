@@ -230,6 +230,10 @@ def fetch_snapshots(symbols):
                 },
                 timeout=20
             )
+                print(
+                    f"DEBUG snapshot status={res.status_code} | text={res.text[:300]}",
+                    flush=True
+                )
 
             if res.status_code != 200:
 
