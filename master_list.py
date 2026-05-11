@@ -3,6 +3,8 @@ import time
 import json
 import requests
 import threading
+from datetime import datetime
+import pytz
 from flask import Flask
 
 # =========================
@@ -140,7 +142,27 @@ def chunk_list(items, size=100):
     for i in range(0, len(items), size):
         yield items[i:i + size]
 
+def get_market_mode():
 
+    saudi_tz = pytz.timezone("Asia/Riyadh")
+    now = datetime.now(saudi_tz)
+
+    current_minutes = now.hour * 60 + now.minute
+
+    # Premarket
+    if 11 * 60 <= current_minutes < 16 * 60 + 30:
+        return "PREMARKET"
+
+    # Market Open
+    if 16 * 60 + 30 <= current_minutes <= 23 * 60:
+        return "MARKET"
+
+    # After Hours
+    if current_minutes > 23 * 60 or current_minutes <= 3 * 60:
+        return "AFTER_HOURS"
+
+    return "OFF_HOURS"
+    
 # =========================
 # FETCH ASSETS FROM ALPACA
 # =========================
@@ -235,7 +257,11 @@ def fetch_master_list():
 
     snapshots = fetch_snapshots(symbols)
 
-    candidates = []
+market_mode = get_market_mode()
+
+print(f"🕒 Market mode: {market_mode}", flush=True)
+
+candidates = []
 
     for symbol, snap in snapshots.items():
         try:
@@ -250,7 +276,19 @@ def fetch_master_list():
                 or daily.get("c")
             )
 
-            volume = daily.get("v", 0) or 0
+            minute_volume = minute.get("v", 0) or 0
+daily_volume = daily.get("v", 0) or 0
+
+if market_mode in ["PREMARKET", "AFTER_HOURS"]:
+
+    volume = max(
+        minute_volume * 60,
+        daily_volume
+    )
+
+else:
+
+    volume = daily_volume
             prev_close = prev_daily.get("c")
             prev_volume = prev_daily.get("v", 0) or 0
 
@@ -269,8 +307,28 @@ def fetch_master_list():
             dollar_volume = price * volume
             rel_volume = volume / prev_volume if prev_volume > 0 else 1
 
-            if not liquidity_filter(price, volume, change_pct):
-                continue
+            if market_mode == "PREMARKET":
+
+    if (
+        volume < 25_000
+        and dollar_volume < 100_000
+        and change_pct < 2
+    ):
+        continue
+
+elif market_mode == "AFTER_HOURS":
+
+    if (
+        volume < 35_000
+        and dollar_volume < 150_000
+        and change_pct < 2
+    ):
+        continue
+
+else:
+
+    if not liquidity_filter(price, volume, change_pct):
+        continue
 
             score = (
                 abs(change_pct) * 2
