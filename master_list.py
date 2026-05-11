@@ -312,9 +312,8 @@ def fetch_master_list():
             if market_mode == "PREMARKET":
 
                 if (
-                    volume < 25_000
-                    and dollar_volume < 100_000
-                    and change_pct < 2
+                    dollar_volume < 50_000
+                    and abs(change_pct) < 1
                 ):
                     continue
 
