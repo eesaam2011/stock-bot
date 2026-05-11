@@ -229,11 +229,12 @@ def fetch_snapshots(symbols):
                     "feed": "iex"
                 },
                 timeout=20
+            ) 
+            
+            print(
+                f"DEBUG snapshot status={res.status_code} | text={res.text[:300]}",
+                flush=True
             )
-                print(
-                    f"DEBUG snapshot status={res.status_code} | text={res.text[:300]}",
-                    flush=True
-                )
 
             if res.status_code != 200:
 
