@@ -212,23 +212,37 @@ def fetch_alpaca_assets():
 # =========================
 
 def fetch_snapshots(symbols):
+
     url = f"{ALPACA_DATA_BASE}/v2/stocks/snapshots"
+
     all_data = {}
 
     for batch in chunk_list(symbols, 100):
+
         try:
+
             res = requests.get(
                 url,
                 headers=alpaca_headers(),
-                params={"symbols": ",".join(batch)},
+                params={
+                    "symbols": ",".join(batch),
+                    "feed": "iex"
+                },
                 timeout=20
             )
 
             if res.status_code != 200:
-                print("Snapshot error:", res.text[:200], flush=True)
+
+                print(
+                    "Snapshot error:",
+                    res.text[:200],
+                    flush=True
+                )
+
                 continue
 
             data = res.json()
+
             snapshots = data.get("snapshots", {})
 
             all_data.update(snapshots)
@@ -236,7 +250,13 @@ def fetch_snapshots(symbols):
             time.sleep(0.15)
 
         except Exception as e:
-            print("Snapshot batch error:", e, flush=True)
+
+            print(
+                "Snapshot batch error:",
+                e,
+                flush=True
+            )
+
             continue
 
     return all_data
