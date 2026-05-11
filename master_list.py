@@ -230,11 +230,6 @@ def fetch_snapshots(symbols):
                 },
                 timeout=20
             ) 
-            
-            print(
-                f"DEBUG snapshot status={res.status_code} | text={res.text[:300]}",
-                flush=True
-            )
 
             if res.status_code != 200:
 
@@ -248,7 +243,7 @@ def fetch_snapshots(symbols):
 
             data = res.json()
 
-            snapshots = data.get("snapshots", {})
+            snapshots = data.get("snapshots", data)
 
             all_data.update(snapshots)
 
@@ -281,7 +276,6 @@ def fetch_master_list():
     asset_map = {a["symbol"]: a for a in assets}
 
     snapshots = fetch_snapshots(symbols)
-    print(f"DEBUG snapshots received: {len(snapshots)}", flush=True)
    
     if not snapshots:
 
