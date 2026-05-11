@@ -311,26 +311,26 @@ def fetch_master_list():
 
             if market_mode == "PREMARKET":
 
-    if (
-        volume < 25_000
-        and dollar_volume < 100_000
-        and change_pct < 2
-    ):
-        continue
+                if (
+                    volume < 25_000
+                    and dollar_volume < 100_000
+                    and change_pct < 2
+                ):
+                    continue
 
-elif market_mode == "AFTER_HOURS":
+            elif market_mode == "AFTER_HOURS":
 
-    if (
-        volume < 35_000
-        and dollar_volume < 150_000
-        and change_pct < 2
-    ):
-        continue
+                if (
+                    volume < 35_000
+                    and dollar_volume < 150_000
+                    and change_pct < 2
+                ):
+                    continue
 
-else:
+            else:
 
-    if not liquidity_filter(price, volume, change_pct):
-        continue
+                if not liquidity_filter(price, volume, change_pct):
+                    continue
 
             score = (
                 abs(change_pct) * 2
