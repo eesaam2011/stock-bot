@@ -281,23 +281,11 @@ def fetch_master_list():
     if not snapshots:
 
         print(
-            "⚠️ Snapshots empty - using clean assets fallback list",
+            "⚠️ Snapshots empty - keeping previous master_list.json unchanged",
             flush=True
         )
 
-        fallback_symbols = symbols[:TOP_N]
-
-        print(
-            f"🔥 Fallback Master List: {len(fallback_symbols)} symbols",
-            flush=True
-        )
-
-        print(
-            f"Top 20 fallback: {fallback_symbols[:20]}",
-            flush=True
-        )
-
-        return fallback_symbols
+        return []
         
     market_mode = get_market_mode()
 
