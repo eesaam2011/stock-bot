@@ -814,7 +814,7 @@ def check_ready_entry(symbol, data):
         # استبعاد الأسهم الثقيلة بطيئة الاستجابة
         early_momentum_mode = False
 
-        if instant_rvol >= 4.5 and recent_move < 0.35:
+        if instant_rvol >= 3 and recent_move < 0.6:
             return None
 
         if (
