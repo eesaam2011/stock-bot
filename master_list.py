@@ -165,8 +165,6 @@ def fetch_alpaca_assets():
         name = a.get("name", "")
         exchange = a.get("exchange", "")
 
-        if exchange != "NASDAQ":
-            continue
 
         if not a.get("tradable", False):
             continue
