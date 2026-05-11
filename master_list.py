@@ -14,8 +14,8 @@ from flask import Flask
 PRICE_MIN = 0.4
 PRICE_MAX = 25.0
 
-MIN_TODAY_VOLUME = 50_000
-MIN_DOLLAR_VOLUME = 200_000
+MIN_TODAY_VOLUME = 150_000
+MIN_DOLLAR_VOLUME = 750_000
 
 TOP_N = 800
 RUN_INTERVAL = 900  # كل 15 دقيقة
@@ -257,13 +257,14 @@ def fetch_master_list():
 
     snapshots = fetch_snapshots(symbols)
 
-market_mode = get_market_mode()
+    market_mode = get_market_mode()
 
-print(f"🕒 Market mode: {market_mode}", flush=True)
+    print(f"🕒 Market mode: {market_mode}", flush=True)
 
-candidates = []
+    candidates = []
 
     for symbol, snap in snapshots.items():
+
         try:
             daily = snap.get("dailyBar") or {}
             prev_daily = snap.get("prevDailyBar") or {}
@@ -277,18 +278,19 @@ candidates = []
             )
 
             minute_volume = minute.get("v", 0) or 0
-daily_volume = daily.get("v", 0) or 0
+            daily_volume = daily.get("v", 0) or 0
 
-if market_mode in ["PREMARKET", "AFTER_HOURS"]:
+            if market_mode in ["PREMARKET", "AFTER_HOURS"]:
 
-    volume = max(
-        minute_volume * 60,
-        daily_volume
-    )
+                volume = max(
+                    minute_volume * 60,
+                    daily_volume
+                )
 
-else:
+            else:
 
-    volume = daily_volume
+                volume = daily_volume
+
             prev_close = prev_daily.get("c")
             prev_volume = prev_daily.get("v", 0) or 0
 
