@@ -579,20 +579,19 @@ def update_pending_behavior(symbol, price, instant_rvol, recent_move, volume_acc
 def clean_old_pending_watchlist():
 
     expired = []
-    now = datetime.now(saudi_tz)
+    now_ts = time.time()
 
-    for symbol, data in pending_watchlist.items():
+    for symbol, data in list(pending_watchlist.items()):
 
         try:
-            created_at = datetime.fromisoformat(
-                data["created_at"]
-            )
+            expires_at = float(data.get("expires_at", 0))
 
-            age_minutes = (
-                (now - created_at).total_seconds() / 60
-            )
+            if expires_at <= 0:
+                expires_at = float(data.get("first_seen", now_ts)) + (
+                    PENDING_MAX_AGE_MINUTES * 60
+                )
 
-            if age_minutes >= PENDING_MAX_AGE_MINUTES:
+            if now_ts >= expires_at:
                 expired.append(symbol)
 
         except Exception:
@@ -617,10 +616,26 @@ def save_pending_candidates_if_changed():
 
         simplified.append({
             "symbol": symbol,
-            "price": data.get("price", 0),
+            "first_price": data.get("first_price", 0),
+            "last_price": data.get("last_price", 0),
+            "best_price": data.get("best_price", 0),
             "reason": data.get("reason", ""),
-            "created_at": data.get("created_at", "")
+            "pending_score": data.get("pending_score", 0),
+            "status": data.get("status", ""),
+            "improve_count": data.get("improve_count", 0),
+            "weak_count": data.get("weak_count", 0),
+            "news_bonus": data.get("news_bonus", 0),
+            "first_seen": data.get("first_seen", 0),
+            "last_update": data.get("last_update", 0),
+            "expires_at": data.get("expires_at", 0),
+            "early_alert_sent": data.get("early_alert_sent", False)
         })
+
+    simplified = sorted(
+        simplified,
+        key=lambda x: x.get("pending_score", 0),
+        reverse=True
+    )
 
     current_json = json.dumps(
         simplified,
