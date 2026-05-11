@@ -256,7 +256,8 @@ def fetch_master_list():
     asset_map = {a["symbol"]: a for a in assets}
 
     snapshots = fetch_snapshots(symbols)
-
+    print(f"DEBUG snapshots received: {len(snapshots)}", flush=True)
+    
     market_mode = get_market_mode()
 
     print(f"🕒 Market mode: {market_mode}", flush=True)
