@@ -894,6 +894,17 @@ def check_ready_entry(symbol, data):
             pending_score = float(
                 pending_watchlist[symbol].get("pending_score", 50)
             )
+            pending = pending_watchlist.get(symbol, {})
+
+            if (
+                pending_score >= 75
+                and int(pending.get("improve_count", 0)) >= 2
+                and int(pending.get("weak_count", 0)) == 0
+                and not pending.get("early_alert_sent", False)
+            ):
+                early_momentum_mode = True
+                pending["early_alert_sent"] = True
+                pending_watchlist[symbol] = pending
 
             if pending_score < 40:
                 print(f"🧹 Removed weak pending: {symbol}", flush=True)
