@@ -1009,6 +1009,26 @@ def check_ready_entry(symbol, data):
             entry_stage = (
                 "🟢 CONFIRMED ENTRY - دخول مؤكد"
         )
+        if (
+            "LATE ENTRY RISK" in entry_stage
+            and not strong_explosion_candidate
+        ):
+            print(
+                f"❌ Rejected late entry risk: {symbol}",
+                flush=True
+            )
+            return None
+
+        if (
+            distribution_score >= 25
+            and not strong_candle
+            and not strong_explosion_candidate
+        ):
+            print(
+                f"❌ Rejected weak candle with distribution: {symbol}",
+                flush=True
+            )
+            return None
         ready_to_alert = (
             real_breakout
             or (
