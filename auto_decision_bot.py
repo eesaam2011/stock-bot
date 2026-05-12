@@ -1855,6 +1855,7 @@ def monitor_explosion_tracking():
 
             elif weak_behavior:
 
+                if data.get("last_status") != "WEAK":
                 msg = (
                     f"⚠️ *Explosion Weakness*\n\n"
                     f"🎫 `{symbol}`\n"
