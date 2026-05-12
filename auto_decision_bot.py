@@ -26,6 +26,7 @@ active_trades = {}
 explosion_tracking = {}
 last_saved_active_trades = ""
 pending_watchlist = {}
+momentum_watchlist = {}
 last_saved_pending_candidates = ""
 
 PRICE_MIN = 0.4
@@ -785,7 +786,27 @@ def detect_hidden_distribution(df, instant_rvol, recent_move, real_breakout):
             "distribution_reasons": []
         }
 
+def add_to_momentum_watch(symbol, price, reason=""):
+    symbol = str(symbol).upper().strip()
 
+    if symbol not in momentum_watchlist:
+        momentum_watchlist[symbol] = {
+            "symbol": symbol,
+            "first_price": float(price),
+            "last_price": float(price),
+            "best_price": float(price),
+            "reason": reason,
+            "checks": 0,
+            "started_at": time.time(),
+            "last_update": time.time(),
+            "confirmed": False
+        }
+
+        print(
+            f"🟠 Added momentum watch: {symbol} | {reason}",
+            flush=True
+        )
+        
 def check_ready_entry(symbol, data):
     try:
         df = get_alpaca_bars(symbol, minutes=120)
@@ -1152,6 +1173,22 @@ def check_ready_entry(symbol, data):
             return None 
             
         if not advanced_entry:
+
+            if (
+                ready_to_alert
+                and recent_move >= 0.70
+                and instant_rvol >= 2.2
+                and cp > vwap
+                and cp > ema9
+                and not fake_breakout_risk
+                and distribution_score < 35
+            ):
+                add_to_momentum_watch(
+                    symbol,
+                    cp,
+                    "اختراق أولي يحتاج تأكيد 3-10 دقائق"
+                )
+
             return None
 
         if sent_alerts.get(symbol):
@@ -1410,7 +1447,103 @@ def get_trade_age_minutes(trade):
     except Exception:
         return 0
 
+def monitor_momentum_watchlist():
 
+    global momentum_watchlist
+
+    for symbol, data in list(momentum_watchlist.items()):
+
+        try:
+            df = get_alpaca_bars(symbol, minutes=30)
+
+            if df.empty or len(df) < 10:
+                continue
+
+            cp = get_latest_price(symbol, df)
+
+            vwap = float(
+                (df["Close"] * df["Volume"]).sum()
+                / df["Volume"].sum()
+            )
+
+            df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+            ema9 = float(df["EMA9"].iloc[-1])
+
+            instant_rvol = (
+                df["Volume"].tail(3).mean()
+                / max(df["Volume"].mean(), 1)
+            )
+
+            last_close = float(df["Close"].iloc[-1])
+            last_high = float(df["High"].iloc[-1])
+            last_low = float(df["Low"].iloc[-1])
+
+            candle_range = last_high - last_low
+
+            if candle_range <= 0:
+                continue
+
+            close_position = (last_close - last_low) / candle_range
+            upper_wick_pct = (last_high - last_close) / candle_range
+
+            higher_low = (
+                df["Low"].iloc[-1] > df["Low"].iloc[-3]
+            )
+
+            confirmed = (
+                cp > vwap
+                and cp > ema9
+                and instant_rvol >= 2.0
+                and close_position >= 0.60
+                and upper_wick_pct <= 0.40
+                and higher_low
+            )
+
+            weak = (
+                cp < vwap
+                or cp < ema9
+                or instant_rvol < 1.3
+                or upper_wick_pct >= 0.55
+            )
+
+            data["checks"] = int(data.get("checks", 0)) + 1
+            data["last_price"] = float(cp)
+            data["best_price"] = max(float(data.get("best_price", cp)), float(cp))
+            data["last_update"] = time.time()
+
+            if confirmed and data["checks"] >= 2:
+                add_to_watchlist(
+                    symbol,
+                    "Momentum Confirmed بعد مراقبة 3-10 دقائق",
+                    cp
+                )
+
+                momentum_watchlist.pop(symbol, None)
+
+                print(
+                    f"✅ Momentum confirmed: {symbol}",
+                    flush=True
+                )
+
+                continue
+
+            if weak or data["checks"] >= 6:
+                momentum_watchlist.pop(symbol, None)
+
+                print(
+                    f"❌ Momentum watch removed: {symbol}",
+                    flush=True
+                )
+
+                continue
+
+            momentum_watchlist[symbol] = data
+
+        except Exception as e:
+            print(
+                f"Momentum watch error {symbol}: {e}",
+                flush=True
+            )
 def monitor_active_trades():
     global active_trades
 
@@ -1791,6 +1924,7 @@ while True:
         update_watchlist_from_bot2()
         self_scan_top_400()
         clean_old_watchlist()
+        monitor_momentum_watchlist()
         clean_old_pending_watchlist()
         save_pending_candidates_if_changed()
         print(f"📊 Bot 3 Watchlist size: {len(watchlist)}", flush=True)
