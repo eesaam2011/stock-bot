@@ -26,6 +26,7 @@ active_trades = {}
 explosion_tracking = {}
 last_saved_active_trades = ""
 pending_watchlist = {}
+momentum_watchlist = {}
 last_saved_pending_candidates = ""
 
 PRICE_MIN = 0.4
