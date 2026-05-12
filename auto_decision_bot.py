@@ -23,6 +23,7 @@ saudi_tz = pytz.timezone("Asia/Riyadh")
 watchlist = {}
 sent_alerts = {}
 active_trades = {}
+explosion_tracking = {}
 last_saved_active_trades = ""
 pending_watchlist = {}
 last_saved_pending_candidates = ""
@@ -1210,6 +1211,16 @@ def check_ready_entry(symbol, data):
 
         final_score = technical_score + bot2_bonus + news_bonus
         grade = grade_from_score(final_score)
+        strong_explosion_candidate = (
+            instant_rvol >= 3.5
+            and recent_move >= 1.2
+            and move_5m >= 0.60
+            and move_3m >= 0.30
+            and acceleration_ok
+            and strong_candle
+            and cp >= day_high * 0.985
+            and distribution_score < 25
+        )
 
         if grade not in ["A", "A+", "A++"]:
             return None
@@ -1278,6 +1289,7 @@ def check_ready_entry(symbol, data):
             f"💰 السعر: {entry:.2f}\n"
             f"🏆 التصنيف: {grade}\n\n"
             f"{signal_type}\n\n"
+            f"{'🔥 Strong Explosion Candidate - مرشح انفجار قوي جداً\\n\\n' if strong_explosion_candidate else ''}"
             f"📍 مرحلة الدخول: {entry_stage}\n"
             f"📡 المصدر:\n"
             f"{source_text}\n\n"
@@ -1335,6 +1347,18 @@ def check_ready_entry(symbol, data):
             "target2_alerted": False,
             "target3_alerted": False
         }
+        if strong_explosion_candidate:
+
+            explosion_tracking[symbol] = {
+                "entry": entry,
+                "last_update": time.time(),
+                "last_status": "STARTED"
+            }
+
+            print(
+                f"🔥 Explosion tracking started: {symbol}",
+                flush=True
+            )
 
         watchlist[symbol]["alerted"] = True
 
@@ -1577,7 +1601,131 @@ def monitor_active_trades():
             print(f"Monitor trade error {symbol}: {e}", flush=True)
             continue
 
+def monitor_explosion_tracking():
 
+    global explosion_tracking
+
+    for symbol, data in list(explosion_tracking.items()):
+
+        try:
+            df = get_alpaca_bars(symbol, minutes=30)
+
+            if df.empty or len(df) < 10:
+                continue
+
+            cp = get_latest_price(symbol, df)
+
+            entry = float(data["entry"])
+
+            gain_pct = (
+                (cp - entry) / entry
+            ) * 100
+
+            vwap = float(
+                (df["Close"] * df["Volume"]).sum()
+                / df["Volume"].sum()
+            )
+
+            df["EMA9"] = (
+                df["Close"]
+                .ewm(span=9, adjust=False)
+                .mean()
+            )
+
+            ema9 = float(df["EMA9"].iloc[-1])
+
+            rsi = calculate_rsi(df["Close"])
+
+            instant_rvol = (
+                df["Volume"].tail(3).mean()
+                / max(df["Volume"].mean(), 1)
+            )
+
+            last_close = float(df["Close"].iloc[-1])
+            last_high = float(df["High"].iloc[-1])
+            last_low = float(df["Low"].iloc[-1])
+
+            candle_range = last_high - last_low
+
+            if candle_range <= 0:
+                continue
+
+            close_position = (
+                (last_close - last_low)
+                / candle_range
+            )
+
+            strong_continuation = (
+                cp > vwap
+                and cp > ema9
+                and instant_rvol >= 2.0
+                and close_position >= 0.60
+                and rsi <= 82
+            )
+
+            weak_behavior = (
+                cp < vwap
+                or instant_rvol < 1.3
+                or close_position < 0.45
+            )
+
+            now_ts = time.time()
+
+            if (
+                now_ts - data.get("last_update", 0)
+            ) < 180:
+                continue
+
+            if strong_continuation:
+
+                msg = (
+                    f"🚀 *Explosion Update*\n\n"
+                    f"🎫 `{symbol}`\n"
+                    f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                    f"🔥 الزخم ما زال قوي\n"
+                    f"✅ فوق VWAP\n"
+                    f"✅ السيولة مستمرة\n"
+                    f"✅ احتمال استمرار الصعود قائم"
+                )
+
+                send_telegram_msg(msg)
+
+                data["last_status"] = "STRONG"
+
+            elif weak_behavior:
+
+                msg = (
+                    f"⚠️ *Explosion Weakness*\n\n"
+                    f"🎫 `{symbol}`\n"
+                    f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                    f"❌ ضعف واضح بالزخم\n"
+                    f"❌ السيولة تبرد\n"
+                    f"⚠️ راقب الخروج أو تشديد الوقف"
+                )
+
+                send_telegram_msg(msg)
+
+                data["last_status"] = "WEAK"
+
+            data["last_update"] = now_ts
+
+            explosion_tracking[symbol] = data
+
+            if weak_behavior and gain_pct < -3:
+
+                explosion_tracking.pop(symbol, None)
+
+                print(
+                    f"🧹 Explosion tracking removed: {symbol}",
+                    flush=True
+                )
+
+        except Exception as e:
+
+            print(
+                f"Explosion tracking error {symbol}: {e}",
+                flush=True
+            )
 def load_active_trades_from_gist():
     global active_trades
 
@@ -1625,6 +1773,7 @@ while True:
                 time.sleep(0.05)
 
         monitor_active_trades()
+        monitor_explosion_tracking()
 
         current_active_trades = json.dumps(
             active_trades,
