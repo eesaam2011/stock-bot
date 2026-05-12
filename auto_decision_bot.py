@@ -818,8 +818,22 @@ def check_ready_entry(symbol, data):
         ema20 = float(df["EMA20"].iloc[-1])
 
         rsi = calculate_rsi(df["Close"])
+
+        strong_explosion_candidate = False
+
         instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
         recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
+        move_3m = ((cp - df["Close"].iloc[-3]) / df["Close"].iloc[-3]) * 100
+        move_5m = ((cp - df["Close"].iloc[-5]) / df["Close"].iloc[-5]) * 100
+
+        strong_explosion_candidate = (
+            instant_rvol >= 5.0
+            and (
+                move_3m >= 2.0
+                or move_5m >= 3.5
+            )
+            and recent_move >= 1.2
+        )
         move_5m = ((cp - price_5min_ago) / price_5min_ago) * 100
         move_3m = ((cp - price_3min_ago) / price_3min_ago) * 100
 
