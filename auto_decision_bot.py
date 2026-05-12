@@ -26,7 +26,6 @@ active_trades = {}
 explosion_tracking = {}
 last_saved_active_trades = ""
 pending_watchlist = {}
-momentum_watchlist = {}
 last_saved_pending_candidates = ""
 
 PRICE_MIN = 0.4
@@ -1173,22 +1172,6 @@ def check_ready_entry(symbol, data):
             return None 
             
         if not advanced_entry:
-
-            if (
-                ready_to_alert
-                and recent_move >= 0.70
-                and instant_rvol >= 2.2
-                and cp > vwap
-                and cp > ema9
-                and not fake_breakout_risk
-                and distribution_score < 35
-            ):
-                add_to_momentum_watch(
-                    symbol,
-                    cp,
-                    "اختراق أولي يحتاج تأكيد 3-10 دقائق"
-                )
-
             return None
 
         if sent_alerts.get(symbol):
@@ -1398,6 +1381,16 @@ def check_ready_entry(symbol, data):
         )
 
         send_telegram_msg(msg)
+        momentum_watchlist[symbol] = {
+            "symbol": symbol,
+            "entry": entry,
+            "last_price": entry,
+            "best_price": entry,
+            "checks": 0,
+            "started_at": time.time(),
+            "last_update": time.time(),
+            "last_status": "POST_ALERT"
+        }
 
         sent_alerts[symbol] = {
             "time": time.time(),
