@@ -796,8 +796,16 @@ def check_ready_entry(symbol, data):
 
         day_high = float(df["High"].max())
         price_10min_ago = float(df["Close"].iloc[-10])
+        price_5min_ago = float(df["Close"].iloc[-5])
+        price_3min_ago = float(df["Close"].iloc[-3])
 
-        if cp <= 0 or day_high <= 0 or price_10min_ago <= 0:
+        if (
+            cp <= 0
+            or day_high <= 0
+            or price_10min_ago <= 0
+            or price_5min_ago <= 0
+            or price_3min_ago <= 0
+        ):
             return None
 
         vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
@@ -811,10 +819,31 @@ def check_ready_entry(symbol, data):
         rsi = calculate_rsi(df["Close"])
         instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
         recent_move = ((cp - price_10min_ago) / price_10min_ago) * 100
+        move_5m = ((cp - price_5min_ago) / price_5min_ago) * 100
+        move_3m = ((cp - price_3min_ago) / price_3min_ago) * 100
+
+        acceleration_ok = (
+            move_5m >= 0.45
+            and move_3m >= 0.25
+            and move_3m >= move_5m * 0.35
+        )
         # استبعاد الأسهم الثقيلة بطيئة الاستجابة
         early_momentum_mode = False
 
         if instant_rvol >= 3 and recent_move < 0.6:
+            return None
+            
+        if (
+            recent_move >= 0.70
+            and not acceleration_ok
+        ):
+            print(
+                f"❌ Rejected weak follow-through: {symbol} | "
+                f"10m={recent_move:.2f}% | "
+                f"5m={move_5m:.2f}% | "
+                f"3m={move_3m:.2f}%",
+                flush=True
+            )
             return None
 
         if (
@@ -1262,7 +1291,10 @@ def check_ready_entry(symbol, data):
             f"📊 القوة:\n"
             f"RSI: {rsi:.1f}\n"
             f"RVOL: {instant_rvol:.2f}x\n"
-            f"حركة 10د: {recent_move:.2f}%\n\n"
+            f"حركة 10د: {recent_move:.2f}%\n"
+            f"حركة 5د: {move_5m:.2f}%\n"
+            f"حركة 3د: {move_3m:.2f}%\n"
+            f"Acceleration OK: {acceleration_ok}\n\n"
             f"🧪 تأكيد الدخول:\n"
             f"Real Breakout: {real_breakout}\n"
             f"Volume Acceleration: {volume_acceleration}\n"
