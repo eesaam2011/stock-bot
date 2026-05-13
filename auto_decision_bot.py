@@ -1077,6 +1077,38 @@ def check_ready_entry(symbol, data):
                 flush=True
             )
             return None
+            if (
+            recent_move >= 2.0
+            and move_5m < 0.80
+            and move_3m < 0.30
+        ):
+            print(
+                f"❌ Momentum cooling after spike: {symbol}",
+                flush=True
+            )
+            return None
+
+        fresh_acceleration = (
+            move_3m >= move_5m * 0.60
+        )
+
+        if not fresh_acceleration:
+            print(
+                f"❌ Weak fresh acceleration: {symbol}",
+                flush=True
+            )
+            return None
+            
+        if (
+            close_position < 0.55
+            and recent_move >= 2.0
+        ):
+            print(
+                f"❌ Weak close after move: {symbol}",
+                flush=True
+            )
+            return None
+            
         ready_to_alert = (
             real_breakout
             or runner_escape_mode
