@@ -855,6 +855,17 @@ def check_ready_entry(symbol, data):
             )
             and recent_move >= 1.2
         )
+        
+        runner_escape_mode = (
+            instant_rvol >= 3.5
+            and recent_move >= 2.0
+            and move_3m >= 0.80
+            and move_5m >= 1.20
+            and cp > vwap
+            and cp > ema9
+            and rsi <= 82
+        )
+        
         move_5m = ((cp - price_5min_ago) / price_5min_ago) * 100
         move_3m = ((cp - price_3min_ago) / price_3min_ago) * 100
 
@@ -1047,6 +1058,7 @@ def check_ready_entry(symbol, data):
         if (
             "LATE ENTRY RISK" in entry_stage
             and not strong_explosion_candidate
+            and not runner_escape_mode
         ):
             print(
                 f"❌ Rejected late entry risk: {symbol}",
@@ -1058,6 +1070,7 @@ def check_ready_entry(symbol, data):
             distribution_score >= 25
             and not strong_candle
             and not strong_explosion_candidate
+            and not runner_escape_mode
         ):
             print(
                 f"❌ Rejected weak candle with distribution: {symbol}",
@@ -1066,6 +1079,7 @@ def check_ready_entry(symbol, data):
             return None
         ready_to_alert = (
             real_breakout
+            or runner_escape_mode
             or (
                 instant_rvol >= 2.5
                 and recent_move >= 0.65
@@ -1331,12 +1345,14 @@ def check_ready_entry(symbol, data):
         dist_reasons_text = (
             ", ".join(distribution_reasons[:3])
             if distribution_reasons else "None"
-        )
-        signal_type = (
-            "🟡 EARLY MOMENTUM - دخول مبكر"
-            if early_momentum_mode
-            else "✅ دخول مؤكد"
-        )
+        if runner_escape_mode:
+            signal_type = "🔥 RUNNER ESCAPE - انفجار سريع"
+
+        elif early_momentum_mode:
+            signal_type = "🟡 EARLY MOMENTUM - دخول مبكر"
+
+        else:
+            signal_type = "✅ دخول مؤكد"
 
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
