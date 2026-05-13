@@ -1775,12 +1775,9 @@ def monitor_explosion_tracking():
                 continue
 
             cp = get_latest_price(symbol, df)
-
             entry = float(data["entry"])
 
-            gain_pct = (
-                (cp - entry) / entry
-            ) * 100
+            gain_pct = ((cp - entry) / entry) * 100
 
             vwap = float(
                 (df["Close"] * df["Volume"]).sum()
@@ -1794,7 +1791,6 @@ def monitor_explosion_tracking():
             )
 
             ema9 = float(df["EMA9"].iloc[-1])
-
             rsi = calculate_rsi(df["Close"])
 
             instant_rvol = (
@@ -1811,10 +1807,7 @@ def monitor_explosion_tracking():
             if candle_range <= 0:
                 continue
 
-            close_position = (
-                (last_close - last_low)
-                / candle_range
-            )
+            close_position = (last_close - last_low) / candle_range
 
             strong_continuation = (
                 cp > vwap
@@ -1832,9 +1825,7 @@ def monitor_explosion_tracking():
 
             now_ts = time.time()
 
-            if (
-                now_ts - data.get("last_update", 0)
-            ) < 180:
+            if (now_ts - data.get("last_update", 0)) < 180:
                 continue
 
             if strong_continuation:
@@ -1853,9 +1844,10 @@ def monitor_explosion_tracking():
 
                 data["last_status"] = "STRONG"
 
-                elif weak_behavior:
+            elif weak_behavior:
 
-                    if data.get("last_status") != "WEAK":
+                if data.get("last_status") != "WEAK":
+
                     msg = (
                         f"⚠️ *Explosion Weakness*\n\n"
                         f"🎫 `{symbol}`\n"
@@ -1865,17 +1857,17 @@ def monitor_explosion_tracking():
                         f"⚠️ راقب الخروج أو تشديد الوقف"
                     )
 
-                send_telegram_msg(msg)
+                    send_telegram_msg(msg)
 
-                data["last_status"] = "WEAK"
+                    data["last_status"] = "WEAK"
 
-                data["last_update"] = now_ts
+            data["last_update"] = now_ts
 
-                explosion_tracking[symbol] = data
+            explosion_tracking[symbol] = data
 
-                if weak_behavior and gain_pct < -3:
+            if weak_behavior and gain_pct < -3:
 
-                    explosion_tracking.pop(symbol, None)
+                explosion_tracking.pop(symbol, None)
 
                 print(
                     f"🧹 Explosion tracking removed: {symbol}",
@@ -1888,6 +1880,7 @@ def monitor_explosion_tracking():
                 f"Explosion tracking error {symbol}: {e}",
                 flush=True
             )
+
 def load_active_trades_from_gist():
     global active_trades
 
