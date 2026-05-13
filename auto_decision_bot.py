@@ -1855,15 +1855,15 @@ def monitor_explosion_tracking():
 
             elif weak_behavior:
 
-            if data.get("last_status") != "WEAK":
-                msg = (
-                    f"⚠️ *Explosion Weakness*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
-                    f"❌ ضعف واضح بالزخم\n"
-                    f"❌ السيولة تبرد\n"
-                    f"⚠️ راقب الخروج أو تشديد الوقف"
-                )
+                 if data.get("last_status") != "WEAK":
+                    msg = (
+                        f"⚠️ *Explosion Weakness*\n\n"
+                        f"🎫 `{symbol}`\n"
+                        f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                        f"❌ ضعف واضح بالزخم\n"
+                        f"❌ السيولة تبرد\n"
+                        f"⚠️ راقب الخروج أو تشديد الوقف"
+                    )
 
                 send_telegram_msg(msg)
 
