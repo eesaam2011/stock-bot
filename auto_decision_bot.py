@@ -1345,6 +1345,7 @@ def check_ready_entry(symbol, data):
         dist_reasons_text = (
             ", ".join(distribution_reasons[:3])
             if distribution_reasons else "None"
+        )
         if runner_escape_mode:
             signal_type = "🔥 RUNNER ESCAPE - انفجار سريع"
 
