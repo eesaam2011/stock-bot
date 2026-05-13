@@ -1869,13 +1869,13 @@ def monitor_explosion_tracking():
 
                 data["last_status"] = "WEAK"
 
-            data["last_update"] = now_ts
+                data["last_update"] = now_ts
 
-            explosion_tracking[symbol] = data
+                explosion_tracking[symbol] = data
 
-            if weak_behavior and gain_pct < -3:
+                if weak_behavior and gain_pct < -3:
 
-                explosion_tracking.pop(symbol, None)
+                    explosion_tracking.pop(symbol, None)
 
                 print(
                     f"🧹 Explosion tracking removed: {symbol}",
