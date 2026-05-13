@@ -1076,8 +1076,8 @@ def check_ready_entry(symbol, data):
                 f"❌ Rejected weak candle with distribution: {symbol}",
                 flush=True
             )
-            return None
-            if (
+            eturn None
+         if (
             recent_move >= 2.0
             and move_5m < 0.80
             and move_3m < 0.30
