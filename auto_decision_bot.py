@@ -1119,7 +1119,32 @@ def check_ready_entry(symbol, data):
                 flush=True
             )
             return None
-            
+
+# منع الأسهم التي تملك سيولة قوية لكن السعر لم يعد يستجيب
+
+        if (
+            instant_rvol >= 4
+            and move_3m < move_5m
+            and move_5m < recent_move
+        ):
+            print(
+                f"❌ Momentum fading: {symbol}",
+                flush=True
+            )
+            return None
+
+
+        # منع ارتفاع RVOL مع ضعف التقدم السعري
+
+        if (
+            instant_rvol >= 5
+            and recent_move < 1.8
+        ):
+            print(
+                f"❌ High RVOL weak response: {symbol}",
+                flush=True
+            )
+            return None                
         ready_to_alert = (
             real_breakout
             or runner_escape_mode
