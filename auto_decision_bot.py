@@ -1144,10 +1144,24 @@ def check_ready_entry(symbol, data):
                 f"❌ High RVOL weak response: {symbol}",
                 flush=True
             )
-            return None                
+            return None  
+            scenario_explosion_setup = (
+            instant_rvol >= 3.0
+            and recent_move >= 1.0
+            and move_3m >= 0.35
+            and move_5m >= 0.70
+            and move_3m >= move_5m * 0.50
+            and cp > vwap
+            and cp > ema9
+            and close_position >= 0.60
+            and distribution_score < 30
+            and rsi <= 78
+        )
+            
         ready_to_alert = (
             real_breakout
             or runner_escape_mode
+            or scenario_explosion_setup
             or (
                 instant_rvol >= 2.5
                 and recent_move >= 0.65
@@ -1416,6 +1430,9 @@ def check_ready_entry(symbol, data):
         )
         if runner_escape_mode:
             signal_type = "🔥 RUNNER ESCAPE - انفجار سريع"
+
+        elif scenario_explosion_setup:
+            signal_type = "🎯 SCENARIO ALERT - سيناريو انفجار محتمل"
 
         elif early_momentum_mode:
             signal_type = "🟡 EARLY MOMENTUM - دخول مبكر"
