@@ -25,14 +25,14 @@ saudi_tz = pytz.timezone("Asia/Riyadh")
 PRICE_MIN = 1.0
 PRICE_MAX = 15.0
 
-WEEKEND_TOP_N = 500
-NEWS_TOP_N = 50
+WEEKEND_TOP_N = 700
+NEWS_TOP_N = 100
 FINAL_MAX_PICKS = 5
 FINAL_MIN_PICKS = 3
 
 SCAN_INTERVAL = 900
 MONITOR_INTERVAL = 4 * 60 * 60
-
+last_deep_close_recheck_date = ""
 THURSDAY_ALERT_HOUR = 16
 THURSDAY_ALERT_MINUTE = 0
 
@@ -450,7 +450,69 @@ def investment_score(symbol, use_news=False, deep=False):
             return None
 
         score = 0
+        # =========================
+        # قوة الثبات والاستمرار
+        # =========================
+
+        if cp > sma20:
+            score += 8
+
+        if cp > sma50:
+            score += 10
+
+        if close_position >= 0.70:
+            score += 8
+
+        if recent_move >= 3:
+            score += 5
+
+        if recent_move >= 8:
+            score -= 12
+
+        if rsi >= 82:
+            score -= 15
+
+        if instant_rvol >= 2 and recent_move < 2:
+            score += 6
+
+        if instant_rvol >= 5 and recent_move < 1:
+            score -= 10
         reasons = []
+        # =========================
+        # قوة الثبات والاستمرار
+        # =========================
+
+        if cp > sma20:
+            score += 8
+            reasons.append("فوق SMA20")
+
+        if cp > sma50:
+            score += 10
+            reasons.append("فوق SMA50")
+
+        if close_position >= 0.70:
+            score += 8
+            reasons.append("إغلاق قوي")
+
+        if recent_move >= 3:
+            score += 5
+            reasons.append("حركة جيدة")
+
+        if recent_move >= 8:
+            score -= 12
+            reasons.append("حركة مبالغ فيها")
+
+        if rsi >= 82:
+            score -= 15
+            reasons.append("RSI مرتفع جدًا")
+
+        if instant_rvol >= 2 and recent_move < 2:
+            score += 6
+            reasons.append("سيولة هادئة")
+
+        if instant_rvol >= 5 and recent_move < 1:
+            score -= 10
+            reasons.append("سيولة بدون استجابة")
 
         if price > sma20:
             score += 12
@@ -979,7 +1041,28 @@ def run_scheduler():
     if should_monitor:
         monitor_active_picks()
 
+def should_run_deep_close_recheck():
+    global last_deep_close_recheck_date
 
+    now = datetime.now(saudi_tz)
+    today = now.strftime("%Y-%m-%d")
+
+    # Tuesday = 1, Wednesday = 2
+    if now.weekday() not in [1, 2]:
+        return False
+
+    current_minutes = now.hour * 60 + now.minute
+
+    # around 11 PM Saudi time
+    if not (22 * 60 + 55 <= current_minutes <= 23 * 60 + 20):
+        return False
+
+    if last_deep_close_recheck_date == today:
+        return False
+
+    last_deep_close_recheck_date = today
+    return True
+    
 threading.Thread(target=run_web_server, daemon=True).start()
 
 load_active_picks_from_gist()
@@ -990,6 +1073,11 @@ send_telegram_msg("📈 *Investment Bot - البوت الاستثماري*\n\nت
 while True:
     try:
         run_scheduler()
+
+        if should_run_deep_close_recheck():
+            print("🔍 Running deep close recheck", flush=True)
+            run_scheduler()
+
         time.sleep(SCAN_INTERVAL)
 
     except Exception as e:
