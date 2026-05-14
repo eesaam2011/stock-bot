@@ -1114,11 +1114,11 @@ def check_ready_entry(symbol, data):
             and move_3m < move_5m
             and move_5m < move_10m
         ):
-    print(
-        f"❌ Momentum fading: {symbol}",
-        flush=True
-    )
-    return None
+            print(
+                f"❌ Momentum fading: {symbol}",
+                flush=True
+            )
+            return None
             
         ready_to_alert = (
             real_breakout
