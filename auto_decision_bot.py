@@ -1157,6 +1157,22 @@ def check_ready_entry(symbol, data):
             and distribution_score < 30
             and rsi <= 78
         )
+        
+        # منع Runner Escape المتأخر أو الضعيف
+
+        if (
+            runner_escape_mode
+            and (
+                "LATE ENTRY RISK" in entry_stage
+                or not strong_candle
+                or not real_breakout
+            )
+        ):
+            print(
+                f"❌ Rejected weak Runner Escape: {symbol}",
+                flush=True
+            )
+            return None
             
         ready_to_alert = (
             real_breakout
