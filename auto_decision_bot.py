@@ -1234,7 +1234,30 @@ def check_ready_entry(symbol, data):
                 flush=True
             )
             return None
-            
+
+        # =================================
+        # رفض الأسهم البطيئة الثقيلة
+        # =================================
+
+        slow_grind = (
+            instant_rvol >= 2.5
+            and recent_move <= 2
+            and move_3m <= 1.5
+            and close_position < 0.85
+        )
+
+        if (
+            slow_grind
+            and not scenario_explosion_setup
+            and not runner_escape_mode
+            and not strong_explosion_candidate
+        ):
+            print(
+                f"❌ Slow grind / weak expansion: {symbol}",
+                flush=True
+            )
+            return None
+    
         ready_to_alert = (
             real_breakout
             or runner_escape_mode
