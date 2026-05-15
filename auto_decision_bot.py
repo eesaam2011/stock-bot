@@ -1601,7 +1601,9 @@ def check_ready_entry(symbol, data):
         }
 
         active_trades[symbol] = {
-            "entry": entry,
+        "entry": entry,
+        "entry_time": time.time(),
+        "signal_type": "SCENARIO_ALERT" if scenario_explosion_setup else signal_type,
             "t1": t1,
             "t2": t2,
             "t3": t3,
@@ -1761,6 +1763,15 @@ def monitor_active_trades():
 
             gain_pct = ((cp - entry) / entry) * 100
             age_minutes = get_trade_age_minutes(trade)
+            move_3m = 0
+
+        try:
+            price_3min_ago = float(df["Close"].iloc[-3])
+        if price_3min_ago > 0:
+            move_3m = ((cp - price_3min_ago) / price_3min_ago) * 100
+            except Exception:
+            move_3m = 0
+            
             # =========================
             # REMOVE OLD TRADES AFTER 3 DAYS
             # =========================
@@ -1789,6 +1800,58 @@ def monitor_active_trades():
             candle_range = last_high - last_low
             close_position = ((last_close - last_low) / candle_range) if candle_range > 0 else 0.5
             upper_wick_pct = ((last_high - last_close) / candle_range) if candle_range > 0 else 0.5
+            
+            # =================================
+            # Scenario Explosion Failed
+            # =================================
+
+            if trade.get("signal_type") == "SCENARIO_ALERT":
+
+                entry_time = trade.get(
+                    "entry_time",
+                    trade.get("time", time.time())
+                )
+
+                minutes_alive = (
+                    time.time() - float(entry_time)
+                ) / 60
+
+                failed_scenario = (
+                    minutes_alive >= 10
+                    and gain_pct < 1.0
+                    and (
+                        cp < vwap
+                        or cp < ema9
+                        or move_3m < 0.30
+                    )
+                )
+
+                if (
+                    failed_scenario
+                    and not trade.get(
+                        "scenario_failed_alert"
+                    )
+                ):
+
+                    if can_send_trade_alerts():
+
+                        msg = (
+                            f"⚠️ *Bot 3 - فشل سيناريو الانفجار*\n\n"
+                            f"🎫 السهم: `{symbol}`\n"
+                            f"💰 السعر الحالي: {cp:.2f}\n"
+                            f"🚀 الدخول: {entry:.2f}\n"
+                            f"📊 الربح الحالي: {gain_pct:.2f}%\n"
+                            f"⏱️ مدة المتابعة: "
+                            f"{minutes_alive:.0f} دقيقة\n\n"
+                            f"❌ السهم لم يؤكد الانفجار "
+                            f"بعد 10 دقائق\n"
+                            f"⚠️ يفضل تشديد الوقف "
+                            f"أو الخروج حسب الشارت"
+                        )
+
+                        send_telegram_msg(msg)
+
+                    trade["scenario_failed_alert"] = True
 
             strong_momentum_after_target = (
                 cp > vwap
@@ -1798,6 +1861,44 @@ def monitor_active_trades():
                 and close_position >= 0.55
                 and upper_wick_pct <= 0.45
             )
+            # =================================
+        # Scenario Explosion Failed
+        # =================================
+
+        if trade.get("signal_type") == "SCENARIO_ALERT":
+
+            entry_time = trade.get("entry_time", time.time())
+
+            minutes_alive = (
+                time.time() - entry_time
+            ) / 60
+
+            failed_scenario = (
+
+                minutes_alive >= 10
+
+                and gain_pct < 1.0
+
+                and (
+                    current_price < vwap
+                    or current_price < ema9
+                    or move_3m < 0.30
+                )
+            )
+
+            if (
+                failed_scenario
+                and not trade.get("scenario_failed_alert")
+            ):
+
+                send_telegram_message(
+                    f"⚠️ سيناريو انفجار فشل: {symbol}\n\n"
+                    f"السعر الحالي: {current_price:.2f}\n"
+                    f"الربح الحالي: {gain_pct:.2f}%\n"
+                    f"السهم لم يؤكد الانفجار بعد 10 دقائق."
+                )
+
+                trade["scenario_failed_alert"] = True
 
             if cp <= sl and not trade.get("stop_alerted", False):
                 if can_send_trade_alerts():
