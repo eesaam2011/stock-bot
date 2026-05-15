@@ -878,7 +878,13 @@ def check_ready_entry(symbol, data):
         early_momentum_mode = False
 
         if instant_rvol >= 3 and recent_move < 0.6:
-            symbol, cp, "RVOL عالي لكن السعر لم يستجب بعد")
+
+            add_to_momentum_watch(
+                symbol,
+                cp,
+                "RVOL عالي لكن السعر لم يستجب بعد"
+            )
+
             return None
             
         if (
@@ -1554,6 +1560,7 @@ def check_ready_entry(symbol, data):
 
             explosion_tracking[symbol] = {
                 "entry": entry,
+                "start_time": time.time(),
                 "last_update": time.time(),
                 "last_status": "STARTED"
             }
