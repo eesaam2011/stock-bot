@@ -450,34 +450,7 @@ def investment_score(symbol, use_news=False, deep=False):
             return None
 
         score = 0
-        # =========================
-        # قوة الثبات والاستمرار
-        # =========================
-
-        if cp > sma20:
-            score += 8
-
-        if cp > sma50:
-            score += 10
-
-        if close_position >= 0.70:
-            score += 8
-
-        if recent_move >= 3:
-            score += 5
-
-        if recent_move >= 8:
-            score -= 12
-
-        if rsi >= 82:
-            score -= 15
-
-        if instant_rvol >= 2 and recent_move < 2:
-            score += 6
-
-        if instant_rvol >= 5 and recent_move < 1:
-            score -= 10
-        reasons = []
+        
         # =========================
         # قوة الثبات والاستمرار
         # =========================
