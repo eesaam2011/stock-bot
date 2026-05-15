@@ -1199,6 +1199,41 @@ def check_ready_entry(symbol, data):
                 flush=True
             )
             return None
+
+        # =========================
+        # منع الاختراقات البطيئة / المملة
+        # =========================
+
+        if (
+            not scenario_explosion_setup
+            and not runner_escape_mode
+            and not strong_explosion_candidate
+            and recent_move < 1.20
+            and move_3m < 0.80
+        ):
+            print(
+                f"❌ Slow breakout rejected: {symbol}",
+                flush=True
+            )
+            return None
+
+
+        # =========================
+        # منع الزخم الذي لا يتسارع الآن
+        # =========================
+
+        if (
+            not scenario_explosion_setup
+            and not runner_escape_mode
+            and not strong_explosion_candidate
+            and move_5m > 0
+            and move_3m < move_5m * 0.75
+        ):
+            print(
+                f"❌ Not enough current acceleration: {symbol}",
+                flush=True
+            )
+            return None
             
         ready_to_alert = (
             real_breakout
