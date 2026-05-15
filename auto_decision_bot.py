@@ -1120,7 +1120,7 @@ def check_ready_entry(symbol, data):
             )
             return None
 
-# منع الأسهم التي تملك سيولة قوية لكن السعر لم يعد يستجيب
+        # منع الأسهم التي تملك سيولة قوية لكن السعر لم يعد يستجيب
 
         if (
             instant_rvol >= 4
@@ -1144,8 +1144,12 @@ def check_ready_entry(symbol, data):
                 f"❌ High RVOL weak response: {symbol}",
                 flush=True
             )
-            return None  
-            scenario_explosion_setup = (
+            return None
+
+
+        # سيناريو انفجار محتمل
+
+        scenario_explosion_setup = (
             instant_rvol >= 3.0
             and recent_move >= 1.0
             and move_3m >= 0.35
@@ -1157,7 +1161,8 @@ def check_ready_entry(symbol, data):
             and distribution_score < 30
             and rsi <= 78
         )
-        
+
+
         # منع Runner Escape المتأخر أو الضعيف
 
         if (
@@ -1170,6 +1175,20 @@ def check_ready_entry(symbol, data):
         ):
             print(
                 f"❌ Rejected weak Runner Escape: {symbol}",
+                flush=True
+            )
+            return None
+
+
+        # منع التنبيه بعد شمعة انفجار كبيرة خلال آخر 3 دقائق
+
+        if (
+            move_3m >= 6.0
+            and recent_move >= 1.5
+            and not scenario_explosion_setup
+        ):
+            print(
+                f"❌ Too late after 3m spike: {symbol}",
                 flush=True
             )
             return None
