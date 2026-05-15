@@ -455,11 +455,11 @@ def investment_score(symbol, use_news=False, deep=False):
         # قوة الثبات والاستمرار
         # =========================
 
-        if cp > sma20:
+        if price > sma20:
             score += 8
             reasons.append("فوق SMA20")
 
-        if cp > sma50:
+        if price > sma50:
             score += 10
             reasons.append("فوق SMA50")
 
