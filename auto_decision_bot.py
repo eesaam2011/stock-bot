@@ -855,7 +855,7 @@ def check_ready_entry(symbol, data):
             )
             and recent_move >= 1.2
         )
-        
+        scenario_explosion_setup = False
         runner_escape_mode = (
             instant_rvol >= 3.5
             and recent_move >= 2.0
