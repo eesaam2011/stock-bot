@@ -1765,12 +1765,17 @@ def monitor_active_trades():
             age_minutes = get_trade_age_minutes(trade)
             move_3m = 0
 
-        try:
-            price_3min_ago = float(df["Close"].iloc[-3])
-        if price_3min_ago > 0:
-            move_3m = ((cp - price_3min_ago) / price_3min_ago) * 100
+            try:
+                price_3min_ago = float(df["Close"].iloc[-3])
+
+                if price_3min_ago > 0:
+                    move_3m = (
+                        (cp - price_3min_ago)
+                        / price_3min_ago
+                    ) * 100
+
             except Exception:
-            move_3m = 0
+                move_3m = 0
             
             # =========================
             # REMOVE OLD TRADES AFTER 3 DAYS
