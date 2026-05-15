@@ -878,6 +878,7 @@ def check_ready_entry(symbol, data):
         early_momentum_mode = False
 
         if instant_rvol >= 3 and recent_move < 0.6:
+            symbol, cp, "RVOL عالي لكن السعر لم يستجب بعد")
             return None
             
         if (
