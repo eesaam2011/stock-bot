@@ -900,12 +900,6 @@ def check_ready_entry(symbol, data):
             )
             return None
 
-        if (
-            instant_rvol >= 3.0
-            and recent_move < 0.60
-        ):
-            early_momentum_mode = True
-
         recent_highs = df["High"].tail(10)
         touches = (recent_highs >= day_high * 0.995).sum()
 
