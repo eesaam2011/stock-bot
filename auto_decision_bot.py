@@ -1119,7 +1119,7 @@ def check_ready_entry(symbol, data):
         if (
             recent_move >= 2.0
             and move_3m < move_5m
-            and move_5m < move_10m
+            and move_5m < recent_move
         ):
             print(
                 f"❌ Momentum fading: {symbol}",
