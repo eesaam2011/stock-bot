@@ -1158,7 +1158,7 @@ def check_ready_entry(symbol, data):
             and move_3m >= move_5m * 0.50
             and cp > vwap
             and cp > ema9
-            and close_position >= 0.60
+            and close_position >= 0.70
             and distribution_score < 30
             and rsi <= 78
             and volume_acceleration
@@ -1267,6 +1267,8 @@ def check_ready_entry(symbol, data):
                 and ema9 >= ema20 * 0.995
                 and volume_acceleration
                 and strong_candle
+                and close_position >= 0.70
+                and upper_wick_pct <= 0.30
                 and (vwap_reclaim or ema_reclaim)
                 and not fake_breakout_risk
             )
@@ -1329,9 +1331,10 @@ def check_ready_entry(symbol, data):
         if (
             "EARLY BREAKOUT" in entry_stage
             and (
-                not strong_candle
-                or not vwap_reclaim
-                or not ema_reclaim
+                not strong_candle or (
+                not vwap_reclaim
+                and not ema_reclaim
+                )
             )
             and distribution_score >= 15
         ):
