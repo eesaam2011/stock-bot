@@ -1810,7 +1810,7 @@ def monitor_active_trades():
             # Scenario Explosion Failed
             # =================================
 
-            if trade.get("signal_type") == "SCENARIO_ALERT":
+                if trade.get("signal_type") == "SCENARIO_ALERT":
 
                 entry_time = trade.get(
                     "entry_time",
@@ -1828,13 +1828,6 @@ def monitor_active_trades():
                         cp < vwap
                         or cp < ema9
                         or move_3m < 0.30
-                    )
-                )
-
-                if (
-                    failed_scenario
-                    and not trade.get(
-                        "scenario_failed_alert"
                     )
                 ):
 
