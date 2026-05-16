@@ -1831,20 +1831,21 @@ def monitor_active_trades():
                     )
                 )
 
-                    if can_send_trade_alerts():
+                if (
+                    failed_scenario
+                    and not trade.get("scenario_failed_alert")
+                ):
 
+                    if can_send_trade_alerts():
                         msg = (
                             f"⚠️ *Bot 3 - فشل سيناريو الانفجار*\n\n"
                             f"🎫 السهم: `{symbol}`\n"
                             f"💰 السعر الحالي: {cp:.2f}\n"
                             f"🚀 الدخول: {entry:.2f}\n"
                             f"📊 الربح الحالي: {gain_pct:.2f}%\n"
-                            f"⏱️ مدة المتابعة: "
-                            f"{minutes_alive:.0f} دقيقة\n\n"
-                            f"❌ السهم لم يؤكد الانفجار "
-                            f"بعد 10 دقائق\n"
-                            f"⚠️ يفضل تشديد الوقف "
-                            f"أو الخروج حسب الشارت"
+                            f"⏱️ مدة المتابعة: {minutes_alive:.0f} دقيقة\n\n"
+                            f"❌ السهم لم يؤكد الانفجار بعد 10 دقائق\n"
+                            f"⚠️ يفضل تشديد الوقف أو الخروج حسب الشارت"
                         )
 
                         send_telegram_msg(msg)
