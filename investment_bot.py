@@ -450,6 +450,7 @@ def investment_score(symbol, use_news=False, deep=False):
             return None
 
         score = 0
+        reasons = []
         
         # =========================
         # قوة الثبات والاستمرار
