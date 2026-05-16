@@ -1810,7 +1810,7 @@ def monitor_active_trades():
             # Scenario Explosion Failed
             # =================================
 
-                if trade.get("signal_type") == "SCENARIO_ALERT":
+            if trade.get("signal_type") == "SCENARIO_ALERT":
 
                 entry_time = trade.get(
                     "entry_time",
@@ -1829,7 +1829,7 @@ def monitor_active_trades():
                         or cp < ema9
                         or move_3m < 0.30
                     )
-                ):
+                )
 
                     if can_send_trade_alerts():
 
@@ -1859,59 +1859,6 @@ def monitor_active_trades():
                 and close_position >= 0.55
                 and upper_wick_pct <= 0.45
             )
-            # =================================
-        # Scenario Explosion Failed
-        # =================================
-
-        if trade.get("signal_type") == "SCENARIO_ALERT":
-
-            entry_time = trade.get("entry_time", time.time())
-
-            minutes_alive = (
-                time.time() - entry_time
-            ) / 60
-
-            failed_scenario = (
-
-                minutes_alive >= 10
-
-                and gain_pct < 1.0
-
-                and (
-                    current_price < vwap
-                    or current_price < ema9
-                    or move_3m < 0.30
-                )
-            )
-
-            if (
-                failed_scenario
-                and not trade.get("scenario_failed_alert")
-            ):
-
-                send_telegram_message(
-                    f"⚠️ سيناريو انفجار فشل: {symbol}\n\n"
-                    f"السعر الحالي: {current_price:.2f}\n"
-                    f"الربح الحالي: {gain_pct:.2f}%\n"
-                    f"السهم لم يؤكد الانفجار بعد 10 دقائق."
-                )
-
-                trade["scenario_failed_alert"] = True
-
-            if cp <= sl and not trade.get("stop_alerted", False):
-                if can_send_trade_alerts():
-                    msg = (
-                        f"🛑 *Bot 3 - خروج وقف الخسارة*\n\n"
-                        f"🎫 السهم: `{symbol}`\n"
-                        f"💰 السعر الحالي: {cp:.2f}\n"
-                        f"🚀 الدخول: {entry:.2f}\n"
-                        f"🛑 الوقف: {sl:.2f}"
-                    )
-                    send_telegram_msg(msg)
-
-                trade["stop_alerted"] = True
-                active_trades.pop(symbol, None)
-                continue
 
             # =========================
             # SMART TRADE FOLLOW-UP
