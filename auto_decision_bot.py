@@ -1161,6 +1161,8 @@ def check_ready_entry(symbol, data):
             and close_position >= 0.60
             and distribution_score < 30
             and rsi <= 78
+            and volume_acceleration
+            and strong_candle
         )
 
 
