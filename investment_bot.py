@@ -982,9 +982,53 @@ def run_scheduler():
     today = now.strftime("%Y-%m-%d")
     state = load_state()
 
+    # =================================
+    # Weekend Build (Morning)
+    # =================================
+
     if now.weekday() in [4, 5, 6]:
+
         if state.get("last_weekend_build") != today:
+
             build_weekend_500()
+
+    # =================================
+    # Weekend Rebuild (12 PM Saudi)
+    # =================================
+
+    if now.weekday() in [4, 5, 6]:
+
+        current_minutes = (
+            now.hour * 60 + now.minute
+        )
+
+        rebuild_window = (
+            12 * 60 <= current_minutes <= 12 * 60 + 20
+        )
+
+        if rebuild_window:
+
+            last_rebuild = state.get(
+                "last_weekend_midday_rebuild",
+                ""
+            )
+
+            if last_rebuild != today:
+
+                print(
+                    "🔄 Weekend midday rebuild started",
+                    flush=True
+                )
+
+                build_weekend_500()
+
+                state = load_state()
+
+                state[
+                    "last_weekend_midday_rebuild"
+                ] = today
+
+                save_state(state)
 
     if now.weekday() in [0, 1]:
         if state.get("last_deep_review") != today:
