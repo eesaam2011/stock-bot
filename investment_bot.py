@@ -925,14 +925,52 @@ def monitor_active_picks():
                 alerts["target1"] = True
 
             if price >= t2 and not alerts.get("target2"):
+
+                smart_continue = (
+                    price > sma20
+                    and rsi <= 72
+                    and news_grade != "NEGATIVE"
+                    and gain >= 20
+                )
+
+                if smart_continue:
+
+                    new_stop = max(t1, price * 0.92)
+
+                    p["stop"] = round(new_stop, 4)
+
+                    action_text = (
+                        f"🔥 السهم ما زال قويًا بعد هدف 2\n"
+                        f"✅ السعر فوق SMA20\n"
+                        f"✅ RSI ما زال صحي\n"
+                        f"✅ لا يوجد خبر سلبي\n\n"
+                        f"📌 الأفضل: الاستمرار مع رفع الوقف\n"
+                        f"🔒 الوقف المقترح الآن: {new_stop:.2f}\n\n"
+                        f"🧠 سيستمر البوت بمتابعة السهم "
+                        f"وإرسال تنبيه إذا ظهر ضعف أو خبر سلبي"
+                    )
+
+                else:
+
+                    action_text = (
+                        f"✅ وصل الهدف الثاني\n"
+                        f"⚠️ الزخم لم يعد مثاليًا\n"
+                        f"📌 الأفضل جني جزء كبير من الربح "
+                        f"أو تشديد الوقف"
+                    )
+
                 send_telegram_msg(
                     f"📈 *Investment Bot - البوت الاستثماري*\n"
                     f"🚀 *وصل هدف 2*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
-                    f"🚀 هدف 2: {t2:.2f}\n\n"
-                    f"يفضل جني جزء كبير من الربح."
+                    f"🚀 هدف 2: {t2:.2f}\n"
+                    f"📈 الربح الحالي: {gain:.2f}%\n"
+                    f"📊 RSI: {rsi:.1f}\n"
+                    f"📉 SMA20: {sma20:.2f}\n\n"
+                    f"{action_text}"
                 )
+
                 alerts["target2"] = True
 
             weakness = (
