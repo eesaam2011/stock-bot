@@ -806,7 +806,51 @@ def add_to_momentum_watch(symbol, price, reason=""):
             f"🟠 Added momentum watch: {symbol} | {reason}",
             flush=True
         )
-        
+def estimate_target_timing(
+    signal_type,
+    instant_rvol,
+    recent_move,
+    move_3m,
+    move_5m,
+    acceleration_ok,
+    scenario_explosion_setup,
+    runner_escape_mode,
+    early_momentum_mode
+):
+    if runner_escape_mode:
+        return (
+            "⚡ نوع الفرصة: انفجار سريع جدًا\n"
+            "⏱️ المتوقع: هدف 1 خلال 5–15 دقيقة إذا استمر الزخم"
+        )
+
+    if scenario_explosion_setup:
+        return (
+            "🎯 نوع الفرصة: سيناريو انفجار محتمل\n"
+            "⏱️ المتوقع: تأكيد الحركة أو هدف 1 خلال 15–45 دقيقة"
+        )
+
+    if early_momentum_mode:
+        return (
+            "🟡 نوع الفرصة: دخول مبكر\n"
+            "⏱️ المتوقع: قد يحتاج 20–60 دقيقة قبل الانطلاق الكامل"
+        )
+
+    if (
+        instant_rvol >= 4
+        and recent_move >= 1.5
+        and move_3m >= 0.50
+        and acceleration_ok
+    ):
+        return (
+            "🔥 نوع الفرصة: زخم قوي\n"
+            "⏱️ المتوقع: هدف 1 خلال 10–25 دقيقة"
+        )
+
+    return (
+        "✅ نوع الفرصة: دخول مؤكد\n"
+        "⏱️ المتوقع: هدف 1 خلال 15–35 دقيقة إذا استمر الثبات فوق VWAP/EMA9"
+    ) 
+    
 def check_ready_entry(symbol, data):
     try:
         df = get_alpaca_bars(symbol, minutes=120)
@@ -1538,6 +1582,17 @@ def check_ready_entry(symbol, data):
 
         else:
             signal_type = "✅ دخول مؤكد"
+        timing_text = estimate_target_timing(
+        signal_type,
+        instant_rvol,
+        recent_move,
+        move_3m,
+        move_5m,
+        acceleration_ok,
+        scenario_explosion_setup,
+        runner_escape_mode,
+        early_momentum_mode
+        ) 
 
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
@@ -1545,6 +1600,7 @@ def check_ready_entry(symbol, data):
             f"💰 السعر: {entry:.2f}\n"
             f"🏆 التصنيف: {grade}\n\n"
             f"{signal_type}\n\n"
+            f"{timing_text}\n\n"
             f"{'🔥 Strong Explosion Candidate - مرشح انفجار قوي جداً\\n\\n' if strong_explosion_candidate else ''}"
             f"📍 مرحلة الدخول: {entry_stage}\n"
             f"📡 المصدر:\n"
