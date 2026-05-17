@@ -396,6 +396,22 @@ def investment_score(symbol, use_news=False, deep=False):
         vol_ratio_5_20 = avg_vol_5 / max(float(volume.tail(20).mean()), 1)
         vol_ratio_10_30 = avg_vol_10 / max(avg_vol_30, 1)
 
+        last_open = float(df["Open"].iloc[-1])
+        last_close = float(df["Close"].iloc[-1])
+        last_high = float(df["High"].iloc[-1])
+        last_low = float(df["Low"].iloc[-1])
+
+        candle_range = last_high - last_low
+
+        if candle_range <= 0:
+            close_position = 0.5
+        else:
+            close_position = (last_close - last_low) / candle_range
+
+        recent_move = move5
+
+        instant_rvol = avg_vol_5 / max(avg_vol_30, 1)
+
         higher_lows = (
             float(close.iloc[-1]) > float(close.iloc[-5]) > float(close.iloc[-10])
         )
