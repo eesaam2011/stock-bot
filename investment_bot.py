@@ -33,8 +33,13 @@ FINAL_MIN_PICKS = 3
 SCAN_INTERVAL = 900
 MONITOR_INTERVAL = 4 * 60 * 60
 last_deep_close_recheck_date = ""
+
+THURSDAY_REPORT_HOUR = 15
+THURSDAY_REPORT_MINUTE = 0
 THURSDAY_ALERT_HOUR = 16
 THURSDAY_ALERT_MINUTE = 0
+
+REPEAT_BLOCK_DAYS = 30
 
 STATE_FILE = "investment_state.json"
 NEWS_FILE = "news_signals.json"
@@ -144,15 +149,18 @@ def load_state():
     default_state = {
         "cycle_week": "",
         "last_weekend_build": "",
+        "last_weekend_midday_rebuild": "",
         "last_deep_review": "",
         "last_news_50": "",
+        "last_previous_report": "",
         "last_thursday_alert": "",
         "last_monitor": "",
         "weekend_500": [],
         "reviewed_results": [],
         "news_50": [],
         "final_picks": [],
-        "active_picks": []
+        "active_picks": [],
+        "sent_history": []
     }
 
     state = read_gist_file(STATE_FILE, default_state)
@@ -235,11 +243,7 @@ def get_nasdaq_symbols_from_alpaca():
 
             symbol = getattr(asset, "symbol", "")
             name = getattr(asset, "name", "")
-            exchange = getattr(asset, "exchange", "")
-            asset_class = getattr(asset, "asset_class", "")
-            tradable = getattr(asset, "tradable", False)
 
-                
             if not is_clean_symbol(symbol):
                 continue
 
@@ -347,6 +351,28 @@ def get_news(symbol):
     return "NONE", 0, ""
 
 
+def get_recent_sent_symbols(state, days=REPEAT_BLOCK_DAYS):
+    now_ts = time.time()
+    blocked = set()
+    cleaned_history = []
+
+    for item in state.get("sent_history", []):
+        symbol = item.get("symbol")
+        sent_time = float(item.get("time", 0) or 0)
+
+        if not symbol:
+            continue
+
+        age_days = (now_ts - sent_time) / 86400
+
+        if age_days <= days:
+            blocked.add(symbol.upper())
+            cleaned_history.append(item)
+
+    state["sent_history"] = cleaned_history
+    return blocked
+
+
 def investment_score(symbol, use_news=False, deep=False):
     try:
         df = get_daily_bars(symbol, days=240)
@@ -374,11 +400,18 @@ def investment_score(symbol, use_news=False, deep=False):
         if dollar_volume < 500_000:
             return None
 
+        df["SMA5"] = close.rolling(5).mean()
+        df["SMA10"] = close.rolling(10).mean()
         df["SMA20"] = close.rolling(20).mean()
         df["SMA50"] = close.rolling(50).mean()
 
+        sma5 = float(df["SMA5"].iloc[-1])
+        sma10 = float(df["SMA10"].iloc[-1])
         sma20 = float(df["SMA20"].iloc[-1])
         sma50 = float(df["SMA50"].iloc[-1])
+
+        sma20_prev = float(df["SMA20"].iloc[-6]) if len(df) >= 26 else sma20
+        sma50_prev = float(df["SMA50"].iloc[-11]) if len(df) >= 61 else sma50
 
         rsi = calculate_rsi(close)
 
@@ -389,6 +422,7 @@ def investment_score(symbol, use_news=False, deep=False):
         recent_range_15 = ((close.tail(15).max() - close.tail(15).min()) / price) * 100
         distance_sma20 = ((price - sma20) / sma20) * 100 if sma20 > 0 else 99
 
+        move1 = ((price - float(close.iloc[-2])) / float(close.iloc[-2])) * 100
         move5 = ((price - float(close.iloc[-6])) / float(close.iloc[-6])) * 100
         move10 = ((price - float(close.iloc[-11])) / float(close.iloc[-11])) * 100
         move20 = ((price - float(close.iloc[-21])) / float(close.iloc[-21])) * 100
@@ -409,25 +443,45 @@ def investment_score(symbol, use_news=False, deep=False):
             close_position = (last_close - last_low) / candle_range
 
         recent_move = move5
-
         instant_rvol = avg_vol_5 / max(avg_vol_30, 1)
 
         higher_lows = (
             float(close.iloc[-1]) > float(close.iloc[-5]) > float(close.iloc[-10])
         )
 
-        trend_ok = (
-            price > sma20 * 0.98
+        weekly_higher_lows = (
+            float(df["Low"].iloc[-1]) >= float(df["Low"].iloc[-5]) * 0.98
+            and float(df["Low"].iloc[-5]) >= float(df["Low"].iloc[-10]) * 0.98
+        )
+
+        ma_stack = (
+            price > sma5 > sma10 > sma20
             and sma20 >= sma50 * 0.97
         )
 
-        not_extended = (
-            distance_sma20 <= 8
-            and move10 <= 15
-            and move20 <= 25
+        ma20_rising = sma20 > sma20_prev
+        ma50_stable = sma50 >= sma50_prev * 0.98
+
+        green_days_10 = int((close.tail(10).diff() > 0).sum())
+
+        pullback_depth = ((high30 - price) / high30) * 100 if high30 > 0 else 99
+
+        stable_above_ma20_days = int((close.tail(10) >= df["SMA20"].tail(10) * 0.97).sum())
+
+        trend_ok = (
+            price > sma20 * 0.98
+            and sma20 >= sma50 * 0.97
+            and ma20_rising
         )
 
-        accumulation = recent_range_15 <= 14
+        not_extended = (
+            distance_sma20 <= 10
+            and move1 <= 12
+            and move10 <= 18
+            and move20 <= 32
+        )
+
+        accumulation = recent_range_15 <= 16
 
         near_breakout = (
             price >= high30 * 0.88
@@ -435,29 +489,57 @@ def investment_score(symbol, use_news=False, deep=False):
         )
 
         volume_improving = (
-            vol_ratio_5_20 >= 0.9
-            or vol_ratio_10_30 >= 1.0
+            vol_ratio_5_20 >= 0.85
+            or vol_ratio_10_30 >= 0.95
         )
 
-        if not trend_ok:
+        slow_runner_setup = (
+            ma_stack
+            and ma20_rising
+            and ma50_stable
+            and weekly_higher_lows
+            and stable_above_ma20_days >= 7
+            and 3 <= move20 <= 55
+            and -4 <= move5 <= 14
+            and recent_range_15 <= 18
+            and pullback_depth <= 18
+            and 40 <= rsi <= 72
+        )
+
+        continuation_setup = (
+            price > sma20
+            and sma20 >= sma50 * 0.97
+            and weekly_higher_lows
+            and volume_improving
+            and stable_above_ma20_days >= 6
+            and move20 > 0
+            and move1 <= 12
+            and distance_sma20 <= 10
+        )
+
+        # فلتر ضد الأسهم التي قفزت يوم واحد ثم قد تهدأ مباشرة
+        if move1 >= 15 and not slow_runner_setup:
             return None
 
-        if not not_extended:
+        if not trend_ok and not slow_runner_setup:
             return None
 
-        if not accumulation:
+        if not not_extended and not slow_runner_setup:
             return None
 
-        if not near_breakout:
+        if not accumulation and not slow_runner_setup:
+            return None
+
+        if not near_breakout and not slow_runner_setup:
             return None
 
         if deep:
-            if not volume_improving:
+            if not (volume_improving or slow_runner_setup):
                 return None
-            if not (43 <= rsi <= 66):
+            if not (42 <= rsi <= 72):
                 return None
         else:
-            if not (40 <= rsi <= 68):
+            if not (40 <= rsi <= 72):
                 return None
 
         news_grade, news_score, headline = get_news(symbol) if use_news else ("NONE", 0, "")
@@ -467,69 +549,81 @@ def investment_score(symbol, use_news=False, deep=False):
 
         score = 0
         reasons = []
-        
+
         # =========================
-        # قوة الثبات والاستمرار
+        # Trend Quality / جودة الاتجاه
         # =========================
 
-        if price > sma20:
-            score += 8
-            reasons.append("فوق SMA20")
+        if ma_stack:
+            score += 18
+            reasons.append("ترتيب متوسطات صاعد MA5>MA10>MA20")
 
-        if price > sma50:
-            score += 10
-            reasons.append("فوق SMA50")
+        if ma20_rising:
+            score += 12
+            reasons.append("MA20 صاعد")
 
-        if close_position >= 0.70:
-            score += 8
-            reasons.append("إغلاق قوي")
-
-        if recent_move >= 3:
-            score += 5
-            reasons.append("حركة جيدة")
-
-        if recent_move >= 8:
-            score -= 12
-            reasons.append("حركة مبالغ فيها")
-
-        if rsi >= 82:
-            score -= 15
-            reasons.append("RSI مرتفع جدًا")
-
-        if instant_rvol >= 2 and recent_move < 2:
+        if ma50_stable:
             score += 6
-            reasons.append("سيولة هادئة")
+            reasons.append("MA50 مستقر")
+
+        if stable_above_ma20_days >= 8:
+            score += 12
+            reasons.append("ثبات قوي فوق MA20")
+
+        if weekly_higher_lows:
+            score += 12
+            reasons.append("قيعان صاعدة أسبوعية")
+
+        # =========================
+        # Slow Runner / صعود هادئ مستمر
+        # =========================
+
+        if slow_runner_setup:
+            score += 22
+            reasons.append("صعود هادئ مستمر")
+
+        if 4 <= green_days_10 <= 7:
+            score += 8
+            reasons.append("أيام خضراء متوازنة")
+
+        if 5 <= move20 <= 45 and move1 < 10:
+            score += 10
+            reasons.append("صعود شهري صحي بدون قفزة يومية")
+
+        if -3 <= move5 <= 12:
+            score += 8
+            reasons.append("حركة قصيرة صحية")
+
+        # =========================
+        # Continuation Score / استمرارية
+        # =========================
+
+        if continuation_setup:
+            score += 18
+            reasons.append("استمرارية اتجاه جيدة")
+
+        if volume_improving:
+            score += 12
+            reasons.append("تحسن سيولة تدريجي")
+
+        if instant_rvol >= 1.2 and recent_move < 8:
+            score += 6
+            reasons.append("سيولة هادئة داعمة")
 
         if instant_rvol >= 5 and recent_move < 1:
             score -= 10
             reasons.append("سيولة بدون استجابة")
 
-        if price > sma20:
-            score += 12
-            reasons.append("فوق SMA20")
-
-        if price > sma50:
-            score += 12
-            reasons.append("فوق SMA50")
-
-        if sma20 >= sma50 * 0.99:
-            score += 8
-            reasons.append("SMA20 قريب/فوق SMA50")
-
-        if 45 <= rsi <= 62:
-            score += 12
-            reasons.append("RSI صحي")
+        # =========================
+        # Base / Breakout
+        # =========================
 
         if recent_range_15 <= 10:
             score += 14
             reasons.append("تجميع هادئ")
-        elif recent_range_15 <= 14:
+        elif recent_range_15 <= 16:
             score += 8
             reasons.append("نطاق مقبول")
-
-        if volume_improving:
-            score += 12
-            reasons.append("تحسن سيولة تدريجي")
 
         if price >= high30 * 0.92:
             score += 14
@@ -542,13 +636,36 @@ def investment_score(symbol, use_news=False, deep=False):
             score += 8
             reasons.append("قيعان صاعدة")
 
-        if -5 <= move5 <= 8:
+        if close_position >= 0.70:
             score += 8
-            reasons.append("غير متضخم قصيرًا")
+            reasons.append("إغلاق قوي")
 
-        if -10 <= move20 <= 18:
-            score += 8
-            reasons.append("غير متأخر شهريًا")
+        if 45 <= rsi <= 64:
+            score += 12
+            reasons.append("RSI صحي")
+        elif 64 < rsi <= 72:
+            score += 4
+            reasons.append("RSI قوي لكن يحتاج مراقبة")
+
+        # =========================
+        # Penalties / منع التوقيت المتأخر
+        # =========================
+
+        if move1 >= 10:
+            score -= 10
+            reasons.append("قفزة يومية كبيرة - احتمال توقيت متأخر")
+
+        if recent_move >= 12 and not slow_runner_setup:
+            score -= 12
+            reasons.append("حركة قصيرة مبالغ فيها")
+
+        if distance_sma20 > 10:
+            score -= 12
+            reasons.append("بعيد عن SMA20")
+
+        if rsi >= 78:
+            score -= 15
+            reasons.append("RSI مرتفع جدًا")
 
         if dollar_volume >= 5_000_000:
             score += 8
@@ -561,13 +678,13 @@ def investment_score(symbol, use_news=False, deep=False):
 
         if use_news:
             if news_grade == "STRONG" and news_score >= 18:
-                news_bonus = 18
+                news_bonus = 14
                 reasons.append("خبر قوي جدًا")
             elif news_grade == "STRONG":
-                news_bonus = 12
+                news_bonus = 9
                 reasons.append("خبر قوي")
             elif news_grade == "MEDIUM":
-                news_bonus = 6
+                news_bonus = 4
                 reasons.append("خبر متوسط")
 
         score += news_bonus
@@ -590,6 +707,7 @@ def investment_score(symbol, use_news=False, deep=False):
             "rsi": round(rsi, 2),
             "avg_vol_30": round(avg_vol_30, 2),
             "dollar_volume": round(dollar_volume, 2),
+            "move1": round(move1, 2),
             "move5": round(move5, 2),
             "move10": round(move10, 2),
             "move20": round(move20, 2),
@@ -597,6 +715,9 @@ def investment_score(symbol, use_news=False, deep=False):
             "range15": round(recent_range_15, 2),
             "near_breakout": near_breakout,
             "volume_improving": volume_improving,
+            "slow_runner_setup": slow_runner_setup,
+            "continuation_setup": continuation_setup,
+            "trend_quality": ma_stack,
             "news_grade": news_grade,
             "news_score": news_score,
             "headline": headline,
@@ -613,7 +734,7 @@ def investment_score(symbol, use_news=False, deep=False):
 
 
 def build_weekend_500():
-    print("🔎 Investment Bot - Building weekend 500 from Nasdaq...", flush=True)
+    print("🔎 Investment Bot - Building weekend 700 from Nasdaq...", flush=True)
 
     symbols = get_nasdaq_symbols_from_alpaca()
     print(f"DEBUG symbols loaded: {len(symbols)}", flush=True)
@@ -621,7 +742,7 @@ def build_weekend_500():
     if not symbols:
         print("❌ No symbols loaded from Alpaca. Check exchange filter or API keys.", flush=True)
         return []
-        
+
     scored = []
 
     for i, symbol in enumerate(symbols, start=1):
@@ -637,7 +758,13 @@ def build_weekend_500():
 
     scored = sorted(
         scored,
-        key=lambda x: (x["score"], x["dollar_volume"], x["avg_vol_30"]),
+        key=lambda x: (
+            x.get("slow_runner_setup", False),
+            x.get("continuation_setup", False),
+            x["score"],
+            x["dollar_volume"],
+            x["avg_vol_30"]
+        ),
         reverse=True
     )
 
@@ -653,7 +780,7 @@ def build_weekend_500():
     state["final_picks"] = []
     save_state(state)
 
-    print(f"✅ Investment Bot - Weekend 500 ready: {len(top500)}", flush=True)
+    print(f"✅ Investment Bot - Weekend candidates ready: {len(top500)}", flush=True)
     return top500
 
 
@@ -666,7 +793,7 @@ def deep_review_500():
 
     symbols = [x["symbol"] for x in candidates if x.get("symbol")]
 
-    print(f"🔍 Investment Bot - Deep review 500: {len(symbols)}", flush=True)
+    print(f"🔍 Investment Bot - Deep review: {len(symbols)}", flush=True)
 
     reviewed = []
 
@@ -683,7 +810,13 @@ def deep_review_500():
 
     reviewed = sorted(
         reviewed,
-        key=lambda x: (x["score"], x["dollar_volume"], x["avg_vol_30"]),
+        key=lambda x: (
+            x.get("slow_runner_setup", False),
+            x.get("continuation_setup", False),
+            x["score"],
+            x["dollar_volume"],
+            x["avg_vol_30"]
+        ),
         reverse=True
     )
 
@@ -704,7 +837,12 @@ def prepare_news_50():
 
     news_50 = sorted(
         reviewed,
-        key=lambda x: (x["score"], x["dollar_volume"]),
+        key=lambda x: (
+            x.get("slow_runner_setup", False),
+            x.get("continuation_setup", False),
+            x["score"],
+            x["dollar_volume"]
+        ),
         reverse=True
     )[:NEWS_TOP_N]
 
@@ -713,7 +851,7 @@ def prepare_news_50():
             "symbol": x["symbol"],
             "score": x["score"],
             "price": x["price"],
-            "reason": "Investment Bot Wednesday Top 50",
+            "reason": "Investment Bot Wednesday Top 100",
             "time": time.time()
         }
         for x in news_50
@@ -725,7 +863,7 @@ def prepare_news_50():
     state["last_news_50"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
     save_state(state)
 
-    print(f"✅ Investment Bot - News 50 prepared: {len(news_50)}", flush=True)
+    print(f"✅ Investment Bot - News candidates prepared: {len(news_50)}", flush=True)
     return news_50
 
 
@@ -748,11 +886,16 @@ def build_final_picks():
 
     symbols = [x["symbol"] for x in news_50 if x.get("symbol")]
 
-    print(f"🏁 Investment Bot - Building final picks from news 50: {len(symbols)}", flush=True)
+    print(f"🏁 Investment Bot - Building final picks from news list: {len(symbols)}", flush=True)
 
+    recent_sent = get_recent_sent_symbols(state, REPEAT_BLOCK_DAYS)
     final = []
 
     for symbol in symbols:
+        if symbol.upper() in recent_sent:
+            print(f"⏭️ Skipped repeated investment pick within {REPEAT_BLOCK_DAYS} days: {symbol}", flush=True)
+            continue
+
         item = investment_score(symbol, use_news=True, deep=True)
 
         if item:
@@ -762,7 +905,13 @@ def build_final_picks():
 
     final = sorted(
         final,
-        key=lambda x: (x["score"], x["news_bonus"], x["dollar_volume"]),
+        key=lambda x: (
+            x.get("slow_runner_setup", False),
+            x.get("continuation_setup", False),
+            x["score"],
+            x["news_bonus"],
+            x["dollar_volume"]
+        ),
         reverse=True
     )
 
@@ -786,6 +935,87 @@ def build_final_picks():
     return picks
 
 
+def send_previous_picks_report():
+    state = load_state()
+    picks = state.get("active_picks", [])
+
+    if not picks:
+        send_telegram_msg(
+            "📊 *Investment Bot - تقرير الأسبوع السابق*\n\n"
+            "لا توجد أسهم نشطة من الأسبوع السابق للمتابعة."
+        )
+        state["last_previous_report"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
+        save_state(state)
+        return
+
+    msg = "📊 *Investment Bot - تقرير أسهم الأسبوع السابق*\n\n"
+
+    strong_count = 0
+    weak_count = 0
+    target_count = 0
+    stop_count = 0
+
+    for p in picks:
+        try:
+            symbol = p["symbol"]
+            df = get_daily_bars(symbol, days=90)
+
+            if df.empty or len(df) < 30:
+                continue
+
+            price = float(df["Close"].iloc[-1])
+            entry = float(p["entry"])
+            stop = float(p["stop"])
+            t1 = float(p["t1"])
+            t2 = float(p["t2"])
+
+            gain = ((price - entry) / entry) * 100
+
+            df["SMA20"] = df["Close"].rolling(20).mean()
+            sma20 = float(df["SMA20"].iloc[-1])
+            rsi = calculate_rsi(df["Close"])
+
+            if price <= stop:
+                status = "🛑 كسر الوقف"
+                stop_count += 1
+            elif price >= t2:
+                status = "🚀 وصل هدف 2"
+                target_count += 1
+            elif price >= t1:
+                status = "🎯 وصل هدف 1"
+                target_count += 1
+            elif price > sma20 and rsi >= 45:
+                status = "✅ ما زال صحي"
+                strong_count += 1
+            else:
+                status = "⚠️ ضعف / يحتاج مراقبة"
+                weak_count += 1
+
+            msg += (
+                f"🎫 `{symbol}`\n"
+                f"💰 الحالي: {price:.2f} | الدخول: {entry:.2f}\n"
+                f"📈 الأداء: {gain:.2f}%\n"
+                f"📊 RSI: {rsi:.1f} | SMA20: {sma20:.2f}\n"
+                f"📌 الحالة: {status}\n\n"
+            )
+
+        except Exception as e:
+            print(f"Previous report error {p.get('symbol')}: {e}", flush=True)
+
+    msg += (
+        f"🧠 *الخلاصة:*\n"
+        f"✅ صحي: {strong_count}\n"
+        f"🎯/🚀 أهداف: {target_count}\n"
+        f"⚠️ ضعيف: {weak_count}\n"
+        f"🛑 وقف: {stop_count}\n"
+    )
+
+    send_telegram_msg(msg)
+
+    state["last_previous_report"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
+    save_state(state)
+
+
 def send_thursday_alert():
     picks = build_final_picks()
 
@@ -797,11 +1027,26 @@ def send_thursday_alert():
         return
 
     msg = "📈 *Investment Bot - البوت الاستثماري*\n"
-    msg += "🏆 *أفضل فرص استثمارية لمدة 2 إلى 4 أسابيع*\n\n"
+    msg += "🏆 *أفضل فرص استثمارية لمدة 2 إلى 4 أسابيع*\n"
+    msg += "🎯 تركيز النسخة الحالية: صعود هادئ + استمرارية + تجميع صحي\n\n"
 
     for r in picks:
+        setup_tags = []
+
+        if r.get("slow_runner_setup"):
+            setup_tags.append("صعود هادئ مستمر")
+
+        if r.get("continuation_setup"):
+            setup_tags.append("استمرارية جيدة")
+
+        if r.get("trend_quality"):
+            setup_tags.append("Trend Quality")
+
+        setup_text = " / ".join(setup_tags) if setup_tags else "فرصة استثمارية"
+
         msg += (
             f"🎫 `{r['symbol']}`\n"
+            f"🏷️ النوع: {setup_text}\n"
             f"💰 دخول: {r['entry']:.2f}\n"
             f"🛑 وقف: {r['stop']:.2f}\n"
             f"🎯 هدف 1: {r['t1']:.2f}\n"
@@ -811,7 +1056,8 @@ def send_thursday_alert():
             f"⭐ الدرجة: {r['score']:.1f}\n"
             f"📊 RSI: {r['rsi']:.1f}\n"
             f"📦 Range15: {r['range15']:.1f}%\n"
-            f"🧠 الأسباب: {', '.join(r['reasons'][:5])}\n"
+            f"📈 Move20: {r.get('move20', 0):.1f}%\n"
+            f"🧠 الأسباب: {', '.join(r['reasons'][:6])}\n"
         )
 
         if r.get("headline"):
@@ -822,8 +1068,24 @@ def send_thursday_alert():
     send_telegram_msg(msg)
 
     state = load_state()
-    state["last_thursday_alert"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
+    today = datetime.now(saudi_tz).strftime("%Y-%m-%d")
+
+    state["last_thursday_alert"] = today
     state["active_picks"] = picks
+
+    history = state.get("sent_history", [])
+    now_ts = time.time()
+
+    for p in picks:
+        history.append({
+            "symbol": p["symbol"],
+            "time": now_ts,
+            "date": today,
+            "score": p.get("score", 0),
+            "entry": p.get("entry", 0)
+        })
+
+    state["sent_history"] = history
     save_state(state)
     save_gist_file(INVESTMENT_ACTIVE_FILE, picks)
 
@@ -855,12 +1117,28 @@ def monitor_active_picks():
             gain = ((price - entry) / entry) * 100
 
             df["SMA20"] = df["Close"].rolling(20).mean()
+            df["SMA50"] = df["Close"].rolling(50).mean()
+
             sma20 = float(df["SMA20"].iloc[-1])
+            sma50 = float(df["SMA50"].iloc[-1]) if not pd.isna(df["SMA50"].iloc[-1]) else sma20
             rsi = calculate_rsi(df["Close"])
 
             news_grade, news_score, headline = get_news(symbol)
 
             alerts = p.get("alerts", {})
+
+            healthy_pullback = (
+                price >= sma20 * 0.97
+                and rsi >= 40
+                and price >= sma50 * 0.95
+                and gain > -8
+            )
+
+            true_weakness = (
+                price < sma20 * 0.95
+                or rsi < 38
+                or price < stop
+            )
 
             if news_grade == "NEGATIVE" and not alerts.get("negative_news"):
                 send_telegram_msg(
@@ -973,22 +1251,32 @@ def monitor_active_picks():
 
                 alerts["target2"] = True
 
-            weakness = (
-                price < sma20 * 0.97
-                or rsi < 40
-            )
-
-            if weakness and not alerts.get("weakness"):
+            if true_weakness and not healthy_pullback and not alerts.get("weakness"):
                 send_telegram_msg(
                     f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"⚠️ *ضعف فني*\n\n"
+                    f"⚠️ *ضعف فني حقيقي*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"📊 RSI: {rsi:.1f}\n"
                     f"📉 SMA20: {sma20:.2f}\n\n"
-                    f"يفضل المراقبة أو تخفيف الكمية."
+                    f"❌ الضعف ليس مجرد تهدئة بسيطة\n"
+                    f"يفضل المراقبة الجادة أو تخفيف الكمية."
                 )
                 alerts["weakness"] = True
+
+            elif healthy_pullback and not alerts.get("healthy_pullback") and gain < 3:
+                send_telegram_msg(
+                    f"📈 *Investment Bot - البوت الاستثماري*\n"
+                    f"🟡 *تهدئة صحية وليست ضعفًا واضحًا*\n\n"
+                    f"🎫 `{symbol}`\n"
+                    f"💰 السعر الحالي: {price:.2f}\n"
+                    f"📈 الأداء الحالي: {gain:.2f}%\n"
+                    f"📊 RSI: {rsi:.1f}\n"
+                    f"📉 SMA20: {sma20:.2f}\n\n"
+                    f"✅ السهم ما زال قريبًا من الاتجاه الصحي\n"
+                    f"📌 لا يوجد سبب قوي للخروج حتى الآن."
+                )
+                alerts["healthy_pullback"] = True
 
             p["current_price"] = round(price, 4)
             p["current_gain_pct"] = round(gain, 2)
@@ -1094,6 +1382,14 @@ def run_scheduler():
 
     if (
         now.weekday() == 3
+        and now.hour == THURSDAY_REPORT_HOUR
+        and now.minute >= THURSDAY_REPORT_MINUTE
+        and state.get("last_previous_report") != today
+    ):
+        send_previous_picks_report()
+
+    if (
+        now.weekday() == 3
         and now.hour == THURSDAY_ALERT_HOUR
         and now.minute >= THURSDAY_ALERT_MINUTE
         and state.get("last_thursday_alert") != today
@@ -1112,6 +1408,7 @@ def run_scheduler():
 
     if should_monitor:
         monitor_active_picks()
+
 
 def should_run_deep_close_recheck():
     global last_deep_close_recheck_date
@@ -1134,7 +1431,8 @@ def should_run_deep_close_recheck():
 
     last_deep_close_recheck_date = today
     return True
-    
+
+
 threading.Thread(target=run_web_server, daemon=True).start()
 
 load_active_picks_from_gist()
