@@ -386,7 +386,6 @@ def update_watchlist_from_bot2():
             float(r.get("final_score", 0) or 0)
         )
 
-
 def self_scan_top_400():
     symbols = load_master_list()[:SELF_SCAN_COUNT]
 
@@ -415,13 +414,6 @@ def self_scan_top_400():
             if not (PRICE_MIN <= cp <= PRICE_MAX):
                 continue
 
-            # باقي كود التحليل كله هنا داخل try
-
-        except Exception as e:
-            print(f"Self scan error {symbol}: {e}", flush=True)
-            continue
-
-    
             vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
             rsi = calculate_rsi(df["Close"])
             instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
@@ -469,6 +461,7 @@ def self_scan_top_400():
                 and volume_acceleration
                 and strong_candle
             )
+
             explosion_building_setup = (
                 instant_rvol >= 2.5
                 and 1.0 <= recent_move <= 6.0
@@ -500,12 +493,12 @@ def self_scan_top_400():
 
             elif self_setup:
                 add_to_watchlist(symbol, "فحص ذاتي Bot 3", cp)
+
             elif (
                 instant_rvol >= 1.6
                 and volume_acceleration
                 and cp > ema9 * 0.995
             ):
-
                 add_to_pending(
                     symbol,
                     cp,
@@ -520,10 +513,12 @@ def self_scan_top_400():
         except Exception as e:
             print(f"Self scan error {symbol}: {e}", flush=True)
             continue
+
     print(
         f"✅ Bot 3 self scan completed: {len(symbols)} symbols",
         flush=True
     )
+            
     
 def add_to_pending(symbol, price, reason=""):
     symbol = str(symbol).upper().strip()
@@ -966,8 +961,10 @@ def check_ready_entry(symbol, data):
             return None
             
         if (
-            recent_move >= 0.70
+            recent_move >= 1.80
             and not acceleration_ok
+            and move_3m < 0.10
+            and move_5m < 0.40
         ):
             print(
                 f"❌ Rejected weak follow-through: {symbol} | "
@@ -1173,9 +1170,10 @@ def check_ready_entry(symbol, data):
             return None
             
         if (
-            recent_move >= 2.0
-            and move_5m < 0.80
-            and move_3m < 0.30
+            recent_move >= 3.0
+            and move_5m < 0.50
+            and move_3m < 0.10
+            and distribution_score >= 20
         ):
             print(
                 f"❌ Momentum cooling after spike: {symbol}",
@@ -1187,7 +1185,13 @@ def check_ready_entry(symbol, data):
             move_3m >= move_5m * 0.60
         )
 
-        if not fresh_acceleration:
+        if (
+            not fresh_acceleration
+            and recent_move >= 2.50
+            and distribution_score >= 20
+            and not strong_explosion_candidate
+            and not runner_escape_mode
+        ):
             print(
                 f"❌ Weak fresh acceleration: {symbol}",
                 flush=True
@@ -1204,9 +1208,10 @@ def check_ready_entry(symbol, data):
             )
             return None
         if (
-            recent_move >= 2.0
-            and move_3m < move_5m
-            and move_5m < recent_move
+            recent_move >= 3.0
+            and move_3m < 0
+            and move_5m < recent_move * 0.35
+            and distribution_score >= 20
         ):
             print(
                 f"❌ Momentum fading: {symbol}",
@@ -1217,12 +1222,19 @@ def check_ready_entry(symbol, data):
         # منع الأسهم التي تملك سيولة قوية لكن السعر لم يعد يستجيب
 
         if (
-            instant_rvol >= 4
-            and move_3m < move_5m
-            and move_5m < recent_move
+            instant_rvol >= 5
+            and recent_move < 1.0
+            and move_3m < 0.15
+            and move_5m < 0.35
         ):
+            add_to_momentum_watch(
+                symbol,
+                cp,
+                "RVOL عالي لكن السعر يحتاج وقت للتأكيد"
+            )
+
             print(
-                f"❌ Momentum fading: {symbol}",
+                f"🟠 High RVOL weak response moved to momentum watch: {symbol}",
                 flush=True
             )
             return None
@@ -1316,7 +1328,9 @@ def check_ready_entry(symbol, data):
             and not runner_escape_mode
             and not strong_explosion_candidate
             and move_5m > 0
-            and move_3m < move_5m * 0.75
+            and move_3m < move_5m * 0.50
+            and distribution_score >= 20
+            and recent_move >= 1.80
         ):
             print(
                 f"❌ Not enough current acceleration: {symbol}",
