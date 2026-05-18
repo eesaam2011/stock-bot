@@ -421,10 +421,6 @@ def self_scan_top_400():
             print(f"Self scan error {symbol}: {e}", flush=True)
             continue
 
-    print(
-        f"✅ Bot 3 self scan completed: {len(symbols)} symbols",
-        flush=True
-    )
     
             vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
             rsi = calculate_rsi(df["Close"])
@@ -508,7 +504,11 @@ def self_scan_top_400():
         except Exception as e:
             print(f"Self scan error {symbol}: {e}", flush=True)
             continue
-
+    print(
+        f"✅ Bot 3 self scan completed: {len(symbols)} symbols",
+        flush=True
+    )
+    
 def add_to_pending(symbol, price, reason=""):
     symbol = str(symbol).upper().strip()
     now_ts = time.time()
