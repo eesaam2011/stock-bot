@@ -469,6 +469,16 @@ def self_scan_top_400():
                 and volume_acceleration
                 and strong_candle
             )
+            explosion_building_setup = (
+                instant_rvol >= 2.5
+                and 1.0 <= recent_move <= 6.0
+                and volume_acceleration
+                and strong_candle
+                and cp > vwap
+                and cp > ema9
+                and close_position >= 0.70
+                and upper_wick_pct <= 0.35
+            )
 
             self_setup = (
                 1.8 <= instant_rvol <= 6.0
@@ -481,9 +491,15 @@ def self_scan_top_400():
                 and (vwap_reclaim or ema_reclaim or behavior_change)
             )
 
-            if self_setup:
-                add_to_watchlist(symbol, "فحص ذاتي Bot 3", cp)
+            if explosion_building_setup:
+                add_to_watchlist(
+                    symbol,
+                    "🚀 Explosion Building - بداية انفجار محتمل",
+                    cp
+                )
 
+            elif self_setup:
+                add_to_watchlist(symbol, "فحص ذاتي Bot 3", cp)
             elif (
                 instant_rvol >= 1.6
                 and volume_acceleration
@@ -1140,7 +1156,22 @@ def check_ready_entry(symbol, data):
                 flush=True
             )
             return None
-                
+
+        if (
+            "MOMENTUM RUNNING" in entry_stage
+            and distribution_score >= 15
+            and not volume_acceleration
+            and not vwap_reclaim
+            and not ema_reclaim
+            and not strong_explosion_candidate
+            and not runner_escape_mode
+        ):
+            print(
+                f"❌ Rejected late running momentum with distribution: {symbol}",
+                flush=True
+            )
+            return None
+            
         if (
             recent_move >= 2.0
             and move_5m < 0.80
