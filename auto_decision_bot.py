@@ -42,7 +42,7 @@ BOT2_FINAL_FILE = "bot2_final_results.json"
 BOT3_ACTIVE_TRADES_FILE = "bot3_active_trades.json"
 BOT3_EARLY_CANDIDATES_FILE = "bot3_early_candidates.json"
 
-SELF_SCAN_COUNT = 500
+SELF_SCAN_COUNT = 650
 
 
 def send_telegram_msg(message):
