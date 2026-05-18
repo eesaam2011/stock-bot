@@ -398,17 +398,17 @@ def self_scan_top_400():
 
     for i, symbol in enumerate(symbols, start=1):
 
-    if i % 100 == 0:
-        print(
-            f"🔎 Bot 3 scanned {i}/{len(symbols)}",
-            flush=True
-        )
+        if i % 100 == 0:
+            print(
+                f"🔎 Bot 3 scanned {i}/{len(symbols)}",
+                flush=True
+            )
 
-    try:
-        df = get_alpaca_bars(
-            symbol,
-            minutes=120
-        )
+        try:
+            df = get_alpaca_bars(
+                symbol,
+                minutes=120
+            )
 
         if (
             df.empty
