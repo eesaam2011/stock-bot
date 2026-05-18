@@ -405,15 +405,26 @@ def self_scan_top_400():
             )
 
         try:
-            df = get_alpaca_bars(
-                symbol,
-                minutes=120
-            )
+            df = get_alpaca_bars(symbol, minutes=120)
+
+            if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
+                continue
+
+            cp = get_latest_price(symbol, df)
+
+            if not (PRICE_MIN <= cp <= PRICE_MAX):
+                continue
+
+            # باقي كود التحليل كله هنا داخل try
+
+        except Exception as e:
+            print(f"Self scan error {symbol}: {e}", flush=True)
+            continue
 
     print(
         f"✅ Bot 3 self scan completed: {len(symbols)} symbols",
         flush=True
-    ) 
+    )
     
             vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
             rsi = calculate_rsi(df["Close"])
