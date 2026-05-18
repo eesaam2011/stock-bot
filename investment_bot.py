@@ -109,7 +109,24 @@ def read_gist_file(filename, default_value):
         print(f"Read gist error {filename}: {e}", flush=True)
         return default_value
 
+def make_json_safe(obj):
+    if isinstance(obj, dict):
+        return {
+            k: make_json_safe(v)
+            for k, v in obj.items()
+        }
 
+    if isinstance(obj, list):
+        return [
+            make_json_safe(v)
+            for v in obj
+        ]
+
+    if hasattr(obj, "item"):
+        return obj.item()
+
+    return obj
+    
 def save_gist_file(filename, content_obj):
     if not GIST_ID or not GITHUB_TOKEN:
         print("Gist keys missing", flush=True)
@@ -128,7 +145,10 @@ def save_gist_file(filename, content_obj):
             json={
                 "files": {
                     filename: {
-                        "content": json.dumps(content_obj, ensure_ascii=False)
+                        "content": json.dumps(
+                            make_json_safe(content_obj),
+                            ensure_ascii=False
+                        )
                     }
                 }
             },
