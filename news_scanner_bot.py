@@ -24,7 +24,7 @@ SCAN_INTERVAL = 900  # كل 15 دقيقة
 NEWS_FILE = "news_signals.json"
 
 BOT2_CANDIDATES_FILE = "bot2_news_candidates.json"
-BOT3_RESULTS_FILE = "bot3_results.json"
+BOT3_RESULTS_FILE = "bot3_early_candidates.json"
 INVESTMENT_NEWS_50_FILE = "investment_news_candidates_50.json"
 
 TOP_TOP_NEWS_SCORE = 18
@@ -159,6 +159,7 @@ def clean_symbol(symbol):
 def extract_symbols_from_file(data, source_name, max_items=None):
     results = []
     now_ts = time.time()
+    max_age_seconds = 2 * 60 * 60 if "SPEC" in source_name else 7 * 86400
 
     if not isinstance(data, list):
         return results
@@ -170,14 +171,23 @@ def extract_symbols_from_file(data, source_name, max_items=None):
             score = 0
         elif isinstance(item, dict):
             symbol = item.get("symbol")
-            item_time = float(item.get("time", now_ts) or now_ts)
+            item_time = float(
+                item.get("time")
+                or item.get("last_update")
+                or item.get("first_seen")
+                or now_ts
+            )
             score = float(
                 item.get("final_score")
                 or item.get("technical_score")
+                or item.get("pending_score")
                 or item.get("score")
                 or 0
             )
         else:
+            continue
+
+        if now_ts - item_time > max_age_seconds:
             continue
 
         symbol = clean_symbol(symbol)
@@ -191,7 +201,11 @@ def extract_symbols_from_file(data, source_name, max_items=None):
             "time": item_time
         })
 
-    results = sorted(results, key=lambda x: (x["score"], x["time"]), reverse=True)
+    results = sorted(
+        results,
+        key=lambda x: (x["score"], x["time"]),
+        reverse=True
+    )
 
     if max_items:
         results = results[:max_items]
