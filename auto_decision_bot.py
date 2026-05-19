@@ -1258,13 +1258,13 @@ def check_ready_entry(symbol, data):
         scenario_explosion_setup = (
             instant_rvol >= 3.0
             and recent_move >= 1.0
-            and move_3m >= 0.35
-            and move_5m >= 0.70
-            and move_3m >= move_5m * 0.50
+            and move_3m >= 0.45
+            and move_5m >= 0.80
+            and move_3m >= move_5m * 0.65
             and cp > vwap
             and cp > ema9
-            and close_position >= 0.70
-            and distribution_score < 30
+            and close_position >= 0.72
+            and distribution_score < 25
             and rsi <= 78
             and volume_acceleration
             and strong_candle
