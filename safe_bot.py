@@ -240,7 +240,7 @@ def load_master_list():
 
 def get_alpaca_bars(symbol, minutes=120):
     try:
-        end = datetime.utcnow()
+        end = datetime.now(pytz.UTC)
         start = end - timedelta(days=1)
 
         bars = api.get_bars(
