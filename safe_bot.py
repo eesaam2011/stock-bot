@@ -311,10 +311,26 @@ def calculate_rsi(close, period=14):
 
 
 def calculate_trade_plan(entry):
+
+    if entry < 2:
+
+        t1 = entry + 0.04
+        t2 = entry + 0.08
+
+    elif entry < 5:
+
+        t1 = entry + 0.07
+        t2 = entry + 0.14
+
+    else:
+
+        t1 = entry * 1.025
+        t2 = entry * 1.05
+
     return {
         "entry": round(entry, 4),
-        "target_1": round(entry * 1.02, 4),
-        "target_2": round(entry * 1.04, 4),
+        "target_1": round(t1, 4),
+        "target_2": round(t2, 4),
         "stop_loss": round(entry * 0.985, 4)
     }
 
@@ -401,6 +417,8 @@ def analyze_symbol(symbol, source_group):
         rsi = calculate_rsi(df["Close"])
         instant_rvol = df["Volume"].tail(3).mean() / df["Volume"].mean()
         recent_move = ((cp - df["Close"].iloc[-10]) / df["Close"].iloc[-10]) * 100
+        move_5m = ((cp - df["Close"].iloc[-5]) / df["Close"].iloc[-5]) * 100
+        move_3m = ((cp - df["Close"].iloc[-3]) / df["Close"].iloc[-3]) * 100
 
         df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
         df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
@@ -411,9 +429,12 @@ def analyze_symbol(symbol, source_group):
         latest_volume = float(df["Volume"].tail(10).sum())
         dollar_volume = cp * latest_volume
 
-        near_high = cp >= day_high * 0.965
+        near_high = cp >= day_high * 0.975
+
         above_vwap = cp > vwap
+
         above_ema9 = cp > ema9
+
         ema_ok = ema9 >= ema20 * 0.995
 
         last_open = float(df["Open"].iloc[-1])
@@ -441,8 +462,8 @@ def analyze_symbol(symbol, source_group):
         volume_acceleration = last_3_volume >= prev_10_volume * 1.6
 
         strong_candle = (
-            close_position >= 0.65
-            and upper_wick_pct <= 0.35
+            close_position >= 0.70
+            and upper_wick_pct <= 0.30
             and body_ratio >= 0.35
         )
 
@@ -481,56 +502,70 @@ def analyze_symbol(symbol, source_group):
         )
 
         overextended = (
-            rsi > 75
-            or recent_move > 3.5
+            rsi > 78
+            or recent_move > 3.0
         )
 
-        strong_setup = (
-            source_group == "STRONG"
-            and instant_rvol >= 2.0
-            and 0.35 <= recent_move <= 3.0
-            and 50 <= rsi <= 72
-            and above_vwap
-            and above_ema9
-            and near_high
-            and not overextended
-            and not fake_breakout_risk
-        )
+        distribution_score = 0
 
-        radar_setup = (
-            source_group == "RADAR"
-            and 1.7 <= instant_rvol <= 6.0
-            and 0.25 <= recent_move <= 2.8
-            and 45 <= rsi <= 68
+        if instant_rvol >= 3.0 and recent_move < 0.75:
+            distribution_score += 15
+
+        if upper_wick_pct >= 0.40 and close_position < 0.60:
+            distribution_score += 12
+
+        if volume_acceleration and body_ratio < 0.28:
+            distribution_score += 10
+            
+        early_confirmed_explosion = (
+            0.35 <= recent_move <= 1.80
+            and instant_rvol >= 2.2
+            and volume_acceleration
             and cp > vwap
             and cp > ema9
-            and ema_ok
-            and volume_acceleration
-            and strong_candle
-            and new_money_flow
-            and (vwap_reclaim or ema_reclaim or behavior_change)
-            and not overextended
+            and ema9 >= ema20 * 0.995
+            and close_position >= 0.70
+            and upper_wick_pct <= 0.30
+            and body_ratio >= 0.35
+            and move_3m >= 0.25
+            and move_5m >= 0.45
+            and move_3m >= move_5m * 0.60
+            and distribution_score < 20
             and not fake_breakout_risk
+            and not overextended
         )
 
-        if not strong_setup and not radar_setup:
+        if recent_move > 2.2:
             return None
+
+        if not early_confirmed_explosion:
+            return None
+
+        setup_type = "🟢 EARLY CONFIRMED EXPLOSION ENTRY"
+        reason = "دخول مبكر مؤكد قبل الانفجار العالي"
 
         technical_score = 0
 
-        technical_score += min(instant_rvol * 12, 30)
-        technical_score += min(max(recent_move, 0) * 8, 20)
+        technical_score += min(instant_rvol * 10, 24)
 
+        technical_score += min(
+            max(recent_move, 0) * 10,
+            26
+        )
         if above_vwap:
             technical_score += 10
+
         if above_ema9:
             technical_score += 10
+
         if ema_ok:
             technical_score += 8
-        if near_high and source_group == "STRONG":
-            technical_score += 10
+
+        if near_high:
+            technical_score += 8
+
         if real_breakout:
-            technical_score += 12
+            technical_score += 15
 
         if 52 <= rsi <= 68:
             technical_score += 10
@@ -541,7 +576,7 @@ def analyze_symbol(symbol, source_group):
             technical_score -= 15
 
         if source_group == "RADAR":
-            technical_score += 8
+            technical_score += 12
 
             if volume_acceleration:
                 technical_score += 10
@@ -694,16 +729,21 @@ def send_bot2_alert(signal):
     source_group = signal.get("source_group", "")
 
     mode_text = (
-        "🟡 RADAR MODE - استيقاظ مبكر"
+        "🟢 EARLY CONFIRMED ENTRY MODE"
         if source_group == "RADAR"
         else
-        "🟢 STRONG MODE - زخم قوي"
+        "🔥 STRONG EARLY EXPLOSION MODE"
     )
 
-    source_text = "Radar Scanner - 400 الثانية" if source_group == "RADAR" else "Strong Scanner - أول 400"
-
+    source_text = (
+        "🟢 Early Confirmed Explosion - دخول مبكر مؤكد"
+        if source_group == "RADAR"
+        else
+        "🔥 Strong Early Explosion - انفجار مبكر قوي"
+    )
+    
     msg = (
-        f"🟢🔥 *Bot 2 - فرصة قوية*\n\n"
+        f"🟢🔥 *Bot 2 - دخول مبكر مؤكد قبل الانفجار*\n\n"
         f"🎫 السهم: `{symbol}`\n"
         f"{mode_text}\n"
         f"💰 السعر: {signal.get('price', 0):.2f}\n"
@@ -848,8 +888,16 @@ def run_bot2_once():
     radar_symbols = symbols[STRONG_COUNT:STRONG_COUNT + RADAR_COUNT]
 
     print(f"📦 Master symbols: {len(symbols)}", flush=True)
-    print(f"🟢 Strong symbols: {len(strong_symbols)}", flush=True)
-    print(f"🟡 Radar symbols: {len(radar_symbols)}", flush=True)
+
+    print(
+        f"🟢 Early Confirmed Explosion (Top): {len(strong_symbols)}",
+        flush=True
+    )
+
+    print(
+        f"🔥 Strong Early Explosion (Next): {len(radar_symbols)}",
+        flush=True
+    )
 
     preliminary_results = []
 
@@ -906,7 +954,10 @@ def run_bot2_once():
         if r.get("grade") in ["A", "A+", "A++"]
     ]
 
-    print(f"🏆 Telegram eligible: {len(telegram_results)}", flush=True)
+    print(
+        f"🟢 Early Confirmed Explosion candidates: {len(telegram_results)}",
+        flush=True
+    )
 
     for signal in telegram_results[:10]:
         send_bot2_alert(signal)
@@ -919,13 +970,18 @@ def run_bot2_once():
 
 load_active_trades_from_gist()
 
-print("🟢 BOT 2 STARTED", flush=True)
-send_telegram_msg("🟢 تم تشغيل Bot 2 بنظام Strong/Radar + News Bonus")
+print("🟢 BOT 2 - EARLY CONFIRMED EXPLOSION STARTED", flush=True)
 
+send_telegram_msg(
+    "🟢 تم تشغيل Bot 2 - الدخول المبكر المؤكد قبل الانفجار"
+)
 while True:
     try:
         if not is_trading_time():
-            print("⏸️ خارج وقت التشغيل - Bot 2 ينتظر", flush=True)
+            print(
+                "⏸️ خارج وقت التشغيل - Bot 2 (الدخول المبكر المؤكد) ينتظر",
+                flush=True
+            )
             time.sleep(300)
             continue
 
