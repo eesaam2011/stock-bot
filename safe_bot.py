@@ -246,8 +246,8 @@ def get_alpaca_bars(symbol, minutes=120):
         bars = api.get_bars(
             symbol,
             tradeapi.TimeFrame.Minute,
-            start=start.isoformat() + "Z",
-            end=end.isoformat() + "Z",
+            start=start.isoformat(),
+            end=end.isoformat(),
             adjustment="raw"
         ).df
 
