@@ -335,6 +335,14 @@ def calculate_trade_plan(entry):
     }
 
 
+def calculate_micro_scalp_plan(entry):
+    return {
+        "entry": round(entry, 4),
+        "target_1": round(entry + 0.05, 4),
+        "target_2": round(entry + 0.10, 4),
+        "stop_loss": round(entry - 0.04, 4)
+    }
+    
 # =========================
 # NEWS
 # =========================
@@ -537,6 +545,22 @@ def analyze_symbol(symbol, source_group):
             and not overextended
         )
         
+        micro_scalp_setup = (
+            1.00 <= cp <= 10.00
+            and instant_rvol >= 2.5
+            and dollar_volume >= 300000
+            and volume_acceleration
+            and cp > vwap
+            and cp > ema9
+            and close_position >= 0.70
+            and upper_wick_pct <= 0.30
+            and move_3m >= 0.20
+            and move_5m >= 0.40
+            and distribution_score < 15
+            and not fake_breakout_risk
+            and not overextended
+        )
+        
         if (
             instant_rvol >= 4
             and move_3m < move_5m
@@ -547,11 +571,24 @@ def analyze_symbol(symbol, source_group):
         if recent_move > 2.2:
             return None
 
-        if not early_confirmed_explosion:
+        if not near_high:
             return None
 
-        setup_type = "🟢 EARLY CONFIRMED EXPLOSION ENTRY"
-        reason = "دخول مبكر مؤكد قبل الانفجار العالي"
+        if not (real_breakout or vwap_reclaim or ema_reclaim):
+            return None
+        if not early_confirmed_explosion and not micro_scalp_setup:
+            return None
+
+        if micro_scalp_setup:
+            setup_type = "🎯 هدف سنتات بسيطة"
+            reason = "هدف قصير 5 إلى 10 سنتات"
+            target_note = "🎯 الهدف الأساسي: ربح 5 إلى 10 سنتات فقط"
+            timing_note = "⏱️ المدة المتوقعة: 3 إلى 15 دقيقة إذا استمر الزخم"
+        else:
+            setup_type = "🟢 دخول مبكر مؤكد قبل الانفجار"
+            reason = "دخول مبكر مؤكد قبل الانفجار العالي"
+            target_note = "🚀 الهدف الأساسي: انفجار أعلى"
+            timing_note = "⏱️ المدة المتوقعة: 10 إلى 30 دقيقة حسب قوة الزخم"
 
         technical_score = 0
 
@@ -600,7 +637,10 @@ def analyze_symbol(symbol, source_group):
             if new_money_flow:
                 technical_score += 8
 
-        plan = calculate_trade_plan(cp)
+        if micro_scalp_setup:
+            plan = calculate_micro_scalp_plan(cp)
+        else:
+            plan = calculate_trade_plan(cp)
 
         return {
             "symbol": symbol,
@@ -623,6 +663,10 @@ def analyze_symbol(symbol, source_group):
             "ema_reclaim": bool(ema_reclaim),
             "behavior_change": bool(behavior_change),
             "new_money_flow": bool(new_money_flow),
+            "setup_type": setup_type,
+            "reason": reason,
+            "target_note": target_note,
+            "timing_note": timing_note,
             "technical_score": round(float(technical_score), 2),
             "entry": plan["entry"],
             "target_1": plan["target_1"],
@@ -753,6 +797,10 @@ def send_bot2_alert(signal):
     
     msg = (
         f"🟢🔥 *Bot 2 - دخول مبكر مؤكد قبل الانفجار*\n\n"
+        f"{signal.get('target_note', '')}\n"
+        f"{signal.get('timing_note', '')}\n"
+        f"📌 نوع الإشارة: {signal.get('setup_type', '')}\n"
+        f"🧠 السبب: {signal.get('reason', '')}\n\n"
         f"🎫 السهم: `{symbol}`\n"
         f"{mode_text}\n"
         f"💰 السعر: {signal.get('price', 0):.2f}\n"
