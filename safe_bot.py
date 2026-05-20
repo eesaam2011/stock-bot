@@ -174,6 +174,8 @@ def load_active_trades_from_gist():
         active_trades = {}
         print("⚠️ No valid Bot 2 active trades found", flush=True)
 
+active_trades = {}
+save_gist_file(BOT2_ACTIVE_TRADES_FILE, active_trades)
 
 # =========================
 # TIME
