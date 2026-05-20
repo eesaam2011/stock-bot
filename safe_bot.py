@@ -527,10 +527,12 @@ def analyze_symbol(symbol, source_group):
             and close_position >= 0.70
             and upper_wick_pct <= 0.30
             and body_ratio >= 0.35
-            and move_3m >= 0.25
-            and move_5m >= 0.45
-            and move_3m >= move_5m * 0.60
-            and distribution_score < 20
+            and near_high
+            and move_3m >= 0.35
+            and move_5m >= 0.60
+            and move_3m >= move_5m * 0.70
+            and distribution_score < 15
+            and (real_breakout or vwap_reclaim or ema_reclaim)
             and not fake_breakout_risk
             and not overextended
         )
