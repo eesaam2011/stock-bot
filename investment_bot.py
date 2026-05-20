@@ -204,7 +204,7 @@ BLACKLIST_SYMBOLS = [
     "PM", "MO",
     "CGC", "TLRY", "ACB",
     "NCLH", "CCL", "RCL",
-    "AMC", "GPRE", "SKLZ", "PGY", "JELD", "TWO", "PGEN", "GENI",
+    "AMC", "GPRE", "SKLZ", "PGY", "JELD", "TWO", "PGEN", "GENI", "TRC",
 ]
 
 BLACKLIST_KEYWORDS = [
