@@ -536,6 +536,13 @@ def analyze_symbol(symbol, source_group):
             and not fake_breakout_risk
             and not overextended
         )
+        
+        if (
+            instant_rvol >= 4
+            and move_3m < move_5m
+            and move_5m < recent_move
+        ):
+            return None
 
         if recent_move > 2.2:
             return None
