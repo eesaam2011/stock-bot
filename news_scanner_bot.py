@@ -19,7 +19,15 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
-SCAN_INTERVAL = 900  # كل 15 دقيقة
+def get_scan_interval():
+    now = datetime.now(saudi_tz)
+
+    # الأربعاء والخميس
+    if now.weekday() in [2, 3]:
+        return 900  # كل 15 دقيقة
+
+    # باقي الأيام
+    return 7200  # كل ساعتين
 
 NEWS_FILE = "news_signals.json"
 
@@ -590,7 +598,15 @@ send_telegram_msg("📰 تم تشغيل بوت الأخبار - Bot2/Bot3 مست
 while True:
     try:
         run_news_scanner()
-        time.sleep(SCAN_INTERVAL)
+
+        sleep_time = get_scan_interval()
+
+        print(
+            f"🕒 News Bot sleeping {sleep_time / 60:.0f} minutes",
+            flush=True
+        )
+
+        time.sleep(sleep_time)
 
     except Exception as e:
         print("News main loop error:", e, flush=True)
