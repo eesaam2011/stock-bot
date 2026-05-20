@@ -234,7 +234,7 @@ def load_news_symbols():
     all_items = bot2_symbols + bot3_symbols
 
     # الاستثمار: الأربعاء فقط بعد تجهيز أفضل 50
-    if now.weekday() == 2:
+    if now.weekday() in [2, 3]:
         investment_data = read_gist_file(INVESTMENT_NEWS_50_FILE, [])
         investment_symbols = extract_symbols_from_file(
             investment_data,
