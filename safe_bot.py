@@ -1009,15 +1009,26 @@ def run_bot2_once():
 
     telegram_results = [
         r for r in final_results
-        if r.get("grade") in ["A", "A+", "A++"]
+        if r.get("grade") in ["A+", "A++"]
     ]
 
+    telegram_results = sorted(
+        telegram_results,
+        key=lambda x: (
+            x.get("final_score", 0),
+            x.get("instant_rvol", 0),
+            x.get("recent_move", 0),
+            x.get("dollar_volume_10m", 0)
+        ),
+        reverse=True
+    )
+
     print(
-        f"🟢 Early Confirmed Explosion candidates: {len(telegram_results)}",
+        f"🎯 Best Bot 2 candidates selected: {len(telegram_results)}",
         flush=True
     )
 
-    for signal in telegram_results[:10]:
+    for signal in telegram_results[:2]:
         send_bot2_alert(signal)
         time.sleep(0.5)
 
