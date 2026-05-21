@@ -76,11 +76,8 @@ def can_send_trade_alerts():
         return False
 
     current_minutes = hour * 60 + minute
-
-    if 22 * 60 + 40 <= current_minutes <= 23 * 60 + 15:
-        return False
-
-    if 2 * 60 <= current_minutes <= 11 * 60 + 10:
+    
+    if 4 * 60 <= current_minutes <= 10 * 60 + 45:
         return False
 
     return True
