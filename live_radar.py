@@ -16,7 +16,12 @@ BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
+api = tradeapi.REST(
+    API_KEY,
+    SECRET_KEY,
+    BASE_URL,
+    api_version="v2"
+)
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
 app = Flask(__name__)
