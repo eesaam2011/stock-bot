@@ -44,7 +44,7 @@ SYMBOL_BLACKLIST = {
     "PM", "MO",
     "CGC", "TLRY", "ACB",
     "NCLH", "CCL", "RCL",
-    "AMC"
+    "AMC", "GPRE", "SKLZ", "PGY", "JELD", "TWO", "PGEN", "GENI", "TRC",
 }
 
 BAD_KEYWORDS = [
