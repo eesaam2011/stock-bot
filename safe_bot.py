@@ -1038,8 +1038,6 @@ def run_bot2_once():
 # =========================
 
 load_active_trades_from_gist()
-active_trades = {}
-save_gist_file(BOT2_ACTIVE_TRADES_FILE, active_trades)
 print("🟢 BOT 2 - EARLY CONFIRMED EXPLOSION STARTED", flush=True)
 
 send_telegram_msg(
