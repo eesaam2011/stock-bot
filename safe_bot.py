@@ -523,21 +523,21 @@ def analyze_symbol(symbol, source_group):
             distribution_score += 10
             
         early_confirmed_explosion = (
-            0.35 <= recent_move <= 1.80
-            and instant_rvol >= 2.2
+            0.45 <= recent_move <= 1.50
+            and instant_rvol >= 3.0
             and volume_acceleration
             and cp > vwap
             and cp > ema9
-            and ema9 >= ema20 * 0.995
-            and close_position >= 0.70
-            and upper_wick_pct <= 0.30
-            and body_ratio >= 0.35
+            and ema9 >= ema20
             and near_high
-            and move_3m >= 0.35
-            and move_5m >= 0.60
-            and move_3m >= move_5m * 0.70
-            and distribution_score < 15
             and (real_breakout or vwap_reclaim or ema_reclaim)
+            and close_position >= 0.78
+            and upper_wick_pct <= 0.22
+            and body_ratio >= 0.40
+            and move_3m >= 0.45
+            and move_5m >= 0.75
+            and move_3m >= move_5m * 0.75
+            and distribution_score < 12
             and not fake_breakout_risk
             and not overextended
         )
