@@ -1,55 +1,64 @@
 import os
 import time
 import json
-import html
 import requests
 import threading
-import xml.etree.ElementTree as ET
+import pandas as pd
+import alpaca_trade_api as tradeapi
 from flask import Flask
-from datetime import datetime
-from email.utils import parsedate_to_datetime
-from urllib.parse import quote_plus
+from datetime import datetime, timedelta, timezone
 import pytz
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+API_KEY = os.getenv("APCA_API_KEY_ID")
+SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
+BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
+api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
-def get_scan_interval():
-    now = datetime.now(saudi_tz)
-
-    # الأربعاء والخميس
-    if now.weekday() in [2, 3]:
-        return 900  # كل 15 دقيقة
-
-    # باقي الأيام
-    return 7200  # كل ساعتين
-
-NEWS_FILE = "news_signals.json"
-
-BOT2_CANDIDATES_FILE = "bot2_news_candidates.json"
-BOT3_RESULTS_FILE = "bot3_early_candidates.json"
-INVESTMENT_NEWS_50_FILE = "investment_news_candidates_50.json"
-
-TOP_TOP_NEWS_SCORE = 18
-MAX_ALERT_NEWS_AGE_HOURS = 6
-MAX_STORE_NEWS_AGE_SECONDS = 7 * 86400
-
-SPEC_SYMBOL_LIMIT = 300
-INVESTMENT_SYMBOL_LIMIT = 50
-
-sent_news_alerts = {}
-
 app = Flask(__name__)
+
+LIVE_MOVERS_FILE = "live_movers.json"
+
+SCAN_INTERVAL = 60
+PRICE_MIN = 0.4
+PRICE_MAX = 25
+
+MAX_SYMBOLS_TO_SCAN = 2500
+CHUNK_SIZE = 150
+BARS_MINUTES = 30
+TOP_SAVE_COUNT = 150
+
+MIN_DOLLAR_VOLUME_10M = 150000
+MIN_MOVE_3M = 0.40
+MIN_INSTANT_RVOL = 2.0
+
+
+SYMBOL_BLACKLIST = {
+    "JPM", "BAC", "WFC", "C", "GS", "MS",
+    "DKNG", "PENN", "WYNN", "LVS",
+    "BUD", "STZ", "DEO",
+    "PM", "MO",
+    "CGC", "TLRY", "ACB",
+    "NCLH", "CCL", "RCL",
+    "AMC"
+}
+
+BAD_KEYWORDS = [
+    "bank", "financial", "insurance", "credit", "lending",
+    "casino", "gambling", "betting", "sportsbook",
+    "alcohol", "beer", "wine", "tobacco", "cannabis",
+    "marijuana", "hemp", "cruise", "adult",
+    "etf", "fund", "trust", "warrant", "unit"
+]
 
 
 @app.route("/")
 def home():
-    return "News Bot Running"
+    return "Live Movers Scanner Running"
 
 
 def run_web_server():
@@ -57,63 +66,9 @@ def run_web_server():
     app.run(host="0.0.0.0", port=port)
 
 
-def send_telegram_msg(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram keys missing", flush=True)
-        return
-
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "Markdown"
-            },
-            timeout=10
-        )
-    except Exception as e:
-        print("Telegram error:", e, flush=True)
-
-
-def read_gist_file(filename, default_value=None):
-    if default_value is None:
-        default_value = []
-
+def save_gist_file(filename, data):
     if not GIST_ID or not GITHUB_TOKEN:
-        return default_value
-
-    try:
-        url = f"https://api.github.com/gists/{GIST_ID}"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
-
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
-
-        file_data = data.get("files", {}).get(filename)
-        if not file_data:
-            return default_value
-
-        content = file_data.get("content", "")
-        if not content:
-            return default_value
-
-        try:
-            return json.loads(content)
-        except Exception:
-            return default_value
-
-    except Exception as e:
-        print(f"Gist read error ({filename}): {e}", flush=True)
-        return default_value
-
-
-def save_gist_file(filename, content_obj):
-    if not GIST_ID or not GITHUB_TOKEN:
-        print("Gist keys missing", flush=True)
+        print("❌ GIST_ID or GITHUB_TOKEN missing", flush=True)
         return
 
     try:
@@ -129,21 +84,21 @@ def save_gist_file(filename, content_obj):
             json={
                 "files": {
                     filename: {
-                        "content": json.dumps(content_obj, ensure_ascii=False)
+                        "content": json.dumps(data, ensure_ascii=False)
                     }
                 }
             },
-            timeout=10
+            timeout=15
         )
 
         if res.status_code not in [200, 201]:
-            print(f"Gist save failed {filename}: {res.text[:300]}", flush=True)
+            print(f"❌ Gist save failed {filename}: {res.text[:300]}", flush=True)
             return
 
-        print(f"Gist saved: {filename}", flush=True)
+        print(f"✅ Saved {filename}: {len(data)} movers", flush=True)
 
     except Exception as e:
-        print(f"Gist save error ({filename}): {e}", flush=True)
+        print(f"❌ Gist save error {filename}: {e}", flush=True)
 
 
 def clean_symbol(symbol):
@@ -151,6 +106,9 @@ def clean_symbol(symbol):
         return None
 
     symbol = symbol.upper().strip()
+
+    if symbol in SYMBOL_BLACKLIST:
+        return None
 
     if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
         return None
@@ -164,450 +122,269 @@ def clean_symbol(symbol):
     return symbol
 
 
-def extract_symbols_from_file(data, source_name, max_items=None):
-    results = []
-    now_ts = time.time()
-    max_age_seconds = 2 * 60 * 60 if "SPEC" in source_name else 7 * 86400
-
-    if not isinstance(data, list):
-        return results
-
-    for item in data:
-        if isinstance(item, str):
-            symbol = item
-            item_time = now_ts
-            score = 0
-        elif isinstance(item, dict):
-            symbol = item.get("symbol")
-            item_time = float(
-                item.get("time")
-                or item.get("last_update")
-                or item.get("first_seen")
-                or now_ts
-            )
-            score = float(
-                item.get("final_score")
-                or item.get("technical_score")
-                or item.get("pending_score")
-                or item.get("score")
-                or 0
-            )
-        else:
-            continue
-
-        if now_ts - item_time > max_age_seconds:
-            continue
-
-        symbol = clean_symbol(symbol)
-        if not symbol:
-            continue
-
-        results.append({
-            "symbol": symbol,
-            "source": source_name,
-            "score": score,
-            "time": item_time
-        })
-
-    results = sorted(
-        results,
-        key=lambda x: (x["score"], x["time"]),
-        reverse=True
-    )
-
-    if max_items:
-        results = results[:max_items]
-
-    return results
-
-
-def load_news_symbols():
-    now = datetime.now(saudi_tz)
-
-    bot2_data = read_gist_file(BOT2_CANDIDATES_FILE, [])
-    bot3_data = read_gist_file(BOT3_RESULTS_FILE, [])
-
-    bot2_symbols = extract_symbols_from_file(
-        bot2_data,
-        "BOT2_SPEC",
-        max_items=SPEC_SYMBOL_LIMIT
-    )
-
-    bot3_symbols = extract_symbols_from_file(
-        bot3_data,
-        "BOT3_SPEC",
-        max_items=SPEC_SYMBOL_LIMIT
-    )
-
-    all_items = bot2_symbols + bot3_symbols
-
-    # الاستثمار: الأربعاء فقط بعد تجهيز أفضل 50
-    if now.weekday() in [2, 3]:
-        investment_data = read_gist_file(INVESTMENT_NEWS_50_FILE, [])
-        investment_symbols = extract_symbols_from_file(
-            investment_data,
-            "INVESTMENT",
-            max_items=INVESTMENT_SYMBOL_LIMIT
-        )
-        all_items += investment_symbols
-
-    deduped = {}
-
-    for item in all_items:
-        symbol = item["symbol"]
-
-        old = deduped.get(symbol)
-        if old is None:
-            deduped[symbol] = item
-        else:
-            # إذا ظهر من أكثر من مصدر نخلي المصدر مركب ونحفظ أعلى score
-            old_sources = set(str(old.get("source", "")).split("+"))
-            old_sources.add(item["source"])
-            old["source"] = "+".join(sorted(old_sources))
-            old["score"] = max(old.get("score", 0), item.get("score", 0))
-            old["time"] = max(old.get("time", 0), item.get("time", 0))
-
-    symbols = sorted(
-        deduped.values(),
-        key=lambda x: (x["score"], x["time"]),
-        reverse=True
-    )
-
-    print(
-        f"✅ Loaded news candidates: {len(symbols)} "
-        f"| Bot2: {len(bot2_symbols)} | Bot3: {len(bot3_symbols)} "
-        f"| Investment included: {now.weekday() == 2}",
-        flush=True
-    )
-
-    return symbols
-
-
-def fetch_google_news(symbol):
-    try:
-        query = quote_plus(f"{symbol} stock")
-        url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
-        headers = {"User-Agent": "Mozilla/5.0"}
-
-        res = requests.get(url, headers=headers, timeout=10)
-
-        if res.status_code != 200:
-            return []
-
-        root = ET.fromstring(res.content)
-        items = []
-
-        for item in root.findall(".//item")[:7]:
-            title = html.unescape(item.findtext("title", default="")).strip()
-            link = item.findtext("link", default="")
-            pub_date = item.findtext("pubDate", default="")
-
-            age_hours = None
-
-            try:
-                dt = parsedate_to_datetime(pub_date)
-                now_utc = datetime.now(dt.tzinfo)
-                age_hours = (now_utc - dt).total_seconds() / 3600
-            except Exception:
-                pass
-
-            if title:
-                items.append({
-                    "title": title,
-                    "link": link,
-                    "pub_date": pub_date,
-                    "age_hours": age_hours
-                })
-
-        return items
-
-    except Exception as e:
-        print(f"Google news error {symbol}: {e}", flush=True)
-        return []
-
-
-def analyze_news_items(items):
-    positive_keywords = {
-        "fda approval": 6,
-        "approval": 4,
-        "contract": 4,
-        "major contract": 6,
-        "partnership": 4,
-        "strategic partnership": 5,
-        "collaboration": 3,
-        "acquisition": 5,
-        "merger": 5,
-        "buyout": 7,
-        "earnings beat": 5,
-        "beats estimates": 5,
-        "raises guidance": 6,
-        "guidance raised": 6,
-        "patent": 3,
-        "launch": 3,
-        "breakthrough": 5,
-        "positive data": 6,
-        "phase 3": 5,
-        "phase 2": 3,
-        "upgrade": 3,
-        "price target raised": 3,
-        "short squeeze": 4,
-        "receives grant": 4,
-        "secures funding": 4,
-        "partnership agreement": 5,
-        "commercial agreement": 5,
-        "record revenue": 4,
-        "analyst upgrade": 4
-    }
-
-    negative_keywords = {
-        "offering": 6,
-        "public offering": 7,
-        "direct offering": 7,
-        "dilution": 7,
-        "bankruptcy": 8,
-        "delisting": 8,
-        "lawsuit": 4,
-        "investigation": 5,
-        "downgrade": 4,
-        "misses estimates": 5,
-        "cuts guidance": 6,
-        "reverse split": 7,
-        "sec investigation": 8,
-        "fraud": 8
-    }
-
-    total_score = 0
-    best_title = ""
-    best_age = None
-    strongest_negative = False
-
-    for item in items:
-        title = item["title"]
-        text = title.lower()
-        age_hours = item.get("age_hours")
-
-        item_score = 0
-
-        for kw, weight in positive_keywords.items():
-            if kw in text:
-                item_score += weight
-
-        for kw, weight in negative_keywords.items():
-            if kw in text:
-                item_score -= weight
-                if weight >= 7:
-                    strongest_negative = True
-
-        if age_hours is not None:
-            if age_hours <= 1:
-                item_score += 5
-            elif age_hours <= 3:
-                item_score += 4
-            elif age_hours <= 6:
-                item_score += 3
-            elif age_hours <= 12:
-                item_score += 1
-            elif age_hours > 24:
-                item_score -= 2
-
-        if item_score > 0 and (not best_title or item_score > total_score):
-            best_title = title
-            best_age = age_hours
-
-        if not best_title:
-            best_title = title
-            best_age = age_hours
-
-        total_score += item_score
-
-    if strongest_negative:
-        return {
-            "grade": "NEGATIVE",
-            "label": "🔴 خبر سلبي / خطر",
-            "score": total_score,
-            "headline": best_title,
-            "age_hours": best_age
-        }
-
-    if total_score >= TOP_TOP_NEWS_SCORE:
-        grade = "SUPER_STRONG"
-        label = "🔥🔥🔥🔥 خبر قوي جدًا جدًا جدًا جدًا"
-    elif total_score >= 10:
-        grade = "STRONG"
-        label = "🔥 خبر قوي"
-    elif total_score >= 5:
-        grade = "MEDIUM"
-        label = "🟢 خبر متوسط"
-    elif total_score >= 1:
-        grade = "WEAK"
-        label = "⚪ خبر ضعيف"
-    else:
-        grade = "NONE"
-        label = "⚪ لا يوجد خبر مؤثر"
-
-    return {
-        "grade": grade,
-        "label": label,
-        "score": total_score,
-        "headline": best_title,
-        "age_hours": best_age
-    }
-
-
-def save_news_to_gist(new_items):
-    old_items = read_gist_file(NEWS_FILE, [])
-    now_ts = time.time()
-
-    if not isinstance(old_items, list):
-        old_items = []
-
-    old_items = [
-        x for x in old_items
-        if now_ts - float(x.get("time", 0)) < MAX_STORE_NEWS_AGE_SECONDS
-    ]
-
-    merged = old_items[:]
-
-    existing_keys = {
-        (x.get("symbol"), x.get("headline"))
-        for x in merged
-    }
-
-    for item in new_items:
-        key = (item.get("symbol"), item.get("headline"))
-
-        if key not in existing_keys:
-            merged.append(item)
-            existing_keys.add(key)
-
-    save_gist_file(NEWS_FILE, merged[-1000:])
-    print(f"News gist saved: {len(new_items)} new items", flush=True)
-
-
-def should_alert(symbol, headline):
-    now = datetime.now(saudi_tz)
-    key = f"{symbol}:{headline}"
-
-    if key not in sent_news_alerts:
-        sent_news_alerts[key] = now
+def is_blacklisted_asset(asset):
+    symbol = clean_symbol(asset.symbol)
+    if not symbol:
         return True
 
-    diff = (now - sent_news_alerts[key]).total_seconds() / 60
+    name = str(getattr(asset, "name", "") or "").lower()
 
-    if diff >= 240:
-        sent_news_alerts[key] = now
-        return True
+    for kw in BAD_KEYWORDS:
+        if kw in name:
+            return True
 
     return False
 
 
-def is_fresh_top_top_news(analysis):
-    age_hours = analysis.get("age_hours")
+def load_alpaca_universe():
+    try:
+        assets = api.list_assets(status="active")
+        symbols = []
 
-    if age_hours is None:
-        return False
-
-    return (
-        analysis["grade"] == "SUPER_STRONG"
-        and analysis["score"] >= TOP_TOP_NEWS_SCORE
-        and age_hours <= MAX_ALERT_NEWS_AGE_HOURS
-    )
-
-
-def is_spec_source(source):
-    return "BOT2_SPEC" in source or "BOT3_SPEC" in source
-
-
-def run_news_scanner():
-    print("📰 Loading candidates from Bot2 / Bot3 / Investment...", flush=True)
-
-    candidates = load_news_symbols()
-
-    if not candidates:
-        print("⚠️ No news candidates found", flush=True)
-        return
-
-    useful_news = []
-
-    for i, item in enumerate(candidates, start=1):
-        symbol = item["symbol"]
-        source = item.get("source", "")
-
-        try:
-            print(f"📰 {i}/{len(candidates)} checking news: {symbol} | {source}", flush=True)
-
-            news_items = fetch_google_news(symbol)
-
-            if not news_items:
-                time.sleep(0.2)
+        for asset in assets:
+            if not getattr(asset, "tradable", False):
                 continue
 
-            analysis = analyze_news_items(news_items)
+            if is_blacklisted_asset(asset):
+                continue
 
-            if analysis["grade"] in ["SUPER_STRONG", "STRONG", "MEDIUM", "NEGATIVE"]:
-                news_item = {
-                    "symbol": symbol,
-                    "source": source,
-                    "news_grade": analysis["grade"],
-                    "news_label": analysis["label"],
-                    "news_score": analysis["score"],
-                    "headline": analysis["headline"],
-                    "age_hours": analysis.get("age_hours"),
-                    "time": time.time()
-                }
+            symbol = clean_symbol(asset.symbol)
+            if symbol:
+                symbols.append(symbol)
 
-                useful_news.append(news_item)
+        symbols = list(dict.fromkeys(symbols))
+        symbols = symbols[:MAX_SYMBOLS_TO_SCAN]
 
-                # الإرسال فقط للمضاربة Bot2/Bot3، وليس Investment
-                if (
-                    is_spec_source(source)
-                    and is_fresh_top_top_news(analysis)
-                    and should_alert(symbol, analysis["headline"])
-                ):
-                    msg = (
-                        f"📰🔥🔥🔥🔥 *بوت الأخبار - خبر مضاربي قوي جدًا جدًا جدًا جدًا*\n\n"
-                        f"🎫 السهم: `{symbol}`\n"
-                        f"📡 المصدر: {source}\n"
-                        f"🗞️ التصنيف: {analysis['label']}\n"
-                        f"⭐ News Score: {analysis['score']}\n"
-                        f"⏱️ عمر الخبر: {analysis['age_hours']:.1f} ساعة\n\n"
-                        f"🧠 العنوان:\n{analysis['headline']}\n\n"
-                        f"📌 ملاحظة: هذا ليس دخول مباشر، لكنه خبر قوي جدًا يرجع لـ Bot 2 / Bot 3 للتأكيد.\n"
-                        f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
-                    )
+        print(f"📦 Loaded Alpaca live universe: {len(symbols)}", flush=True)
+        return symbols
 
-                    send_telegram_msg(msg)
+    except Exception as e:
+        print(f"❌ Alpaca assets error: {e}", flush=True)
+        return []
+
+
+def get_market_session_label():
+    now = datetime.now(saudi_tz)
+    minutes = now.hour * 60 + now.minute
+
+    if 16 * 60 <= minutes < 23 * 60 + 30:
+        return "REGULAR_OR_PREMARKET"
+
+    if minutes >= 23 * 60 + 30 or minutes < 3 * 60:
+        return "AFTER_HOURS"
+
+    return "OFF_HOURS"
+
+
+def analyze_symbol_bars(symbol, df):
+    try:
+        if df is None or df.empty or len(df) < 12:
+            return None
+
+        if "symbol" in df.columns:
+            df = df[df["symbol"] == symbol]
+
+        if df.empty or len(df) < 12:
+            return None
+
+        df = df.rename(columns={
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume"
+        })
+
+        needed = ["Open", "High", "Low", "Close", "Volume"]
+        for col in needed:
+            if col not in df.columns:
+                return None
+
+        df = df[needed].dropna()
+
+        if df.empty or len(df) < 12 or df["Volume"].mean() <= 0:
+            return None
+
+        cp = float(df["Close"].iloc[-1])
+
+        if not (PRICE_MIN <= cp <= PRICE_MAX):
+            return None
+
+        price_1m = float(df["Close"].iloc[-2])
+        price_3m = float(df["Close"].iloc[-4])
+        price_5m = float(df["Close"].iloc[-6])
+        price_10m = float(df["Close"].iloc[-11])
+
+        move_1m = ((cp - price_1m) / price_1m) * 100 if price_1m > 0 else 0
+        move_3m = ((cp - price_3m) / price_3m) * 100 if price_3m > 0 else 0
+        move_5m = ((cp - price_5m) / price_5m) * 100 if price_5m > 0 else 0
+        move_10m = ((cp - price_10m) / price_10m) * 100 if price_10m > 0 else 0
+
+        last_3_volume = float(df["Volume"].tail(3).mean())
+        avg_volume = float(df["Volume"].mean())
+        instant_rvol = last_3_volume / max(avg_volume, 1)
+
+        volume_10m = float(df["Volume"].tail(10).sum())
+        dollar_volume_10m = cp * volume_10m
+
+        day_high = float(df["High"].max())
+        near_high = cp >= day_high * 0.975 if day_high > 0 else False
+
+        last_open = float(df["Open"].iloc[-1])
+        last_close = float(df["Close"].iloc[-1])
+        last_high = float(df["High"].iloc[-1])
+        last_low = float(df["Low"].iloc[-1])
+
+        candle_range = last_high - last_low
+        if candle_range <= 0:
+            return None
+
+        close_position = (last_close - last_low) / candle_range
+        upper_wick_pct = (last_high - last_close) / candle_range
+        body_ratio = abs(last_close - last_open) / candle_range
+
+        volume_spike = last_3_volume >= avg_volume * 2.0
+
+        hot_score = 0
+        hot_score += min(move_3m * 12, 35)
+        hot_score += min(move_5m * 8, 25)
+        hot_score += min(instant_rvol * 6, 25)
+
+        if volume_spike:
+            hot_score += 10
+
+        if near_high:
+            hot_score += 8
+
+        if close_position >= 0.70:
+            hot_score += 6
+
+        if upper_wick_pct <= 0.30:
+            hot_score += 5
+
+        if body_ratio >= 0.35:
+            hot_score += 5
+
+        hot_mover = (
+            dollar_volume_10m >= MIN_DOLLAR_VOLUME_10M
+            and instant_rvol >= MIN_INSTANT_RVOL
+            and move_3m >= MIN_MOVE_3M
+            and cp > 0
+            and close_position >= 0.55
+            and upper_wick_pct <= 0.45
+        )
+
+        if not hot_mover:
+            return None
+
+        return {
+            "symbol": symbol,
+            "price": round(cp, 4),
+            "move_1m": round(move_1m, 2),
+            "move_3m": round(move_3m, 2),
+            "move_5m": round(move_5m, 2),
+            "move_10m": round(move_10m, 2),
+            "instant_rvol": round(float(instant_rvol), 2),
+            "dollar_volume_10m": round(float(dollar_volume_10m), 2),
+            "volume_spike": bool(volume_spike),
+            "near_high": bool(near_high),
+            "close_position": round(float(close_position), 2),
+            "upper_wick_pct": round(float(upper_wick_pct), 2),
+            "body_ratio": round(float(body_ratio), 2),
+            "hot_score": round(float(hot_score), 2),
+            "source": "LIVE_MOVERS",
+            "session": get_market_session_label(),
+            "time": time.time(),
+            "created_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+    except Exception as e:
+        print(f"Analyze bars error {symbol}: {e}", flush=True)
+        return None
+
+
+def scan_live_movers():
+    symbols = load_alpaca_universe()
+
+    if not symbols:
+        print("⚠️ No Alpaca symbols loaded", flush=True)
+        return []
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(minutes=BARS_MINUTES + 10)
+
+    movers = []
+
+    for i in range(0, len(symbols), CHUNK_SIZE):
+        chunk = symbols[i:i + CHUNK_SIZE]
+
+        try:
+            bars = api.get_bars(
+                chunk,
+                tradeapi.TimeFrame.Minute,
+                start=start.isoformat(),
+                end=end.isoformat(),
+                adjustment="raw"
+            ).df
+
+            if bars is None or bars.empty:
+                continue
+
+            for symbol in chunk:
+                result = analyze_symbol_bars(symbol, bars)
+
+                if result:
+                    movers.append(result)
+
+            print(
+                f"🔎 Live scan {min(i + CHUNK_SIZE, len(symbols))}/{len(symbols)} | movers: {len(movers)}",
+                flush=True
+            )
 
             time.sleep(0.2)
 
         except Exception as e:
-            print(f"News scanner error {symbol}: {e}", flush=True)
+            print(f"Chunk scan error {i}: {e}", flush=True)
+            time.sleep(1)
             continue
 
-    if useful_news:
-        save_news_to_gist(useful_news)
+    movers = sorted(
+        movers,
+        key=lambda x: (
+            x.get("hot_score", 0),
+            x.get("move_3m", 0),
+            x.get("instant_rvol", 0),
+            x.get("dollar_volume_10m", 0)
+        ),
+        reverse=True
+    )
 
-    print(f"✅ News scan completed. Found: {len(useful_news)} useful news", flush=True)
+    return movers[:TOP_SAVE_COUNT]
+
+
+def run_once():
+    print("🚀 Live Movers Scanner running...", flush=True)
+
+    movers = scan_live_movers()
+
+    if movers:
+        save_gist_file(LIVE_MOVERS_FILE, movers)
+    else:
+        print("⚠️ No live movers found this cycle", flush=True)
+
+    print(f"✅ Live Movers cycle completed: {len(movers)}", flush=True)
 
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
-print("📰 NEWS SCANNER BOT STARTED", flush=True)
-send_telegram_msg("📰 تم تشغيل بوت الأخبار - Bot2/Bot3 مستمر + الاستثمار الأربعاء فقط")
+print("🚀 LIVE MOVERS SCANNER STARTED", flush=True)
+
 
 while True:
     try:
-        run_news_scanner()
-
-        sleep_time = get_scan_interval()
-
-        print(
-            f"🕒 News Bot sleeping {sleep_time / 60:.0f} minutes",
-            flush=True
-        )
-
-        time.sleep(sleep_time)
+        run_once()
+        time.sleep(SCAN_INTERVAL)
 
     except Exception as e:
-        print("News main loop error:", e, flush=True)
+        print(f"Main loop error: {e}", flush=True)
         time.sleep(30)
