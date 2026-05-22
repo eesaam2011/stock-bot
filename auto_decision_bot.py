@@ -2263,7 +2263,8 @@ def load_active_trades_from_gist():
 
 
 load_active_trades_from_gist()
-
+active_trades = {}
+save_gist_file(BOT3_ACTIVE_TRADES_FILE, active_trades)
 print("🧠 BOT 3 DECISION BOT STARTED", flush=True)
 send_telegram_msg("🧠 تم تشغيل Bot 3 - القرار النهائي")
 
