@@ -13,6 +13,7 @@ BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT3_CHAT_ID = os.getenv("TELEGRAM_BOT3_CHAT_ID")
 
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -45,7 +46,7 @@ BOT3_EARLY_CANDIDATES_FILE = "bot3_early_candidates.json"
 SELF_SCAN_COUNT = 650
 
 
-def send_telegram_msg(message):
+def send_telegram_msg(message, chat_id):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram keys missing", flush=True)
         return
@@ -55,7 +56,7 @@ def send_telegram_msg(message):
         requests.post(
             url,
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
+                "chat_id": chat_id,
                 "text": message,
                 "parse_mode": "Markdown"
             },
@@ -1653,7 +1654,10 @@ def check_ready_entry(symbol, data):
             f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
         )
 
-        send_telegram_msg(msg)
+        send_telegram_msg(
+        msg,
+        TELEGRAM_BOT3_CHAT_ID
+        )
         momentum_watchlist[symbol] = {
             "symbol": symbol,
             "entry": entry,
