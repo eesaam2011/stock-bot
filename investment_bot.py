@@ -42,7 +42,6 @@ THURSDAY_ALERT_MINUTE = 0
 REPEAT_BLOCK_DAYS = 30
 
 STATE_FILE = "investment_state.json"
-NEWS_FILE = "news_signals.json"
 
 INVESTMENT_500_FILE = "investment_500_candidates.json"
 INVESTMENT_NEWS_50_FILE = "investment_news_candidates_50.json"
@@ -336,41 +335,6 @@ def calculate_rsi(close, period=14):
     rs = gain.iloc[-1] / loss.iloc[-1]
     return 100 - (100 / (1 + rs))
 
-
-def get_news(symbol):
-    news_list = read_gist_file(NEWS_FILE, [])
-    now = time.time()
-
-    best = None
-    best_score = 0
-
-    for n in news_list:
-        if str(n.get("symbol", "")).upper() != symbol.upper():
-            continue
-
-        try:
-            age = now - float(n.get("time", 0))
-        except Exception:
-            age = 999999
-
-        if age > 7 * 86400:
-            continue
-
-        if n.get("news_grade") == "NEGATIVE":
-            return "NEGATIVE", float(n.get("news_score", 0) or 0), n.get("headline", "")
-
-        score = float(n.get("news_score", 0) or 0)
-
-        if score > best_score:
-            best = n
-            best_score = score
-
-    if best:
-        return best.get("news_grade", "NONE"), best_score, best.get("headline", "")
-
-    return "NONE", 0, ""
-
-
 def get_recent_sent_symbols(state, days=REPEAT_BLOCK_DAYS):
     now_ts = time.time()
     blocked = set()
@@ -562,10 +526,9 @@ def investment_score(symbol, use_news=False, deep=False):
             if not (40 <= rsi <= 72):
                 return None
 
-        news_grade, news_score, headline = get_news(symbol) if use_news else ("NONE", 0, "")
-
-        if news_grade == "NEGATIVE":
-            return None
+        news_grade = "NONE"
+        news_score = 0
+        headline = ""
 
         score = 0
         reasons = []
@@ -693,21 +656,6 @@ def investment_score(symbol, use_news=False, deep=False):
         elif dollar_volume >= 1_500_000:
             score += 5
             reasons.append("سيولة مناسبة")
-
-        news_bonus = 0
-
-        if use_news:
-            if news_grade == "STRONG" and news_score >= 18:
-                news_bonus = 14
-                reasons.append("خبر قوي جدًا")
-            elif news_grade == "STRONG":
-                news_bonus = 9
-                reasons.append("خبر قوي")
-            elif news_grade == "MEDIUM":
-                news_bonus = 4
-                reasons.append("خبر متوسط")
-
-        score += news_bonus
 
         if deep:
             score += 5
@@ -846,46 +794,6 @@ def deep_review_500():
 
     print(f"✅ Investment Bot - Deep review done: {len(reviewed)}", flush=True)
     return reviewed
-
-
-def prepare_news_50():
-    state = load_state()
-    reviewed = state.get("reviewed_results", [])
-
-    if not reviewed:
-        reviewed = deep_review_500()
-
-    news_50 = sorted(
-        reviewed,
-        key=lambda x: (
-            x.get("slow_runner_setup", False),
-            x.get("continuation_setup", False),
-            x["score"],
-            x["dollar_volume"]
-        ),
-        reverse=True
-    )[:NEWS_TOP_N]
-
-    payload = [
-        {
-            "symbol": x["symbol"],
-            "score": x["score"],
-            "price": x["price"],
-            "reason": "Investment Bot Wednesday Top 100",
-            "time": time.time()
-        }
-        for x in news_50
-    ]
-
-    save_gist_file(INVESTMENT_NEWS_50_FILE, payload)
-
-    state["news_50"] = news_50
-    state["last_news_50"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
-    save_state(state)
-
-    print(f"✅ Investment Bot - News candidates prepared: {len(news_50)}", flush=True)
-    return news_50
-
 
 def get_target_timing():
     now = datetime.now(saudi_tz)
