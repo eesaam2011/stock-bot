@@ -724,12 +724,7 @@ def send_bot2_alert(signal):
         "🔥 STRONG EARLY EXPLOSION MODE"
     )
 
-    source_text = (
-        "🟢 Early Confirmed Explosion - دخول مبكر مؤكد"
-        if source_group == "RADAR"
-        else
-        "🔥 Strong Early Explosion - انفجار مبكر قوي"
-    )
+    source_text = signal.get("source", "UNKNOWN")
     
     msg = (
         f"🟢🔥 *Bot 2 - دخول مبكر مؤكد قبل الانفجار*\n\n"
