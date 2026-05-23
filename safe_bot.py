@@ -29,8 +29,7 @@ PRICE_MAX = 25
 
 SCAN_INTERVAL = 180
 MASTER_LIST_FILE = "master_list.json"
-NEWS_FILE = "news_signals.json"
-
+LIVE_RADAR_FILE = "live_radar.json"
 BOT2_PRELIMINARY_FILE = "bot2_preliminary_results.json"
 BOT2_NEWS_CANDIDATES_FILE = "bot2_news_candidates.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
@@ -234,7 +233,32 @@ def load_master_list():
     symbols = list(dict.fromkeys(symbols))
     return symbols[:STRONG_COUNT + RADAR_COUNT]
 
+def load_live_radar():
+    data = read_gist_file(LIVE_RADAR_FILE, default=[])
 
+    symbols = []
+
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, str):
+                symbol = item
+            elif isinstance(item, dict):
+                symbol = item.get("symbol")
+            else:
+                continue
+
+            if not symbol:
+                continue
+
+            symbol = symbol.upper().strip()
+
+            if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
+                continue
+
+            symbols.append(symbol)
+
+    return list(dict.fromkeys(symbols))
+    
 def get_alpaca_bars(symbol, minutes=120):
     try:
         end = datetime.now(pytz.UTC)
@@ -345,59 +369,6 @@ def calculate_micro_scalp_plan(entry):
 # =========================
 
 def load_news_map():
-    news = read_gist_file(NEWS_FILE, default=[])
-    now_ts = time.time()
-
-    news_map = {}
-
-    if not isinstance(news, list):
-        return news_map
-
-    for n in news:
-        symbol = n.get("symbol")
-        if not symbol:
-            continue
-
-        try:
-            age = now_ts - float(n.get("time", 0))
-        except Exception:
-            age = 999999
-
-        if age > 21600:
-            continue
-
-        symbol = symbol.upper()
-        score = float(n.get("news_score", 0) or 0)
-        grade = n.get("news_grade", "")
-        headline = n.get("headline", "")
-        label = n.get("news_label", "")
-
-        old = news_map.get(symbol)
-
-        if old is None or score > old.get("news_score", 0):
-            news_map[symbol] = {
-                "news_score": score,
-                "news_grade": grade,
-                "headline": headline,
-                "news_label": label
-            }
-
-    return news_map
-
-
-def get_news_bonus(news_score, news_grade):
-    if news_grade == "NEGATIVE":
-        return -25
-
-    if news_score >= 18:
-        return 15
-    elif news_score >= 14:
-        return 8
-    elif news_score >= 10:
-        return 4
-
-    return 0
-
 
 # =========================
 # BOT 2 SCANNER
@@ -699,23 +670,15 @@ def scan_group(symbols, source_group):
     return results
 
 
-def apply_news_and_grade(preliminary_results):
-    news_map = load_news_map()
+def finalize_and_rank_results():(preliminary_results):
     final_results = []
 
     for r in preliminary_results:
-        symbol = r["symbol"]
-        news = news_map.get(symbol, {})
-
-        news_score = float(news.get("news_score", 0) or 0)
-        news_grade = news.get("news_grade", "")
-        news_bonus = get_news_bonus(news_score, news_grade)
 
         radar_bonus = 8 if r.get("source_group") == "RADAR" else 0
 
         final_score = (
             float(r.get("technical_score", 0))
-            + news_bonus
             + radar_bonus
         )
 
@@ -730,11 +693,6 @@ def apply_news_and_grade(preliminary_results):
         else:
             grade = "C"
 
-        r["news_score"] = news_score
-        r["news_grade"] = news_grade
-        r["news_bonus"] = news_bonus
-        r["news_headline"] = news.get("headline", "")
-        r["news_label"] = news.get("news_label", "")
         r["radar_bonus"] = radar_bonus
         r["final_score"] = round(final_score, 2)
         r["grade"] = grade
@@ -765,22 +723,7 @@ def send_bot2_alert(signal):
         print(f"🔕 Bot 2 alert muted by schedule: {symbol} | {grade}", flush=True)
         return
 
-    news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
-
-    if signal.get("news_bonus", 0) > 0:
-        news_text = (
-            f"📰 *خبر داعم:* {signal.get('news_label', '')}\n"
-            f"⭐ News Score: {signal.get('news_score', 0):.0f}\n"
-            f"🧠 العنوان: {signal.get('news_headline', '')}\n\n"
-        )
-    elif signal.get("news_bonus", 0) < 0:
-        news_text = (
-            f"🚨 *خبر سلبي:* {signal.get('news_label', '')}\n"
-            f"⭐ News Score: {signal.get('news_score', 0):.0f}\n"
-            f"🧠 العنوان: {signal.get('news_headline', '')}\n\n"
-        )
-
-    source_group = signal.get("source_group", "")
+    
 
     mode_text = (
         "🟢 EARLY CONFIRMED ENTRY MODE"
@@ -807,12 +750,10 @@ def send_bot2_alert(signal):
         f"💰 السعر: {signal.get('price', 0):.2f}\n"
         f"🏆 التصنيف: {grade}\n"
         f"📡 المصدر: {source_text}\n\n"
-        f"{news_text}"
         f"📊 القوة:\n"
         f"Final Score: {signal.get('final_score', 0):.1f}\n"
         f"Technical Score: {signal.get('technical_score', 0):.1f}\n"
         f"Radar Bonus: {signal.get('radar_bonus', 0)}\n"
-        f"News Bonus: {signal.get('news_bonus', 0)}\n"
         f"RSI: {signal.get('rsi', 0):.1f}\n"
         f"RVOL: {signal.get('instant_rvol', 0):.2f}x\n"
         f"حركة 10د: {signal.get('recent_move', 0):.2f}%\n\n"
@@ -936,7 +877,11 @@ def monitor_active_trades():
 # =========================
 
 def run_bot2_once():
-    symbols = load_master_list()
+    live_symbols = load_live_radar()
+    master_symbols = load_master_list()
+
+    symbols = live_symbols + master_symbols
+    symbols = list(dict.fromkeys(symbols))
 
     if not symbols:
         print("⚠️ Master List empty", flush=True)
@@ -945,7 +890,10 @@ def run_bot2_once():
     strong_symbols = symbols[:STRONG_COUNT]
     radar_symbols = symbols[STRONG_COUNT:STRONG_COUNT + RADAR_COUNT]
 
-    print(f"📦 Master symbols: {len(symbols)}", flush=True)
+    print(
+        f"📦 Bot 2 symbols: {len(symbols)} | Live: {len(live_symbols)} | Master: {len(master_symbols)}",
+        flush=True
+    )
 
     print(
         f"🟢 Early Confirmed Explosion (Top): {len(strong_symbols)}",
@@ -970,21 +918,8 @@ def run_bot2_once():
 
     save_gist_file(BOT2_PRELIMINARY_FILE, preliminary_results)
 
-    news_candidates = [
-        {
-            "symbol": r["symbol"],
-            "technical_score": r.get("technical_score", 0),
-            "source_group": r.get("source_group", ""),
-            "price": r.get("price", 0),
-            "time": time.time()
-        }
-        for r in preliminary_results
-        if r.get("technical_score", 0) >= 55
-    ][:150]
-
-    save_gist_file(BOT2_NEWS_CANDIDATES_FILE, news_candidates)
-
-    final_results = apply_news_and_grade(preliminary_results)
+    
+    final_results = finalize_and_rank_results(preliminary_results)
 
     # =========================
         # REMOVE OLD RESULTS (>90 MIN)
