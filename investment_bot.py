@@ -974,9 +974,7 @@ def send_thursday_alert():
             f"🧠 الأسباب: {', '.join(r['reasons'][:6])}\n"
         )
 
-        if r.get("headline"):
-            msg += f"📰 {r['headline']}\n"
-
+        
         msg += f"🔗 https://www.tradingview.com/chart/?symbol={r['symbol']}\n\n"
 
     send_telegram_msg(msg)
@@ -1036,8 +1034,6 @@ def monitor_active_picks():
             sma20 = float(df["SMA20"].iloc[-1])
             sma50 = float(df["SMA50"].iloc[-1]) if not pd.isna(df["SMA50"].iloc[-1]) else sma20
             rsi = calculate_rsi(df["Close"])
-
-            news_grade, news_score, headline = get_news(symbol)
 
             alerts = p.get("alerts", {})
 
@@ -1110,7 +1106,6 @@ def monitor_active_picks():
                 smart_continue = (
                     price > sma20
                     and rsi <= 72
-                    and news_grade != "NEGATIVE"
                     and gain >= 20
                 )
 
@@ -1127,7 +1122,7 @@ def monitor_active_picks():
                         f"📌 الأفضل: الاستمرار مع رفع الوقف\n"
                         f"🔒 الوقف المقترح الآن: {new_stop:.2f}\n\n"
                         f"🧠 سيستمر البوت بمتابعة السهم "
-                        f"وإرسال تنبيه إذا ظهر ضعف أو خبر سلبي"
+                        f"وإرسال تنبيه إذا ظهر ضعف أو فقدان زخم"
                     )
 
                 else:
