@@ -760,8 +760,8 @@ def send_bot2_alert(signal):
     )
 
     send_telegram_msg(
-    msg,
-    TELEGRAM_FAST_CHAT_ID
+        msg,
+        TELEGRAM_FAST_CHAT_ID
     )
 
     sent_alerts[symbol] = {
@@ -819,7 +819,10 @@ def monitor_active_trades():
                         f"🚀 الدخول: {entry:.2f}\n"
                         f"🛑 الوقف: {sl:.2f}"
                     )
-                    send_telegram_msg(msg)
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_FAST_CHAT_ID
+                    )
 
                 trade["stop_alerted"] = True
                 active_trades.pop(symbol, None)
@@ -836,7 +839,10 @@ def monitor_active_trades():
                         f"⚠️ السهم لم يتحرك بقوة بعد الدخول.\n"
                         f"يفضل تشديد الوقف أو الخروج الجزئي."
                     )
-                    send_telegram_msg(msg)
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_FAST_CHAT_ID 
+                    )
 
                 trade["slow_alerted"] = True
 
@@ -854,7 +860,10 @@ def monitor_active_trades():
                         f"🚀 هدف 2: {t2:.2f}\n"
                         f"✅ الوقف المقترح الآن: {new_sl:.2f}"
                     )
-                    send_telegram_msg(msg)
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_FAST_CHAT_ID 
+                    )
 
                 trade["run_alerted"] = True
 
