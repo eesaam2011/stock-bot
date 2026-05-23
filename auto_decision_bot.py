@@ -1602,7 +1602,14 @@ def check_ready_entry(symbol, data):
         early_momentum_mode
         ) 
         
-        source_text = data.get("source", "Bot 3")
+        if data.get("source") == "LIVE_MOVERS":
+            source_text = "LIVE_MOVERS"
+
+        elif data.get("source") == "BOT2_SIGNAL":
+            source_text = "BOT2_SIGNAL"
+
+        else:
+            source_text = "MASTER_LIST_SCAN"
         
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
