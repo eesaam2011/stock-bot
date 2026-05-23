@@ -44,7 +44,6 @@ REPEAT_BLOCK_DAYS = 30
 STATE_FILE = "investment_state.json"
 
 INVESTMENT_500_FILE = "investment_500_candidates.json"
-INVESTMENT_NEWS_50_FILE = "investment_news_candidates_50.json"
 INVESTMENT_FINAL_FILE = "investment_final_results.json"
 INVESTMENT_ACTIVE_FILE = "investment_active_trades.json"
 
@@ -176,7 +175,6 @@ def load_state():
         "last_monitor": "",
         "weekend_500": [],
         "reviewed_results": [],
-        "news_50": [],
         "final_picks": [],
         "active_picks": [],
         "sent_history": []
@@ -357,7 +355,7 @@ def get_recent_sent_symbols(state, days=REPEAT_BLOCK_DAYS):
     return blocked
 
 
-def investment_score(symbol, use_news=False, deep=False):
+def investment_score(symbol, deep=False):
     try:
         df = get_daily_bars(symbol, days=240)
 
@@ -824,7 +822,7 @@ def build_final_picks():
             print(f"⏭️ Skipped repeated investment pick within {REPEAT_BLOCK_DAYS} days: {symbol}", flush=True)
             continue
 
-        item = investment_score(symbol, use_news=True, deep=True)
+        item = investment_score(symbol, deep=True)
 
         if item:
             final.append(item)
@@ -837,7 +835,6 @@ def build_final_picks():
             x.get("slow_runner_setup", False),
             x.get("continuation_setup", False),
             x["score"],
-            x["news_bonus"],
             x["dollar_volume"]
         ),
         reverse=True
@@ -1068,17 +1065,6 @@ def monitor_active_picks():
                 or price < stop
             )
 
-            if news_grade == "NEGATIVE" and not alerts.get("negative_news"):
-                send_telegram_msg(
-                    f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"🚨 *خبر سلبي على صفقة استثمارية*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"💰 السعر الحالي: {price:.2f}\n"
-                    f"📰 {headline}\n\n"
-                    f"يفضل مراجعة الصفقة فورًا."
-                )
-                alerts["negative_news"] = True
-
             if price <= stop and not alerts.get("stop"):
                 send_telegram_msg(
                     f"📈 *Investment Bot - البوت الاستثماري*\n"
@@ -1149,7 +1135,6 @@ def monitor_active_picks():
                         f"🔥 السهم ما زال قويًا بعد هدف 2\n"
                         f"✅ السعر فوق SMA20\n"
                         f"✅ RSI ما زال صحي\n"
-                        f"✅ لا يوجد خبر سلبي\n\n"
                         f"📌 الأفضل: الاستمرار مع رفع الوقف\n"
                         f"🔒 الوقف المقترح الآن: {new_stop:.2f}\n\n"
                         f"🧠 سيستمر البوت بمتابعة السهم "
