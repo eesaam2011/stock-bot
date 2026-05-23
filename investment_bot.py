@@ -26,7 +26,6 @@ PRICE_MIN = 1.0
 PRICE_MAX = 15.0
 
 WEEKEND_TOP_N = 700
-NEWS_TOP_N = 100
 FINAL_MAX_PICKS = 5
 FINAL_MIN_PICKS = 3
 
@@ -169,7 +168,6 @@ def load_state():
         "last_weekend_build": "",
         "last_weekend_midday_rebuild": "",
         "last_deep_review": "",
-        "last_news_50": "",
         "last_previous_report": "",
         "last_thursday_alert": "",
         "last_monitor": "",
@@ -680,10 +678,6 @@ def investment_score(symbol, deep=False):
             "slow_runner_setup": slow_runner_setup,
             "continuation_setup": continuation_setup,
             "trend_quality": ma_stack,
-            "news_grade": news_grade,
-            "news_score": news_score,
-            "headline": headline,
-            "news_bonus": news_bonus,
             "reasons": reasons,
             "alerts": {},
             "time": time.time(),
@@ -708,8 +702,8 @@ def build_weekend_500():
     scored = []
 
     for i, symbol in enumerate(symbols, start=1):
-        item = investment_score(symbol, use_news=False, deep=False)
-
+        item = investment_score(symbol, deep=False)
+        
         if item:
             scored.append(item)
 
@@ -738,7 +732,6 @@ def build_weekend_500():
     state["weekend_500"] = top500
     state["last_weekend_build"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
     state["reviewed_results"] = []
-    state["news_50"] = []
     state["final_picks"] = []
     save_state(state)
 
@@ -1093,7 +1086,7 @@ def monitor_active_picks():
                     f"📈 الربح الحالي: {gain:.2f}%\n\n"
                     f"✅ الوقف المقترح الآن: {new_stop:.2f}"
                 )
-
+                
                 p["stop"] = round(new_stop, 4)
                 alerts["raise_stop"] = True
 
