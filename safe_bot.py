@@ -702,6 +702,40 @@ def finalize_and_rank_results(preliminary_results):
 
     return final_results
 
+def classify_setup_strength(data):
+    score = float(data.get("final_score", 0) or 0)
+    rvol = float(data.get("instant_rvol", 0) or 0)
+    recent_move = float(data.get("recent_move", 0) or 0)
+    move_3m = float(data.get("move_3m", 0) or 0)
+    close_position = float(data.get("close_position", 0) or 0)
+    distribution_score = float(data.get("distribution_score", 0) or 0)
+
+    volume_acceleration = bool(data.get("volume_acceleration", False))
+    real_breakout = bool(data.get("real_breakout", False))
+
+    if (
+        score >= 85
+        and rvol >= 4
+        and move_3m >= 0.55
+        and recent_move >= 1.0
+        and close_position >= 0.75
+        and distribution_score < 15
+        and volume_acceleration
+        and real_breakout
+    ):
+        return "💎 فرصة ذهبية"
+
+    if (
+        score >= 75
+        and rvol >= 3
+        and move_3m >= 0.35
+        and close_position >= 0.68
+        and distribution_score < 25
+        and volume_acceleration
+    ):
+        return "🔥 فرصة قوية جدًا"
+
+    return "🟢 فرصة ممتازة"
 
 def send_bot2_alert(signal):
     symbol = signal["symbol"]
@@ -726,6 +760,7 @@ def send_bot2_alert(signal):
     )
 
     source_text = signal.get("source", "UNKNOWN")
+    setup_strength = classify_setup_strength(signal)
     
     msg = (
         f"🟢🔥 *Bot 2 - دخول مبكر مؤكد قبل الانفجار*\n\n"
@@ -737,6 +772,7 @@ def send_bot2_alert(signal):
         f"{mode_text}\n"
         f"💰 السعر: {signal.get('price', 0):.2f}\n"
         f"🏆 التصنيف: {grade}\n"
+        f"💎 قوة الفرصة: {setup_strength}\n\n"
         f"📡 المصدر: {source_text}\n\n"
         f"📊 القوة:\n"
         f"Final Score: {signal.get('final_score', 0):.1f}\n"
