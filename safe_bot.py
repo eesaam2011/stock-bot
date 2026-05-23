@@ -976,7 +976,8 @@ load_active_trades_from_gist()
 print("🟢 BOT 2 - EARLY CONFIRMED EXPLOSION STARTED", flush=True)
 
 send_telegram_msg(
-    "🟢 تم تشغيل Bot 2 - الدخول المبكر المؤكد قبل الانفجار"
+    "🟢 تم تشغيل Bot 2 - الدخول المبكر المؤكد قبل الانفجار",
+    TELEGRAM_FAST_CHAT_ID
 )
 while True:
     try:
