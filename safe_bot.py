@@ -31,7 +31,6 @@ SCAN_INTERVAL = 180
 MASTER_LIST_FILE = "master_list.json"
 LIVE_RADAR_FILE = "live_radar.json"
 BOT2_PRELIMINARY_FILE = "bot2_preliminary_results.json"
-BOT2_NEWS_CANDIDATES_FILE = "bot2_news_candidates.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
 BOT2_ACTIVE_TRADES_FILE = "bot2_active_trades.json"
 
@@ -717,8 +716,6 @@ def send_bot2_alert(signal):
     if not can_send_trade_alerts():
         print(f"🔕 Bot 2 alert muted by schedule: {symbol} | {grade}", flush=True)
         return
-
-    
 
     mode_text = (
         "🟢 EARLY CONFIRMED ENTRY MODE"
