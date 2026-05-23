@@ -36,9 +36,8 @@ WATCH_MINUTES = 45
 SCAN_INTERVAL = 30
 PENDING_MAX_AGE_MINUTES = 90
 
+LIVE_RADAR_FILE = "live_radar.json" 
 MASTER_LIST_FILE = "master_list.json"
-NEWS_FILE = "news_signals.json"
-LIVE_RADAR_FILE = "live_radar.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
 BOT3_ACTIVE_TRADES_FILE = "bot3_active_trades.json"
 BOT3_EARLY_CANDIDATES_FILE = "bot3_early_candidates.json"
