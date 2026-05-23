@@ -1655,8 +1655,8 @@ def check_ready_entry(symbol, data):
         )
 
         send_telegram_msg(
-        msg,
-        TELEGRAM_BOT3_CHAT_ID
+            msg,
+            TELEGRAM_BOT3_CHAT_ID
         )
         momentum_watchlist[symbol] = {
             "symbol": symbol,
@@ -1922,7 +1922,10 @@ def monitor_active_trades():
                             f"⚠️ يفضل تشديد الوقف أو الخروج حسب الشارت"
                         )
 
-                        send_telegram_msg(msg)
+                        send_telegram_msg(
+                            msg,
+                            TELEGRAM_BOT3_CHAT_ID
+                        )
 
                     trade["scenario_failed_alert"] = True
 
@@ -2008,7 +2011,10 @@ def monitor_active_trades():
                             f"السهم لم يتحرك بقوة حتى الآن."
                         )
 
-                    send_telegram_msg(msg)
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_BOT3_CHAT_ID
+                    )
 
                 trade["slow_alerted"] = True
 
@@ -2027,7 +2033,10 @@ def monitor_active_trades():
                         f"✅ الوقف المقترح الآن: {new_sl:.2f}\n"
                         f"📌 الهدف التالي: {t2:.2f}"
                     )
-                    send_telegram_msg(msg)
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_BOT3_CHAT_ID
+                    )
 
                 trade["target1_alerted"] = True
 
@@ -2052,7 +2061,10 @@ def monitor_active_trades():
                         f"🔥 هدف 3: {t3:.2f}\n\n"
                         f"{action_text}"
                     )
-                    send_telegram_msg(msg)
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_BOT3_CHAT_ID
+                    )
 
                 trade["target2_alerted"] = True
 
@@ -2076,7 +2088,10 @@ def monitor_active_trades():
                         f"✅ الوقف المقترح الآن: {new_sl:.2f}\n\n"
                         f"{action_text}"
                     )
-                    send_telegram_msg(msg)
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_BOT3_CHAT_ID
+                    )
 
                 trade["target3_alerted"] = True
 
@@ -2164,7 +2179,10 @@ def monitor_explosion_tracking():
                     f"✅ احتمال استمرار الصعود قائم"
                 )
 
-                send_telegram_msg(msg)
+                send_telegram_msg(
+                    msg,
+                    TELEGRAM_BOT3_CHAT_ID
+                )
 
                 data["last_status"] = "STRONG"
 
@@ -2181,7 +2199,10 @@ def monitor_explosion_tracking():
                         f"⚠️ راقب الخروج أو تشديد الوقف"
                     )
 
-                    send_telegram_msg(msg)
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_BOT3_CHAT_ID
+                    )
 
                     data["last_status"] = "WEAK"
 
