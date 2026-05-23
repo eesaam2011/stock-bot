@@ -1603,7 +1603,9 @@ def check_ready_entry(symbol, data):
         runner_escape_mode,
         early_momentum_mode
         ) 
-
+        
+        source_text = data.get("source", "Bot 3")
+        
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
             f"🎫 السهم: `{symbol}`\n"
