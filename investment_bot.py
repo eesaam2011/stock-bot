@@ -11,6 +11,7 @@ import pytz
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_INVESTMENT_CHAT_ID = os.getenv("TELEGRAM_INVESTMENT_CHAT_ID")
 
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -59,7 +60,7 @@ def run_web_server():
     app.run(host="0.0.0.0", port=port)
 
 
-def send_telegram_msg(message):
+def send_telegram_msg(message, chat_id):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram keys missing", flush=True)
         return
@@ -68,7 +69,7 @@ def send_telegram_msg(message):
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
+                "chat_id": chat_id,
                 "text": message,
                 "parse_mode": "Markdown"
             },
@@ -856,7 +857,8 @@ def send_previous_picks_report():
     if not picks:
         send_telegram_msg(
             "📊 *Investment Bot - تقرير الأسبوع السابق*\n\n"
-            "لا توجد أسهم نشطة من الأسبوع السابق للمتابعة."
+            "لا توجد أسهم نشطة من الأسبوع السابق للمتابعة.",
+            TELEGRAM_INVESTMENT_CHAT_ID
         )
         state["last_previous_report"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
         save_state(state)
@@ -924,8 +926,11 @@ def send_previous_picks_report():
         f"🛑 وقف: {stop_count}\n"
     )
 
-    send_telegram_msg(msg)
-
+        send_telegram_msg(
+            msg,
+            TELEGRAM_INVESTMENT_CHAT_ID
+        )
+    
     state["last_previous_report"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
     save_state(state)
 
@@ -936,7 +941,8 @@ def send_thursday_alert():
     if len(picks) < FINAL_MIN_PICKS:
         send_telegram_msg(
             "📈 *Investment Bot - البوت الاستثماري*\n\n"
-            "📉 لا توجد فرص استثمارية كافية هذا الأسبوع."
+            "📉 لا توجد فرص استثمارية كافية هذا الأسبوع.",
+            TELEGRAM_INVESTMENT_CHAT_ID
         )
         return
 
@@ -977,7 +983,11 @@ def send_thursday_alert():
         
         msg += f"🔗 https://www.tradingview.com/chart/?symbol={r['symbol']}\n\n"
 
-    send_telegram_msg(msg)
+        send_telegram_msg(
+            "📈 *Investment Bot - البوت الاستثماري*\n\n"
+            "📉 لا توجد فرص استثمارية كافية هذا الأسبوع.",
+            TELEGRAM_INVESTMENT_CHAT_ID
+        )
 
     state = load_state()
     today = datetime.now(saudi_tz).strftime("%Y-%m-%d")
@@ -1057,7 +1067,9 @@ def monitor_active_picks():
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"🚀 الدخول: {entry:.2f}\n"
-                    f"🛑 الوقف: {stop:.2f}"
+                    f"🛑 الوقف: {stop:.2f}",
+                    
+                    TELEGRAM_INVESTMENT_CHAT_ID
                 )
                 alerts["stop"] = True
 
@@ -1067,7 +1079,9 @@ def monitor_active_picks():
                     f"🚀 *بدأ التحرك*\n\n"
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
-                    f"📈 الربح الحالي: {gain:.2f}%"
+                    f"📈 الربح الحالي: {gain:.2f}%",
+                    
+                    TELEGRAM_INVESTMENT_CHAT_ID
                 )
                 alerts["start"] = True
 
@@ -1080,7 +1094,9 @@ def monitor_active_picks():
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"📈 الربح الحالي: {gain:.2f}%\n\n"
-                    f"✅ الوقف المقترح الآن: {new_stop:.2f}"
+                    f"✅ الوقف المقترح الآن: {new_stop:.2f}",
+                    
+                    TELEGRAM_INVESTMENT_CHAT_ID
                 )
                 
                 p["stop"] = round(new_stop, 4)
@@ -1095,7 +1111,9 @@ def monitor_active_picks():
                     f"🎫 `{symbol}`\n"
                     f"💰 السعر الحالي: {price:.2f}\n"
                     f"🎯 هدف 1: {t1:.2f}\n\n"
-                    f"✅ الوقف المقترح بعد الهدف: {new_stop:.2f}"
+                    f"✅ الوقف المقترح بعد الهدف: {new_stop:.2f}",
+
+                    TELEGRAM_INVESTMENT_CHAT_ID
                 )
 
                 p["stop"] = round(new_stop, 4)
@@ -1143,7 +1161,9 @@ def monitor_active_picks():
                     f"📈 الربح الحالي: {gain:.2f}%\n"
                     f"📊 RSI: {rsi:.1f}\n"
                     f"📉 SMA20: {sma20:.2f}\n\n"
-                    f"{action_text}"
+                    f"{action_text}",
+
+                    TELEGRAM_INVESTMENT_CHAT_ID
                 )
 
                 alerts["target2"] = True
@@ -1157,7 +1177,9 @@ def monitor_active_picks():
                     f"📊 RSI: {rsi:.1f}\n"
                     f"📉 SMA20: {sma20:.2f}\n\n"
                     f"❌ الضعف ليس مجرد تهدئة بسيطة\n"
-                    f"يفضل المراقبة الجادة أو تخفيف الكمية."
+                    f"يفضل المراقبة الجادة أو تخفيف الكمية.",
+
+                    TELEGRAM_INVESTMENT_CHAT_ID
                 )
                 alerts["weakness"] = True
 
@@ -1171,7 +1193,9 @@ def monitor_active_picks():
                     f"📊 RSI: {rsi:.1f}\n"
                     f"📉 SMA20: {sma20:.2f}\n\n"
                     f"✅ السهم ما زال قريبًا من الاتجاه الصحي\n"
-                    f"📌 لا يوجد سبب قوي للخروج حتى الآن."
+                    f"📌 لا يوجد سبب قوي للخروج حتى الآن.",
+
+                    TELEGRAM_INVESTMENT_CHAT_ID
                 )
                 alerts["healthy_pullback"] = True
 
