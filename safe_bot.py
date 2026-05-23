@@ -665,7 +665,7 @@ def scan_group(symbols, source_group):
     return results
 
 
-def finalize_and_rank_results():(preliminary_results):
+def finalize_and_rank_results(preliminary_results):
     final_results = []
 
     for r in preliminary_results:
