@@ -1359,8 +1359,10 @@ threading.Thread(target=run_web_server, daemon=True).start()
 load_active_picks_from_gist()
 
 print("📈 Investment Bot Started", flush=True)
-send_telegram_msg("📈 *Investment Bot - البوت الاستثماري*\n\nتم تشغيل النظام الأسبوعي الجديد.")
-
+send_telegram_msg(
+    "📈 *Investment Bot - البوت الاستثماري*\n\nتم تشغيل النظام الأسبوعي الجديد.",
+    TELEGRAM_INVESTMENT_CHAT_ID
+)
 while True:
     try:
         run_scheduler()
