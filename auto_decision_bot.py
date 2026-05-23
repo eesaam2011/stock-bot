@@ -38,6 +38,7 @@ PENDING_MAX_AGE_MINUTES = 90
 
 MASTER_LIST_FILE = "master_list.json"
 NEWS_FILE = "news_signals.json"
+LIVE_RADAR_FILE = "live_radar.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
 BOT3_ACTIVE_TRADES_FILE = "bot3_active_trades.json"
 BOT3_EARLY_CANDIDATES_FILE = "bot3_early_candidates.json"
@@ -187,7 +188,35 @@ def load_master_list():
 
     return list(dict.fromkeys(symbols))
 
+def load_live_radar():
+    data = read_gist_file(LIVE_RADAR_FILE, default=[])
 
+    symbols = []
+
+    if isinstance(data, list):
+        for item in data:
+
+            if isinstance(item, str):
+                symbol = item
+
+            elif isinstance(item, dict):
+                symbol = item.get("symbol")
+
+            else:
+                continue
+
+            if not symbol:
+                continue
+
+            symbol = symbol.upper().strip()
+
+            if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
+                continue
+
+            symbols.append(symbol)
+
+    return list(dict.fromkeys(symbols))
+    
 def get_alpaca_bars(symbol, minutes=120):
     try:
         end = datetime.now(timezone.utc)
@@ -253,59 +282,6 @@ def calculate_rsi(close, period=14):
 
     rs = gain.iloc[-1] / loss.iloc[-1]
     return 100 - (100 / (1 + rs))
-
-
-def load_news_map():
-    news = read_gist_file(NEWS_FILE, default=[])
-    now_ts = time.time()
-    news_map = {}
-
-    if not isinstance(news, list):
-        return news_map
-
-    for n in news:
-        symbol = n.get("symbol")
-        if not symbol:
-            continue
-
-        try:
-            age = now_ts - float(n.get("time", 0))
-        except Exception:
-            age = 999999
-
-        if age > 21600:
-            continue
-
-        symbol = symbol.upper()
-        score = float(n.get("news_score", 0) or 0)
-
-        old = news_map.get(symbol)
-        if old is None or score > old.get("news_score", 0):
-            news_map[symbol] = {
-                "news_score": score,
-                "news_grade": n.get("news_grade", ""),
-                "news_label": n.get("news_label", ""),
-                "headline": n.get("headline", "")
-            }
-
-    return news_map
-
-
-def get_news_bonus(news):
-    news_score = float(news.get("news_score", 0) or 0)
-    news_grade = news.get("news_grade", "")
-
-    if news_grade == "NEGATIVE":
-        return -25
-
-    if news_score >= 18:
-        return 15
-    elif news_score >= 14:
-        return 8
-    elif news_score >= 10:
-        return 4
-
-    return 0
 
 
 def add_to_watchlist(symbol, source, price=0, bot2_grade="", bot2_score=0):
@@ -384,13 +360,23 @@ def update_watchlist_from_bot2():
         )
 
 def self_scan_top_400():
-    symbols = load_master_list()[:SELF_SCAN_COUNT]
 
+    live_symbols = load_live_radar()
+    master_symbols = load_master_list()
+
+    symbols = live_symbols + master_symbols
+    symbols = list(dict.fromkeys(symbols))
+
+    symbols = symbols[:SELF_SCAN_COUNT]
+    
     if not symbols:
         print("⚠️ Master List empty", flush=True)
         return
 
-    print(f"🔎 Bot 3 self scan: {len(symbols)} symbols", flush=True)
+    print(
+    f"📦 Bot 3 symbols: {len(symbols)} | Live: {len(live_symbols)} | Master: {len(master_symbols)}",
+    flush=True
+    )
 
     for i, symbol in enumerate(symbols, start=1):
 
@@ -1477,26 +1463,6 @@ def check_ready_entry(symbol, data):
         if sent_alerts.get(symbol):
             return None
 
-        news_map = load_news_map()
-        news = news_map.get(symbol, {})
-        news_bonus = get_news_bonus(news)
-        if symbol in pending_watchlist:
-
-            if news_bonus < 0:
-                print(f"🧹 Removed pending due to negative news: {symbol}", flush=True)
-                pending_watchlist.pop(symbol, None)
-                return None
-
-            if news_bonus > 0:
-                p = pending_watchlist[symbol]
-                p["news_bonus"] = news_bonus
-                p["pending_score"] = min(
-                    float(p.get("pending_score", 50)) + news_bonus,
-                    100
-                )
-                p["last_update"] = time.time()
-                pending_watchlist[symbol] = p
-
         bot2_score = float(data.get("bot2_score", 0) or 0)
         bot2_grade = data.get("bot2_grade", "")
 
@@ -1563,7 +1529,7 @@ def check_ready_entry(symbol, data):
         distribution_penalty = min(distribution_score, 30)
         technical_score -= distribution_penalty
 
-        final_score = technical_score + bot2_bonus + news_bonus
+        final_score = technical_score + bot2_bonus
         grade = grade_from_score(final_score)
         strong_explosion_candidate = (
             instant_rvol >= 3.5
@@ -1605,22 +1571,7 @@ def check_ready_entry(symbol, data):
 
         sl = entry * 0.985
 
-        news_text = "📰 الأخبار: لا يوجد خبر قوي حديث\n\n"
 
-        if news_bonus > 0:
-            news_text = (
-                f"📰 *خبر داعم:* {news.get('news_label', '')}\n"
-                f"⭐ News Score: {news.get('news_score', 0):.0f}\n"
-                f"🧠 العنوان: {news.get('headline', '')}\n\n"
-            )
-        elif news_bonus < 0:
-            news_text = (
-                f"🚨 *خبر سلبي:* {news.get('news_label', '')}\n"
-                f"⭐ News Score: {news.get('news_score', 0):.0f}\n"
-                f"🧠 العنوان: {news.get('headline', '')}\n\n"
-            )
-
-        source_text = data.get("source", "Bot 3")
 
         if not can_send_trade_alerts():
             print(f"🔕 Bot 3 alert muted by schedule: {symbol} | {grade}", flush=True)
@@ -1665,12 +1616,10 @@ def check_ready_entry(symbol, data):
             f"📍 مرحلة الدخول: {entry_stage}\n"
             f"📡 المصدر:\n"
             f"{source_text}\n\n"
-            f"{news_text}"
             f"📊 السكور:\n"
             f"Final Score: {final_score:.1f}\n"
             f"Technical Score: {technical_score:.1f}\n"
             f"Bot2 Bonus: {bot2_bonus}\n"
-            f"News Bonus: {news_bonus}\n"
             f"خصم التصريف: {distribution_penalty}\n\n"
             f"📊 القوة:\n"
             f"RSI: {rsi:.1f}\n"
