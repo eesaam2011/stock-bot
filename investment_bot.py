@@ -524,10 +524,6 @@ def investment_score(symbol, deep=False):
             if not (40 <= rsi <= 72):
                 return None
 
-        news_grade = "NONE"
-        news_score = 0
-        headline = ""
-
         score = 0
         reasons = []
 
@@ -805,15 +801,15 @@ def get_target_timing():
 
 def build_final_picks():
     state = load_state()
-    news_50 = state.get("news_50", [])
+    reviewed = state.get("reviewed_results", [])
 
-    if not news_50:
-        news_50 = read_gist_file(INVESTMENT_NEWS_50_FILE, [])
+    if not reviewed:
+        reviewed = deep_review_500()
 
-    symbols = [x["symbol"] for x in news_50 if x.get("symbol")]
+    symbols = [x["symbol"] for x in reviewed if x.get("symbol")]
 
-    print(f"🏁 Investment Bot - Building final picks from news list: {len(symbols)}", flush=True)
-
+    print(f"🏁 Investment Bot - Building final picks from reviewed results: {len(symbols)}", flush=True)
+    
     recent_sent = get_recent_sent_symbols(state, REPEAT_BLOCK_DAYS)
     final = []
 
@@ -1290,8 +1286,8 @@ def run_scheduler():
             deep_review_500()
 
     if now.weekday() == 2 and now.hour >= 8:
-        if state.get("last_news_50") != today:
-            prepare_news_50()
+        if state.get("last_deep_review") != today:
+            deep_review_500()
 
     if (
         now.weekday() == 3
