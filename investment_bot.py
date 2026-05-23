@@ -919,17 +919,17 @@ def send_previous_picks_report():
             print(f"Previous report error {p.get('symbol')}: {e}", flush=True)
 
     msg += (
-        f"🧠 *الخلاصة:*\n"
-        f"✅ صحي: {strong_count}\n"
-        f"🎯/🚀 أهداف: {target_count}\n"
-        f"⚠️ ضعيف: {weak_count}\n"
-        f"🛑 وقف: {stop_count}\n"
-    )
+    f"🧠 *الخلاصة:*\n"
+    f"✅ صحي: {strong_count}\n"
+    f"🎯/🚀 أهداف: {target_count}\n"
+    f"⚠️ ضعيف: {weak_count}\n"
+    f"🛑 وقف: {stop_count}\n"
+)
 
-        send_telegram_msg(
-            msg,
-            TELEGRAM_INVESTMENT_CHAT_ID
-        )
+send_telegram_msg(
+    msg,
+    TELEGRAM_INVESTMENT_CHAT_ID
+)
     
     state["last_previous_report"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
     save_state(state)
