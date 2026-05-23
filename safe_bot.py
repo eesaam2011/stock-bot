@@ -364,11 +364,6 @@ def calculate_micro_scalp_plan(entry):
         "stop_loss": round(entry - 0.04, 4)
     }
     
-# =========================
-# NEWS
-# =========================
-
-def load_news_map():
 
 # =========================
 # BOT 2 SCANNER
