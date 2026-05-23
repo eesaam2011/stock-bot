@@ -2245,7 +2245,10 @@ def load_active_trades_from_gist():
 load_active_trades_from_gist()
 
 print("🧠 BOT 3 DECISION BOT STARTED", flush=True)
-send_telegram_msg("🧠 تم تشغيل Bot 3 - القرار النهائي")
+send_telegram_msg(
+    "🧠 تم تشغيل Bot 3 - القرار النهائي",
+    TELEGRAM_BOT3_CHAT_ID
+)
 
 while True:
     try:
