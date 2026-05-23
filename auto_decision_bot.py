@@ -860,6 +860,41 @@ def estimate_target_timing(
         "✅ نوع الفرصة: دخول مؤكد\n"
         "⏱️ المتوقع: هدف 1 خلال 15–35 دقيقة إذا استمر الثبات فوق VWAP/EMA9"
     ) 
+
+def classify_setup_strength(data):
+    source = data.get("source", "")
+    score = float(data.get("final_score", 0) or 0)
+    rvol = float(data.get("instant_rvol", 0) or 0)
+    move_3m = float(data.get("move_3m", 0) or 0)
+    close_position = float(data.get("close_position", 0) or 0)
+    distribution_score = float(data.get("distribution_score", 0) or 0)
+
+    real_breakout = bool(data.get("real_breakout", False))
+    volume_acceleration = bool(data.get("volume_acceleration", False))
+
+    if (
+        source == "LIVE_MOVERS"
+        and score >= 88
+        and rvol >= 4
+        and move_3m >= 0.60
+        and close_position >= 0.78
+        and distribution_score < 15
+        and volume_acceleration
+        and real_breakout
+    ):
+        return "💎 فرصة ذهبية"
+
+    if (
+        score >= 80
+        and rvol >= 3
+        and move_3m >= 0.40
+        and close_position >= 0.70
+        and distribution_score < 25
+        and volume_acceleration
+    ):
+        return "🔥 فرصة قوية جدًا"
+
+    return "🟢 فرصة ممتازة"
     
 def check_ready_entry(symbol, data):
     try:
@@ -1611,12 +1646,14 @@ def check_ready_entry(symbol, data):
 
         else:
             source_text = "MASTER_LIST_SCAN"
+            setup_strength = classify_setup_strength(data)
         
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
             f"🎫 السهم: `{symbol}`\n"
             f"💰 السعر: {entry:.2f}\n"
             f"🏆 التصنيف: {grade}\n\n"
+            f"💎 قوة الفرصة: {setup_strength}\n\n"
             f"{signal_type}\n\n"
             f"{timing_text}\n\n"
             f"{'🔥 Strong Explosion Candidate - مرشح انفجار قوي جداً\\n\\n' if strong_explosion_candidate else ''}"
