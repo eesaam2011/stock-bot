@@ -521,7 +521,6 @@ def add_to_pending(symbol, price, reason=""):
             "improve_count": 0,
             "weak_count": 0,
 
-            "news_bonus": 0,
 
             "first_seen": now_ts,
             "last_update": now_ts,
@@ -637,7 +636,6 @@ def save_pending_candidates_if_changed():
             "status": data.get("status", ""),
             "improve_count": data.get("improve_count", 0),
             "weak_count": data.get("weak_count", 0),
-            "news_bonus": data.get("news_bonus", 0),
             "first_seen": data.get("first_seen", 0),
             "last_update": data.get("last_update", 0),
             "expires_at": data.get("expires_at", 0),
