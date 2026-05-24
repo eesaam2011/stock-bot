@@ -4,3 +4,4 @@ requests
 pytz 
 flask
 yfinance
+alpaca-py
