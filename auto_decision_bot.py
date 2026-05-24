@@ -37,13 +37,13 @@ WATCH_MINUTES = 45
 SCAN_INTERVAL = 30
 PENDING_MAX_AGE_MINUTES = 90
 
-LIVE_RADAR_FILE = "live_radar.json" 
+LIVE_MOVERS_FILE = "live_movers.json" 
 MASTER_LIST_FILE = "master_list.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
 BOT3_ACTIVE_TRADES_FILE = "bot3_active_trades.json"
 BOT3_EARLY_CANDIDATES_FILE = "bot3_early_candidates.json"
 
-SELF_SCAN_COUNT = 650
+SELF_SCAN_COUNT = 1500
 
 
 def send_telegram_msg(message, chat_id):
@@ -188,34 +188,37 @@ def load_master_list():
 
     return list(dict.fromkeys(symbols))
 
-def load_live_radar():
-    data = read_gist_file(LIVE_RADAR_FILE, default=[])
+def load_live_movers():
+    data = load_gist_file(LIVE_MOVERS_FILE, default=[])
+
+    if not isinstance(data, list):
+        return []
 
     symbols = []
 
-    if isinstance(data, list):
-        for item in data:
+    now_ts = time.time()
 
-            if isinstance(item, str):
-                symbol = item
+    for item in data:
+        if not isinstance(item, dict):
+            continue
 
-            elif isinstance(item, dict):
-                symbol = item.get("symbol")
+        symbol = clean_symbol(item.get("symbol"))
+        if not symbol:
+            continue
 
-            else:
-                continue
+        item_time = item.get("time", 0)
+        age = now_ts - item_time if item_time else 999999
 
-            if not symbol:
-                continue
+        # لا تستخدم بيانات قديمة جدًا
+        if age > 180:
+            continue
 
-            symbol = symbol.upper().strip()
+        symbols.append(symbol)
 
-            if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
-                continue
+    symbols = list(dict.fromkeys(symbols))
 
-            symbols.append(symbol)
-
-    return list(dict.fromkeys(symbols))
+    print(f"⚡ Loaded Live Movers symbols: {len(symbols)}", flush=True)
+    return symbols
     
 def get_alpaca_bars(symbol, minutes=120):
     try:
@@ -364,19 +367,29 @@ def self_scan_top_400():
     live_symbols = load_live_radar()
     master_symbols = load_master_list()
 
-    symbols = live_symbols + master_symbols
+    if live_symbols:
+        symbols = live_symbols
+
+        print(
+            f"⚡ Bot 3 using WebSocket Live Movers: {len(symbols)} symbols",
+            flush=True
+        )
+
+    else:
+        symbols = master_symbols
+
+        print(
+            f"🛟 Bot 3 fallback to Master List: {len(symbols)} symbols",
+            flush=True
+        )
+
     symbols = list(dict.fromkeys(symbols))
 
     symbols = symbols[:SELF_SCAN_COUNT]
-    
-    if not symbols:
-        print("⚠️ Master List empty", flush=True)
-        return
 
-    print(
-    f"📦 Bot 3 symbols: {len(symbols)} | Live: {len(live_symbols)} | Master: {len(master_symbols)}",
-    flush=True
-    )
+    if not symbols:
+        print("⚠️ No symbols available", flush=True)
+        return
 
     for i, symbol in enumerate(symbols, start=1):
 
