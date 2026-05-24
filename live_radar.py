@@ -3,11 +3,21 @@ import time
 import json
 import requests
 import threading
+import asyncio
+from collections import defaultdict, deque
 import pandas as pd
 import alpaca_trade_api as tradeapi
 from flask import Flask
 from datetime import datetime, timedelta, timezone
 import pytz
+
+try:
+    from alpaca.data.live import StockDataStream
+    from alpaca.data.enums import DataFeed
+    ALPACA_PY_AVAILABLE = True
+except Exception:
+    ALPACA_PY_AVAILABLE = False
+
 
 API_KEY = os.getenv("APCA_API_KEY_ID")
 SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
@@ -22,25 +32,32 @@ api = tradeapi.REST(
     BASE_URL,
     api_version="v2"
 )
+
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
 app = Flask(__name__)
 
 LIVE_MOVERS_FILE = "live_movers.json"
 
-SCAN_INTERVAL = 60
 PRICE_MIN = 0.4
 PRICE_MAX = 25
 
-MAX_SYMBOLS_TO_SCAN = 5000
+# WebSocket / Live Engine timing
+EVENT_PROCESS_INTERVAL = 5          # تحليل مصغر كل 5 ثواني
+LIVE_SAVE_INTERVAL = 30             # تحديث live_movers.json كل 30 ثانية
+WEBSOCKET_STALE_SECONDS = 90        # إذا انقطعت بيانات WebSocket نستخدم الاحتياط
+
+# Polling fallback فقط عند الحاجة
+POLLING_FALLBACK_INTERVAL = 60
 CHUNK_SIZE = 200
 BARS_MINUTES = 30
-TOP_SAVE_COUNT = 200
 
 MIN_DOLLAR_VOLUME_10M = 100000
 MIN_MOVE_3M = 0.40
 MIN_INSTANT_RVOL = 2.0
 
+# لا يوجد حد إجباري لعدد الأسهم المحفوظة
+# كل سهم يجتاز الفلاتر يدخل live_movers.json ثم يرتب حسب hot_score
 
 SYMBOL_BLACKLIST = {
     "JPM", "BAC", "WFC", "C", "GS", "MS",
@@ -60,10 +77,20 @@ BAD_KEYWORDS = [
     "etf", "fund", "trust", "warrant", "unit"
 ]
 
+# WebSocket state
+allowed_symbols = set()
+asset_names = {}
+symbol_bars = defaultdict(lambda: deque(maxlen=40))
+current_minute_bar = {}
+last_trade_time = {}
+last_websocket_event_ts = 0
+latest_movers = []
+state_lock = threading.Lock()
+
 
 @app.route("/")
 def home():
-    return "Live Movers Scanner Running"
+    return "Live Movers WebSocket Scanner Running"
 
 
 def run_web_server():
@@ -145,6 +172,7 @@ def load_alpaca_universe():
     try:
         assets = api.list_assets(status="active")
         symbols = []
+        names = {}
 
         for asset in assets:
             if not getattr(asset, "tradable", False):
@@ -156,16 +184,16 @@ def load_alpaca_universe():
             symbol = clean_symbol(asset.symbol)
             if symbol:
                 symbols.append(symbol)
+                names[symbol] = str(getattr(asset, "name", "") or "")
 
         symbols = list(dict.fromkeys(symbols))
-        symbols = symbols[:MAX_SYMBOLS_TO_SCAN]
 
-        print(f"📦 Loaded Alpaca live universe: {len(symbols)}", flush=True)
-        return symbols
+        print(f"📦 Loaded clean Alpaca universe: {len(symbols)}", flush=True)
+        return symbols, names
 
     except Exception as e:
         print(f"❌ Alpaca assets error: {e}", flush=True)
-        return []
+        return [], {}
 
 
 def get_market_session_label():
@@ -181,7 +209,113 @@ def get_market_session_label():
     return "OFF_HOURS"
 
 
-def analyze_symbol_bars(symbol, df):
+def get_field(obj, *names, default=None):
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return obj.get(name)
+
+        if hasattr(obj, name):
+            return getattr(obj, name)
+
+    return default
+
+
+def minute_bucket(ts):
+    try:
+        if ts is None:
+            return int(time.time() // 60)
+
+        if isinstance(ts, str):
+            dt = pd.to_datetime(ts, utc=True)
+            return int(dt.timestamp() // 60)
+
+        if hasattr(ts, "timestamp"):
+            return int(ts.timestamp() // 60)
+
+        return int(time.time() // 60)
+
+    except Exception:
+        return int(time.time() // 60)
+
+
+def update_symbol_bar_from_trade(symbol, price, size, ts):
+    global last_websocket_event_ts
+
+    if not symbol or price <= 0 or size <= 0:
+        return
+
+    if allowed_symbols and symbol not in allowed_symbols:
+        return
+
+    if not (PRICE_MIN <= price <= PRICE_MAX):
+        return
+
+    bucket = minute_bucket(ts)
+    now_ts = time.time()
+
+    with state_lock:
+        last_websocket_event_ts = now_ts
+        last_trade_time[symbol] = now_ts
+
+        current = current_minute_bar.get(symbol)
+
+        if current is None:
+            current_minute_bar[symbol] = {
+                "minute": bucket,
+                "Open": price,
+                "High": price,
+                "Low": price,
+                "Close": price,
+                "Volume": float(size),
+            }
+            return
+
+        if current["minute"] == bucket:
+            current["High"] = max(current["High"], price)
+            current["Low"] = min(current["Low"], price)
+            current["Close"] = price
+            current["Volume"] += float(size)
+            return
+
+        symbol_bars[symbol].append({
+            "Open": current["Open"],
+            "High": current["High"],
+            "Low": current["Low"],
+            "Close": current["Close"],
+            "Volume": current["Volume"],
+        })
+
+        current_minute_bar[symbol] = {
+            "minute": bucket,
+            "Open": price,
+            "High": price,
+            "Low": price,
+            "Close": price,
+            "Volume": float(size),
+        }
+
+
+def build_df_from_state(symbol):
+    with state_lock:
+        bars = list(symbol_bars.get(symbol, []))
+        current = current_minute_bar.get(symbol)
+
+        if current:
+            bars.append({
+                "Open": current["Open"],
+                "High": current["High"],
+                "Low": current["Low"],
+                "Close": current["Close"],
+                "Volume": current["Volume"],
+            })
+
+    if len(bars) < 12:
+        return None
+
+    return pd.DataFrame(bars)
+
+
+def analyze_symbol_bars(symbol, df, source="WEBSOCKET_LIVE_MOVERS"):
     try:
         if df is None or df.empty or len(df) < 12:
             return None
@@ -297,7 +431,7 @@ def analyze_symbol_bars(symbol, df):
             "upper_wick_pct": round(float(upper_wick_pct), 2),
             "body_ratio": round(float(body_ratio), 2),
             "hot_score": round(float(hot_score), 2),
-            "source": "LIVE_MOVERS",
+            "source": source,
             "session": get_market_session_label(),
             "time": time.time(),
             "created_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -308,11 +442,114 @@ def analyze_symbol_bars(symbol, df):
         return None
 
 
-def scan_live_movers():
-    symbols = load_alpaca_universe()
+def sort_movers(movers):
+    return sorted(
+        movers,
+        key=lambda x: (
+            x.get("hot_score", 0),
+            x.get("move_3m", 0),
+            x.get("instant_rvol", 0),
+            x.get("dollar_volume_10m", 0)
+        ),
+        reverse=True
+    )
+
+
+def build_websocket_movers():
+    movers = []
+
+    with state_lock:
+        symbols = list(current_minute_bar.keys())
+
+    for symbol in symbols:
+        df = build_df_from_state(symbol)
+        result = analyze_symbol_bars(symbol, df, source="WEBSOCKET_LIVE_MOVERS")
+
+        if result:
+            movers.append(result)
+
+    return sort_movers(movers)
+
+
+async def websocket_trade_handler(trade):
+    try:
+        symbol = clean_symbol(get_field(trade, "symbol", "S"))
+        if not symbol:
+            return
+
+        price = float(get_field(trade, "price", "p", default=0) or 0)
+        size = float(get_field(trade, "size", "s", default=0) or 0)
+        ts = get_field(trade, "timestamp", "t", default=None)
+
+        update_symbol_bar_from_trade(symbol, price, size, ts)
+
+    except Exception as e:
+        print(f"WebSocket trade handler error: {e}", flush=True)
+
+
+def get_data_feed():
+    feed = os.getenv("ALPACA_DATA_FEED", "sip").lower().strip()
+
+    if feed == "iex":
+        return DataFeed.IEX
+
+    return DataFeed.SIP
+
+
+def run_websocket_stream():
+    global last_websocket_event_ts
+
+    if not ALPACA_PY_AVAILABLE:
+        print("❌ alpaca-py not installed. WebSocket disabled. Polling fallback will run.", flush=True)
+        return
+
+    while True:
+        try:
+            print("🔌 Starting Alpaca WebSocket stream...", flush=True)
+
+            stream = StockDataStream(
+                API_KEY,
+                SECRET_KEY,
+                feed=get_data_feed()
+            )
+
+            stream.subscribe_trades(websocket_trade_handler, "*")
+            print("✅ Subscribed to WebSocket trades: *", flush=True)
+
+            last_websocket_event_ts = time.time()
+            stream.run()
+
+        except Exception as e:
+            print(f"❌ WebSocket stream error: {e}", flush=True)
+            time.sleep(10)
+
+
+def websocket_processor_loop():
+    global latest_movers
+
+    while True:
+        try:
+            movers = build_websocket_movers()
+
+            if movers:
+                latest_movers = movers
+                save_gist_file(LIVE_MOVERS_FILE, movers)
+                print(f"⚡ WebSocket movers updated: {len(movers)}", flush=True)
+            else:
+                print("⚠️ WebSocket active but no movers passed filters", flush=True)
+
+            time.sleep(LIVE_SAVE_INTERVAL)
+
+        except Exception as e:
+            print(f"WebSocket processor error: {e}", flush=True)
+            time.sleep(10)
+
+
+def scan_live_movers_polling_fallback():
+    symbols, _ = load_alpaca_universe()
 
     if not symbols:
-        print("⚠️ No Alpaca symbols loaded", flush=True)
+        print("⚠️ No Alpaca symbols loaded for fallback", flush=True)
         return []
 
     end = datetime.now(timezone.utc)
@@ -336,60 +573,92 @@ def scan_live_movers():
                 continue
 
             for symbol in chunk:
-                result = analyze_symbol_bars(symbol, bars)
+                result = analyze_symbol_bars(
+                    symbol,
+                    bars,
+                    source="POLLING_LIVE_MOVERS_BACKUP"
+                )
 
                 if result:
                     movers.append(result)
 
             print(
-                f"🔎 Live scan {min(i + CHUNK_SIZE, len(symbols))}/{len(symbols)} | movers: {len(movers)}",
+                f"🔎 Backup polling scan {min(i + CHUNK_SIZE, len(symbols))}/{len(symbols)} | movers: {len(movers)}",
                 flush=True
             )
 
             time.sleep(0.2)
 
         except Exception as e:
-            print(f"Chunk scan error {i}: {e}", flush=True)
+            print(f"Chunk fallback scan error {i}: {e}", flush=True)
             time.sleep(1)
             continue
 
-    movers = sorted(
-        movers,
-        key=lambda x: (
-            x.get("hot_score", 0),
-            x.get("move_3m", 0),
-            x.get("instant_rvol", 0),
-            x.get("dollar_volume_10m", 0)
-        ),
-        reverse=True
-    )
-
-    return movers[:TOP_SAVE_COUNT]
+    return sort_movers(movers)
 
 
-def run_once():
-    print("🚀 Live Movers Scanner running...", flush=True)
+def fallback_supervisor_loop():
+    while True:
+        try:
+            now_ts = time.time()
+            websocket_age = now_ts - last_websocket_event_ts if last_websocket_event_ts else 999999
 
-    movers = scan_live_movers()
+            if websocket_age > WEBSOCKET_STALE_SECONDS:
+                print(
+                    f"🛟 WebSocket stale for {round(websocket_age)}s. Running polling Live Movers backup...",
+                    flush=True
+                )
+
+                movers = scan_live_movers_polling_fallback()
+
+                if movers:
+                    save_gist_file(LIVE_MOVERS_FILE, movers)
+                    print(f"✅ Backup polling saved movers: {len(movers)}", flush=True)
+                else:
+                    print("⚠️ Backup polling found no movers", flush=True)
+
+            time.sleep(POLLING_FALLBACK_INTERVAL)
+
+        except Exception as e:
+            print(f"Fallback supervisor error: {e}", flush=True)
+            time.sleep(30)
+
+
+def warmup_from_polling_once():
+    print("🔥 Warmup: running one polling scan to seed live_movers.json...", flush=True)
+
+    movers = scan_live_movers_polling_fallback()
 
     if movers:
         save_gist_file(LIVE_MOVERS_FILE, movers)
+        print(f"✅ Warmup saved movers: {len(movers)}", flush=True)
     else:
-        print("⚠️ No live movers found this cycle", flush=True)
-
-    print(f"✅ Live Movers cycle completed: {len(movers)}", flush=True)
+        print("⚠️ Warmup found no movers", flush=True)
 
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
-print("🚀 LIVE MOVERS SCANNER STARTED", flush=True)
+print("🚀 LIVE MOVERS WEBSOCKET SCANNER STARTED", flush=True)
 
+symbols, names = load_alpaca_universe()
+allowed_symbols = set(symbols)
+asset_names = names
+
+print(f"✅ Allowed clean symbols for WebSocket filter: {len(allowed_symbols)}", flush=True)
+
+threading.Thread(target=warmup_from_polling_once, daemon=True).start()
+threading.Thread(target=run_websocket_stream, daemon=True).start()
+threading.Thread(target=websocket_processor_loop, daemon=True).start()
+threading.Thread(target=fallback_supervisor_loop, daemon=True).start()
 
 while True:
     try:
-        run_once()
-        time.sleep(SCAN_INTERVAL)
+        time.sleep(60)
+        print(
+            f"💓 Alive | allowed_symbols={len(allowed_symbols)} | tracked={len(current_minute_bar)} | latest_movers={len(latest_movers)}",
+            flush=True
+        )
 
     except Exception as e:
-        print(f"Main loop error: {e}", flush=True)
+        print(f"Main keepalive error: {e}", flush=True)
         time.sleep(30)
