@@ -399,50 +399,6 @@ def analyze_symbol(symbol, source_group):
         if not (PRICE_MIN <= cp <= PRICE_MAX):
              return None
             
-def load_live_radar():
-    data = read_gist_file(LIVE_MOVERS_FILE, default=[])
-    
-    symbols = []
-    now_ts = time.time()
-
-    if isinstance(data, list):
-        for item in data:
-
-            if isinstance(item, str):
-                symbol = item
-                item_time = now_ts
-
-            elif isinstance(item, dict):
-                symbol = item.get("symbol")
-                item_time = item.get("time", 0)
-
-            else:
-                continue
-
-            if not symbol:
-                continue
-
-            symbol = symbol.upper().strip()
-
-            if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
-                continue
-
-            age = now_ts - item_time if item_time else 999999
-
-            if age > 180:
-                continue
-
-            symbols.append(symbol)
-
-    symbols = list(dict.fromkeys(symbols))
-
-    print(
-        f"⚡ Loaded Live Movers symbols: {len(symbols)}",
-        flush=True
-    )
-
-    return None
-
         day_high = float(df["High"].max())
         day_low = float(df["Low"].min())
         vwap = float((df["Close"] * df["Volume"]).sum() / df["Volume"].sum())
