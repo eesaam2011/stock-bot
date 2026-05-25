@@ -454,9 +454,9 @@ def analyze_bot2_window(symbol, df, source_group):
             and near_high
             and (real_breakout or vwap_reclaim)
             and close_position >= 0.85
-            and upper_wick_pct <= 0.15
+            and upper_wick_pct <= 0.12
             and move_3m >= 0.30
-            and move_5m >= 0.55
+            and move_5m >= 0.50
             and move_3m >= move_5m * 0.75
             and distribution_score < 12
             and not fake_breakout_risk
