@@ -435,7 +435,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and close_position >= 0.78
             and upper_wick_pct <= 0.22
             and body_ratio >= 0.40
-            and move_3m >= 0.55
+            and move_3m >= 5
             and move_5m >= 0.75
             and move_3m >= move_5m * 0.75
             and distribution_score < 12
