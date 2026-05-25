@@ -5,6 +5,8 @@ import requests
 import pandas as pd
 import alpaca_trade_api as tradeapi
 from datetime import datetime, timedelta, timezone
+from flask import Flask
+import threading
 
 API_KEY = os.getenv("APCA_API_KEY_ID")
 SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
@@ -18,6 +20,16 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version="v2")
 
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Historical Bot 2 Backtest Running"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+    
 MASTER_LIST_FILE = "master_list.json"
 LIVE_MOVERS_FILE = "live_movers.json"
 RESULTS_FILE = "historical_bot2_backtest_results.json"
@@ -725,4 +737,8 @@ def main():
 
 
 if __name__ == "__main__":
+    threading.Thread(target=run_web_server, daemon=True).start()
     main()
+
+    while True:
+        time.sleep(3600)
