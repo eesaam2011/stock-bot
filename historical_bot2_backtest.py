@@ -34,8 +34,8 @@ MASTER_LIST_FILE = "master_list.json"
 LIVE_MOVERS_FILE = "live_movers.json"
 RESULTS_FILE = "historical_bot2_backtest_results.json"
 
-MONTHS_BACK = 1
-MAX_SYMBOLS_TO_TEST = 500
+MONTHS_BACK = 0.25
+MAX_SYMBOLS_TO_TEST = 50
 
 PRICE_MIN = 0.4
 PRICE_MAX = 25
