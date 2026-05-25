@@ -160,10 +160,17 @@ def load_symbols_for_backtest():
     live_data = read_gist_file(LIVE_MOVERS_FILE, default=[])
     live_symbols = extract_symbols_from_gist_data(live_data)
 
-    if live_symbols:
-        print(f"⚡ Using live_movers symbols: {len(live_symbols)}", flush=True)
-        return live_symbols[:MAX_SYMBOLS_TO_TEST]
+    if len(live_symbols) >= 50:
+    print(
+        f"⚡ Using live_movers symbols: {len(live_symbols)}",
+        flush=True
+    )
+    return live_symbols[:MAX_SYMBOLS_TO_TEST]
 
+print(
+    f"🛟 live_movers insufficient ({len(live_symbols)}), using master_list",
+    flush=True
+)
     master_data = read_gist_file(MASTER_LIST_FILE, default=[])
     master_symbols = extract_symbols_from_gist_data(master_data)
 
