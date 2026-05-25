@@ -435,7 +435,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and close_position >= 0.78
             and upper_wick_pct <= 0.22
             and body_ratio >= 0.40
-            and move_3m >= 5
+            and move_3m >= 10
             and move_5m >= 0.75
             and move_3m >= move_5m * 0.75
             and distribution_score < 12
@@ -455,7 +455,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and (real_breakout or vwap_reclaim)
             and close_position >= 0.80
             and upper_wick_pct <= 0.20
-            and move_3m >= 0.30
+            and move_3m >= 10
             and move_5m >= 0.40
             and move_3m >= move_5m * 0.75
             and distribution_score < 15
