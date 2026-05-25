@@ -650,6 +650,8 @@ def backtest_symbol(symbol):
 
 def main():
     symbols = load_symbols_for_backtest()
+    
+    print(f"🧪 First symbols loaded: {symbols[:20]}", flush=True)
 
     if not symbols:
         print("⚠️ No symbols loaded for backtest", flush=True)
