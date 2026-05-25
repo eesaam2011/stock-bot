@@ -446,18 +446,18 @@ def analyze_bot2_window(symbol, df, source_group):
         micro_scalp_setup = (
             1.00 <= cp <= 10.00
             and recent_move <= 1.20
-            and instant_rvol >= 3
-            and dollar_volume >= 300000
+            and instant_rvol >= 3.2
+            and dollar_volume >= 500000
             and volume_acceleration
             and cp > vwap
             and cp > ema9
             and near_high
             and (real_breakout or vwap_reclaim)
             and close_position >= 0.85
-            and upper_wick_pct <= 0.12
+            and upper_wick_pct <= 0.15
             and move_3m >= 0.30
             and move_5m >= 0.50
-            and move_3m >= move_5m * 0.75
+            and move_3m >= move_5m * 0.85
             and distribution_score < 12
             and not fake_breakout_risk
             and not overextended
