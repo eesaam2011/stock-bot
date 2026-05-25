@@ -47,7 +47,7 @@ SELF_SCAN_COUNT = 1500
 
 
 def send_telegram_msg(message, chat_id):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_TOKEN or not chat_id:
         print("Telegram keys missing", flush=True)
         return
 
