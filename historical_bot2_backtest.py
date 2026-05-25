@@ -45,18 +45,53 @@ COOLDOWN_MINUTES = 15
 
 
 def send_telegram_msg(msg):
+
+    print("📨 Trying Telegram send...", flush=True)
+
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+
+        print("❌ Telegram keys missing", flush=True)
+
+        print(
+            f"TOKEN exists: {bool(TELEGRAM_TOKEN)}",
+            flush=True
+        )
+
+        print(
+            f"CHAT_ID exists: {bool(TELEGRAM_CHAT_ID)}",
+            flush=True
+        )
+
         return
 
     try:
-        requests.post(
+
+        res = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": msg
+            },
             timeout=10
         )
-    except Exception as e:
-        print("Telegram error:", e, flush=True)
 
+        print(
+            f"📨 Telegram response: "
+            f"{res.status_code}",
+            flush=True
+        )
+
+        print(
+            res.text[:300],
+            flush=True
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Telegram error: {e}",
+            flush=True
+        )
 
 def read_gist_file(filename, default=None):
     if default is None:
@@ -400,7 +435,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and close_position >= 0.78
             and upper_wick_pct <= 0.22
             and body_ratio >= 0.40
-            and move_3m >= 0.45
+            and move_3m >= 0.55
             and move_5m >= 0.75
             and move_3m >= move_5m * 0.75
             and distribution_score < 12
