@@ -397,6 +397,7 @@ def analyze_symbol(symbol, source_group):
         cp = get_latest_price(symbol, df)
 
         if not (PRICE_MIN <= cp <= PRICE_MAX):
+             return None
             
 def load_live_radar():
     data = read_gist_file(LIVE_MOVERS_FILE, default=[])
