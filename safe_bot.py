@@ -46,7 +46,7 @@ active_trades = {}
 # =========================
 
 def send_telegram_msg(message, chat_id):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_TOKEN or not chat_id:
         print("Telegram keys missing", flush=True)
         return
 
@@ -397,7 +397,7 @@ def analyze_symbol(symbol, source_group):
         cp = get_latest_price(symbol, df)
 
         if not (PRICE_MIN <= cp <= PRICE_MAX):
-             return None
+            return None
             
         day_high = float(df["High"].max())
         day_low = float(df["Low"].min())
@@ -639,7 +639,14 @@ def analyze_symbol(symbol, source_group):
             "rsi": round(rsi, 2),
             "instant_rvol": round(float(instant_rvol), 2),
             "recent_move": round(float(recent_move), 2),
+            "move_3m": round(float(move_3m), 2),
+            "move_5m": round(float(move_5m), 2),
             "dollar_volume_10m": round(float(dollar_volume), 2),
+            "close_position": round(float(close_position), 2),
+            "upper_wick_pct": round(float(upper_wick_pct), 2),
+            "body_ratio": round(float(body_ratio), 2),
+            "distribution_score": round(float(distribution_score), 2),
+            "source": "LIVE_MOVERS" if source_group in ["STRONG", "RADAR"] else source_group,
             "real_breakout": bool(real_breakout),
             "fake_breakout_risk": bool(fake_breakout_risk),
             "volume_acceleration": bool(volume_acceleration),
@@ -762,6 +769,7 @@ def send_bot2_alert(signal):
         return
 
     grade = signal.get("grade", "C")
+    source_group = signal.get("source_group", "UNKNOWN")
 
     if grade not in ["A", "A+", "A++"]:
         return
