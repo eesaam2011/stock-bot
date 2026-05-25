@@ -35,7 +35,7 @@ LIVE_MOVERS_FILE = "live_movers.json"
 RESULTS_FILE = "historical_bot2_backtest_results.json"
 
 MONTHS_BACK = 1
-MAX_SYMBOLS_TO_TEST = 100
+MAX_SYMBOLS_TO_TEST = 500
 
 PRICE_MIN = 0.4
 PRICE_MAX = 25
