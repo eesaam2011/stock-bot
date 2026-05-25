@@ -28,9 +28,9 @@ saudi_tz = pytz.timezone("Asia/Riyadh")
 PRICE_MIN = 0.4
 PRICE_MAX = 25
 
-SCAN_INTERVAL = 180
+SCAN_INTERVAL = 40
 MASTER_LIST_FILE = "master_list.json"
-LIVE_RADAR_FILE = "live_radar.json"
+LIVE_MOVERS_FILE = "live_movers.json"
 BOT2_PRELIMINARY_FILE = "bot2_preliminary_results.json"
 BOT2_FINAL_FILE = "bot2_final_results.json"
 BOT2_ACTIVE_TRADES_FILE = "bot2_active_trades.json"
@@ -234,16 +234,22 @@ def load_master_list():
     return symbols[:STRONG_COUNT + RADAR_COUNT]
 
 def load_live_radar():
-    data = read_gist_file(LIVE_RADAR_FILE, default=[])
+    data = read_gist_file(LIVE_MOVERS_FILE, default=[])
 
     symbols = []
+    now_ts = time.time()
 
     if isinstance(data, list):
         for item in data:
+
             if isinstance(item, str):
                 symbol = item
+                item_time = now_ts
+
             elif isinstance(item, dict):
                 symbol = item.get("symbol")
+                item_time = item.get("time", 0)
+
             else:
                 continue
 
@@ -255,9 +261,21 @@ def load_live_radar():
             if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
                 continue
 
+            age = now_ts - item_time if item_time else 999999
+
+            if age > 180:
+                continue
+
             symbols.append(symbol)
 
-    return list(dict.fromkeys(symbols))
+    symbols = list(dict.fromkeys(symbols))
+
+    print(
+        f"⚡ Loaded Live Movers symbols: {len(symbols)}",
+        flush=True
+    )
+
+    return symbols
     
 def get_alpaca_bars(symbol, minutes=120):
     try:
@@ -379,7 +397,49 @@ def analyze_symbol(symbol, source_group):
         cp = get_latest_price(symbol, df)
 
         if not (PRICE_MIN <= cp <= PRICE_MAX):
-            return None
+   def load_live_radar():
+    data = read_gist_file(LIVE_MOVERS_FILE, default=[])
+
+    symbols = []
+    now_ts = time.time()
+
+    if isinstance(data, list):
+        for item in data:
+
+            if isinstance(item, str):
+                symbol = item
+                item_time = now_ts
+
+            elif isinstance(item, dict):
+                symbol = item.get("symbol")
+                item_time = item.get("time", 0)
+
+            else:
+                continue
+
+            if not symbol:
+                continue
+
+            symbol = symbol.upper().strip()
+
+            if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
+                continue
+
+            age = now_ts - item_time if item_time else 999999
+
+            if age > 180:
+                continue
+
+            symbols.append(symbol)
+
+    symbols = list(dict.fromkeys(symbols))
+
+    print(
+        f"⚡ Loaded Live Movers symbols: {len(symbols)}",
+        flush=True
+    )
+
+    return None
 
         day_high = float(df["High"].max())
         day_low = float(df["Low"].min())
@@ -916,11 +976,26 @@ def run_bot2_once():
     live_symbols = load_live_radar()
     master_symbols = load_master_list()
 
-    symbols = live_symbols + master_symbols
+    if live_symbols:
+        symbols = live_symbols
+
+        print(
+            f"⚡ Bot 2 using WebSocket Live Movers: {len(symbols)} symbols",
+            flush=True
+        )
+
+    else:
+        symbols = master_symbols
+
+        print(
+            f"🛟 Bot 2 fallback to Master List: {len(symbols)} symbols",
+            flush=True
+        )
+
     symbols = list(dict.fromkeys(symbols))
 
     if not symbols:
-        print("⚠️ Master List empty", flush=True)
+        print("⚠️ No symbols available", flush=True)
         return
 
     strong_symbols = symbols[:STRONG_COUNT]
