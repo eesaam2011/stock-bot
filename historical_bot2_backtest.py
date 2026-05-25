@@ -435,7 +435,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and close_position >= 0.78
             and upper_wick_pct <= 0.22
             and body_ratio >= 0.40
-            and move_3m >= 10
+            and move_3m >= 0.55
             and move_5m >= 0.75
             and move_3m >= move_5m * 0.75
             and distribution_score < 12
@@ -446,7 +446,7 @@ def analyze_bot2_window(symbol, df, source_group):
         micro_scalp_setup = (
             1.00 <= cp <= 10.00
             and recent_move <= 1.20
-            and instant_rvol >= 2.5
+            and instant_rvol >= 3
             and dollar_volume >= 300000
             and volume_acceleration
             and cp > vwap
@@ -455,7 +455,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and (real_breakout or vwap_reclaim)
             and close_position >= 0.80
             and upper_wick_pct <= 0.20
-            and move_3m >= 10
+            and move_3m >= 0.30
             and move_5m >= 0.40
             and move_3m >= move_5m * 0.75
             and distribution_score < 15
