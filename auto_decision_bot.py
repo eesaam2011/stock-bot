@@ -189,35 +189,44 @@ def load_master_list():
     return list(dict.fromkeys(symbols))
 
 def load_live_movers():
-    data = load_gist_file(LIVE_MOVERS_FILE, default=[])
-
-    if not isinstance(data, list):
-        return []
+    data = read_gist_file(LIVE_MOVERS_FILE, default=[])
 
     symbols = []
-
     now_ts = time.time()
 
-    for item in data:
-        if not isinstance(item, dict):
-            continue
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, str):
+                symbol = item
+                item_time = now_ts
+            elif isinstance(item, dict):
+                symbol = item.get("symbol")
+                item_time = item.get("time", 0)
+            else:
+                continue
 
-        symbol = clean_symbol(item.get("symbol"))
-        if not symbol:
-            continue
+            if not symbol:
+                continue
 
-        item_time = item.get("time", 0)
-        age = now_ts - item_time if item_time else 999999
+            symbol = symbol.upper().strip()
 
-        # لا تستخدم بيانات قديمة جدًا
-        if age > 180:
-            continue
+            if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
+                continue
 
-        symbols.append(symbol)
+            age = now_ts - item_time if item_time else 999999
+
+            if age > 180:
+                continue
+
+            symbols.append(symbol)
 
     symbols = list(dict.fromkeys(symbols))
 
-    print(f"⚡ Loaded Live Movers symbols: {len(symbols)}", flush=True)
+    print(
+        f"⚡ Loaded Live Movers symbols: {len(symbols)}",
+        flush=True
+    )
+
     return symbols
     
 def get_alpaca_bars(symbol, minutes=120):
@@ -364,7 +373,7 @@ def update_watchlist_from_bot2():
 
 def self_scan_top_400():
 
-    live_symbols = load_live_radar()
+    live_symbols = load_live_movers()
     master_symbols = load_master_list()
 
     if live_symbols:
@@ -1652,14 +1661,24 @@ def check_ready_entry(symbol, data):
         ) 
         
         if data.get("source") == "LIVE_MOVERS":
-            source_text = "LIVE_MOVERS"
+            source_text = "📡 رصد حي مباشر"
 
-        elif data.get("source") == "BOT2_SIGNAL":
-            source_text = "BOT2_SIGNAL"
+        elif "Bot 2" in data.get("source", ""):
+            source_text = "🟢 إشارة من Bot 2"
 
         else:
-            source_text = "MASTER_LIST_SCAN"
-            setup_strength = classify_setup_strength(data)
+            source_text = "🛟 فحص احتياطي"
+
+        setup_strength = classify_setup_strength({
+            "source": "LIVE_MOVERS" if data.get("source") == "LIVE_MOVERS" else data.get("source", ""),
+            "final_score": final_score,
+            "instant_rvol": instant_rvol,
+            "move_3m": move_3m,
+            "close_position": close_position,
+            "distribution_score": distribution_score,
+            "real_breakout": real_breakout,
+            "volume_acceleration": volume_acceleration
+        })
         
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
