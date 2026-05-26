@@ -231,8 +231,8 @@ def load_live_radar_from_redis():
         now_ts = time.time()
 
         for item in movers:
-            symbol = clean_symbol(item.get("symbol", ""))
-
+            symbol = str(item.get("symbol", "")).upper().strip()
+            
             if not symbol:
                 continue
 
