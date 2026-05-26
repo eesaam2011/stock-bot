@@ -434,12 +434,12 @@ def analyze_bot2_window(symbol, df, source_group):
             and ema9 >= ema20
             and near_high
             and (real_breakout or vwap_reclaim or ema_reclaim)
-            and close_position >= 0.78
+            and close_position >= 0.82
             and upper_wick_pct <= 0.22
             and body_ratio >= 0.40
             and move_3m >= 0.55
             and move_5m >= 0.75
-            and move_3m >= move_5m * 0.80
+            and move_3m >= move_5m * 0.75
             and distribution_score < 12
             and not fake_breakout_risk
             and not overextended
