@@ -283,27 +283,33 @@ def calculate_rsi(close, period=14):
 
 
 def calculate_trade_plan(entry):
-    t1 = entry * 1.018
-    t2 = entry * 1.035
-    sl = entry * 0.98
 
     return {
         "entry": round(entry, 4),
-        "target_1": round(t1, 4),
-        "target_2": round(t2, 4),
-        "stop_loss": round(sl, 4)
+
+        # 🎯 هدف أول متوازن
+        "target_1": round(entry * 1.02, 4),
+
+        # 🚀 هدف ثاني منطقي
+        "target_2": round(entry * 1.04, 4),
+
+        # 🛑 وقف -2%
+        "stop_loss": round(entry * 0.98, 4)
     }
 
 def calculate_micro_scalp_plan(entry):
-    t1 = entry * 1.015
-    t2 = entry * 1.030
-    sl = entry * 0.98
 
     return {
         "entry": round(entry, 4),
-        "target_1": round(t1, 4),
-        "target_2": round(t2, 4),
-        "stop_loss": round(sl, 4)
+
+        # 🎯 هدف سريع واقعي
+        "target_1": round(entry * 1.015, 4),
+
+        # 🚀 هدف ثاني
+        "target_2": round(entry * 1.03, 4),
+
+        # 🛑 وقف -2%
+        "stop_loss": round(entry * 0.98, 4)
     }
 
 def analyze_bot2_window(symbol, df, source_group):
