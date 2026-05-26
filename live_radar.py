@@ -523,7 +523,7 @@ def run_websocket_stream():
 
         except Exception as e:
             print(f"❌ WebSocket stream error: {e}", flush=True)
-            time.sleep(10)
+            time.sleep(60)
 
 
 def websocket_processor_loop():
