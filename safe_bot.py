@@ -354,13 +354,13 @@ def calculate_trade_plan(entry):
     return {
         "entry": round(entry, 4),
 
-        # 🎯 هدف واقعي قريب من متوسط الحركة
-        "target_1": round(entry * 1.018, 4),
+        # 🎯 هدف أول واقعي
+        "target_1": round(entry * 1.02, 4),
 
-        # 🚀 هدف ثاني واقعي
-        "target_2": round(entry * 1.035, 4),
+        # 🚀 هدف ثاني قريب من متوسط الحركة
+        "target_2": round(entry * 1.04, 4),
 
-        # 🛑 وقف ثابت -2%
+        # 🛑 وقف خسارة -2%
         "stop_loss": round(entry * 0.98, 4)
     }
 
@@ -369,13 +369,13 @@ def calculate_micro_scalp_plan(entry):
     return {
         "entry": round(entry, 4),
 
-        # 🎯 هدف أول سريع
+        # 🎯 هدف سريع للسكالب
         "target_1": round(entry * 1.015, 4),
 
-        # 🚀 هدف ثاني
+        # 🚀 هدف ثاني واقعي
         "target_2": round(entry * 1.03, 4),
 
-        # 🛑 وقف -2%
+        # 🛑 وقف خسارة -2%
         "stop_loss": round(entry * 0.98, 4)
     }    
 
