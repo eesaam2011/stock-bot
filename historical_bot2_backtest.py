@@ -283,32 +283,28 @@ def calculate_rsi(close, period=14):
 
 
 def calculate_trade_plan(entry):
-    if entry < 2:
-        t1 = entry + 0.04
-        t2 = entry + 0.08
-    elif entry < 5:
-        t1 = entry + 0.07
-        t2 = entry + 0.14
-    else:
-        t1 = entry * 1.025
-        t2 = entry * 1.05
+    t1 = entry * 1.018
+    t2 = entry * 1.035
+    sl = entry * 0.98
 
     return {
         "entry": round(entry, 4),
         "target_1": round(t1, 4),
         "target_2": round(t2, 4),
-        "stop_loss": round(entry * 0.985, 4)
+        "stop_loss": round(sl, 4)
     }
-
 
 def calculate_micro_scalp_plan(entry):
+    t1 = entry * 1.015
+    t2 = entry * 1.030
+    sl = entry * 0.98
+
     return {
         "entry": round(entry, 4),
-        "target_1": round(entry + 0.05, 4),
-        "target_2": round(entry + 0.10, 4),
-        "stop_loss": round(entry - 0.04, 4)
+        "target_1": round(t1, 4),
+        "target_2": round(t2, 4),
+        "stop_loss": round(sl, 4)
     }
-
 
 def analyze_bot2_window(symbol, df, source_group):
     try:
@@ -446,8 +442,8 @@ def analyze_bot2_window(symbol, df, source_group):
         micro_scalp_setup = (
             1.00 <= cp <= 10.00
             and recent_move <= 1.20
-            and instant_rvol >= 3.2
-            and dollar_volume >= 500000
+            and instant_rvol >= 3
+            and dollar_volume >= 300000
             and volume_acceleration
             and cp > vwap
             and cp > ema9
@@ -457,7 +453,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and upper_wick_pct <= 0.15
             and move_3m >= 0.30
             and move_5m >= 0.50
-            and move_3m >= move_5m * 0.85
+            and move_3m >= move_5m * 0.75
             and distribution_score < 12
             and not fake_breakout_risk
             and not overextended
