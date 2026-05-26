@@ -17,6 +17,10 @@ TELEGRAM_BOT3_CHAT_ID = os.getenv("TELEGRAM_BOT3_CHAT_ID")
 
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_BOT3")
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+
+LIVE_MOVERS_REDIS_KEY = "live_movers"
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 saudi_tz = pytz.timezone("Asia/Riyadh")
@@ -194,6 +198,59 @@ def load_master_list():
 
     return list(dict.fromkeys(symbols))
 
+def load_live_radar_from_redis():
+    try:
+        if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+            print("⚠️ Upstash Redis env vars missing", flush=True)
+            return []
+
+        url = f"{UPSTASH_REDIS_REST_URL}/get/{LIVE_MOVERS_REDIS_KEY}"
+
+        headers = {
+            "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"
+        }
+
+        r = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
+
+        if r.status_code != 200:
+            print(f"❌ Redis read failed: {r.status_code} {r.text}", flush=True)
+            return []
+
+        data = r.json().get("result")
+
+        if not data:
+            return []
+
+        movers = json.loads(data)
+
+        symbols = []
+        now_ts = time.time()
+
+        for item in movers:
+            symbol = clean_symbol(item.get("symbol", ""))
+
+            if not symbol:
+                continue
+
+            ts = item.get("timestamp", 0)
+            if ts and now_ts - ts > 180:
+                continue
+
+            symbols.append(symbol)
+
+        symbols = list(dict.fromkeys(symbols))
+
+        print(f"✅ Loaded live movers from Redis: {len(symbols)}", flush=True)
+        return symbols
+
+    except Exception as e:
+        print(f"❌ Redis read exception: {e}", flush=True)
+        return []
+        
 def load_live_movers():
     data = read_gist_file(LIVE_MOVERS_FILE, default=[])
 
@@ -379,7 +436,7 @@ def update_watchlist_from_bot2():
 
 def self_scan_top_400():
 
-    live_symbols = load_live_movers()
+    live_symbols = load_live_radar_from_redis()
     master_symbols = load_master_list()
 
     if live_symbols:
