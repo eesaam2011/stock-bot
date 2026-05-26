@@ -264,12 +264,14 @@ def load_live_radar_from_redis():
             return []
 
         movers = json.loads(data)
+        if isinstance(movers, str):
+        movers = json.loads(movers)
 
         symbols = []
         now_ts = time.time()
 
         for item in movers:
-            symbol = clean_symbol(item.get("symbol", ""))
+            symbol = str(item.get("symbol", "")).upper().strip()
 
             if not symbol:
                 continue
