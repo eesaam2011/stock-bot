@@ -24,7 +24,7 @@ SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
 GIST_ID = os.getenv("GIST_ID")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_LIVE")
 
 api = tradeapi.REST(
     API_KEY,
