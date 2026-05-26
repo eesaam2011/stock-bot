@@ -265,7 +265,7 @@ def load_live_radar_from_redis():
 
         movers = json.loads(data)
         if isinstance(movers, str):
-        movers = json.loads(movers)
+            movers = json.loads(movers)
 
         symbols = []
         now_ts = time.time()
