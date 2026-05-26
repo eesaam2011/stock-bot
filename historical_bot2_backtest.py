@@ -608,31 +608,45 @@ def evaluate_after_signal(df, signal_index, signal):
 
     outcome = "NO_HIT"
 
+    protected_after_t1 = False
+    protection_stop = None
+
     for n, (_, row) in enumerate(future.iterrows(), start=1):
         high = float(row["High"])
         low = float(row["Low"])
 
-        if low <= sl and not hit_stop:
-            hit_stop = True
-            minutes_to_stop = n
-
         if high >= t1 and not hit_t1:
             hit_t1 = True
             minutes_to_t1 = n
+            protected_after_t1 = True
+            protection_stop = entry * 1.003
 
         if high >= t2 and not hit_t2:
             hit_t2 = True
             minutes_to_t2 = n
 
-        if hit_stop or hit_t1:
+        if protected_after_t1 and protection_stop is not None:
+            if low <= protection_stop:
+                outcome = "PROTECTED_AFTER_T1"
+                break
+
+        if low <= sl and not hit_stop and not hit_t1:
+            hit_stop = True
+            minutes_to_stop = n
+            outcome = "STOP"
             break
 
-    if hit_t1 and hit_stop:
-        outcome = "TARGET_FIRST" if minutes_to_t1 <= minutes_to_stop else "STOP_FIRST"
-    elif hit_t1:
-        outcome = "TARGET"
-    elif hit_stop:
-        outcome = "STOP"
+        if hit_t2:
+            outcome = "TARGET_2"
+            break
+
+    if outcome not in ["PROTECTED_AFTER_T1", "TARGET_2", "STOP"]:
+        if hit_t1:
+            outcome = "TARGET"
+        elif hit_stop:
+            outcome = "STOP"
+        else:
+            outcome = "NO_HIT"
 
     return {
         "hit_target_1": bool(hit_t1),
