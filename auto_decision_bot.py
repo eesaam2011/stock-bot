@@ -1463,6 +1463,10 @@ def check_ready_entry(symbol, data):
                 flush=True
             )
             return None
+
+        if not vwap_reclaim and not ema_reclaim and not real_breakout:
+            print(f"❌ Weak entry rejected: no VWAP/EMA reclaim and no real breakout: {symbol}", flush=True)
+            return None
     
         ready_to_alert = (
             real_breakout
