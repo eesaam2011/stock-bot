@@ -169,10 +169,16 @@ def load_master_list():
 
     if isinstance(data, list):
         for item in data:
+
             if isinstance(item, str):
                 symbol = item
+
             elif isinstance(item, dict):
                 symbol = item.get("symbol")
+
+                # ✅ إضافة مصدر السهم
+                item["source_group"] = "MASTER LIST"
+
             else:
                 continue
 
@@ -1679,6 +1685,7 @@ def check_ready_entry(symbol, data):
             "real_breakout": real_breakout,
             "volume_acceleration": volume_acceleration
         })
+        source_group = data.get("source_group", "UNKNOWN")
         
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
@@ -1691,6 +1698,7 @@ def check_ready_entry(symbol, data):
             f"{'🔥 Strong Explosion Candidate - مرشح انفجار قوي جداً\\n\\n' if strong_explosion_candidate else ''}"
             f"📍 مرحلة الدخول: {entry_stage}\n"
             f"📡 المصدر:\n"
+            f"📡 المصدر: {source_group}\n"
             f"{source_text}\n\n"
             f"📊 السكور:\n"
             f"Final Score: {final_score:.1f}\n"
