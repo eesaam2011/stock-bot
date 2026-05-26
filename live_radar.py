@@ -38,6 +38,8 @@ saudi_tz = pytz.timezone("Asia/Riyadh")
 app = Flask(__name__)
 
 LIVE_MOVERS_FILE = "live_movers.json"
+last_saved_live_movers_signature = ""
+last_live_movers_save_time = 0
 
 PRICE_MIN = 0.4
 PRICE_MAX = 25
@@ -630,12 +632,14 @@ def warmup_from_polling_once():
     movers = scan_live_movers_polling_fallback()
 
     if movers:
-        save_gist_file(LIVE_MOVERS_FILE, movers)
+        if should_save_live_movers(latest_movers):
+            save_gist_file(LIVE_MOVERS_FILE, latest_movers)
+
         print(f"✅ Warmup saved movers: {len(movers)}", flush=True)
+
     else:
-        print("⚠️ Warmup found no movers", flush=True)
-
-
+        print("⚠️ Warmup found no movers", flush=True)    
+        
 threading.Thread(target=run_web_server, daemon=True).start()
 
 print("🚀 LIVE MOVERS WEBSOCKET SCANNER STARTED", flush=True)
