@@ -351,37 +351,33 @@ def calculate_rsi(close, period=14):
 
 def calculate_trade_plan(entry):
 
-    if entry < 2:
-
-        t1 = entry + 0.04
-        t2 = entry + 0.08
-
-    elif entry < 5:
-
-        t1 = entry + 0.07
-        t2 = entry + 0.14
-
-    else:
-
-        t1 = entry * 1.025
-        t2 = entry * 1.05
-
     return {
         "entry": round(entry, 4),
-        "target_1": round(t1, 4),
-        "target_2": round(t2, 4),
-        "stop_loss": round(entry * 0.985, 4)
-    }
 
+        # 🎯 هدف واقعي قريب من متوسط الحركة
+        "target_1": round(entry * 1.018, 4),
+
+        # 🚀 هدف ثاني واقعي
+        "target_2": round(entry * 1.035, 4),
+
+        # 🛑 وقف ثابت -2%
+        "stop_loss": round(entry * 0.98, 4)
+    }
 
 def calculate_micro_scalp_plan(entry):
+
     return {
         "entry": round(entry, 4),
-        "target_1": round(entry + 0.05, 4),
-        "target_2": round(entry + 0.10, 4),
-        "stop_loss": round(entry - 0.04, 4)
-    }
-    
+
+        # 🎯 هدف أول سريع
+        "target_1": round(entry * 1.015, 4),
+
+        # 🚀 هدف ثاني
+        "target_2": round(entry * 1.03, 4),
+
+        # 🛑 وقف -2%
+        "stop_loss": round(entry * 0.98, 4)
+    }    
 
 # =========================
 # BOT 2 SCANNER
