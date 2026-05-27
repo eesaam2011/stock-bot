@@ -19,6 +19,8 @@ GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_BOT3")
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+BOT3_EARLY_CANDIDATES_REDIS_KEY = "bot3_early_candidates"
+BOT3_ACTIVE_TRADES_REDIS_KEY = "bot3_active_trades"
 
 LIVE_MOVERS_REDIS_KEY = "live_movers"
 
@@ -198,6 +200,38 @@ def load_master_list():
 
     return list(dict.fromkeys(symbols))
 
+def save_json_to_redis(redis_key, data):
+    try:
+        if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+            print("⚠️ Upstash Redis env vars missing", flush=True)
+            return False
+
+        url = f"{UPSTASH_REDIS_REST_URL}/set/{redis_key}"
+
+        headers = {
+            "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"
+        }
+
+        payload = json.dumps(data)
+
+        r = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+
+        if r.status_code in [200, 201]:
+            print(f"✅ Saved to Redis: {redis_key}", flush=True)
+            return True
+
+        print(f"❌ Redis save failed {redis_key}: {r.status_code} {r.text}", flush=True)
+        return False
+
+    except Exception as e:
+        print(f"❌ Redis save exception {redis_key}: {e}", flush=True)
+        return False
+        
 def load_live_radar_from_redis():
     try:
         if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
@@ -743,8 +777,8 @@ def save_pending_candidates_if_changed():
 
     if current_json != last_saved_pending_candidates:
 
-        save_gist_file(
-            BOT3_EARLY_CANDIDATES_FILE,
+        save_json_to_redis(
+            BOT3_EARLY_CANDIDATES_REDIS_KEY,
             simplified
         )
 
