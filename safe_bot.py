@@ -19,6 +19,8 @@ GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_BOT2")
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+BOT2_ACTIVE_TRADES_REDIS_KEY = "bot2_active_trades"
+BOT2_FINAL_RESULTS_REDIS_KEY = "bot2_final_results"
 
 LIVE_MOVERS_REDIS_KEY = "live_movers"
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
@@ -1071,8 +1073,9 @@ def run_bot2_once():
             fresh_results.append(r)
 
     final_results = fresh_results
-    save_gist_file(BOT2_FINAL_FILE, final_results)
-
+    save_json_to_redis(
+        BOT2_FINAL_RESULTS_REDIS_KEY,
+        
     telegram_results = [
         r for r in final_results
         if r.get("grade") in ["A+", "A++"]
@@ -1123,7 +1126,10 @@ while True:
         run_bot2_once()
         monitor_active_trades()
 
-        save_gist_file(BOT2_ACTIVE_TRADES_FILE, active_trades)
+        save_json_to_redis(
+            BOT2_ACTIVE_TRADES_REDIS_KEY,
+            active_trades
+        )
 
         time.sleep(SCAN_INTERVAL)
 
