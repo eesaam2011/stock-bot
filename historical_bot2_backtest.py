@@ -410,6 +410,9 @@ def analyze_bot2_window(symbol, df, source_group):
         dollar_volume = cp * latest_volume
 
         near_high = cp >= day_high * 0.975
+        distance_to_resistance_pct = (
+        ((day_high - cp) / cp) * 100
+        )
         above_vwap = cp > vwap
         above_ema9 = cp > ema9
         ema_ok = ema9 >= ema20 * 0.995
@@ -505,7 +508,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and body_ratio >= 0.40
             and move_3m >= 0.55
             and move_5m >= 0.75
-            and move_3m >= move_5m * 0.85
+            and move_3m >= move_5m * 0.75
             and distribution_score < 12
             and not fake_breakout_risk
             and not overextended
@@ -562,6 +565,9 @@ def analyze_bot2_window(symbol, df, source_group):
             return None
 
         if not near_high:
+            return None
+
+        if distance_to_resistance_pct < 0.60:
             return None
 
         if not (real_breakout or vwap_reclaim or ema_reclaim):
