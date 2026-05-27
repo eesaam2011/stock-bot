@@ -60,7 +60,7 @@ def send_telegram_msg(message, chat_id):
             json={
                 "chat_id": chat_id,
                 "text": message,
-                "parse_mode": "Markdown"
+                # "parse_mode": "Markdown"
             },
             timeout=10
         )
@@ -843,12 +843,12 @@ def send_bot2_alert(signal):
     setup_strength = classify_setup_strength(signal)
     
     msg = (
-        f"🟢🔥 *Bot 2 - دخول مبكر مؤكد قبل الانفجار*\n\n"
+        f"🟢🔥 Bot 2 - دخول مبكر مؤكد قبل الانفجار\n\n"
         f"{signal.get('target_note', '')}\n"
         f"{signal.get('timing_note', '')}\n"
         f"📌 نوع الإشارة: {signal.get('setup_type', '')}\n"
         f"🧠 السبب: {signal.get('reason', '')}\n\n"
-        f"🎫 السهم: `{symbol}`\n"
+        f"🎫 السهم: {symbol}\n"
         f"{mode_text}\n"
         f"💰 السعر: {signal.get('price', 0):.2f}\n"
         f"🏆 التصنيف: {grade}\n"
