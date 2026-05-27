@@ -738,7 +738,7 @@ def analyze_symbol(symbol, source_group):
             return None
             
         if distance_to_resistance_pct < 0.60:
-        return None
+            return None
 
         if not (real_breakout or vwap_reclaim or ema_reclaim):
             return None
