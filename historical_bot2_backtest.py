@@ -802,7 +802,7 @@ def main():
 
     if not symbols:
         print("⚠️ No symbols loaded for backtest", flush=True)
-        send_telegram_msg("⚠️ Bot 2 Historical Backtest: No symbols loaded")
+        # send_telegram_msg("⚠️ Bot 2 Historical Backtest: No symbols loaded")
         return
 
     print(f"🚀 Starting Bot 2 historical backtest: {len(symbols)} symbols", flush=True)
@@ -815,7 +815,7 @@ def main():
 
     if not all_results:
         print("⚠️ No Bot 2 historical signals found", flush=True)
-        send_telegram_msg("⚠️ Bot 2 Historical Backtest: No signals found")
+        # send_telegram_msg("⚠️ Bot 2 Historical Backtest: No signals found")
         save_gist_file(
             RESULTS_FILE,
             {
@@ -882,7 +882,7 @@ def main():
     )
 
     print(json.dumps(summary, indent=2), flush=True)
-    send_telegram_msg(msg)
+    # send_telegram_msg(msg)
 
 
 if __name__ == "__main__":
