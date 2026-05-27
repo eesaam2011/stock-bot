@@ -292,6 +292,38 @@ def load_live_radar_from_redis():
     except Exception as e:
         print(f"❌ Redis read exception: {e}", flush=True)
         return []
+
+def save_json_to_redis(redis_key, data):
+    try:
+        if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+            print("⚠️ Upstash Redis env vars missing", flush=True)
+            return False
+
+        url = f"{UPSTASH_REDIS_REST_URL}/set/{redis_key}"
+
+        headers = {
+            "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"
+        }
+
+        payload = json.dumps(data)
+
+        r = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+
+        if r.status_code in [200, 201]:
+            print(f"✅ Saved to Redis: {redis_key}", flush=True)
+            return True
+
+        print(f"❌ Redis save failed {redis_key}: {r.status_code} {r.text}", flush=True)
+        return False
+
+    except Exception as e:
+        print(f"❌ Redis save exception {redis_key}: {e}", flush=True)
+        return False
         
 def load_live_radar():
     data = read_gist_file(LIVE_MOVERS_FILE, default=[])
