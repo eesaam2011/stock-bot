@@ -34,8 +34,8 @@ MASTER_LIST_FILE = "master_list.json"
 LIVE_MOVERS_FILE = "live_movers.json"
 RESULTS_FILE = "historical_bot2_backtest_results.json"
 
-MONTHS_BACK = 0.25
-MAX_SYMBOLS_TO_TEST = 50
+MONTHS_BACK = 1
+MAX_SYMBOLS_TO_TEST = 100
 
 PRICE_MIN = 0.4
 PRICE_MAX = 25
@@ -345,7 +345,7 @@ def bot2_entry_quality_guard(
 
         if (
             distance_to_resistance_pct != 999
-            and distance_to_resistance_pct < 0.35
+            and distance_to_resistance_pct < 0.60
             and not real_breakout
             and not strong_exception
         ):
@@ -369,7 +369,7 @@ def bot2_entry_quality_guard(
         if distribution_score < 15:
             intent_score += 1
 
-        if intent_score < 2 and not strong_exception:
+        if intent_score < 3 and not strong_exception:
             return False, f"Weak intent {intent_score}"
 
         return True, "PASS"
