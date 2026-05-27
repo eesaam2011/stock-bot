@@ -1016,7 +1016,144 @@ def classify_setup_strength(data):
         return "🔥 فرصة قوية جدًا"
 
     return "🟢 فرصة ممتازة"
-    
+
+def entry_quality_guard(
+    symbol,
+    df,
+    cp,
+    recent_move,
+    move_3m,
+    move_5m,
+    instant_rvol,
+    volume_acceleration,
+    close_position,
+    upper_wick_pct,
+    vwap_reclaim,
+    ema_reclaim,
+    real_breakout,
+    scenario_explosion_setup,
+    runner_escape_mode,
+    strong_explosion_candidate,
+    distribution_score,
+    cp_above_vwap,
+    cp_above_ema9
+):
+    try:
+        previous_highs = df["High"].iloc[:-1].tail(80)
+
+        resistance_levels = previous_highs[
+            previous_highs > cp * 1.003
+        ].sort_values()
+
+        nearest_resistance = None
+        next_resistance = None
+        distance_to_resistance_pct = 999
+
+        if len(resistance_levels) > 0:
+            nearest_resistance = float(resistance_levels.iloc[0])
+            distance_to_resistance_pct = (
+                (nearest_resistance - cp) / cp
+            ) * 100
+
+            if len(resistance_levels) > 1:
+                next_resistance = float(resistance_levels.iloc[1])
+
+        strong_exception = (
+            scenario_explosion_setup
+            or runner_escape_mode
+            or strong_explosion_candidate
+        )
+
+        # 1) Air Space / nearest resistance
+        if (
+            distance_to_resistance_pct != 999
+            and distance_to_resistance_pct < 0.80
+            and not real_breakout
+            and not strong_exception
+        ):
+            return {
+                "ok": False,
+                "reason": f"No air space near resistance {distance_to_resistance_pct:.2f}%",
+                "nearest_resistance": nearest_resistance,
+                "next_resistance": next_resistance,
+                "distance_to_resistance_pct": distance_to_resistance_pct
+            }
+
+        # 2) Freshness / late move
+        if (
+            recent_move >= 2.2
+            and move_3m < move_5m * 0.55
+            and not strong_exception
+        ):
+            return {
+                "ok": False,
+                "reason": "Late move / freshness weak",
+                "nearest_resistance": nearest_resistance,
+                "next_resistance": next_resistance,
+                "distance_to_resistance_pct": distance_to_resistance_pct
+            }
+
+        # 3) Continuation strength
+        if (
+            move_5m > 0
+            and move_3m < move_5m * 0.50
+            and recent_move >= 1.4
+            and not strong_exception
+        ):
+            return {
+                "ok": False,
+                "reason": "Continuation slowing",
+                "nearest_resistance": nearest_resistance,
+                "next_resistance": next_resistance,
+                "distance_to_resistance_pct": distance_to_resistance_pct
+            }
+
+        # 4) Market intent مبسط
+        market_intent_score = 0
+
+        if volume_acceleration:
+            market_intent_score += 1
+        if close_position >= 0.65:
+            market_intent_score += 1
+        if cp_above_vwap:
+            market_intent_score += 1
+        if cp_above_ema9:
+            market_intent_score += 1
+        if vwap_reclaim or ema_reclaim or real_breakout:
+            market_intent_score += 1
+        if distribution_score < 20:
+            market_intent_score += 1
+
+        if (
+            market_intent_score < 4
+            and not strong_exception
+        ):
+            return {
+                "ok": False,
+                "reason": f"Weak market intent score {market_intent_score}",
+                "nearest_resistance": nearest_resistance,
+                "next_resistance": next_resistance,
+                "distance_to_resistance_pct": distance_to_resistance_pct
+            }
+
+        return {
+            "ok": True,
+            "reason": "PASS",
+            "nearest_resistance": nearest_resistance,
+            "next_resistance": next_resistance,
+            "distance_to_resistance_pct": distance_to_resistance_pct
+        }
+
+    except Exception as e:
+        print(f"Entry quality guard error {symbol}: {e}", flush=True)
+        return {
+            "ok": True,
+            "reason": "GUARD_ERROR_PASS",
+            "nearest_resistance": None,
+            "next_resistance": None,
+            "distance_to_resistance_pct": 999
+        }
+        
 def check_ready_entry(symbol, data):
     try:
         df = get_alpaca_bars(symbol, minutes=120)
@@ -1406,6 +1543,38 @@ def check_ready_entry(symbol, data):
             and volume_acceleration
             and strong_candle
         )
+        quality_guard = entry_quality_guard(
+            symbol=symbol,
+            df=df,
+            cp=cp,
+            recent_move=recent_move,
+            move_3m=move_3m,
+            move_5m=move_5m,
+            instant_rvol=instant_rvol,
+            volume_acceleration=volume_acceleration,
+            close_position=close_position,
+            upper_wick_pct=upper_wick_pct,
+            vwap_reclaim=vwap_reclaim,
+            ema_reclaim=ema_reclaim,
+            real_breakout=real_breakout,
+            scenario_explosion_setup=scenario_explosion_setup,
+            runner_escape_mode=runner_escape_mode,
+            strong_explosion_candidate=strong_explosion_candidate,
+            distribution_score=distribution_score,
+            cp_above_vwap=cp > vwap,
+            cp_above_ema9=cp > ema9
+        )
+
+        if not quality_guard.get("ok", True):
+            print(
+                f"❌ Entry quality rejected: {symbol} | {quality_guard.get('reason')}",
+                flush=True
+            )
+            return None
+
+        nearest_resistance = quality_guard.get("nearest_resistance")
+        next_resistance = quality_guard.get("next_resistance")
+        distance_to_resistance_pct = quality_guard.get("distance_to_resistance_pct", 999)
 
 
         # منع Runner Escape المتأخر أو الضعيف
