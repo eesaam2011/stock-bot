@@ -345,7 +345,7 @@ def bot2_entry_quality_guard(
 
         if (
             distance_to_resistance_pct != 999
-            and distance_to_resistance_pct < 0.60
+            and distance_to_resistance_pct < 0.35
             and not real_breakout
             and not strong_exception
         ):
@@ -369,7 +369,7 @@ def bot2_entry_quality_guard(
         if distribution_score < 15:
             intent_score += 1
 
-        if intent_score < 3 and not strong_exception:
+        if intent_score < 2 and not strong_exception:
             return False, f"Weak intent {intent_score}"
 
         return True, "PASS"
