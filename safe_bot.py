@@ -1075,7 +1075,9 @@ def run_bot2_once():
     final_results = fresh_results
     save_json_to_redis(
         BOT2_FINAL_RESULTS_REDIS_KEY,
-        
+        final_results
+    )
+    
     telegram_results = [
         r for r in final_results
         if r.get("grade") in ["A+", "A++"]
