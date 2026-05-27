@@ -754,7 +754,7 @@ def deep_review_500():
     reviewed = []
 
     for i, symbol in enumerate(symbols, start=1):
-        item = investment_score(symbol, use_news=False, deep=True)
+        item = investment_score(symbol, deep=True)
 
         if item:
             reviewed.append(item)
