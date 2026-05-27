@@ -1467,7 +1467,18 @@ def check_ready_entry(symbol, data):
         if not vwap_reclaim and not ema_reclaim and not real_breakout:
             print(f"❌ Weak entry rejected: no VWAP/EMA reclaim and no real breakout: {symbol}", flush=True)
             return None
-    
+
+        if (
+            recent_move >= 1.2
+            and move_3m <= move_5m * 0.75
+            and not strong_explosion_candidate
+        ):
+            print(
+                f"❌ Momentum slowing down: {symbol}",
+                flush=True
+            )
+            return None
+
         ready_to_alert = (
             real_breakout
             or runner_escape_mode
