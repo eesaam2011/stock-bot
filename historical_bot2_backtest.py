@@ -311,7 +311,73 @@ def calculate_micro_scalp_plan(entry):
         # 🛑 وقف -2%
         "stop_loss": round(entry * 0.98, 4)
     }
+def bot2_entry_quality_guard(
+    symbol,
+    df,
+    cp,
+    recent_move,
+    move_3m,
+    move_5m,
+    volume_acceleration,
+    close_position,
+    vwap_reclaim,
+    ema_reclaim,
+    real_breakout,
+    distribution_score,
+    micro_scalp_setup,
+    early_confirmed_explosion
+):
+    try:
+        previous_highs = df["High"].iloc[:-1].tail(80)
 
+        resistance_levels = previous_highs[
+            previous_highs > cp * 1.003
+        ].sort_values()
+
+        nearest_resistance = None
+        distance_to_resistance_pct = 999
+
+        if len(resistance_levels) > 0:
+            nearest_resistance = float(resistance_levels.iloc[0])
+            distance_to_resistance_pct = ((nearest_resistance - cp) / cp) * 100
+
+        strong_exception = micro_scalp_setup or early_confirmed_explosion
+
+        if (
+            distance_to_resistance_pct != 999
+            and distance_to_resistance_pct < 0.60
+            and not real_breakout
+            and not strong_exception
+        ):
+            return False, f"No air space {distance_to_resistance_pct:.2f}%"
+
+        if (
+            recent_move >= 1.7
+            and move_3m < move_5m * 0.55
+            and not strong_exception
+        ):
+            return False, "Late / slowing momentum"
+
+        intent_score = 0
+
+        if volume_acceleration:
+            intent_score += 1
+        if close_position >= 0.70:
+            intent_score += 1
+        if vwap_reclaim or ema_reclaim or real_breakout:
+            intent_score += 1
+        if distribution_score < 15:
+            intent_score += 1
+
+        if intent_score < 3 and not strong_exception:
+            return False, f"Weak intent {intent_score}"
+
+        return True, "PASS"
+
+    except Exception as e:
+        print(f"Bot 2 quality guard error {symbol}: {e}", flush=True)
+        return True, "GUARD_ERROR_PASS"
+        
 def analyze_bot2_window(symbol, df, source_group):
     try:
         if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
@@ -464,6 +530,26 @@ def analyze_bot2_window(symbol, df, source_group):
             and not fake_breakout_risk
             and not overextended
         )
+
+        quality_ok, quality_reason = bot2_entry_quality_guard(
+            symbol=symbol,
+            df=df,
+            cp=cp,
+            recent_move=recent_move,
+            move_3m=move_3m,
+            move_5m=move_5m,
+            volume_acceleration=volume_acceleration,
+            close_position=close_position,
+            vwap_reclaim=vwap_reclaim,
+            ema_reclaim=ema_reclaim,
+            real_breakout=real_breakout,
+            distribution_score=distribution_score,
+            micro_scalp_setup=micro_scalp_setup,
+            early_confirmed_explosion=early_confirmed_explosion
+        )
+
+        if not quality_ok:
+            return None
 
         if (
             instant_rvol >= 4
