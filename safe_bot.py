@@ -570,6 +570,9 @@ def analyze_symbol(symbol, source_group):
         dollar_volume = cp * latest_volume
 
         near_high = cp >= day_high * 0.975
+        distance_to_resistance_pct = (
+        ((day_high - cp) / cp) * 100
+        )
 
         above_vwap = cp > vwap
 
@@ -733,6 +736,9 @@ def analyze_symbol(symbol, source_group):
 
         if not near_high:
             return None
+            
+        if distance_to_resistance_pct < 0.60:
+        return None
 
         if not (real_breakout or vwap_reclaim or ema_reclaim):
             return None
