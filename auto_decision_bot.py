@@ -2471,8 +2471,8 @@ while True:
 
         if current_active_trades != last_saved_active_trades:
 
-            save_gist_file(
-                BOT3_ACTIVE_TRADES_FILE,
+            save_json_to_redis(
+                BOT3_ACTIVE_TRADES_REDIS_KEY,
                 active_trades
             )
 
