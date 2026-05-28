@@ -563,33 +563,9 @@ def analyze_bot2_window(symbol, df, source_group):
         if not near_high:
             return None
 
-        # =========================
-        # DYNAMIC AIR SPACE FILTER
-        # =========================
-
-        required_air_space = 0.60
-
-        if (
-            instant_rvol >= 4.5
-            and real_breakout
-            and volume_acceleration
-            and close_position >= 0.82
-        ):
-            required_air_space = 0.45
-
-        elif (
-            instant_rvol >= 3.5
-            and (real_breakout or vwap_reclaim or ema_reclaim)
-            and close_position >= 0.78
-        ):
-            required_air_space = 0.55
-
-        if distance_to_resistance_pct < required_air_space:
+        if distance_to_resistance_pct < 0.60:
             return None
-
-        if not (real_breakout or vwap_reclaim or ema_reclaim):
-            return None
-
+            
         if not early_confirmed_explosion and not micro_scalp_setup:
             return None
 
