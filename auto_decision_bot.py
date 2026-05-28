@@ -1543,6 +1543,36 @@ def check_ready_entry(symbol, data):
             and volume_acceleration
             and strong_candle
         )
+
+        ignition_quality = (
+            volume_acceleration
+            and close_position >= 0.75
+            and upper_wick_pct <= 0.25
+            and (
+                real_breakout
+                or scenario_explosion_setup
+                or runner_escape_mode
+            )
+            and (
+                move_3m >= 0.50
+                or move_5m >= 0.90
+            )
+        )
+
+        if not ignition_quality:
+            add_to_pending(
+                symbol,
+                cp,
+                "فرصة جيدة لكن جودة الدخول الآن غير كافية"
+            )
+
+            print(
+                f"🟡 Good setup but weak entry quality: {symbol}",
+                flush=True
+            )
+
+            return None
+            
         quality_guard = entry_quality_guard(
             symbol=symbol,
             df=df,
