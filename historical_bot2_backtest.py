@@ -498,7 +498,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and ema9 >= ema20
             and near_high
             and (real_breakout or vwap_reclaim or ema_reclaim)
-            and close_position >= 0.82
+            and close_position >= 0.85
             and upper_wick_pct <= 0.22
             and body_ratio >= 0.40
             and move_3m >= 0.55
