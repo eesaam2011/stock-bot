@@ -1546,19 +1546,21 @@ def check_ready_entry(symbol, data):
 
         ignition_quality = (
             volume_acceleration
-            and close_position >= 0.75
+            and close_position >= 0.78
             and upper_wick_pct <= 0.25
+            and distribution_score < 18
             and (
-                real_breakout
-                or scenario_explosion_setup
+                scenario_explosion_setup
                 or runner_escape_mode
-            )
-            and (
-                move_3m >= 0.50
-                or move_5m >= 0.90
+                or (
+                    real_breakout
+                    and move_3m >= 0.45
+                    and move_5m >= 0.75
+                    and move_3m >= move_5m * 0.60
+                )
             )
         )
-
+        
         if not ignition_quality:
             add_to_pending(
                 symbol,
