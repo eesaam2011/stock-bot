@@ -489,6 +489,14 @@ def analyze_bot2_window(symbol, df, source_group):
         if volume_acceleration and body_ratio < 0.28:
             distribution_score += 10
 
+        move_1m = ((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2]) * 100 
+        ignition_timing_confirmed = (
+            move_1m >= 0.18
+            and move_3m >= 0.45
+            and move_3m >= move_5m * 0.65
+            and close_position >= 0.85
+            and volume_acceleration
+        )
         early_confirmed_explosion = (
             0.45 <= recent_move <= 1.50
             and instant_rvol >= 3.0
@@ -497,6 +505,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and cp > ema9
             and ema9 >= ema20
             and near_high
+            and ignition_timing_confirmed
             and (real_breakout or vwap_reclaim or ema_reclaim)
             and close_position >= 0.88
             and upper_wick_pct <= 0.18
