@@ -474,7 +474,7 @@ def analyze_bot2_window(symbol, df, source_group):
         )
 
         overextended = (
-            rsi > 78
+            rsi > 74
             or recent_move > 3.0
         )
 
