@@ -376,6 +376,14 @@ def analyze_bot2_window(symbol, df, source_group):
         recent_resistance = float(
             df["High"].tail(80).max()
         )
+        recent_highs_80 = df["High"].tail(80)
+        rejection_zone = recent_highs_80[
+            recent_highs_80 >= cp * 1.003
+        ]
+
+        rejection_count = int(
+            (rejection_zone <= cp * 1.015).sum()
+        )
         day_low = float(df["Low"].min())
         vwap = float((df["Close"] * df["Volume"]).sum() / max(df["Volume"].sum(), 1))
 
@@ -568,6 +576,12 @@ def analyze_bot2_window(symbol, df, source_group):
 
         if distance_to_resistance_pct < 0.60:
             return None
+
+        if (
+            rejection_count >= 3
+            and distance_to_resistance_pct < 1.50
+        ):
+            return None 
             
         if not early_confirmed_explosion and not micro_scalp_setup:
             return None
