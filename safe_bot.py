@@ -570,9 +570,30 @@ def analyze_symbol(symbol, source_group):
         dollar_volume = cp * latest_volume
 
         near_high = cp >= day_high * 0.975
-        distance_to_resistance_pct = (
-        ((day_high - cp) / cp) * 100
+
+        recent_resistance = float(
+            df["High"].tail(80).max()
         )
+
+        distance_to_resistance_pct = (
+            ((recent_resistance - cp) / cp) * 100
+        )
+
+        recent_highs_80 = df["High"].tail(80)
+
+        rejection_zone = recent_highs_80[
+            recent_highs_80 >= cp * 1.003
+        ]
+
+        rejection_count = int(
+            (rejection_zone <= cp * 1.015).sum()
+        )
+
+        if (
+            rejection_count >= 4
+            and distance_to_resistance_pct < 1.00
+        ):
+            return None
 
         above_vwap = cp > vwap
 
