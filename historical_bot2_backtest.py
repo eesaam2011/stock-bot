@@ -538,7 +538,7 @@ def analyze_bot2_window(symbol, df, source_group):
         if not quality_ok:
             return None
 
-# =========================
+        # =========================
         # CONTINUATION INTENT FILTER
         # =========================
 
@@ -575,14 +575,14 @@ def analyze_bot2_window(symbol, df, source_group):
             and volume_acceleration
             and close_position >= 0.82
         ):
-            required_air_space = 0.35
+            required_air_space = 0.45
 
         elif (
             instant_rvol >= 3.5
             and (real_breakout or vwap_reclaim or ema_reclaim)
             and close_position >= 0.78
         ):
-            required_air_space = 0.45
+            required_air_space = 0.55
 
         if distance_to_resistance_pct < required_air_space:
             return None
