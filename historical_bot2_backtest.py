@@ -190,7 +190,6 @@ def extract_symbols_from_gist_data(data):
 
     return list(dict.fromkeys(symbols))
 
-
 def load_symbols_for_backtest():
     live_data = read_gist_file(LIVE_MOVERS_FILE, default=[])
     live_symbols = extract_symbols_from_gist_data(live_data)
@@ -215,7 +214,7 @@ def load_symbols_for_backtest():
         flush=True
     )
 
-    return master_symbols[:MAX_SYMBOLS_TO_TEST]
+    return master_symbols[:MAX_SYMBOLS_TO_TEST] 
 
 def fetch_historical_1m(symbol):
     end = datetime.now(timezone.utc)
