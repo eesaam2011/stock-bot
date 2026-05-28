@@ -554,6 +554,18 @@ def analyze_bot2_window(symbol, df, source_group):
         if not quality_ok:
             return None
 
+# =========================
+        # CONTINUATION INTENT FILTER
+        # =========================
+
+        if (
+            recent_move >= 1.4
+            and move_5m > 0
+            and move_3m < move_5m * 0.60
+        ):
+            return None
+
+
         if (
             instant_rvol >= 4
             and move_3m < move_5m
