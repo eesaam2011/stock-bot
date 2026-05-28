@@ -579,7 +579,7 @@ def analyze_bot2_window(symbol, df, source_group):
 
         if (
             rejection_count >= 4
-            and distance_to_resistance_pct < 1.50
+            and distance_to_resistance_pct < 1.00
         ):
             return None 
             
