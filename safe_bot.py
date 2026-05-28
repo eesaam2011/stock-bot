@@ -723,6 +723,13 @@ def analyze_symbol(symbol, source_group):
                 flush=True
             )
             return None
+
+        if (
+            recent_move >= 1.4
+            and move_5m > 0
+            and move_3m < move_5m * 0.60
+        ):
+            return None
             
         if (
             instant_rvol >= 4
