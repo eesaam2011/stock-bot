@@ -373,6 +373,9 @@ def analyze_bot2_window(symbol, df, source_group):
             return None
 
         day_high = float(df["High"].max())
+        recent_resistance = float(
+            df["High"].tail(80).max()
+        )
         day_low = float(df["Low"].min())
         vwap = float((df["Close"] * df["Volume"]).sum() / max(df["Volume"].sum(), 1))
 
@@ -395,8 +398,8 @@ def analyze_bot2_window(symbol, df, source_group):
 
         near_high = cp >= day_high * 0.975
         distance_to_resistance_pct = (
-        ((day_high - cp) / cp) * 100
-        )
+            (recent_resistance - cp) / cp
+        ) * 100
         above_vwap = cp > vwap
         above_ema9 = cp > ema9
         ema_ok = ema9 >= ema20 * 0.995
