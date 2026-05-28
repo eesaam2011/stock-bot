@@ -431,7 +431,7 @@ def analyze_bot2_window(symbol, df, source_group):
         last_3_volume = float(df["Volume"].tail(3).mean())
         prev_10_volume = float(df["Volume"].tail(13).head(10).mean())
 
-        volume_acceleration = last_3_volume >= prev_10_volume * 1.6
+        volume_acceleration = last_3_volume >= prev_10_volume * 1.8
 
         strong_candle = (
             close_position >= 0.70
