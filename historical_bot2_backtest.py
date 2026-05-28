@@ -489,7 +489,7 @@ def analyze_bot2_window(symbol, df, source_group):
         if volume_acceleration and body_ratio < 0.28:
             distribution_score += 10
 
-        move_1m = ((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2]) * 100 
+        move_1m = ((df["Close"].iloc[-1] - df["Close"].iloc[-2]) / df["Close"].iloc[-2]) * 100 
         ignition_timing_confirmed = (
             move_1m >= 0.18
             and move_3m >= 0.45
