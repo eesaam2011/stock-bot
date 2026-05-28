@@ -502,7 +502,7 @@ def analyze_bot2_window(symbol, df, source_group):
             and upper_wick_pct <= 0.18
             and body_ratio >= 0.40
             and move_3m >= 0.55
-            and move_5m >= 0.75
+            and move_5m >= 0.85
             and move_3m >= move_5m * 0.75
             and distribution_score < 12
             and not fake_breakout_risk
