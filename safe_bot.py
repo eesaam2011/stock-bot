@@ -774,16 +774,17 @@ def analyze_symbol(symbol, source_group):
             return None
 
         if micro_scalp_setup:
-            setup_type = "🎯 هدف سنتات بسيطة"
-            reason = "هدف قصير 5 إلى 10 سنتات"
-            target_note = "🎯 الهدف الأساسي: ربح 5 إلى 10 سنتات فقط"
+            setup_type = "⚡ MICRO SCALP"
+            reason = "التقاط أول حركة سريعة عالية الاحتمال"
+            target_note = "🎯 الهدف الأساسي: ربح سريع (غالبًا 5-10 سنتات كبداية)"
             timing_note = "⏱️ المدة المتوقعة: 3 إلى 15 دقيقة إذا استمر الزخم"
+
         else:
             setup_type = "🟢 دخول مبكر مؤكد قبل الانفجار"
             reason = "دخول مبكر مؤكد قبل الانفجار العالي"
             target_note = "🚀 الهدف الأساسي: انفجار أعلى"
             timing_note = "⏱️ المدة المتوقعة: 10 إلى 30 دقيقة حسب قوة الزخم"
-
+    
         technical_score = 0
 
         technical_score += min(instant_rvol * 10, 24)
