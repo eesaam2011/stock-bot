@@ -1757,26 +1757,48 @@ def check_ready_entry(symbol, data):
             )
 
             print(
-                f"🟡 Breakout ok but buying pressure weak: {symbol}",
-                flush=True
-            )
-
-            return None
-            
-        if not real_buying_pressure:
-            add_to_pending(
-                symbol,
-                cp,
-                "الاختراق جيد لكن ضغط الشراء غير كافي"
-            )
-
-            print(
                 f"🟡 Breakout ok but buying pressure weak: {symbol} | score={buying_pressure_score}",
                 flush=True
             )
 
             return None
-            
+
+        recent_resistance = float(df["High"].tail(80).max())
+
+        air_space_pct = (
+            (recent_resistance - cp) / cp
+        ) * 100
+
+        near_resistance_pressure_required = (
+            recent_resistance > cp
+            and air_space_pct < 0.80
+        )
+
+        if near_resistance_pressure_required:
+            strong_pressure_near_resistance = (
+                buying_pressure_score >= 5
+                and follow_through_ok
+                and volume_acceleration
+                and close_position >= 0.78
+                and upper_wick_pct <= 0.25
+                and move_3m >= 0.45
+                and distribution_score < 15
+            )
+
+            if not strong_pressure_near_resistance:
+                add_to_pending(
+                    symbol,
+                    cp,
+                    f"مقاومة قريبة جدًا وتحتاج تأكيد أقوى ({air_space_pct:.2f}%)"
+                )
+
+                print(
+                    f"🟡 Near resistance needs stronger pressure: {symbol} | air={air_space_pct:.2f}% | pressure={buying_pressure_score}",
+                    flush=True
+                )
+
+                return None
+    
         quality_guard = entry_quality_guard(
             symbol=symbol,
             df=df,
