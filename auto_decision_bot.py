@@ -1153,6 +1153,141 @@ def entry_quality_guard(
             "next_resistance": None,
             "distance_to_resistance_pct": 999
         }
+def breakout_follow_through_confirmed(
+    df,
+    cp,
+    vwap,
+    ema9,
+    real_breakout,
+    scenario_explosion_setup,
+    runner_escape_mode,
+    move_3m,
+    move_5m,
+    close_position,
+    upper_wick_pct,
+    volume_acceleration,
+    distribution_score
+):
+    try:
+        last_close = float(df["Close"].iloc[-1])
+        prev_close = float(df["Close"].iloc[-2])
+        prev_high = float(df["High"].iloc[-2])
+
+        last_3_closes = df["Close"].tail(3)
+        last_3_lows = df["Low"].tail(3)
+
+        holding_above_breakout = (
+            last_close > prev_high
+            and prev_close >= prev_high * 0.995
+        )
+
+        holding_above_vwap_ema = (
+            cp > vwap
+            and cp > ema9
+            and last_3_closes.min() > vwap * 0.995
+            and last_3_closes.min() > ema9 * 0.995
+        )
+
+        higher_lows = (
+            last_3_lows.iloc[-1] >= last_3_lows.iloc[-2] * 0.995
+            and last_3_lows.iloc[-2] >= last_3_lows.iloc[-3] * 0.995
+        )
+
+        continuation_ok = (
+            move_5m > 0
+            and move_3m >= move_5m * 0.55
+            and move_3m >= 0.35
+        )
+
+        candle_ok = (
+            close_position >= 0.65
+            and upper_wick_pct <= 0.35
+        )
+
+        return (
+            volume_acceleration
+            and distribution_score < 25
+            and candle_ok
+            and holding_above_vwap_ema
+            and higher_lows
+            and continuation_ok
+            and (
+                holding_above_breakout
+                or scenario_explosion_setup
+                or runner_escape_mode
+                or real_breakout
+            )
+        )
+
+    except Exception as e:
+        print(f"Follow-through check error: {e}", flush=True)
+        return False
+
+def get_real_buying_pressure(symbol, cp, df, vwap, ema9, volume_acceleration):
+    try:
+        quote = api.get_latest_quote(symbol)
+
+        bid_price = float(getattr(quote, "bid_price", 0) or 0)
+        ask_price = float(getattr(quote, "ask_price", 0) or 0)
+        bid_size = float(getattr(quote, "bid_size", 0) or 0)
+        ask_size = float(getattr(quote, "ask_size", 0) or 0)
+        print(
+            f"📊 {symbol} | "
+            f"bid={bid_price} "
+            f"ask={ask_price} "
+            f"bid_size={bid_size} "
+            f"ask_size={ask_size}",
+            flush=True
+        )
+
+        if bid_price <= 0 or ask_price <= 0:
+            return False, 0
+
+        spread_pct = ((ask_price - bid_price) / cp) * 100 if cp > 0 else 999
+
+        bid_ask_strength = (
+            bid_size >= ask_size * 1.2
+            and spread_pct <= 0.35
+        )
+
+        last_close = float(df["Close"].iloc[-1])
+        last_open = float(df["Open"].iloc[-1])
+        prev_close = float(df["Close"].iloc[-2])
+
+        price_pressure = (
+            last_close > last_open
+            and last_close >= prev_close
+            and cp > vwap
+            and cp > ema9
+        )
+
+        green_candles_5 = (
+            df["Close"].tail(5) > df["Open"].tail(5)
+        ).sum()
+
+        sustained_buying = green_candles_5 >= 3
+
+        buying_pressure_score = 0
+
+        if bid_ask_strength:
+            buying_pressure_score += 2
+
+        if price_pressure:
+            buying_pressure_score += 2
+
+        if sustained_buying:
+            buying_pressure_score += 1
+
+        if volume_acceleration:
+            buying_pressure_score += 1
+
+        real_buying_pressure = buying_pressure_score >= 4
+
+        return real_buying_pressure, buying_pressure_score
+
+    except Exception as e:
+        print(f"Buying pressure error {symbol}: {e}", flush=True)
+        return False, 0
         
 def check_ready_entry(symbol, data):
     try:
@@ -1272,6 +1407,15 @@ def check_ready_entry(symbol, data):
         prev_10_volume = float(df["Volume"].tail(13).head(10).mean())
 
         volume_acceleration = last_3_volume >= prev_10_volume * 1.6
+
+        real_buying_pressure, buying_pressure_score = get_real_buying_pressure(
+            symbol=symbol,
+            cp=cp,
+            df=df,
+            vwap=vwap,
+            ema9=ema9,
+            volume_acceleration=volume_acceleration
+        )
 
         strong_candle = (
             close_position >= 0.68
@@ -1560,7 +1704,7 @@ def check_ready_entry(symbol, data):
                 )
             )
         )
-        
+
         if not ignition_quality:
             add_to_pending(
                 symbol,
@@ -1570,6 +1714,64 @@ def check_ready_entry(symbol, data):
 
             print(
                 f"🟡 Good setup but weak entry quality: {symbol}",
+                flush=True
+            )
+
+            return None
+
+        follow_through_ok = breakout_follow_through_confirmed(
+            df=df,
+            cp=cp,
+            vwap=vwap,
+            ema9=ema9,
+            real_breakout=real_breakout,
+            scenario_explosion_setup=scenario_explosion_setup,
+            runner_escape_mode=runner_escape_mode,
+            move_3m=move_3m,
+            move_5m=move_5m,
+            close_position=close_position,
+            upper_wick_pct=upper_wick_pct,
+            volume_acceleration=volume_acceleration,
+            distribution_score=distribution_score
+        )
+
+        if not follow_through_ok:
+            add_to_pending(
+                symbol,
+                cp,
+                "اختراق جيد لكن Follow-Through غير مؤكد بعد"
+            )
+
+            print(
+                f"🟡 Breakout needs follow-through confirmation: {symbol}",
+                flush=True
+            )
+
+            return None
+
+        if not real_buying_pressure:
+            add_to_pending(
+                symbol,
+                cp,
+                "الاختراق جيد لكن ضغط الشراء غير كافي"
+            )
+
+            print(
+                f"🟡 Breakout ok but buying pressure weak: {symbol}",
+                flush=True
+            )
+
+            return None
+            
+        if not real_buying_pressure:
+            add_to_pending(
+                symbol,
+                cp,
+                "الاختراق جيد لكن ضغط الشراء غير كافي"
+            )
+
+            print(
+                f"🟡 Breakout ok but buying pressure weak: {symbol} | score={buying_pressure_score}",
                 flush=True
             )
 
