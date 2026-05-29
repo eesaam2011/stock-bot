@@ -518,8 +518,18 @@ def bot2_entry_quality_guard(
             and not real_breakout
             and not strong_exception
         ):
-            return False, f"No air space {distance_to_resistance_pct:.2f}%"
+            strong_near_resistance_exception = (
+                instant_rvol >= 4.0
+                and volume_acceleration
+                and close_position >= 0.85
+                and upper_wick_pct <= 0.18
+                and move_3m >= 0.40
+                and distribution_score < 10
+            )
 
+            if not strong_near_resistance_exception:
+                return False, f"No air space {distance_to_resistance_pct:.2f}%"
+                
         if (
             recent_move >= 1.7
             and move_3m < move_5m * 0.55
