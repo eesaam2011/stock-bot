@@ -444,10 +444,14 @@ def analyze_symbol_bars(symbol, df, source="WEBSOCKET_LIVE_MOVERS"):
         hot_mover = (
             dollar_volume_10m >= MIN_DOLLAR_VOLUME_10M
             and instant_rvol >= MIN_INSTANT_RVOL
-            and move_3m >= MIN_MOVE_3M
+            and (
+                move_3m >= MIN_MOVE_3M
+                or move_5m >= 0.40
+                or move_10m >= 0.70
+            )
             and cp > 0
-            and close_position >= 0.55
-            and upper_wick_pct <= 0.45
+            and close_position >= 0.50
+            and upper_wick_pct <= 0.50
         )
 
         if not hot_mover:
