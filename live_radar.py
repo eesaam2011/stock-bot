@@ -671,7 +671,7 @@ def warmup_from_polling_once():
     movers = scan_live_movers_polling_fallback()
 
     if movers:
-    save_live_movers_to_redis(movers)
+        save_live_movers_to_redis(movers)
 
     print(
         f"✅ Warmup saved movers: {len(movers)}",
