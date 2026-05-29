@@ -2146,8 +2146,14 @@ def check_ready_entry(symbol, data):
 
 
         if not can_send_trade_alerts():
-            print(f"🔕 Bot 3 alert muted by schedule: {symbol} | {grade}", flush=True)
-            watchlist[symbol]["alerted"] = True
+            print(
+                f"🔕 Bot 3 alert muted by schedule: {symbol} | {grade}",
+                flush=True
+            )
+
+            if symbol in watchlist:
+                watchlist[symbol]["alerted"] = True
+
             return None
 
         dist_reasons_text = (
