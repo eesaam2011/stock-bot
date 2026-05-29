@@ -673,13 +673,13 @@ def warmup_from_polling_once():
     if movers:
         save_live_movers_to_redis(movers)
 
-    print(
-        f"✅ Warmup saved movers: {len(movers)}",
-        flush=True
-    )
-    
+        print(
+            f"✅ Warmup saved movers: {len(movers)}",
+            flush=True
+        )
+
     else:
-        print("⚠️ Warmup found no movers", flush=True)    
+        print("⚠️ Warmup found no movers", flush=True)      
         
 threading.Thread(target=run_web_server, daemon=True).start()
 
