@@ -58,9 +58,9 @@ POLLING_FALLBACK_INTERVAL = 60
 CHUNK_SIZE = 200
 BARS_MINUTES = 30
 
-MIN_DOLLAR_VOLUME_10M = 100000
-MIN_MOVE_3M = 0.40
-MIN_INSTANT_RVOL = 2.0
+MIN_DOLLAR_VOLUME_10M = 50000
+MIN_MOVE_3M = 0.25
+MIN_INSTANT_RVOL = 1.5
 
 # لا يوجد حد إجباري لعدد الأسهم المحفوظة
 # كل سهم يجتاز الفلاتر يدخل live_movers.json ثم يرتب حسب hot_score
