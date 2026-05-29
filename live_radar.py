@@ -671,11 +671,13 @@ def warmup_from_polling_once():
     movers = scan_live_movers_polling_fallback()
 
     if movers:
-        if should_save_live_movers(latest_movers):
-            save_live_movers_to_redis(latest_movers)
+    save_live_movers_to_redis(movers)
 
-        print(f"✅ Warmup saved movers: {len(movers)}", flush=True)
-
+    print(
+        f"✅ Warmup saved movers: {len(movers)}",
+        flush=True
+    )
+    
     else:
         print("⚠️ Warmup found no movers", flush=True)    
         
