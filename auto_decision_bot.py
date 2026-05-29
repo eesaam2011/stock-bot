@@ -2668,28 +2668,60 @@ def monitor_active_trades():
                 trade["sl"] = round(new_sl, 4)
 
                 if strong_momentum_after_target:
-                    action_text = "🔥 السيولة ما زالت داخلة، ممكن الاستمرار بجزء بسيط مع وقف متحرك."
+                    action_text = (
+                        "🔥 السهم ما زال قويًا بعد هدف 3\n"
+                        "✅ السيولة والزخم مستمران\n"
+                        f"📌 لمن يريد الاستمرار: الوقف المقترح {new_sl:.2f}\n"
+                        "⚠️ سيتم حذف الصفقة من مراقبة البوت بعد هذا التنبيه"
+                    )
+
+                elif (
+                    cp > vwap
+                    and cp > ema9
+                    and instant_rvol >= 1.3
+                    and close_position >= 0.50
+                ):
+                    action_text = (
+                        "🟡 السهم هادئ بعد هدف 3\n"
+                        "✅ لا يوجد ضعف قوي حتى الآن\n"
+                        f"📌 الوقف المقترح لحماية الربح: {new_sl:.2f}\n"
+                        "⚠️ سيتم حذف الصفقة من مراقبة البوت بعد هذا التنبيه"
+                    )
+
                 else:
-                    action_text = "✅ وصل هدف 3، يفضل جني أغلب الربح أو رفع الوقف بقوة."
+                    action_text = (
+                        "⚠️ الزخم بدأ يضعف بعد هدف 3\n"
+                        "❌ السيولة أو حركة السعر لم تعد قوية\n"
+                        "✅ يفضل جني الربح أو الخروج\n"
+                        "⚠️ سيتم حذف الصفقة من مراقبة البوت بعد هذا التنبيه"
+                    )
 
                 if can_send_trade_alerts():
                     msg = (
-                        f"🔥 *Bot 3 - وصل هدف 3*\n\n"
+                        f"🔥 *Bot 3 - وصل هدف 3 / نهاية المتابعة*\n\n"
                         f"🎫 السهم: `{symbol}`\n"
                         f"💰 السعر الحالي: {cp:.2f}\n"
                         f"🚀 الدخول: {entry:.2f}\n"
                         f"🔥 هدف 3: {t3:.2f}\n"
                         f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
-                        f"✅ الوقف المقترح الآن: {new_sl:.2f}\n\n"
                         f"{action_text}"
                     )
+
                     send_telegram_msg(
                         msg,
                         TELEGRAM_BOT3_CHAT_ID
                     )
 
-                trade["target3_alerted"] = True
+                active_trades.pop(symbol, None)
+                explosion_tracking.pop(symbol, None)
 
+                print(
+                    f"✅ Bot 3 trade completed and removed after Target 3: {symbol}",
+                    flush=True
+                )
+
+                continue
+                
             active_trades[symbol] = trade
 
         except Exception as e:
