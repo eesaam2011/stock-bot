@@ -1088,11 +1088,20 @@ def send_bot2_alert(signal):
         "t2": signal.get("target_2"),
         "sl": signal.get("stop_loss"),
         "time": time.time(),
+        "signal_type": (
+            "MICRO_SCALP_2"
+            if signal.get("setup_type") == "⚡⚡ MICRO SCALP 2.0"
+            else (
+                "MICRO_SCALP"
+                if signal.get("setup_type") == "⚡ MICRO SCALP"
+                else "EARLY_EXPLOSION"
+            )
+        ),
         "slow_alerted": False,
         "run_alerted": False,
         "stop_alerted": False
     }
-
+    
     print(f"📩 Bot 2 alert sent: {symbol} | {grade} | {source_group}", flush=True)
 
 
@@ -1122,6 +1131,73 @@ def monitor_active_trades():
 
             gain_pct = ((cp - entry) / entry) * 100
             age_minutes = get_trade_age_minutes(trade)
+
+            if trade.get("signal_type") == "MICRO_SCALP_2" and cp >= t2:
+                new_sl = max(entry + 0.05, cp - 0.03)
+
+                df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+                ema9 = float(df["EMA9"].iloc[-1])
+
+                vwap = float(
+                    (df["Close"] * df["Volume"]).sum()
+                    / df["Volume"].sum()
+                )
+
+                instant_rvol = (
+                    df["Volume"].tail(3).mean()
+                    / max(df["Volume"].mean(), 1)
+                )
+
+                last_close = float(df["Close"].iloc[-1])
+                last_high = float(df["High"].iloc[-1])
+                last_low = float(df["Low"].iloc[-1])
+
+                candle_range = last_high - last_low
+                close_position = (
+                    (last_close - last_low) / candle_range
+                    if candle_range > 0 else 0.5
+                )
+                upper_wick_pct = (
+                    (last_high - last_close) / candle_range
+                    if candle_range > 0 else 0.5
+                )
+
+                if (
+                    cp > vwap
+                    and cp > ema9
+                    and instant_rvol >= 1.8
+                    and close_position >= 0.60
+                    and upper_wick_pct <= 0.35
+                ):
+                    action_text = (
+                        "🔥 الهدف تحقق والزخم ما زال جيدًا\n"
+                        f"📌 لمن يريد الاستمرار بجزء بسيط: الوقف المقترح {new_sl:.2f}"
+                    )
+                else:
+                    action_text = (
+                        "✅ تحقق هدف Micro Scalp 2.0 الأساسي\n"
+                        "⚠️ الأفضل جني الربح أو الخروج لأن الهدف الأساسي اكتمل"
+                    )
+
+                if can_send_trade_alerts():
+                    msg = (
+                        f"⚡⚡ *Bot 2 - Micro Scalp 2.0 اكتمل*\n\n"
+                        f"🎫 السهم: `{symbol}`\n"
+                        f"💰 السعر الحالي: {cp:.2f}\n"
+                        f"🚀 الدخول: {entry:.2f}\n"
+                        f"🎯 هدف 10 سنتات: {t2:.2f}\n"
+                        f"📈 الربح الحالي: {gain_pct:.2f}%\n\n"
+                        f"{action_text}\n\n"
+                        f"🧹 سيتم حذف السهم من المراقبة"
+                    )
+
+                    send_telegram_msg(
+                        msg,
+                        TELEGRAM_FAST_CHAT_ID
+                    )
+
+                active_trades.pop(symbol, None)
+                continue
 
             if cp <= sl and not trade.get("stop_alerted", False):
                 if can_send_trade_alerts():
