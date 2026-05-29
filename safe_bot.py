@@ -773,7 +773,7 @@ def analyze_symbol(symbol, source_group):
             real_breakout=real_breakout,
             distribution_score=distribution_score,
             micro_scalp_setup=micro_scalp_setup,
-            early_confirmed_explosion=early_confirmed_explosion
+            early_confirmed_explosion=early_confirmed_explosion,
             instant_rvol=instant_rvol,
             upper_wick_pct=upper_wick_pct,
         )
