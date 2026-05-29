@@ -456,6 +456,15 @@ def calculate_trade_plan(entry):
         "stop_loss": round(entry * 0.98, 4)
     }
 
+def calculate_micro_scalp_2_plan(price):
+    return {
+        "entry": round(price, 2),
+        "stop_loss": round(price - 0.05, 2),
+        "target1": round(price + 0.05, 2),
+        "target2": round(price + 0.10, 2),
+        "rr": 2.0
+    }
+    
 def calculate_micro_scalp_plan(entry):
 
     return {
@@ -680,6 +689,23 @@ def analyze_symbol(symbol, source_group):
 
         if volume_acceleration and body_ratio < 0.28:
             distribution_score += 10
+
+        micro_scalp_2_setup = (
+            cp < 10
+            and instant_rvol >= 2.5
+            and volume_acceleration
+            and cp > vwap
+            and cp > ema9
+            and close_position >= 0.80
+            and upper_wick_pct <= 0.20
+            and body_ratio >= 0.35
+            and move_3m >= 0.20
+            and move_5m >= 0.35
+            and move_3m >= move_5m * 0.55
+            and distribution_score < 10
+            and not overextended
+            and (vwap_reclaim or ema_reclaim or real_breakout)
+        )
             
         early_confirmed_explosion = (
             0.45 <= recent_move <= 1.50
@@ -770,10 +796,21 @@ def analyze_symbol(symbol, source_group):
 
         if not (real_breakout or vwap_reclaim or ema_reclaim):
             return None
-        if not early_confirmed_explosion and not micro_scalp_setup:
+            
+        if (
+            not micro_scalp_2_setup
+            and not early_confirmed_explosion
+            and not micro_scalp_setup
+        ):
             return None
 
-        if micro_scalp_setup:
+        if micro_scalp_2_setup:
+            setup_type = "⚡⚡ MICRO SCALP 2.0"
+            reason = "هدف ثابت 5-10 سنتات فقط"
+            target_note = "🎯 الهدف الأساسي: خروج سريع بعد 5-10 سنتات"
+            timing_note = "⏱️ المدة المتوقعة: 1 إلى 10 دقائق إذا استمر الزخم"
+
+        elif micro_scalp_setup:
             setup_type = "⚡ MICRO SCALP"
             reason = "التقاط أول حركة سريعة عالية الاحتمال"
             target_note = "🎯 الهدف الأساسي: ربح سريع (غالبًا 5-10 سنتات كبداية)"
@@ -784,7 +821,7 @@ def analyze_symbol(symbol, source_group):
             reason = "دخول مبكر مؤكد قبل الانفجار العالي"
             target_note = "🚀 الهدف الأساسي: انفجار أعلى"
             timing_note = "⏱️ المدة المتوقعة: 10 إلى 30 دقيقة حسب قوة الزخم"
-    
+            
         technical_score = 0
 
         technical_score += min(instant_rvol * 10, 24)
@@ -832,11 +869,15 @@ def analyze_symbol(symbol, source_group):
             if new_money_flow:
                 technical_score += 8
 
-        if micro_scalp_setup:
+        if micro_scalp_2_setup:
+            plan = calculate_micro_scalp_2_plan(cp)
+
+        elif micro_scalp_setup:
             plan = calculate_micro_scalp_plan(cp)
+
         else:
             plan = calculate_trade_plan(cp)
-
+            
         return {
             "symbol": symbol,
             "source_group": source_group,
