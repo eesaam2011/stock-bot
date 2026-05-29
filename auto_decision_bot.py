@@ -2292,7 +2292,8 @@ def check_ready_entry(symbol, data):
                 flush=True
             )
 
-        watchlist[symbol]["alerted"] = True
+        if symbol in watchlist:
+            watchlist[symbol]["alerted"] = True
 
         print(f"🧠 BOT 3 ENTRY SENT: {symbol} | {grade}", flush=True)
 
