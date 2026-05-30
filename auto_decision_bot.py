@@ -1357,6 +1357,61 @@ def get_real_buying_pressure(symbol, cp, df, vwap, ema9, volume_acceleration):
     except Exception as e:
         print(f"Ignition confirmation error: {e}", flush=True)
         return False
+
+def continuation_quality_ok(
+    cp,
+    vwap,
+    ema9,
+    move_3m,
+    move_5m,
+    instant_rvol,
+    volume_acceleration,
+    close_position,
+    upper_wick_pct,
+    distribution_score
+):
+    try:
+
+        continuation_strength = (
+            move_5m > 0
+            and move_3m >= move_5m * 0.65
+            and move_3m >= 0.40
+        )
+
+        structure_ok = (
+            cp > vwap
+            and cp > ema9
+        )
+
+        volume_ok = (
+            volume_acceleration
+            and instant_rvol >= 2.0
+        )
+
+        candle_ok = (
+            close_position >= 0.72
+            and upper_wick_pct <= 0.28
+        )
+
+        clean_ok = (
+            distribution_score < 18
+        )
+
+        return (
+            continuation_strength
+            and structure_ok
+            and volume_ok
+            and candle_ok
+            and clean_ok
+        )
+
+    except Exception as e:
+        print(
+            f"Continuation quality error: {e}",
+            flush=True
+        )
+
+        return False
         
 def check_ready_entry(symbol, data):
     try:
@@ -1854,6 +1909,33 @@ def check_ready_entry(symbol, data):
 
             print(
                 f"🟡 Ignition not confirmed yet: {symbol}",
+                flush=True
+            )
+
+            return None
+
+        continuation_ok = continuation_quality_ok(
+            cp=cp,
+            vwap=vwap,
+            ema9=ema9,
+            move_3m=move_3m,
+            move_5m=move_5m,
+            instant_rvol=instant_rvol,
+            volume_acceleration=volume_acceleration,
+            close_position=close_position,
+            upper_wick_pct=upper_wick_pct,
+            distribution_score=distribution_score
+        )
+
+        if not continuation_ok:
+            add_to_pending(
+                symbol,
+                cp,
+                "الانطلاق بدأ لكن الاستمرار غير مؤكد بعد"
+            )
+
+            print(
+                f"🟡 Continuation not confirmed: {symbol}",
                 flush=True
             )
 
