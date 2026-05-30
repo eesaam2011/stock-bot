@@ -65,9 +65,7 @@ SELF_SCAN_COUNT = 1500
 
 def send_telegram_msg(message, chat_id):
     if TIME_MACHINE_MODE:
-        print("🧪 TIME MACHINE TELEGRAM MESSAGE")
-        print(message)
-        return
+    message = "🧪 TIME MACHINE TEST\n\n" + message
         
     if not TELEGRAM_TOKEN or not chat_id:
         print("Telegram keys missing", flush=True)
