@@ -494,13 +494,18 @@ def get_alpaca_bars(symbol, minutes=120):
         return pd.DataFrame()
 
 
-def get_latest_price(symbol, df=None):
+def get_latest_price(symbol, df=None, use_realtime=True):
+    if not use_realtime and df is not None and not df.empty:
+        return float(df["Close"].iloc[-1])
+
     try:
         trade = api.get_latest_trade(symbol)
         return float(trade.price)
+
     except Exception:
         if df is not None and not df.empty:
             return float(df["Close"].iloc[-1])
+
         return 0
 
 
@@ -652,7 +657,11 @@ def analyze_symbol(symbol, source_group, df=None):
         if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
             return None
 
-        cp = get_latest_price(symbol, df)
+        cp = get_latest_price(
+            symbol,
+            df,
+            use_realtime=False
+        )
 
         if not (PRICE_MIN <= cp <= PRICE_MAX):
             return None
