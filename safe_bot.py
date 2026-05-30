@@ -34,6 +34,7 @@ PRICE_MIN = 0.4
 PRICE_MAX = 25
 
 SCAN_INTERVAL = 40
+
 MASTER_LIST_FILE = "master_list.json"
 LIVE_MOVERS_FILE = "live_movers.json"
 BOT2_PRELIMINARY_FILE = "bot2_preliminary_results.json"
@@ -42,6 +43,7 @@ BOT2_ACTIVE_TRADES_FILE = "bot2_active_trades.json"
 
 STRONG_COUNT = 400
 RADAR_COUNT = 400
+BULK_BARS_CHUNK_SIZE = 100
 
 sent_alerts = {}
 active_trades = {}
@@ -368,7 +370,62 @@ def load_live_radar():
     )
 
     return symbols
-    
+
+def get_alpaca_bars_bulk(symbols, minutes=120):
+    try:
+        end = datetime.now(pytz.UTC)
+        start = end - timedelta(days=1)
+
+        bars = api.get_bars(
+            symbols,
+            tradeapi.TimeFrame.Minute,
+            start=start.isoformat(),
+            end=end.isoformat(),
+            adjustment="raw"
+        ).df
+
+        if bars is None or bars.empty:
+            return {}
+
+        result = {}
+
+        for symbol in symbols:
+            try:
+                df = bars[bars["symbol"] == symbol].copy()
+
+                if df.empty:
+                    continue
+
+                df = df.rename(columns={
+                    "open": "Open",
+                    "high": "High",
+                    "low": "Low",
+                    "close": "Close",
+                    "volume": "Volume"
+                })
+
+                needed = [
+                    "Open",
+                    "High",
+                    "Low",
+                    "Close",
+                    "Volume"
+                ]
+
+                df = df[needed].dropna().tail(minutes)
+
+                if not df.empty:
+                    result[symbol] = df
+
+            except Exception:
+                continue
+
+        return result
+
+    except Exception as e:
+        print(f"Bulk bars error: {e}", flush=True)
+        return {} 
+        
 def get_alpaca_bars(symbol, minutes=120):
     try:
         end = datetime.now(pytz.UTC)
@@ -559,10 +616,14 @@ def bot2_entry_quality_guard(
         print(f"Bot 2 quality guard error {symbol}: {e}", flush=True)
         return True, "GUARD_ERROR_PASS"
         
-def analyze_symbol(symbol, source_group):
+def analyze_symbol(symbol, source_group, df=None):
     try:
-        df = get_alpaca_bars(symbol, minutes=120)
+        if df is None:
+            df = get_alpaca_bars(symbol, minutes=120)
 
+        if df is None:
+            return None
+            
         if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
             return None
 
@@ -938,19 +999,42 @@ def analyze_symbol(symbol, source_group):
 def scan_group(symbols, source_group):
     results = []
 
+    bars_map = {}
+
+    for i in range(0, len(symbols), BULK_BARS_CHUNK_SIZE):
+        chunk = symbols[i:i + BULK_BARS_CHUNK_SIZE]
+
+        bars_map.update(
+            get_alpaca_bars_bulk(
+                chunk,
+                minutes=120
+            )
+        )
+
+    print(
+        f"📦 Bot 2 bulk bars loaded {source_group}: {len(bars_map)}/{len(symbols)}",
+        flush=True
+    )
+
     for i, symbol in enumerate(symbols, start=1):
-        result = analyze_symbol(symbol, source_group)
+        result = analyze_symbol(
+            symbol,
+            source_group,
+            bars_map.get(symbol)
+        )
 
         if result:
             results.append(result)
 
         if i % 50 == 0:
-            print(f"🔎 {source_group}: scanned {i}/{len(symbols)} | found {len(results)}", flush=True)
+            print(
+                f"🔎 {source_group}: scanned {i}/{len(symbols)} | found {len(results)}",
+                flush=True
+            )
 
         time.sleep(0.03)
 
     return results
-
 
 def finalize_and_rank_results(preliminary_results):
     final_results = []
