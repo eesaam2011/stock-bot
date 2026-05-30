@@ -1300,7 +1300,7 @@ def get_real_buying_pressure(symbol, cp, df, vwap, ema9, volume_acceleration):
     except Exception as e:
         print(f"Buying pressure error {symbol}: {e}", flush=True)
         return False, 0
- def ignition_confirmation_ok(
+def ignition_confirmation_ok(
     df,
     cp,
     vwap,
