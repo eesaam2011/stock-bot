@@ -460,8 +460,8 @@ def calculate_micro_scalp_2_plan(price):
     return {
         "entry": round(price, 2),
         "stop_loss": round(price - 0.05, 2),
-        "target1": round(price + 0.05, 2),
-        "target2": round(price + 0.10, 2),
+        "target_1": round(price + 0.05, 2),
+        "target_2": round(price + 0.10, 2),
         "rr": 2.0
     }
     
@@ -805,9 +805,6 @@ def analyze_symbol(symbol, source_group):
         if not near_high:
             return None
             
-        if distance_to_resistance_pct < 0.60:
-            return None
-
         if not (real_breakout or vwap_reclaim or ema_reclaim):
             return None
             
