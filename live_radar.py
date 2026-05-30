@@ -50,7 +50,7 @@ PRICE_MAX = 25
 
 # WebSocket / Live Engine timing
 EVENT_PROCESS_INTERVAL = 5          # تحليل مصغر كل 5 ثواني
-LIVE_SAVE_INTERVAL = 30             # تحديث live_movers.json كل 30 ثانية
+LIVE_SAVE_INTERVAL = 10             # تحديث live_movers.json كل 30 ثانية
 WEBSOCKET_STALE_SECONDS = 90        # إذا انقطعت بيانات WebSocket نستخدم الاحتياط
 
 # Polling fallback فقط عند الحاجة
