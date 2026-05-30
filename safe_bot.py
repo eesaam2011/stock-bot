@@ -183,22 +183,7 @@ def load_active_trades_from_gist():
 # =========================
 
 def is_trading_time():
-    now = datetime.now(saudi_tz)
-    hour = now.hour
-    minute = now.minute
-    weekday = now.weekday()
-
-    if weekday > 4:
-        return False
-
-    if hour > 9 or (hour == 9 and minute >= 30):
-        return True
-
-    if hour < 3:
-        return True
-
-    return False
-
+    return True
 
 def get_trade_age_minutes(trade):
     trade_time = trade.get("time", time.time())
