@@ -86,20 +86,8 @@ def can_send_trade_alerts():
 
     return True
 
-
 def is_trading_time():
-    now = datetime.now(saudi_tz)
-    weekday = now.weekday()
-
-    if weekday in [5, 6]:
-        return False
-
-    if weekday == 0:
-        if now.hour < 8 or (now.hour == 8 and now.minute < 30):
-            return False
-
     return True
-
 
 def read_gist_file(filename, default=None):
     if default is None:
