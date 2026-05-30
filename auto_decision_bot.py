@@ -1071,13 +1071,25 @@ def entry_quality_guard(
             and not real_breakout
             and not strong_exception
         ):
-            return {
-                "ok": False,
-                "reason": f"No air space near resistance {distance_to_resistance_pct:.2f}%",
-                "nearest_resistance": nearest_resistance,
-                "next_resistance": next_resistance,
-                "distance_to_resistance_pct": distance_to_resistance_pct
-            }
+            strong_air_space_exception = (
+                instant_rvol >= 3.5
+                and volume_acceleration
+                and close_position >= 0.78
+                and upper_wick_pct <= 0.25
+                and move_3m >= 0.45
+                and distribution_score < 15
+                and cp_above_vwap
+                and cp_above_ema9
+            )
+
+            if not strong_air_space_exception:
+                return {
+                    "ok": False,
+                    "reason": f"No air space near resistance {distance_to_resistance_pct:.2f}%",
+                    "nearest_resistance": nearest_resistance,
+                    "next_resistance": next_resistance,
+                    "distance_to_resistance_pct": distance_to_resistance_pct
+                }
 
         # 2) Freshness / late move
         if (
@@ -2342,6 +2354,7 @@ def check_ready_entry(symbol, data):
             f"VWAP Reclaim: {vwap_reclaim}\n"
             f"EMA Reclaim: {ema_reclaim}\n"
             f"Ready To Alert: {ready_to_alert}\n"
+            f"Ignition Confirmed: {ignition_confirmed}\n"
             f"تصريف مخفي: {'نعم' if hidden_distribution else 'لا'}\n"
             f"درجة التصريف: {distribution_score}\n"
             f"ملاحظات التصريف: {dist_reasons_text}\n\n"
