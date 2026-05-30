@@ -1288,6 +1288,63 @@ def get_real_buying_pressure(symbol, cp, df, vwap, ema9, volume_acceleration):
     except Exception as e:
         print(f"Buying pressure error {symbol}: {e}", flush=True)
         return False, 0
+ def ignition_confirmation_ok(
+    df,
+    cp,
+    vwap,
+    ema9,
+    move_3m,
+    move_5m,
+    volume_acceleration,
+    close_position,
+    upper_wick_pct,
+    distribution_score
+):
+    try:
+        last_close = float(df["Close"].iloc[-1])
+        prev_close = float(df["Close"].iloc[-2])
+        price_3min_ago = float(df["Close"].iloc[-3])
+
+        last_3_volume = float(df["Volume"].tail(3).mean())
+        prev_7_volume = float(df["Volume"].tail(10).head(7).mean())
+
+        price_expanding_now = (
+            last_close > prev_close
+            and cp > price_3min_ago
+            and move_3m >= 0.35
+            and move_3m >= move_5m * 0.55
+        )
+
+        volume_expanding_now = (
+            volume_acceleration
+            and last_3_volume >= prev_7_volume * 1.25
+        )
+
+        candle_confirms_now = (
+            close_position >= 0.72
+            and upper_wick_pct <= 0.28
+        )
+
+        trend_holding_now = (
+            cp > vwap
+            and cp > ema9
+        )
+
+        clean_enough = (
+            distribution_score < 18
+        )
+
+        return (
+            price_expanding_now
+            and volume_expanding_now
+            and candle_confirms_now
+            and trend_holding_now
+            and clean_enough
+        )
+
+    except Exception as e:
+        print(f"Ignition confirmation error: {e}", flush=True)
+        return False
         
 def check_ready_entry(symbol, data):
     try:
@@ -1758,6 +1815,33 @@ def check_ready_entry(symbol, data):
 
             print(
                 f"🟡 Breakout ok but buying pressure weak: {symbol} | score={buying_pressure_score}",
+                flush=True
+            )
+
+            return None
+
+        ignition_confirmed = ignition_confirmation_ok(
+            df=df,
+            cp=cp,
+            vwap=vwap,
+            ema9=ema9,
+            move_3m=move_3m,
+            move_5m=move_5m,
+            volume_acceleration=volume_acceleration,
+            close_position=close_position,
+            upper_wick_pct=upper_wick_pct,
+            distribution_score=distribution_score
+        )
+
+        if not ignition_confirmed:
+            add_to_pending(
+                symbol,
+                cp,
+                "السهم جيد لكن الانطلاق الفعلي غير مؤكد الآن"
+            )
+
+            print(
+                f"🟡 Ignition not confirmed yet: {symbol}",
                 flush=True
             )
 
