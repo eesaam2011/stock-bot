@@ -666,11 +666,15 @@ def fallback_supervisor_loop():
 
 
 def warmup_from_polling_once():
+    global latest_movers
+
     print("🔥 Warmup: running one polling scan to seed live_movers.json...", flush=True)
 
     movers = scan_live_movers_polling_fallback()
 
     if movers:
+        latest_movers = movers
+
         save_live_movers_to_redis(movers)
 
         print(
