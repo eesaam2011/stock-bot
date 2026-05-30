@@ -162,21 +162,20 @@ def save_gist_file(filename, data):
         print(f"❌ Save gist error ({filename}): {e}", flush=True)
 
 
-def load_active_trades_from_gist():
+def load_active_trades_from_redis():
     global active_trades
 
-    saved = read_gist_file(
-        BOT2_ACTIVE_TRADES_FILE,
+    saved = load_json_from_redis(
+        BOT2_ACTIVE_TRADES_REDIS_KEY,
         default={}
     )
 
     if isinstance(saved, dict):
         active_trades = saved
-        print(f"✅ Restored Bot 2 active trades: {len(active_trades)}", flush=True)
+        print(f"✅ Restored Bot 2 active trades from Redis: {len(active_trades)}", flush=True)
     else:
         active_trades = {}
-        print("⚠️ No valid Bot 2 active trades found", flush=True)
-
+        print("⚠️ No valid Bot 2 Redis active trades found", flush=True)
 
 # =========================
 # TIME
@@ -311,6 +310,47 @@ def save_json_to_redis(redis_key, data):
     except Exception as e:
         print(f"❌ Redis save exception {redis_key}: {e}", flush=True)
         return False
+
+def load_json_from_redis(redis_key, default=None):
+    if default is None:
+        default = {}
+
+    try:
+        if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+            print("⚠️ Upstash Redis env vars missing", flush=True)
+            return default
+
+        url = f"{UPSTASH_REDIS_REST_URL}/get/{redis_key}"
+
+        headers = {
+            "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"
+        }
+
+        r = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
+
+        if r.status_code != 200:
+            print(f"❌ Redis read failed {redis_key}: {r.status_code} {r.text}", flush=True)
+            return default
+
+        data = r.json().get("result")
+
+        if not data:
+            return default
+
+        loaded = json.loads(data)
+
+        if isinstance(loaded, str):
+            loaded = json.loads(loaded)
+
+        return loaded
+
+    except Exception as e:
+        print(f"❌ Redis read exception {redis_key}: {e}", flush=True)
+        return default
         
 def load_live_radar():
     data = read_gist_file(LIVE_MOVERS_FILE, default=[])
@@ -1459,7 +1499,7 @@ def run_bot2_once():
 # MAIN LOOP
 # =========================
 
-load_active_trades_from_gist()
+load_active_trades_from_redis()
 print("🟢 BOT 2 - EARLY CONFIRMED EXPLOSION STARTED", flush=True)
 
 send_telegram_msg(
