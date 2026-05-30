@@ -42,6 +42,7 @@ PRICE_MAX = 25
 WATCH_MINUTES = 45
 SCAN_INTERVAL = 20
 PENDING_MAX_AGE_MINUTES = 90
+BULK_BARS_CHUNK_SIZE = 100
 
 LIVE_MOVERS_FILE = "live_movers.json" 
 MASTER_LIST_FILE = "master_list.json"
@@ -368,7 +369,62 @@ def load_live_movers():
     )
 
     return symbols
-    
+
+def get_alpaca_bars_bulk(symbols, minutes=120):
+    try:
+        end = datetime.now(pytz.UTC)
+        start = end - timedelta(days=1)
+
+        bars = api.get_bars(
+            symbols,
+            tradeapi.TimeFrame.Minute,
+            start=start.isoformat(),
+            end=end.isoformat(),
+            adjustment="raw"
+        ).df
+
+        if bars is None or bars.empty:
+            return {}
+
+        result = {}
+
+        for symbol in symbols:
+            try:
+                df = bars[bars["symbol"] == symbol].copy()
+
+                if df.empty:
+                    continue
+
+                df = df.rename(columns={
+                    "open": "Open",
+                    "high": "High",
+                    "low": "Low",
+                    "close": "Close",
+                    "volume": "Volume"
+                })
+
+                needed = [
+                    "Open",
+                    "High",
+                    "Low",
+                    "Close",
+                    "Volume"
+                ]
+
+                df = df[needed].dropna().tail(minutes)
+
+                if not df.empty:
+                    result[symbol] = df
+
+            except Exception:
+                continue
+
+        return result
+
+    except Exception as e:
+        print(f"Bulk bars error: {e}", flush=True)
+        return {}
+        
 def get_alpaca_bars(symbol, minutes=120):
     try:
         end = datetime.now(timezone.utc)
@@ -1454,9 +1510,13 @@ def continuation_quality_ok(
 
         return False
         
-def check_ready_entry(symbol, data):
+def check_ready_entry(symbol, data, df=None):
     try:
-        df = get_alpaca_bars(symbol, minutes=120)
+        if df is None:
+            df = get_alpaca_bars(symbol, minutes=120)
+
+        if df is None:
+            return None
 
         if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
             return None
@@ -3140,9 +3200,35 @@ while True:
             reverse=True
         )
 
+        symbols_to_check = [
+            symbol
+            for symbol, data in sorted_watchlist
+            if not data.get("alerted", False)
+        ]
+
+        bars_map = {}
+
+        for i in range(0, len(symbols_to_check), BULK_BARS_CHUNK_SIZE):
+            chunk = symbols_to_check[i:i + BULK_BARS_CHUNK_SIZE]
+            bars_map.update(
+                get_alpaca_bars_bulk(
+                    chunk,
+                    minutes=120
+                )
+            )
+
+        print(
+            f"📦 Bulk bars loaded: {len(bars_map)}/{len(symbols_to_check)}",
+            flush=True
+        )
+
         for symbol, data in sorted_watchlist:
             if not data.get("alerted", False):
-                check_ready_entry(symbol, data)
+                check_ready_entry(
+                    symbol,
+                    data,
+                    bars_map.get(symbol)
+                )
                 time.sleep(0.05)
 
         monitor_active_trades()
