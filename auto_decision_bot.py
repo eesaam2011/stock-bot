@@ -455,15 +455,19 @@ def get_alpaca_bars(symbol, minutes=120):
         return pd.DataFrame()
 
 
-def get_latest_price(symbol, df=None):
+def get_latest_price(symbol, df=None, use_realtime=True):
+    if not use_realtime and df is not None and not df.empty:
+        return float(df["Close"].iloc[-1])
+
     try:
         trade = api.get_latest_trade(symbol)
         return float(trade.price)
+
     except Exception:
         if df is not None and not df.empty:
             return float(df["Close"].iloc[-1])
-        return 0
 
+        return 0
 
 def calculate_rsi(close, period=14):
     if len(close) < period + 1:
@@ -1509,7 +1513,11 @@ def check_ready_entry(symbol, data, df=None):
         if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
             return None
 
-        cp = get_latest_price(symbol, df)
+        cp = get_latest_price(
+            symbol,
+            df,
+            use_realtime=False
+        )
 
         day_high = float(df["High"].max())
         price_10min_ago = float(df["Close"].iloc[-10])
