@@ -38,6 +38,16 @@ last_saved_pending_candidates = ""
 
 PRICE_MIN = 0.4
 PRICE_MAX = 25
+# =========================
+# TIME MACHINE TEST SETTINGS
+# =========================
+
+TIME_MACHINE_MODE = True
+
+TEST_DATE = "2026-05-27"  # الأربعاء - عدل التاريخ حسب اليوم المطلوب
+TEST_START_HOUR_NY = 9
+TEST_START_MINUTE_NY = 30
+TEST_DURATION_MINUTES = 120
 
 WATCH_MINUTES = 45
 SCAN_INTERVAL = 20
@@ -54,6 +64,11 @@ SELF_SCAN_COUNT = 1500
 
 
 def send_telegram_msg(message, chat_id):
+    if TIME_MACHINE_MODE:
+        print("🧪 TIME MACHINE TELEGRAM MESSAGE")
+        print(message)
+        return
+        
     if not TELEGRAM_TOKEN or not chat_id:
         print("Telegram keys missing", flush=True)
         return
@@ -358,11 +373,40 @@ def load_live_movers():
 
     return symbols
 
+def get_time_machine_window():
+    ny_tz = pytz.timezone("America/New_York")
+
+    test_day = datetime.strptime(
+        TEST_DATE,
+        "%Y-%m-%d"
+    )
+
+    start_ny = ny_tz.localize(
+        datetime(
+            test_day.year,
+            test_day.month,
+            test_day.day,
+            TEST_START_HOUR_NY,
+            TEST_START_MINUTE_NY
+        )
+    )
+
+    end_ny = start_ny + timedelta(
+        minutes=TEST_DURATION_MINUTES
+    )
+
+    return (
+        start_ny.astimezone(pytz.UTC),
+        end_ny.astimezone(pytz.UTC)
+    )
 def get_alpaca_bars_bulk(symbols, minutes=120):
     try:
-        end = datetime.now(pytz.UTC)
-        start = end - timedelta(days=1)
-
+        if TIME_MACHINE_MODE:
+            start, end = get_time_machine_window()
+        else:
+            end = datetime.now(pytz.UTC)
+            start = end - timedelta(days=1)
+            
         bars = api.get_bars(
             symbols,
             tradeapi.TimeFrame.Minute,
@@ -370,6 +414,11 @@ def get_alpaca_bars_bulk(symbols, minutes=120):
             end=end.isoformat(),
             adjustment="raw"
         ).df
+
+        print(
+            f"🕰️ Time Machine bulk request: {start} → {end} | symbols={len(symbols)}",
+            flush=True
+        )
 
         if bars is None or bars.empty:
             return {}
@@ -3169,12 +3218,22 @@ def load_active_trades_from_redis():
 
 load_active_trades_from_redis()
 
-print("🧠 BOT 3 DECISION BOT STARTED", flush=True)
-send_telegram_msg(
-    "🧠 تم تشغيل Bot 3 - القرار النهائي",
-    TELEGRAM_BOT3_CHAT_ID
+print("🧪 BOT 3 TIME MACHINE TEST STARTED", flush=True)
+
+print(
+    f"🕰️ Testing historical window: {TEST_DATE} "
+    f"{TEST_START_HOUR_NY}:{TEST_START_MINUTE_NY:02d} NY "
+    f"for {TEST_DURATION_MINUTES} minutes",
+    flush=True
 )
 
+send_telegram_msg(
+    f"🧪 Time Machine Test\n"
+    f"📅 {TEST_DATE}\n"
+    f"⏰ {TEST_START_HOUR_NY}:{TEST_START_MINUTE_NY:02d} NY\n"
+    f"⏳ {TEST_DURATION_MINUTES} minutes",
+    TELEGRAM_BOT3_CHAT_ID
+)
 while True:
     try:
         if not is_trading_time():
