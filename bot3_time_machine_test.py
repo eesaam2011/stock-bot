@@ -409,6 +409,7 @@ def get_time_machine_window():
         start_ny.astimezone(pytz.UTC),
         end_ny.astimezone(pytz.UTC)
     )
+    
 def get_alpaca_bars_bulk(symbols, minutes=120):
     try:
         if TIME_MACHINE_MODE:
