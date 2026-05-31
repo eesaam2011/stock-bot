@@ -3791,6 +3791,47 @@ for current_test_date in TEST_DATES:
                 reverse=True
             )
 
+            symbols_to_check = [
+                symbol
+                for symbol, data in sorted_watchlist
+                if not data.get("alerted", False)
+            ]
+
+            pending_symbols_to_check = [
+                symbol
+                for symbol in list(pending_watchlist.keys())
+                if symbol not in watchlist
+            ]
+
+            symbols_to_check = list(
+                dict.fromkeys(
+                    symbols_to_check + pending_symbols_to_check
+                )
+            )
+
+            bars_map = {}
+
+            for i in range(
+                0,
+                len(symbols_to_check),
+                BULK_BARS_CHUNK_SIZE
+            ):
+                chunk = symbols_to_check[
+                    i:i + BULK_BARS_CHUNK_SIZE
+                ]
+
+                bars_map.update(
+                    get_alpaca_bars_bulk(
+                        chunk,
+                        minutes=TEST_DURATION_MINUTES
+                    )
+                )
+
+            print(
+                f"📦 Bulk bars loaded: {len(bars_map)}/{len(symbols_to_check)}",
+                flush=True
+            )
+
             for symbol, data in sorted_watchlist:
                 if not data.get("alerted", False):
                     check_ready_entry(
