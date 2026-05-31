@@ -3755,12 +3755,21 @@ def analyze_alerts():
         flush=True
         )
     
-while True:
-    try:
-        if not is_trading_time():
-            print("⏸️ خارج وقت التشغيل - Bot 3 ينتظر", flush=True)
-            time.sleep(300)
-            continue
+for current_test_date in TEST_DATES:
+
+    TEST_DATE = current_test_date
+
+    print(
+        f"\n🧪 STARTING TIME MACHINE DATE: {TEST_DATE}\n",
+        flush=True
+    )
+
+    while True:
+        try:
+            if not is_trading_time():
+                print("⏸️ خارج وقت التشغيل - Bot 3 ينتظر", flush=True)
+                time.sleep(300)
+                continue
 
         update_watchlist_from_bot2()
         self_scan_top_400()
@@ -3860,8 +3869,7 @@ while True:
 
         print("✅ TIME MACHINE TEST FINISHED", flush=True)
 
-        while True:
-            time.sleep(3600)
+        break
             
     except Exception as e:
         print("Main loop error:", e, flush=True)
