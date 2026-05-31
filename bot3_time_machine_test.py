@@ -631,6 +631,23 @@ def self_scan_top_400():
         flush=True
     )
 
+    bars_map = {}
+
+for i in range(0, len(symbols), BULK_BARS_CHUNK_SIZE):
+    chunk = symbols[i:i + BULK_BARS_CHUNK_SIZE]
+
+    bars_map.update(
+        get_alpaca_bars_bulk(
+            chunk,
+            minutes=120
+        )
+    )
+
+print(
+    f"📦 Time Machine self-scan bulk bars loaded: {len(bars_map)}/{len(symbols)}",
+    flush=True
+)
+
     symbols = list(dict.fromkeys(symbols))
 
     symbols = symbols[:SELF_SCAN_COUNT]
@@ -649,13 +666,8 @@ def self_scan_top_400():
 
         try:
 
-            bars_map = get_alpaca_bars_bulk(
-                [symbol],
-                minutes=120
-            )
-
             df = bars_map.get(symbol, pd.DataFrame())
-
+            
             if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
                 continue
 
