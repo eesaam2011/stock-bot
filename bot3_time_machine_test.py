@@ -48,6 +48,7 @@ pending_watchlist = {}
 momentum_watchlist = {}
 last_saved_pending_candidates = ""
 rejection_log = []
+weekly_rejection_stats = {}
 
 def record_rejection(symbol, reason, price):
     try:
@@ -3501,7 +3502,115 @@ def analyze_rejections():
                 f"dd={s['drawdown_pct']:.2f}%",
                 flush=True
     )
-            
+
+def print_weekly_rejection_summary():
+    try:
+        if not rejection_log:
+            return
+
+        stats = {}
+
+        for item in rejection_log:
+            reason = item.get("reason", "Unknown")
+            gain = item.get("gain_pct", 0)
+            drawdown = item.get("drawdown_pct", 0)
+            symbol = item.get("symbol", "")
+
+            if reason not in stats:
+                stats[reason] = {
+                    "count": 0,
+                    "gains": [],
+                    "drawdowns": [],
+                    "over_10pct": 0,
+                    "over_20pct": 0,
+                    "max_gain": 0,
+                    "best_symbol": ""
+                }
+
+            stats[reason]["count"] += 1
+            stats[reason]["gains"].append(gain)
+            stats[reason]["drawdowns"].append(drawdown)
+
+            if gain > 10:
+                stats[reason]["over_10pct"] += 1
+
+            if gain > 20:
+                stats[reason]["over_20pct"] += 1
+
+            if gain > stats[reason]["max_gain"]:
+                stats[reason]["max_gain"] = gain
+                stats[reason]["best_symbol"] = symbol
+
+        total_rejections = 0
+        total_over_10 = 0
+        total_over_20 = 0
+
+        biggest_gain = 0
+        biggest_symbol = ""
+
+        print("\n📊 WEEKLY REJECTION SUMMARY", flush=True)
+
+        for reason, data in stats.items():
+
+            avg_gain = (
+                sum(data["gains"]) / len(data["gains"])
+                if data["gains"]
+                else 0
+            )
+
+            avg_dd = (
+                sum(data["drawdowns"]) / len(data["drawdowns"])
+                if data["drawdowns"]
+                else 0
+            )
+
+            print(
+                f"\n🔍 {reason}\n"
+                f"count={data['count']} | "
+                f"avg_gain={avg_gain:.2f}% | "
+                f"max_gain={data['max_gain']:.2f}% | "
+                f"avg_drawdown={avg_dd:.2f}% | "
+                f"over_10pct={data['over_10pct']} | "
+                f"over_20pct={data['over_20pct']}",
+                flush=True
+            )
+
+            total_rejections += data["count"]
+            total_over_10 += data["over_10pct"]
+            total_over_20 += data["over_20pct"]
+
+            if data["max_gain"] > biggest_gain:
+                biggest_gain = data["max_gain"]
+                biggest_symbol = data["best_symbol"]
+
+        print(
+            f"\n🏆 Biggest Missed Move: "
+            f"{biggest_symbol} "
+            f"({biggest_gain:.2f}%)",
+            flush=True
+        )
+
+        print(
+            f"\n📉 Total Rejections: {total_rejections}",
+            flush=True
+        )
+
+        print(
+            f"📉 Over 10%: {total_over_10}",
+            flush=True
+        )
+
+        print(
+            f"📉 Over 20%: {total_over_20}",
+            flush=True
+        )
+
+    except Exception as e:
+        print(
+            f"❌ Weekly Summary Error: {e}",
+            flush=True
+        )
+        
 while True:
     try:
         if not is_trading_time():
@@ -3602,6 +3711,7 @@ while True:
 
         print_rejection_report()
         analyze_rejections()
+        print_weekly_rejection_summary()
 
         print("✅ TIME MACHINE TEST FINISHED", flush=True)
         break
