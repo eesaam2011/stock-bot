@@ -3771,106 +3771,73 @@ for current_test_date in TEST_DATES:
                 time.sleep(300)
                 continue
 
-        update_watchlist_from_bot2()
-        self_scan_top_400()
-        clean_old_watchlist()
-        monitor_momentum_watchlist()
-        clean_old_pending_watchlist()
-        save_pending_candidates_if_changed()
+            update_watchlist_from_bot2()
+            self_scan_top_400()
+            clean_old_watchlist()
+            monitor_momentum_watchlist()
+            clean_old_pending_watchlist()
+            save_pending_candidates_if_changed()
 
-        print(f"📊 Bot 3 Watchlist size: {len(watchlist)}", flush=True)
+            print(f"📊 Bot 3 Watchlist size: {len(watchlist)}", flush=True)
 
-        print(f"🧪 Pending size after scan: {len(pending_watchlist)}", flush=True)
+            print(f"🧪 Pending size after scan: {len(pending_watchlist)}", flush=True)
 
-        for psymbol in list(pending_watchlist.keys()):
-            print(f"🧪 Rechecking pending symbol: {psymbol}", flush=True)
+            for psymbol in list(pending_watchlist.keys()):
+                print(f"🧪 Rechecking pending symbol: {psymbol}", flush=True)
 
-        sorted_watchlist = sorted(
-            list(watchlist.items()),
-            key=lambda x: x[1].get("priority_score", 0),
-            reverse=True
-        )
-
-        symbols_to_check = [
-            symbol
-            for symbol, data in sorted_watchlist
-            if not data.get("alerted", False)
-        ]
-
-        pending_symbols_to_check = [
-            symbol
-            for symbol in list(pending_watchlist.keys())
-            if symbol not in watchlist
-        ]
-
-        symbols_to_check = list(
-            dict.fromkeys(
-                symbols_to_check + pending_symbols_to_check
-            )
-        )
-
-        bars_map = {}
-
-        for i in range(0, len(symbols_to_check), BULK_BARS_CHUNK_SIZE):
-            chunk = symbols_to_check[i:i + BULK_BARS_CHUNK_SIZE]
-            bars_map.update(
-                get_alpaca_bars_bulk(
-                    chunk,
-                    minutes=120
-                )
+            sorted_watchlist = sorted(
+                list(watchlist.items()),
+                key=lambda x: x[1].get("priority_score", 0),
+                reverse=True
             )
 
-        print(
-            f"📦 Bulk bars loaded: {len(bars_map)}/{len(symbols_to_check)}",
-            flush=True
-        )
+            for symbol, data in sorted_watchlist:
+                if not data.get("alerted", False):
+                    check_ready_entry(
+                        symbol,
+                        data,
+                        bars_map.get(symbol)
+                    )
 
-        for symbol, data in sorted_watchlist:
-            if not data.get("alerted", False):
+            for symbol in list(pending_watchlist.keys()):
+
+                if symbol in watchlist:
+                    continue
+
                 check_ready_entry(
                     symbol,
-                    data,
+                    pending_watchlist.get(symbol, {}),
                     bars_map.get(symbol)
                 )
 
-        for symbol in list(pending_watchlist.keys()):
+                time.sleep(0.05)
 
-            if symbol in watchlist:
-                continue
+            monitor_active_trades()
+            monitor_explosion_tracking()
 
-            check_ready_entry(
-                symbol,
-                pending_watchlist.get(symbol, {}),
-                bars_map.get(symbol)
-            )
-            time.sleep(0.05)
-
-        monitor_active_trades()
-        monitor_explosion_tracking()
-
-        current_active_trades = json.dumps(
-            active_trades,
-            sort_keys=True
-        )
-
-        if current_active_trades != last_saved_active_trades:
-
-            save_json_to_redis(
-                BOT3_ACTIVE_TRADES_REDIS_KEY,
-                active_trades
+            current_active_trades = json.dumps(
+                active_trades,
+                sort_keys=True
             )
 
-            last_saved_active_trades = current_active_trades
+            if current_active_trades != last_saved_active_trades:
 
-        print_rejection_report()
-        analyze_rejections()
-        print_weekly_rejection_summary()
-        analyze_alerts()
+                save_json_to_redis(
+                    BOT3_ACTIVE_TRADES_REDIS_KEY,
+                    active_trades
+                )
 
-        print("✅ TIME MACHINE TEST FINISHED", flush=True)
+                last_saved_active_trades = current_active_trades
 
-        break
-            
-    except Exception as e:
-        print("Main loop error:", e, flush=True)
-        time.sleep(10)
+            print_rejection_report()
+            analyze_rejections()
+            print_weekly_rejection_summary()
+            analyze_alerts()
+
+            print("✅ TIME MACHINE TEST FINISHED", flush=True)
+
+            break
+
+        except Exception as e:
+            print("Main loop error:", e, flush=True)
+            time.sleep(10)
