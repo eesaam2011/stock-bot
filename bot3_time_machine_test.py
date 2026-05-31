@@ -3380,6 +3380,8 @@ def analyze_rejections():
         flush=True
     )
 
+    reason_stats = {}
+
     for item in rejection_log:
 
         symbol = item.get("symbol")
@@ -3404,6 +3406,47 @@ def analyze_rejections():
             / max(reject_price, 0.0001)
         ) * 100
 
+        if reason not in reason_stats:
+            reason_stats[reason] = {
+                "count": 0,
+                "total_gain": 0.0,
+                "max_gain": -999.0,
+                "total_drawdown": 0.0,
+                "max_drawdown": 0.0,
+                "exploded_10": 0,
+                "exploded_20": 0,
+                "symbols": []
+            }
+
+        reason_stats[reason]["count"] += 1
+        reason_stats[reason]["total_gain"] += gain_pct
+        reason_stats[reason]["max_gain"] = max(
+            reason_stats[reason]["max_gain"],
+            gain_pct
+        )
+        reason_stats[reason]["total_drawdown"] += drawdown_pct
+        reason_stats[reason]["max_drawdown"] = min(
+            reason_stats[reason]["max_drawdown"],
+            drawdown_pct
+        )
+
+        if gain_pct >= 10:
+            reason_stats[reason]["exploded_10"] += 1
+
+        if gain_pct >= 20:
+            reason_stats[reason]["exploded_20"] += 1
+
+        reason_stats[reason]["symbols"].append(
+            {
+                "symbol": symbol,
+                "gain_pct": gain_pct,
+                "drawdown_pct": drawdown_pct,
+                "reject_price": reject_price,
+                "high": highest_price,
+                "low": lowest_price
+            }
+        )
+
         print(
             f"📊 {symbol} | {reason} | "
             f"reject={reject_price:.2f} | "
@@ -3413,6 +3456,51 @@ def analyze_rejections():
             f"drawdown={drawdown_pct:.2f}%",
             flush=True
         )
+
+    print(
+        "\n📌 REJECTION SUMMARY BY REASON",
+        flush=True
+    )
+
+    for reason, stats in sorted(
+        reason_stats.items(),
+        key=lambda x: x[1]["count"],
+        reverse=True
+    ):
+
+        count = stats["count"]
+        avg_gain = stats["total_gain"] / max(count, 1)
+        avg_drawdown = stats["total_drawdown"] / max(count, 1)
+
+        print(
+            f"\n🔎 {reason}",
+            flush=True
+        )
+
+        print(
+            f"count={count} | "
+            f"avg_gain={avg_gain:.2f}% | "
+            f"max_gain={stats['max_gain']:.2f}% | "
+            f"avg_drawdown={avg_drawdown:.2f}% | "
+            f"max_drawdown={stats['max_drawdown']:.2f}% | "
+            f"over_10pct={stats['exploded_10']} | "
+            f"over_20pct={stats['exploded_20']}",
+            flush=True
+        )
+
+        top_symbols = sorted(
+            stats["symbols"],
+            key=lambda x: x["gain_pct"],
+            reverse=True
+        )[:3]
+
+        for s in top_symbols:
+            print(
+                f"   🏁 {s['symbol']} "
+                f"gain={s['gain_pct']:.2f}% "
+                f"dd={s['drawdown_pct']:.2f}%",
+                flush=True
+    )
             
 while True:
     try:
