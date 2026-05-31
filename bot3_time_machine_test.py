@@ -6,6 +6,8 @@ import pandas as pd
 import alpaca_trade_api as tradeapi
 from datetime import datetime, timedelta, timezone
 import pytz
+from flask import Flask
+import threading
 
 API_KEY = os.getenv("APCA_API_KEY_ID")
 SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
@@ -26,7 +28,17 @@ LIVE_MOVERS_REDIS_KEY = "live_movers"
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
 saudi_tz = pytz.timezone("Asia/Riyadh")
+app = Flask(__name__)
 
+@app.route("/")
+def home():
+    return "Bot 3 Time Machine Test Running"
+
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+    
 watchlist = {}
 sent_alerts = {}
 active_trades = {}
@@ -3213,6 +3225,10 @@ def load_active_trades_from_redis():
         active_trades = {}
         print("⚠️ No valid Redis active trades found", flush=True)
 
+threading.Thread(
+    target=run_web_server,
+    daemon=True
+).start()
 
 load_active_trades_from_redis()
 
