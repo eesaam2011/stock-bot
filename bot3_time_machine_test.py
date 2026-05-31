@@ -49,6 +49,8 @@ momentum_watchlist = {}
 last_saved_pending_candidates = ""
 rejection_log = []
 alert_log = []
+weekly_rejection_log = []
+weekly_alert_log = []
 weekly_rejection_stats = {}
 
 def record_rejection(symbol, reason, price):
@@ -3758,7 +3760,9 @@ def analyze_alerts():
 for current_test_date in TEST_DATES:
 
     TEST_DATE = current_test_date
-
+    rejection_log = []
+    alert_log = []
+    
     print(
         f"\n🧪 STARTING TIME MACHINE DATE: {TEST_DATE}\n",
         flush=True
@@ -3879,6 +3883,8 @@ for current_test_date in TEST_DATES:
             analyze_rejections()
             print_weekly_rejection_summary()
             analyze_alerts()
+            weekly_rejection_log.extend(rejection_log)
+            weekly_alert_log.extend(alert_log)
 
             print("✅ TIME MACHINE TEST FINISHED", flush=True)
 
