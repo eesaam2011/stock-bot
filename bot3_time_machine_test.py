@@ -631,14 +631,6 @@ def self_scan_top_400():
         flush=True
     )
 
-    else:
-        symbols = master_symbols
-
-        print(
-            f"🛟 Bot 3 fallback to Master List: {len(symbols)} symbols",
-            flush=True
-        )
-
     symbols = list(dict.fromkeys(symbols))
 
     symbols = symbols[:SELF_SCAN_COUNT]
@@ -646,7 +638,7 @@ def self_scan_top_400():
     if not symbols:
         print("⚠️ No symbols available", flush=True)
         return
-
+        
     for i, symbol in enumerate(symbols, start=1):
 
         if i % 100 == 0:
