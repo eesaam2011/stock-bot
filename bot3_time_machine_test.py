@@ -3630,7 +3630,124 @@ def print_weekly_rejection_summary():
             f"❌ Weekly Summary Error: {e}",
             flush=True
         )
-        
+
+def analyze_alerts():
+
+    if not alert_log:
+        print(
+            "\n📈 ALERT OUTCOME REPORT\nNo alerts recorded.",
+            flush=True
+        )
+        return
+
+    unique_symbols = list(
+        dict.fromkeys(
+            item.get("symbol")
+            for item in alert_log
+            if item.get("symbol")
+        )
+    )
+
+    bars_map = get_alpaca_bars_bulk(
+        unique_symbols,
+        minutes=TEST_DURATION_MINUTES
+    )
+
+    print(
+        "\n📈 ALERT OUTCOME REPORT",
+        flush=True
+    )
+
+    total_alerts = 0
+    total_gain = 0.0
+    total_drawdown = 0.0
+    t1_hits = 0
+    t2_hits = 0
+    stop_hits = 0
+    over_10pct = 0
+    over_20pct = 0
+    max_gain_seen = -999
+    best_symbol = ""
+
+    for item in alert_log:
+
+        symbol = item.get("symbol")
+        alert_price = float(item.get("price", 0))
+
+        df = bars_map.get(symbol)
+
+        if df is None or len(df) == 0:
+            continue
+
+        highest_price = float(df["High"].max())
+        lowest_price = float(df["Low"].min())
+
+        gain_pct = (
+            (highest_price - alert_price)
+            / max(alert_price, 0.0001)
+        ) * 100
+
+        drawdown_pct = (
+            (lowest_price - alert_price)
+            / max(alert_price, 0.0001)
+        ) * 100
+
+        total_alerts += 1
+        total_gain += gain_pct
+        total_drawdown += drawdown_pct
+
+        if gain_pct >= 2:
+            t1_hits += 1
+
+        if gain_pct >= 4:
+            t2_hits += 1
+
+        if drawdown_pct <= -2:
+            stop_hits += 1
+
+        if gain_pct >= 10:
+            over_10pct += 1
+
+        if gain_pct >= 20:
+            over_20pct += 1
+
+        if gain_pct > max_gain_seen:
+            max_gain_seen = gain_pct
+            best_symbol = symbol
+
+        print(
+            f"🚨 {symbol} | "
+            f"alert={alert_price:.2f} | "
+            f"high={highest_price:.2f} | "
+            f"gain={gain_pct:.2f}% | "
+            f"low={lowest_price:.2f} | "
+            f"drawdown={drawdown_pct:.2f}%",
+            flush=True
+        )
+
+    print(
+        "\n📊 ALERT SUMMARY",
+        flush=True
+    )
+
+    print(
+        f"alerts={total_alerts} | "
+        f"avg_gain={(total_gain / max(total_alerts, 1)):.2f}% | "
+        f"avg_drawdown={(total_drawdown / max(total_alerts, 1)):.2f}% | "
+        f"t1_hits={t1_hits} | "
+        f"t2_hits={t2_hits} | "
+        f"stop_hits={stop_hits} | "
+        f"over_10pct={over_10pct} | "
+        f"over_20pct={over_20pct}",
+        flush=True
+    )
+
+    print(
+        f"🏆 Best Alert: {best_symbol} "
+        f"gain={max_gain_seen:.2f}%",
+        flush=True
+        )
+    
 while True:
     try:
         if not is_trading_time():
@@ -3732,10 +3849,13 @@ while True:
         print_rejection_report()
         analyze_rejections()
         print_weekly_rejection_summary()
+        analyze_alerts()
 
         print("✅ TIME MACHINE TEST FINISHED", flush=True)
-        break
 
+        while True:
+            time.sleep(3600)
+            
     except Exception as e:
         print("Main loop error:", e, flush=True)
         time.sleep(10)
