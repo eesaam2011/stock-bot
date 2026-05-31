@@ -3534,12 +3534,12 @@ def analyze_rejections():
 
 def print_weekly_rejection_summary():
     try:
-        if not rejection_log:
+        if not weekly_rejection_log:
             return
 
         stats = {}
 
-        for item in rejection_log:
+        for item in weekly_rejection_log:
             reason = item.get("reason", "Unknown")
             gain = item.get("gain_pct", 0)
             drawdown = item.get("drawdown_pct", 0)
