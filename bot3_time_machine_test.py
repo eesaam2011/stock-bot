@@ -3603,7 +3603,8 @@ while True:
         print_rejection_report()
         analyze_rejections()
 
-        time.sleep(SCAN_INTERVAL)
+        print("✅ TIME MACHINE TEST FINISHED", flush=True)
+        break
 
     except Exception as e:
         print("Main loop error:", e, flush=True)
