@@ -51,6 +51,7 @@ rejection_log = []
 alert_log = []
 weekly_rejection_log = []
 weekly_alert_log = []
+weekly_alert_results = []
 weekly_rejection_stats = {}
 
 def record_rejection(symbol, reason, price):
@@ -3436,6 +3437,11 @@ def analyze_rejections():
             / max(reject_price, 0.0001)
         ) * 100
 
+        item["gain_pct"] = gain_pct
+        item["drawdown_pct"] = drawdown_pct
+        item["highest_price"] = highest_price
+        item["lowest_price"] = lowest_price
+
         if reason not in reason_stats:
             reason_stats[reason] = {
                 "count": 0,
@@ -3640,6 +3646,92 @@ def print_weekly_rejection_summary():
             flush=True
         )
 
+def print_weekly_alert_summary():
+
+    if not weekly_alert_log:
+        print(
+            "\n📊 WEEKLY ALERT SUMMARY\nNo alerts recorded.",
+            flush=True
+        )
+        return
+
+    total_alerts = 0
+    total_gain = 0.0
+    total_drawdown = 0.0
+    t1_hits = 0
+    t2_hits = 0
+    stop_hits = 0
+    over_10pct = 0
+    over_20pct = 0
+
+    best_symbol = ""
+    best_gain = -999.0
+
+    worst_symbol = ""
+    worst_drawdown = 0.0
+
+    for item in weekly_alert_log:
+
+        symbol = item.get("symbol", "")
+        gain = float(item.get("gain_pct", 0))
+        drawdown = float(item.get("drawdown_pct", 0))
+
+        total_alerts += 1
+        total_gain += gain
+        total_drawdown += drawdown
+
+        if gain >= 2:
+            t1_hits += 1
+
+        if gain >= 4:
+            t2_hits += 1
+
+        if drawdown <= -2:
+            stop_hits += 1
+
+        if gain >= 10:
+            over_10pct += 1
+
+        if gain >= 20:
+            over_20pct += 1
+
+        if gain > best_gain:
+            best_gain = gain
+            best_symbol = symbol
+
+        if drawdown < worst_drawdown:
+            worst_drawdown = drawdown
+            worst_symbol = symbol
+
+    print(
+        "\n📊 WEEKLY ALERT SUMMARY",
+        flush=True
+    )
+
+    print(
+        f"alerts={total_alerts} | "
+        f"avg_gain={(total_gain / max(total_alerts, 1)):.2f}% | "
+        f"avg_drawdown={(total_drawdown / max(total_alerts, 1)):.2f}% | "
+        f"t1_hits={t1_hits} | "
+        f"t2_hits={t2_hits} | "
+        f"stop_hits={stop_hits} | "
+        f"over_10pct={over_10pct} | "
+        f"over_20pct={over_20pct}",
+        flush=True
+    )
+
+    print(
+        f"🏆 Best Weekly Alert: {best_symbol} "
+        f"gain={best_gain:.2f}%",
+        flush=True
+    )
+
+    print(
+        f"⚠️ Worst Weekly Drawdown: {worst_symbol} "
+        f"drawdown={worst_drawdown:.2f}%",
+        flush=True
+    )
+    
 def analyze_alerts():
 
     if not alert_log:
@@ -3701,6 +3793,11 @@ def analyze_alerts():
             / max(alert_price, 0.0001)
         ) * 100
 
+        item["gain_pct"] = gain_pct
+        item["drawdown_pct"] = drawdown_pct
+        item["highest_price"] = highest_price
+        item["lowest_price"] = lowest_price
+
         total_alerts += 1
         total_gain += gain_pct
         total_drawdown += drawdown_pct
@@ -3756,7 +3853,7 @@ def analyze_alerts():
         f"gain={max_gain_seen:.2f}%",
         flush=True
         )
-    
+
 for current_test_date in TEST_DATES:
 
     TEST_DATE = current_test_date
@@ -3881,10 +3978,13 @@ for current_test_date in TEST_DATES:
 
             print_rejection_report()
             analyze_rejections()
-            print_weekly_rejection_summary()
             analyze_alerts()
+
             weekly_rejection_log.extend(rejection_log)
             weekly_alert_log.extend(alert_log)
+
+            print_weekly_rejection_summary()
+            print_weekly_alert_summary()
 
             print("✅ TIME MACHINE TEST FINISHED", flush=True)
 
