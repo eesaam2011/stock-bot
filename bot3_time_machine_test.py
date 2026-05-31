@@ -3312,11 +3312,13 @@ while True:
         monitor_momentum_watchlist()
         clean_old_pending_watchlist()
         save_pending_candidates_if_changed()
+
         print(f"📊 Bot 3 Watchlist size: {len(watchlist)}", flush=True)
+
         print(f"🧪 Pending size after scan: {len(pending_watchlist)}", flush=True)
 
-for psymbol in list(pending_watchlist.keys()):
-    print(f"🧪 Rechecking pending symbol: {psymbol}", flush=True)
+        for psymbol in list(pending_watchlist.keys()):
+            print(f"🧪 Rechecking pending symbol: {psymbol}", flush=True)
 
         sorted_watchlist = sorted(
             list(watchlist.items()),
