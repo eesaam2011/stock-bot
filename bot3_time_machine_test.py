@@ -47,7 +47,19 @@ last_saved_active_trades = ""
 pending_watchlist = {}
 momentum_watchlist = {}
 last_saved_pending_candidates = ""
+rejection_log = []
 
+def record_rejection(symbol, reason, price):
+    try:
+        rejection_log.append({
+            "symbol": str(symbol).upper().strip(),
+            "reason": str(reason),
+            "price": float(price),
+            "time": time.time()
+        })
+    except Exception as e:
+        print(f"⚠️ record_rejection error: {e}", flush=True)
+        
 PRICE_MIN = 0.4
 PRICE_MAX = 25
 # =========================
@@ -1853,12 +1865,19 @@ def check_ready_entry(symbol, data, df=None):
             and not strong_explosion_candidate
             and not runner_escape_mode
         ):
+            record_rejection(
+                symbol,
+                "Late Entry Risk",
+                cp
+            )
+
             print(
                 f"❌ Rejected late entry risk: {symbol}",
                 flush=True
             )
-            return None
 
+            return None
+            
         if (
             distribution_score >= 25
             and not strong_candle
