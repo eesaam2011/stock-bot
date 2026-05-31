@@ -3380,7 +3380,7 @@ while True:
                 pending_watchlist.get(symbol, {}),
                 bars_map.get(symbol)
             )
-                time.sleep(0.05)
+            time.sleep(0.05)
 
         monitor_active_trades()
         monitor_explosion_tracking()
