@@ -3773,7 +3773,21 @@ def print_top_missed_ignition_stocks(limit=10):
                 "drawdown": drawdown,
                 "reject_price": reject_price,
                 "high": high,
-                "low": low
+                "low": low,
+
+                "instant_rvol": item.get("instant_rvol", 0),
+                "recent_move": item.get("recent_move", 0),
+                "move_3m": item.get("move_3m", 0),
+                "move_5m": item.get("move_5m", 0),
+
+                "rsi": item.get("rsi", 0),
+
+                "vwap": item.get("vwap", 0),
+                "ema9": item.get("ema9", 0),
+                "ema20": item.get("ema20", 0),
+
+                "close_position": item.get("close_position", 0),
+                "distribution_score": item.get("distribution_score", 0)
             })
 
         rows = sorted(
@@ -3796,13 +3810,44 @@ def print_top_missed_ignition_stocks(limit=10):
             return
 
         for r in rows:
+
             print(
-                f"🔥 {r['symbol']} | "
+                f"\n🔥 {r['symbol']}",
+                flush=True
+            )
+
+            print(
                 f"gain={r['gain']:.2f}% | "
+                f"drawdown={r['drawdown']:.2f}% | "
                 f"reject={r['reject_price']:.2f} | "
                 f"high={r['high']:.2f} | "
-                f"low={r['low']:.2f} | "
-                f"drawdown={r['drawdown']:.2f}%",
+                f"low={r['low']:.2f}",
+                flush=True
+            )
+
+            print(
+                f"RVOL={r['instant_rvol']:.2f} | "
+                f"RSI={r['rsi']:.2f}",
+                flush=True
+            )
+
+            print(
+                f"move_3m={r['move_3m']:.2f}% | "
+                f"move_5m={r['move_5m']:.2f}% | "
+                f"recent_move={r['recent_move']:.2f}%",
+                flush=True
+            )
+
+            print(
+                f"VWAP={r['vwap']:.2f} | "
+                f"EMA9={r['ema9']:.2f} | "
+                f"EMA20={r['ema20']:.2f}",
+                flush=True
+            )
+
+            print(
+                f"close_position={r['close_position']:.2f} | "
+                f"distribution={r['distribution_score']:.2f}",
                 flush=True
             )
 
