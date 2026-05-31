@@ -621,16 +621,15 @@ def update_watchlist_from_bot2():
 
 def self_scan_top_400():
 
-    live_symbols = load_live_radar_from_redis()
+    live_symbols = []
     master_symbols = load_master_list()
 
-    if live_symbols:
-        symbols = live_symbols
+    symbols = master_symbols[:SELF_SCAN_COUNT]
 
-        print(
-            f"⚡ Bot 3 using WebSocket Live Movers: {len(symbols)} symbols",
-            flush=True
-        )
+    print(
+        f"🧪 Time Machine using Master List: {len(symbols)} symbols",
+        flush=True
+    )
 
     else:
         symbols = master_symbols
