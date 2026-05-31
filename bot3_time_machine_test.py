@@ -405,6 +405,10 @@ def get_time_machine_window():
         minutes=TEST_DURATION_MINUTES
     )
 
+    global TIME_MACHINE_END_NY
+
+    TIME_MACHINE_END_NY = end_ny
+
     return (
         start_ny.astimezone(pytz.UTC),
         end_ny.astimezone(pytz.UTC)
@@ -2573,9 +2577,22 @@ def check_ready_entry(symbol, data, df=None):
             "volume_acceleration": volume_acceleration
         })
         source_group = data.get("source_group", "UNKNOWN")
-        
+        historical_time_text = ""
+
+        if TIME_MACHINE_MODE:
+            try:
+                historical_time_text = (
+                    f"🕰️ وقت التنبيه التاريخي: "
+                    f"{TIME_MACHINE_END_NY.strftime('%Y-%m-%d %H:%M NY')}\n\n"
+                )
+            except Exception:
+                historical_time_text = (
+                    "🕰️ وقت التنبيه التاريخي: غير متاح\n\n"
+                )
+                
         msg = (
             f"🧠🔥 *Bot 3 - قرار دخول نهائي*\n\n"
+            f"{historical_time_text}"
             f"🎫 السهم: `{symbol}`\n"
             f"💰 السعر: {entry:.2f}\n"
             f"🏆 التصنيف: {grade}\n\n"
