@@ -2024,6 +2024,13 @@ def check_ready_entry(symbol, data, df=None):
         )
 
         if not ignition_quality:
+
+            record_rejection(
+                symbol,
+                "Ignition Quality",
+                cp
+            )
+
             add_to_pending(
                 symbol,
                 cp,
@@ -2054,6 +2061,13 @@ def check_ready_entry(symbol, data, df=None):
         )
 
         if not follow_through_ok:
+
+            record_rejection(
+                symbol,
+                "Follow Through",
+                cp
+            )
+
             add_to_pending(
                 symbol,
                 cp,
@@ -2194,10 +2208,18 @@ def check_ready_entry(symbol, data, df=None):
         )
 
         if not quality_guard.get("ok", True):
+
+            record_rejection(
+                symbol,
+                f"Entry Quality: {quality_guard.get('reason')}",
+                cp
+            )
+
             print(
                 f"❌ Entry quality rejected: {symbol} | {quality_guard.get('reason')}",
                 flush=True
             )
+
             return None
 
         nearest_resistance = quality_guard.get("nearest_resistance")
