@@ -659,8 +659,12 @@ def self_scan_top_400():
             if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
                 continue
 
-            cp = get_latest_price(symbol, df)
-
+            cp = get_latest_price(
+                symbol,
+                df,
+                use_realtime=False
+            )
+            
             if not (PRICE_MIN <= cp <= PRICE_MAX):
                 continue
 
