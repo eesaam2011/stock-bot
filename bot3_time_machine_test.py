@@ -3362,6 +3362,19 @@ def analyze_rejections():
     if not rejection_log:
         return
 
+    unique_symbols = list(
+        dict.fromkeys(
+            item.get("symbol")
+            for item in rejection_log
+            if item.get("symbol")
+        )
+    )
+
+    bars_map = get_alpaca_bars_bulk(
+        unique_symbols,
+        minutes=TEST_DURATION_MINUTES
+    )
+
     print(
         "\n📈 REJECTION OUTCOME REPORT",
         flush=True
@@ -3370,43 +3383,36 @@ def analyze_rejections():
     for item in rejection_log:
 
         symbol = item.get("symbol")
-        reject_price = item.get("price", 0)
+        reason = item.get("reason", "Unknown")
+        reject_price = float(item.get("price", 0))
 
-        try:
+        df = bars_map.get(symbol)
 
-            df = get_alpaca_bars(
-                symbol,
-                minutes=120
-            )
+        if df is None or len(df) == 0:
+            continue
 
-            if df is None or len(df) == 0:
-                continue
+        highest_price = float(df["High"].max())
+        lowest_price = float(df["Low"].min())
 
-            highest_price = float(
-                df["High"].max()
-            )
+        gain_pct = (
+            (highest_price - reject_price)
+            / max(reject_price, 0.0001)
+        ) * 100
 
-            gain_pct = (
-                (highest_price - reject_price)
-                / max(reject_price, 0.0001)
-            ) * 100
+        drawdown_pct = (
+            (lowest_price - reject_price)
+            / max(reject_price, 0.0001)
+        ) * 100
 
-            print(
-                f"📊 {symbol} | "
-                f"{item.get('reason')} | "
-                f"reject={reject_price:.2f} | "
-                f"high={highest_price:.2f} | "
-                f"gain={gain_pct:.2f}%",
-                flush=True
-            )
-
-        except Exception as e:
-
-            print(
-                f"⚠️ rejection analysis error: "
-                f"{symbol} | {e}",
-                flush=True
-            )
+        print(
+            f"📊 {symbol} | {reason} | "
+            f"reject={reject_price:.2f} | "
+            f"high={highest_price:.2f} | "
+            f"gain={gain_pct:.2f}% | "
+            f"low={lowest_price:.2f} | "
+            f"drawdown={drawdown_pct:.2f}%",
+            flush=True
+        )
             
 while True:
     try:
