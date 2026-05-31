@@ -3321,6 +3321,41 @@ send_telegram_msg(
     f"⏳ {TEST_DURATION_MINUTES} minutes",
     TELEGRAM_BOT3_CHAT_ID
 )
+def print_rejection_report():
+
+    if not rejection_log:
+        return
+
+    summary = {}
+
+    for item in rejection_log:
+
+        reason = item.get("reason", "Unknown")
+
+        summary[reason] = (
+            summary.get(reason, 0) + 1
+        )
+
+    print(
+        "\n📊 REJECTION REPORT",
+        flush=True
+    )
+
+    for reason, count in sorted(
+        summary.items(),
+        key=lambda x: x[1],
+        reverse=True
+    ):
+
+        print(
+            f"❌ {reason}: {count}",
+            flush=True
+        )
+
+    print(
+        f"📌 Total Rejections: {len(rejection_log)}\n",
+        flush=True
+    )
 while True:
     try:
         if not is_trading_time():
