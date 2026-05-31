@@ -3419,6 +3419,8 @@ while True:
 
             last_saved_active_trades = current_active_trades
 
+        print_rejection_report()
+
         time.sleep(SCAN_INTERVAL)
 
     except Exception as e:
