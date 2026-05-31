@@ -54,14 +54,20 @@ weekly_alert_log = []
 weekly_alert_results = []
 weekly_rejection_stats = {}
 
-def record_rejection(symbol, reason, price):
+def record_rejection(symbol, reason, price, snapshot=None):
     try:
-        rejection_log.append({
+        row = {
             "symbol": str(symbol).upper().strip(),
             "reason": str(reason),
             "price": float(price),
             "time": time.time()
-        })
+        }
+
+        if snapshot:
+            row.update(snapshot)
+
+        rejection_log.append(row)
+
     except Exception as e:
         print(f"⚠️ record_rejection error: {e}", flush=True)
 
@@ -2053,7 +2059,19 @@ def check_ready_entry(symbol, data, df=None):
             record_rejection(
                 symbol,
                 "Ignition Quality",
-                cp
+                cp,
+                {
+                    "instant_rvol": instant_rvol,
+                    "recent_move": recent_move,
+                    "move_3m": move_3m,
+                    "move_5m": move_5m,
+                    "rsi": rsi,
+                    "vwap": vwap,
+                    "ema9": ema9,
+                    "ema20": ema20,
+                    "close_position": close_position,
+                    "distribution_score": distribution_score
+                }
             )
 
             add_to_pending(
