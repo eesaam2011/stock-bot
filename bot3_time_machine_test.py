@@ -648,7 +648,13 @@ def self_scan_top_400():
             )
 
         try:
-            df = get_alpaca_bars(symbol, minutes=120)
+
+            bars_map = get_alpaca_bars_bulk(
+                [symbol],
+                minutes=120
+            )
+
+            df = bars_map.get(symbol, pd.DataFrame())
 
             if df.empty or len(df) < 30 or df["Volume"].mean() == 0:
                 continue
