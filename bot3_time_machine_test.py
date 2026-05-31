@@ -3369,6 +3369,17 @@ while True:
                     data,
                     bars_map.get(symbol)
                 )
+
+        for symbol in list(pending_watchlist.keys()):
+
+            if symbol in watchlist:
+                continue
+
+            check_ready_entry(
+                symbol,
+                pending_watchlist.get(symbol, {}),
+                bars_map.get(symbol)
+            )
                 time.sleep(0.05)
 
         monitor_active_trades()
