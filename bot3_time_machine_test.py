@@ -892,7 +892,7 @@ distribution_score={distribution_score}
 improved={improved}
 weak={weak}
 
-    pending_watchlist[symbol] = p
+pending_watchlist[symbol] = p
     
 def clean_old_pending_watchlist():
 
