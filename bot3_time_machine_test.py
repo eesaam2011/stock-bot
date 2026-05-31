@@ -1784,13 +1784,18 @@ def check_ready_entry(symbol, data, df=None):
             real_breakout
         )
 
-        if symbol == "ASTC":
-            print("🧪 ASTC reached update_pending_behavior call", flush=True)
-
         hidden_distribution = hidden_dist["hidden_distribution"]
         distribution_score = hidden_dist["distribution_score"]
         distribution_reasons = hidden_dist["distribution_reasons"]
+
         if symbol in pending_watchlist:
+
+            if symbol == "ASTC":
+                print(
+                    "🧪 ASTC reached update_pending_behavior call",
+                    flush=True
+                )
+
             update_pending_behavior(
                 symbol,
                 cp,
