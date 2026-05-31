@@ -882,8 +882,6 @@ times_checked={p.get('times_checked')}
 status={p.get('status')}
 
 price={price}
-instant_rvol={instant_rvol:.2f}
-recent_move={recent_move:.2f}
 
 volume_acceleration={volume_acceleration}
 strong_candle={strong_candle}
