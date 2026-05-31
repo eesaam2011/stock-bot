@@ -3346,6 +3346,18 @@ while True:
             if not data.get("alerted", False)
         ]
 
+        pending_symbols_to_check = [
+            symbol
+            for symbol in list(pending_watchlist.keys())
+            if symbol not in watchlist
+        ]
+
+        symbols_to_check = list(
+            dict.fromkeys(
+                symbols_to_check + pending_symbols_to_check
+            )
+        )
+
         bars_map = {}
 
         for i in range(0, len(symbols_to_check), BULK_BARS_CHUNK_SIZE):
