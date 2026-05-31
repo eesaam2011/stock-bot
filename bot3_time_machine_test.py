@@ -3731,7 +3731,69 @@ def print_weekly_alert_summary():
         f"drawdown={worst_drawdown:.2f}%",
         flush=True
     )
-    
+
+def print_top_missed_ignition_stocks(limit=10):
+    try:
+        rows = []
+
+        for item in weekly_rejection_log:
+            reason = str(item.get("reason", ""))
+
+            if reason != "Ignition Quality":
+                continue
+
+            gain = float(item.get("gain_pct", 0))
+            drawdown = float(item.get("drawdown_pct", 0))
+            symbol = item.get("symbol", "")
+            reject_price = float(item.get("price", 0))
+            high = float(item.get("highest_price", 0))
+            low = float(item.get("lowest_price", 0))
+
+            rows.append({
+                "symbol": symbol,
+                "gain": gain,
+                "drawdown": drawdown,
+                "reject_price": reject_price,
+                "high": high,
+                "low": low
+            })
+
+        rows = sorted(
+            rows,
+            key=lambda x: x["gain"],
+            reverse=True
+        )[:limit]
+
+        print(
+            "\n🔍 TOP MISSED IGNITION QUALITY STOCKS\n"
+            "🔍 أعلى الأسهم المرفوضة بسبب جودة الاشتعال\n",
+            flush=True
+        )
+
+        if not rows:
+            print(
+                "No Ignition Quality missed stocks found.",
+                flush=True
+            )
+            return
+
+        for r in rows:
+            print(
+                f"🔥 {r['symbol']} | "
+                f"gain={r['gain']:.2f}% | "
+                f"reject={r['reject_price']:.2f} | "
+                f"high={r['high']:.2f} | "
+                f"low={r['low']:.2f} | "
+                f"drawdown={r['drawdown']:.2f}%",
+                flush=True
+            )
+
+    except Exception as e:
+        print(
+            f"❌ Top Missed Ignition Error: {e}",
+            flush=True
+        )
+        
 def analyze_alerts():
 
     if not alert_log:
@@ -3984,6 +4046,7 @@ for current_test_date in TEST_DATES:
             weekly_alert_log.extend(alert_log)
 
             print_weekly_rejection_summary()
+            print_top_missed_ignition_stocks()
             print_weekly_alert_summary()
 
             print("✅ TIME MACHINE TEST FINISHED", flush=True)
