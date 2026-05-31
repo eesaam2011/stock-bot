@@ -56,7 +56,7 @@ PRICE_MAX = 25
 
 TIME_MACHINE_MODE = True
 
-TEST_DATE = "2026-05-29"  # الأربعاء - عدل التاريخ حسب اليوم المطلوب
+TEST_DATE = "2026-05-27"  # الأربعاء - عدل التاريخ حسب اليوم المطلوب
 TEST_START_HOUR_NY = 9
 TEST_START_MINUTE_NY = 30
 TEST_DURATION_MINUTES = 120
@@ -829,6 +829,7 @@ def add_to_pending(symbol, price, reason=""):
 
         if reason and reason not in str(p.get("reason", "")):
             p["reason"] = str(p.get("reason", "")) + " | " + reason
+            
 def update_pending_behavior(symbol, price, instant_rvol, recent_move, volume_acceleration, strong_candle, vwap_reclaim, ema_reclaim, distribution_score):
     if symbol not in pending_watchlist:
         return
@@ -873,6 +874,25 @@ def update_pending_behavior(symbol, price, instant_rvol, recent_move, volume_acc
         p["status"] = "ACTIVE_PENDING"
     else:
         p["status"] = "WEAK_PENDING"
+
+    if symbol == "ASTC":
+        print(
+            f"""
+🧪 ASTC PENDING DEBUG
+
+pending_score={pending_score}
+improve_count={improve_count}
+weak_count={weak_count}
+status={status}
+
+instant_rvol={instant_rvol:.2f}
+move_3m={move_3m:.2f}
+
+volume_acceleration={volume_acceleration}
+real_breakout={real_breakout}
+
+"""
+        )
 
     pending_watchlist[symbol] = p
     
