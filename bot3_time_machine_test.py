@@ -3356,6 +3356,58 @@ def print_rejection_report():
         f"📌 Total Rejections: {len(rejection_log)}\n",
         flush=True
     )
+
+def analyze_rejections():
+
+    if not rejection_log:
+        return
+
+    print(
+        "\n📈 REJECTION OUTCOME REPORT",
+        flush=True
+    )
+
+    for item in rejection_log:
+
+        symbol = item.get("symbol")
+        reject_price = item.get("price", 0)
+
+        try:
+
+            df = get_alpaca_bars(
+                symbol,
+                minutes=120
+            )
+
+            if df is None or len(df) == 0:
+                continue
+
+            highest_price = float(
+                df["High"].max()
+            )
+
+            gain_pct = (
+                (highest_price - reject_price)
+                / max(reject_price, 0.0001)
+            ) * 100
+
+            print(
+                f"📊 {symbol} | "
+                f"{item.get('reason')} | "
+                f"reject={reject_price:.2f} | "
+                f"high={highest_price:.2f} | "
+                f"gain={gain_pct:.2f}%",
+                flush=True
+            )
+
+        except Exception as e:
+
+            print(
+                f"⚠️ rejection analysis error: "
+                f"{symbol} | {e}",
+                flush=True
+            )
+            
 while True:
     try:
         if not is_trading_time():
@@ -3455,6 +3507,7 @@ while True:
             last_saved_active_trades = current_active_trades
 
         print_rejection_report()
+        analyze_rejections()
 
         time.sleep(SCAN_INTERVAL)
 
