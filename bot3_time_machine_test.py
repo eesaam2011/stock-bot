@@ -48,6 +48,7 @@ pending_watchlist = {}
 momentum_watchlist = {}
 last_saved_pending_candidates = ""
 rejection_log = []
+alert_log = []
 weekly_rejection_stats = {}
 
 def record_rejection(symbol, reason, price):
@@ -60,6 +61,19 @@ def record_rejection(symbol, reason, price):
         })
     except Exception as e:
         print(f"⚠️ record_rejection error: {e}", flush=True)
+
+def record_alert(symbol, price):
+    try:
+        alert_log.append({
+            "symbol": str(symbol).upper().strip(),
+            "price": float(price),
+            "time": time.time()
+        })
+    except Exception as e:
+        print(
+            f"⚠️ record_alert error: {e}",
+            flush=True
+        )
         
 PRICE_MIN = 0.4
 PRICE_MAX = 25
@@ -2683,6 +2697,12 @@ def check_ready_entry(symbol, data, df=None):
             msg,
             TELEGRAM_BOT3_CHAT_ID
         )
+
+        record_alert(
+            symbol,
+            entry
+        )
+        
         momentum_watchlist[symbol] = {
             "symbol": symbol,
             "entry": entry,
