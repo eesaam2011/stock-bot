@@ -3870,6 +3870,11 @@ for current_test_date in TEST_DATES:
 
                 last_saved_active_trades = current_active_trades
 
+            print(
+                f"\n📅 REPORT DATE: {TEST_DATE}\n",
+                flush=True
+            )
+
             print_rejection_report()
             analyze_rejections()
             print_weekly_rejection_summary()
@@ -3882,3 +3887,16 @@ for current_test_date in TEST_DATES:
         except Exception as e:
             print("Main loop error:", e, flush=True)
             time.sleep(10)
+
+print(
+    f"\n🏁 ALL {len(TEST_DATES)} TEST DAYS COMPLETED SUCCESSFULLY\n",
+    flush=True
+)
+
+print(
+    "😴 Time Machine finished all dates. Sleeping for 1 hour...",
+    flush=True
+)
+
+while True:
+    time.sleep(3600)
