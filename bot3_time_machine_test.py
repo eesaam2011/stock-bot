@@ -68,7 +68,7 @@ PRICE_MAX = 25
 
 TIME_MACHINE_MODE = True
 
-TEST_DATE = "2026-05-27"  # الأربعاء - عدل التاريخ حسب اليوم المطلوب
+TEST_DATE = "2026-05-28"  # الأربعاء - عدل التاريخ حسب اليوم المطلوب
 TEST_START_HOUR_NY = 9
 TEST_START_MINUTE_NY = 30
 TEST_DURATION_MINUTES = 120
