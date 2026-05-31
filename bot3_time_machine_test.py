@@ -633,21 +633,21 @@ def self_scan_top_400():
 
     bars_map = {}
 
-for i in range(0, len(symbols), BULK_BARS_CHUNK_SIZE):
-    chunk = symbols[i:i + BULK_BARS_CHUNK_SIZE]
+    for i in range(0, len(symbols), BULK_BARS_CHUNK_SIZE):
+        chunk = symbols[i:i + BULK_BARS_CHUNK_SIZE]
 
-    bars_map.update(
-        get_alpaca_bars_bulk(
-            chunk,
-            minutes=120
+        bars_map.update(
+            get_alpaca_bars_bulk(
+                chunk,
+                minutes=120
+            )
         )
+
+    print(
+        f"📦 Time Machine self-scan bulk bars loaded: {len(bars_map)}/{len(symbols)}",
+        flush=True
     )
-
-print(
-    f"📦 Time Machine self-scan bulk bars loaded: {len(bars_map)}/{len(symbols)}",
-    flush=True
-)
-
+    
     symbols = list(dict.fromkeys(symbols))
 
     symbols = symbols[:SELF_SCAN_COUNT]
