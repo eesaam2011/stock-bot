@@ -875,11 +875,6 @@ def update_pending_behavior(symbol, price, instant_rvol, recent_move, volume_acc
     else:
         p["status"] = "WEAK_PENDING"
 
-    if symbol == "ASTC":
-        print(
-            f"""
-🧪 ASTC PENDING DEBUG
-
 pending_score={p.get('pending_score')}
 improve_count={p.get('improve_count')}
 weak_count={p.get('weak_count')}
@@ -1789,13 +1784,7 @@ def check_ready_entry(symbol, data, df=None):
         distribution_reasons = hidden_dist["distribution_reasons"]
 
         if symbol in pending_watchlist:
-
-            if symbol == "ASTC":
-                print(
-                    "🧪 ASTC reached update_pending_behavior call",
-                    flush=True
-                )
-
+        
             update_pending_behavior(
                 symbol,
                 cp,
