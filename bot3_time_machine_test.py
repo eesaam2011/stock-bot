@@ -874,25 +874,6 @@ def update_pending_behavior(symbol, price, instant_rvol, recent_move, volume_acc
         p["status"] = "ACTIVE_PENDING"
     else:
         p["status"] = "WEAK_PENDING"
-
-pending_score={p.get('pending_score')}
-improve_count={p.get('improve_count')}
-weak_count={p.get('weak_count')}
-times_checked={p.get('times_checked')}
-status={p.get('status')}
-
-price={price}
-
-volume_acceleration={volume_acceleration}
-strong_candle={strong_candle}
-vwap_reclaim={vwap_reclaim}
-ema_reclaim={ema_reclaim}
-distribution_score={distribution_score}
-
-improved={improved}
-weak={weak}
-
-pending_watchlist[symbol] = p
     
 def clean_old_pending_watchlist():
 
