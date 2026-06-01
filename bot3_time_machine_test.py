@@ -1966,7 +1966,7 @@ def check_ready_entry(symbol, data, df=None):
 
         if (
             not fresh_acceleration
-            and recent_move >= 2.50
+            and recent_move >= 3.50
             and distribution_score >= 20
             and not strong_explosion_candidate
             and not runner_escape_mode
