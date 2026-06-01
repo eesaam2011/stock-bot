@@ -2053,7 +2053,7 @@ def check_ready_entry(symbol, data, df=None):
             volume_acceleration
             and close_position >= 0.78
             and upper_wick_pct <= 0.25
-            and distribution_score < 18
+            and distribution_score < 22
             and (
                 scenario_explosion_setup
                 or runner_escape_mode
