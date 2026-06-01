@@ -1692,7 +1692,7 @@ def check_ready_entry(symbol, data, df=None):
         scenario_explosion_setup = False
         runner_escape_mode = (
             instant_rvol >= 3.5
-            and recent_move >= 2.0
+            and recent_move >= 1.5
             and move_3m >= 0.60
             and move_5m >= 1.20
             and cp > vwap
