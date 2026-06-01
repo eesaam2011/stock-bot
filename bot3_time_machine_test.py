@@ -71,13 +71,24 @@ def record_rejection(symbol, reason, price, snapshot=None):
     except Exception as e:
         print(f"⚠️ record_rejection error: {e}", flush=True)
 
-def record_alert(symbol, price):
+def record_alert(
+    symbol,
+    price,
+    snapshot=None
+):
     try:
-        alert_log.append({
+
+        row = {
             "symbol": str(symbol).upper().strip(),
             "price": float(price),
             "time": time.time()
-        })
+        }
+
+        if snapshot:
+            row.update(snapshot)
+
+        alert_log.append(row)
+
     except Exception as e:
         print(
             f"⚠️ record_alert error: {e}",
