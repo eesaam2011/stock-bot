@@ -2050,6 +2050,17 @@ def check_ready_entry(symbol, data, df=None):
             and strong_candle
         )
 
+        early_ignition_path = (
+            instant_rvol >= 2.5
+            and recent_move >= 0.80
+            and move_3m >= 0.60
+            and move_5m >= 0.80
+            and cp > vwap
+            and cp > ema9
+            and close_position >= 0.60
+            and distribution_score < 25
+        )
+
         ignition_quality = (
             volume_acceleration
             and close_position >= 0.78
@@ -2058,6 +2069,7 @@ def check_ready_entry(symbol, data, df=None):
             and (
                 scenario_explosion_setup
                 or runner_escape_mode
+                or early_ignition_path
                 or (
                     real_breakout
                     and move_3m >= 0.45
@@ -2065,7 +2077,6 @@ def check_ready_entry(symbol, data, df=None):
                     and move_3m >= move_5m * 0.60
                 )
             )
-        )
 
         if not ignition_quality:
 
