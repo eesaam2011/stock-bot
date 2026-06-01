@@ -2740,7 +2740,34 @@ def check_ready_entry(symbol, data, df=None):
 
         record_alert(
             symbol,
-            entry
+            entry,
+            {
+                "signal_type": setup_type if "setup_type" in locals() else "UNKNOWN",
+
+                "instant_rvol": instant_rvol,
+                "recent_move": recent_move,
+                "move_3m": move_3m,
+                "move_5m": move_5m,
+
+                "rsi": rsi,
+
+                "vwap": vwap,
+                "ema9": ema9,
+                "ema20": ema20,
+
+                "close_position": close_position,
+                "distribution_score": distribution_score,
+
+                "entry_stage": entry_stage if "entry_stage" in locals() else "",
+
+                "real_breakout": real_breakout if "real_breakout" in locals() else False,
+
+                "volume_acceleration": (
+                    volume_acceleration
+                    if "volume_acceleration" in locals()
+                    else False
+                )
+            }
         )
         
         momentum_watchlist[symbol] = {
