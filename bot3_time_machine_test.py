@@ -2077,6 +2077,7 @@ def check_ready_entry(symbol, data, df=None):
                     and move_3m >= move_5m * 0.60
                 )
             )
+        ) 
 
         if not ignition_quality:
 
