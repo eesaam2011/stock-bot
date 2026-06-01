@@ -3882,6 +3882,11 @@ def print_weekly_alert_summary():
         )
 
         print(
+            f"fail_reasons={item.get('fail_reasons', [])}",
+            flush=True
+        )
+
+        print(
             f"T1={item.get('hit_t1', False)} | "
             f"T2={item.get('hit_t2', False)} | "
             f"stop={item.get('hit_stop', False)} | "
