@@ -4046,6 +4046,11 @@ def print_top_missed_ignition_stocks(limit=10):
                 flush=True
             )
 
+            print(
+            f"fail_reasons={item.get('fail_reasons', [])}",
+            flush=True
+        )
+
     except Exception as e:
         print(
             f"❌ Top Missed Ignition Error: {e}",
