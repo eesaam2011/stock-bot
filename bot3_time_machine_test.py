@@ -2096,8 +2096,25 @@ def check_ready_entry(symbol, data, df=None):
 
         if not ignition_path_ok:
             ignition_fail_reasons.append("ignition_path")
-                
 
+        if not scenario_explosion_setup:
+            ignition_fail_reasons.append("scenario_explosion_setup")
+
+        if not runner_escape_mode:
+            ignition_fail_reasons.append("runner_escape_mode")
+
+        if not real_breakout:
+            ignition_fail_reasons.append("real_breakout")
+
+        if move_3m < 0.45:
+            ignition_fail_reasons.append("move_3m")
+
+        if move_5m < 0.75:
+            ignition_fail_reasons.append("move_5m")
+
+        if move_3m < move_5m * 0.60:
+            ignition_fail_reasons.append("move_ratio")
+            
         record_rejection(
             symbol,
             "Ignition Quality",
