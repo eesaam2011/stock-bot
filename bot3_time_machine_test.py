@@ -1684,8 +1684,8 @@ def check_ready_entry(symbol, data, df=None):
         strong_explosion_candidate = (
             instant_rvol >= 5.0
             and (
-                move_3m >= 2.0
-                or move_5m >= 3.5
+                move_3m >= 1.2
+                or move_5m >= 2.5
             )
             and recent_move >= 1.2
         )
