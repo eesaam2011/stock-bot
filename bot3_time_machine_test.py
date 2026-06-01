@@ -2083,6 +2083,21 @@ def check_ready_entry(symbol, data, df=None):
         if distribution_score >= 22:
             ignition_fail_reasons.append("distribution_score")
 
+        ignition_path_ok = (
+                scenario_explosion_setup
+                or runner_escape_mode
+                or (
+                    real_breakout
+                    and move_3m >= 0.45
+                    and move_5m >= 0.75
+                    and move_3m >= move_5m * 0.60
+                )
+            )
+
+            if not ignition_path_ok:
+                ignition_fail_reasons.append("ignition_path")
+                
+
         record_rejection(
             symbol,
             "Ignition Quality",
@@ -2097,6 +2112,11 @@ def check_ready_entry(symbol, data, df=None):
                 "ema9": ema9,
                 "ema20": ema20,
                 "close_position": close_position,
+                "upper_wick_pct": upper_wick_pct,
+                "volume_acceleration": volume_acceleration,
+                "real_breakout": real_breakout,
+                "scenario_explosion_setup": scenario_explosion_setup,
+                "runner_escape_mode": runner_escape_mode,
                 "distribution_score": distribution_score,
                 "fail_reasons": ignition_fail_reasons
              }
