@@ -2099,21 +2099,21 @@ def check_ready_entry(symbol, data, df=None):
                 "close_position": close_position,
                 "distribution_score": distribution_score,
                 "fail_reasons": ignition_fail_reasons
-            }
+             }
         )
 
-            add_to_pending(
-                symbol,
-                cp,
-                "فرصة جيدة لكن جودة الدخول الآن غير كافية"
-            )
+        add_to_pending(
+            symbol,
+            cp,
+            "فرصة جيدة لكن جودة الدخول الآن غير كافية"
+        )
 
-            print(
-                f"🟡 Good setup but weak entry quality: {symbol}",
-                flush=True
-            )
+        print(
+            f"🟡 Good setup but weak entry quality: {symbol}",
+            flush=True
+        )
 
-            return None
+        return None
 
         follow_through_ok = breakout_follow_through_confirmed(
             df=df,
