@@ -2400,19 +2400,39 @@ def check_ready_entry(symbol, data, df=None):
         # =========================
 
         if (
-            not scenario_explosion_setup
-            and not runner_escape_mode
-            and not strong_explosion_candidate
-            and move_5m > 0
-            and move_3m < move_5m * 0.50
-            and distribution_score >= 20
-            and recent_move >= 1.80
+    not scenario_explosion_setup
+    and not runner_escape_mode
+    and not strong_explosion_candidate
+    and move_5m > 0
+    and move_3m < move_5m * 0.50
+    and distribution_score >= 20
+    and recent_move >= 1.80
         ):
-            print(
-                f"❌ Not enough current acceleration: {symbol}",
-                flush=True
-            )
-            return None
+
+    record_rejection(
+        symbol,
+        "Not enough current acceleration",
+        cp,
+        {
+            "instant_rvol": instant_rvol,
+            "recent_move": recent_move,
+            "move_3m": move_3m,
+            "move_5m": move_5m,
+            "rsi": rsi,
+            "vwap": vwap,
+            "ema9": ema9,
+            "ema20": ema20,
+            "close_position": close_position,
+            "distribution_score": distribution_score
+        }
+    )
+
+    print(
+        f"❌ Not enough current acceleration: {symbol}",
+        flush=True
+    )
+
+    return None
 
         # =================================
         # رفض الأسهم البطيئة الثقيلة
