@@ -2051,7 +2051,7 @@ def check_ready_entry(symbol, data, df=None):
 
         ignition_quality = (
             volume_acceleration
-            and close_position >= 0.72
+            and close_position >= 0.78
             and upper_wick_pct <= 0.25
             and distribution_score < 22
             and (
