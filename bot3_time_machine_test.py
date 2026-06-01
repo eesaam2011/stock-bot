@@ -1549,7 +1549,7 @@ def ignition_confirmation_ok(
 
         volume_expanding_now = (
             volume_acceleration
-            and last_3_volume >= prev_7_volume * 1.25
+            and last_3_volume >= prev_7_volume * 1.15
         )
 
         candle_confirms_now = (
