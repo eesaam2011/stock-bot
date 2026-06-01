@@ -1889,7 +1889,7 @@ def check_ready_entry(symbol, data, df=None):
             )
 
         elif (
-            recent_move > 3.0
+            recent_move > 4.0
             or rsi >= 73
             or touches >= 3
         ):
