@@ -4084,10 +4084,16 @@ def print_top_missed_ignition_stocks(limit=10):
             )
 
             print(
-            f"fail_reasons={item.get('fail_reasons', [])}",
-            flush=True
-        )
-
+                f"fail_reasons={r.get('fail_reasons', [])}",
+                flush=True
+            )
+            print(
+                f"scenario={r.get('scenario_explosion_setup', False)} | "
+                f"runner={r.get('runner_escape_mode', False)} | "
+                f"breakout={r.get('real_breakout', False)}",
+                flush=True
+            )
+            
     except Exception as e:
         print(
             f"❌ Top Missed Ignition Error: {e}",
