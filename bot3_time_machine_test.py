@@ -2069,23 +2069,38 @@ def check_ready_entry(symbol, data, df=None):
 
         if not ignition_quality:
 
-            record_rejection(
-                symbol,
-                "Ignition Quality",
-                cp,
-                {
-                    "instant_rvol": instant_rvol,
-                    "recent_move": recent_move,
-                    "move_3m": move_3m,
-                    "move_5m": move_5m,
-                    "rsi": rsi,
-                    "vwap": vwap,
-                    "ema9": ema9,
-                    "ema20": ema20,
-                    "close_position": close_position,
-                    "distribution_score": distribution_score
-                }
-            )
+            ignition_fail_reasons = []
+
+        if not volume_acceleration:
+            ignition_fail_reasons.append("volume_acceleration")
+
+        if close_position < 0.78:
+            ignition_fail_reasons.append("close_position")
+
+        if upper_wick_pct > 0.35:
+            ignition_fail_reasons.append("upper_wick_pct")
+
+        if distribution_score >= 22:
+            ignition_fail_reasons.append("distribution_score")
+
+        record_rejection(
+            symbol,
+            "Ignition Quality",
+            cp,
+            {
+                "instant_rvol": instant_rvol,
+                "recent_move": recent_move,
+                "move_3m": move_3m,
+                "move_5m": move_5m,
+                "rsi": rsi,
+                "vwap": vwap,
+                "ema9": ema9,
+                "ema20": ema20,
+                "close_position": close_position,
+                "distribution_score": distribution_score,
+                "fail_reasons": ignition_fail_reasons
+            }
+        )
 
             add_to_pending(
                 symbol,
