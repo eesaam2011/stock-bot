@@ -1692,7 +1692,7 @@ def check_ready_entry(symbol, data, df=None):
         scenario_explosion_setup = False
         runner_escape_mode = (
             instant_rvol >= 3.5
-            and recent_move >= 1.5
+            and recent_move >= 2
             and move_3m >= 0.60
             and move_5m >= 1.20
             and cp > vwap
@@ -2053,7 +2053,7 @@ def check_ready_entry(symbol, data, df=None):
         ignition_quality = (
             volume_acceleration
             and close_position >= 0.78
-            and upper_wick_pct <= 0.25
+            and upper_wick_pct <= 0.23
             and distribution_score < 22
             and (
                 scenario_explosion_setup
