@@ -3718,6 +3718,9 @@ def print_weekly_alert_summary():
     t1_hits = 0
     t2_hits = 0
     stop_hits = 0
+    direct_stop_hits = 0
+    stop_after_t1 = 0
+    stop_after_t2 = 0
     over_10pct = 0
     over_20pct = 0
 
@@ -3737,14 +3740,27 @@ def print_weekly_alert_summary():
         total_gain += gain
         total_drawdown += drawdown
 
-        if gain >= 2:
+        hit_t1 = item.get("hit_t1", gain >= 2)
+        hit_t2 = item.get("hit_t2", gain >= 4)
+        hit_stop = item.get("hit_stop", drawdown <= -2)
+
+        if hit_t1:
             t1_hits += 1
 
-        if gain >= 4:
+        if hit_t2:
             t2_hits += 1
 
-        if drawdown <= -2:
+        if hit_stop:
             stop_hits += 1
+
+        if item.get("direct_stop_hit", hit_stop and not hit_t1):
+            direct_stop_hits += 1
+
+        if item.get("stop_after_t1", hit_stop and hit_t1 and not hit_t2):
+            stop_after_t1 += 1
+
+        if item.get("stop_after_t2", hit_stop and hit_t2):
+            stop_after_t2 += 1
 
         if gain >= 10:
             over_10pct += 1
@@ -3772,6 +3788,9 @@ def print_weekly_alert_summary():
         f"t1_hits={t1_hits} | "
         f"t2_hits={t2_hits} | "
         f"stop_hits={stop_hits} | "
+        f"direct_stop_hits={direct_stop_hits} | "
+        f"stop_after_t1={stop_after_t1} | "
+        f"stop_after_t2={stop_after_t2} | "
         f"over_10pct={over_10pct} | "
         f"over_20pct={over_20pct}",
         flush=True
@@ -3926,9 +3945,14 @@ def analyze_alerts():
     total_alerts = 0
     total_gain = 0.0
     total_drawdown = 0.0
+
     t1_hits = 0
     t2_hits = 0
     stop_hits = 0
+
+    direct_stop_hits = 0
+    stop_after_t1 = 0
+    stop_after_t2 = 0
     over_10pct = 0
     over_20pct = 0
     max_gain_seen = -999
@@ -3966,14 +3990,44 @@ def analyze_alerts():
         total_gain += gain_pct
         total_drawdown += drawdown_pct
 
-        if gain_pct >= 2:
+        hit_t1 = gain_pct >= 2
+        hit_t2 = gain_pct >= 4
+        hit_stop = drawdown_pct <= -2
+
+        if hit_t1:
             t1_hits += 1
 
-        if gain_pct >= 4:
+        if hit_t2:
             t2_hits += 1
 
-        if drawdown_pct <= -2:
+        if hit_stop:
             stop_hits += 1
+
+        if hit_stop and not hit_t1:
+            direct_stop_hits += 1
+
+        elif hit_stop and hit_t1 and not hit_t2:
+            stop_after_t1 += 1
+
+        elif hit_stop and hit_t2:
+            stop_after_t2 += 1
+
+        item["hit_t1"] = hit_t1
+        item["hit_t2"] = hit_t2
+        item["hit_stop"] = hit_stop
+        item["direct_stop_hit"] = (
+            hit_stop and not hit_t1
+        )
+        item["stop_after_t1"] = (
+            hit_stop and hit_t1 and not hit_t2
+        )
+        item["stop_after_t2"] = (
+            hit_stop and hit_t2
+        )
+
+        total_alerts += 1
+        total_gain += gain_pct
+        total_drawdown += drawdown_pct
 
         if gain_pct >= 10:
             over_10pct += 1
@@ -4007,6 +4061,9 @@ def analyze_alerts():
         f"t1_hits={t1_hits} | "
         f"t2_hits={t2_hits} | "
         f"stop_hits={stop_hits} | "
+        f"direct_stop_hits={direct_stop_hits} | "
+        f"stop_after_t1={stop_after_t1} | "
+        f"stop_after_t2={stop_after_t2} | "
         f"over_10pct={over_10pct} | "
         f"over_20pct={over_20pct}",
         flush=True
