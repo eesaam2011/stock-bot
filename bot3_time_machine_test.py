@@ -1922,7 +1922,7 @@ def check_ready_entry(symbol, data, df=None):
             return None
             
         if (
-            distribution_score >= 30
+            distribution_score >= 25
             and not strong_candle
             and not strong_explosion_candidate
             and not runner_escape_mode
