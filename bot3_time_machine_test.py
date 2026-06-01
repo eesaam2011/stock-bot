@@ -3807,6 +3807,122 @@ def print_weekly_alert_summary():
         f"drawdown={worst_drawdown:.2f}%",
         flush=True
     )
+    top_alerts = sorted(
+        weekly_alert_log,
+        key=lambda x: float(x.get("gain_pct", 0)),
+        reverse=True
+    )[:5]
+
+    print(
+        "\n🏆 TOP ALERTS\n"
+        "🏆 أفضل التنبيهات",
+        flush=True
+    )
+
+    for item in top_alerts:
+
+        print(
+            f"\n🔥 {item.get('symbol', '')}",
+            flush=True
+        )
+
+        print(
+            f"gain={float(item.get('gain_pct', 0)):.2f}% | "
+            f"drawdown={float(item.get('drawdown_pct', 0)):.2f}% | "
+            f"entry={float(item.get('price', 0)):.2f}",
+            flush=True
+        )
+
+        print(
+            f"signal_type={item.get('signal_type', 'UNKNOWN')} | "
+            f"entry_stage={item.get('entry_stage', '')}",
+            flush=True
+        )
+
+        print(
+            f"RVOL={float(item.get('instant_rvol', 0)):.2f} | "
+            f"RSI={float(item.get('rsi', 0)):.2f}",
+            flush=True
+        )
+
+        print(
+            f"move_3m={float(item.get('move_3m', 0)):.2f}% | "
+            f"move_5m={float(item.get('move_5m', 0)):.2f}% | "
+            f"recent_move={float(item.get('recent_move', 0)):.2f}%",
+            flush=True
+        )
+
+        print(
+            f"VWAP={float(item.get('vwap', 0)):.2f} | "
+            f"EMA9={float(item.get('ema9', 0)):.2f} | "
+            f"EMA20={float(item.get('ema20', 0)):.2f}",
+            flush=True
+        )
+
+        print(
+            f"close_position={float(item.get('close_position', 0)):.2f} | "
+            f"distribution={float(item.get('distribution_score', 0)):.2f}",
+            flush=True
+        )
+
+        print(
+            f"T1={item.get('hit_t1', False)} | "
+            f"T2={item.get('hit_t2', False)} | "
+            f"stop={item.get('hit_stop', False)} | "
+            f"direct_stop={item.get('direct_stop_hit', False)} | "
+            f"stop_after_t1={item.get('stop_after_t1', False)} | "
+            f"stop_after_t2={item.get('stop_after_t2', False)}",
+            flush=True
+        )
+
+    worst_alerts = sorted(
+        weekly_alert_log,
+        key=lambda x: float(x.get("drawdown_pct", 0))
+    )[:5]
+
+    print(
+        "\n💀 WORST ALERTS\n"
+        "💀 أسوأ التنبيهات",
+        flush=True
+    )
+
+    for item in worst_alerts:
+
+        print(
+            f"\n⚠️ {item.get('symbol', '')}",
+            flush=True
+        )
+
+        print(
+            f"gain={float(item.get('gain_pct', 0)):.2f}% | "
+            f"drawdown={float(item.get('drawdown_pct', 0)):.2f}% | "
+            f"entry={float(item.get('price', 0)):.2f}",
+            flush=True
+        )
+
+        print(
+            f"signal_type={item.get('signal_type', 'UNKNOWN')} | "
+            f"entry_stage={item.get('entry_stage', '')}",
+            flush=True
+        )
+
+        print(
+            f"RVOL={float(item.get('instant_rvol', 0)):.2f} | "
+            f"RSI={float(item.get('rsi', 0)):.2f} | "
+            f"move_3m={float(item.get('move_3m', 0)):.2f}% | "
+            f"move_5m={float(item.get('move_5m', 0)):.2f}%",
+            flush=True
+        )
+
+        print(
+            f"T1={item.get('hit_t1', False)} | "
+            f"T2={item.get('hit_t2', False)} | "
+            f"stop={item.get('hit_stop', False)} | "
+            f"direct_stop={item.get('direct_stop_hit', False)} | "
+            f"stop_after_t1={item.get('stop_after_t1', False)} | "
+            f"stop_after_t2={item.get('stop_after_t2', False)}",
+            flush=True
+        )
 
 def print_top_missed_ignition_stocks(limit=10):
     try:
