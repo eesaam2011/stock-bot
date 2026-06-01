@@ -1967,7 +1967,7 @@ def check_ready_entry(symbol, data, df=None):
         if (
             not fresh_acceleration
             and recent_move >= 2.50
-            and distribution_score >= 20
+            and distribution_score >= 25
             and not strong_explosion_candidate
             and not runner_escape_mode
         ):
@@ -1988,10 +1988,10 @@ def check_ready_entry(symbol, data, df=None):
             return None
             
         if (
-            recent_move >= 4.0
-            and move_3m < -0.15
-            and move_5m < recent_move * 0.25
-            and distribution_score >= 25
+            recent_move >= 3.0
+            and move_3m < 0
+            and move_5m < recent_move * 0.35
+            and distribution_score >= 20
         ):
             print(
                 f"❌ Momentum fading: {symbol}",
