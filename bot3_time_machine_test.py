@@ -1693,7 +1693,7 @@ def check_ready_entry(symbol, data, df=None):
         runner_escape_mode = (
             instant_rvol >= 3.5
             and recent_move >= 2.0
-            and move_3m >= 0.80
+            and move_3m >= 0.60
             and move_5m >= 1.20
             and cp > vwap
             and cp > ema9
