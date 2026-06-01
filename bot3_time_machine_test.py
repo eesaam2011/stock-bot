@@ -2092,10 +2092,10 @@ def check_ready_entry(symbol, data, df=None):
                     and move_5m >= 0.75
                     and move_3m >= move_5m * 0.60
                 )
-            )
+        )
 
-            if not ignition_path_ok:
-                ignition_fail_reasons.append("ignition_path")
+        if not ignition_path_ok:
+            ignition_fail_reasons.append("ignition_path")
                 
 
         record_rejection(
