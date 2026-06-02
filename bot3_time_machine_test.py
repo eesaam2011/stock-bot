@@ -1835,30 +1835,6 @@ def check_ready_entry(symbol, data, df=None):
             )
             pending = pending_watchlist.get(symbol, {})
 
-            pending_reason = str(
-                pending.get("reason", pending.get("note", ""))
-            )
-
-            ignition_recheck_ready = (
-                "IGNITION_RECHECK" in pending_reason
-                and instant_rvol >= 2.5
-                and move_3m >= 0.60
-                and move_5m >= 0.80
-                and cp > vwap
-                and cp > ema9
-                and distribution_score < 25
-                and not pending.get("early_alert_sent", False)
-            )
-
-            if ignition_recheck_ready:
-                early_momentum_mode = True
-                pending["early_alert_sent"] = True
-                pending_watchlist[symbol] = pending
-                print(
-                    f"🔥 IGNITION_RECHECK promoted: {symbol}",
-                    flush=True
-                )
-
             if (
                 pending_score >= 75
                 and int(pending.get("improve_count", 0)) >= 2
@@ -2093,88 +2069,18 @@ def check_ready_entry(symbol, data, df=None):
 
         if not ignition_quality:
 
-            ignition_fail_reasons = []
+            add_to_pending(
+                symbol,
+                cp,
+                "فرصة جيدة لكن جودة الدخول الآن غير كافية"
+            )
 
-        if not volume_acceleration:
-            ignition_fail_reasons.append("volume_acceleration")
+            print(
+                f"🟡 Good setup but weak entry quality: {symbol}",
+                flush=True
+            )
 
-        if close_position < 0.78:
-            ignition_fail_reasons.append("close_position")
-
-        if upper_wick_pct > 0.35:
-            ignition_fail_reasons.append("upper_wick_pct")
-
-        if distribution_score >= 22:
-            ignition_fail_reasons.append("distribution_score")
-
-        ignition_path_ok = (
-                scenario_explosion_setup
-                or runner_escape_mode
-                or (
-                    real_breakout
-                    and move_3m >= 0.45
-                    and move_5m >= 0.75
-                    and move_3m >= move_5m * 0.60
-                )
-        )
-
-        if not ignition_path_ok:
-            ignition_fail_reasons.append("ignition_path")
-
-        if not scenario_explosion_setup:
-            ignition_fail_reasons.append("scenario_explosion_setup")
-
-        if not runner_escape_mode:
-            ignition_fail_reasons.append("runner_escape_mode")
-
-        if not real_breakout:
-            ignition_fail_reasons.append("real_breakout")
-
-        if move_3m < 0.45:
-            ignition_fail_reasons.append("move_3m")
-
-        if move_5m < 0.75:
-            ignition_fail_reasons.append("move_5m")
-
-        if move_3m < move_5m * 0.60:
-            ignition_fail_reasons.append("move_ratio")
-            
-        add_to_pending(
-            symbol,
-            cp,
-            "فرصة جيدة لكن جودة الدخول الآن غير كافية"
-        )
-                "instant_rvol": instant_rvol,
-                "recent_move": recent_move,
-                "move_3m": move_3m,
-                "move_5m": move_5m,
-                "rsi": rsi,
-                "vwap": vwap,
-                "ema9": ema9,
-                "ema20": ema20,
-                "close_position": close_position,
-                "upper_wick_pct": upper_wick_pct,
-                "volume_acceleration": volume_acceleration,
-                "real_breakout": real_breakout,
-                "scenario_explosion_setup": scenario_explosion_setup,
-                "runner_escape_mode": runner_escape_mode,
-                "distribution_score": distribution_score,
-                "fail_reasons": ignition_fail_reasons
-             }
-        )
-
-        add_to_pending(
-            symbol,
-            cp,
-            "فرصة جيدة لكن جودة الدخول الآن غير كافية"
-        )
-
-        print(
-            f"🟡 Good setup but weak entry quality: {symbol}",
-            flush=True
-        )
-
-        return None
+            return None
 
         follow_through_ok = breakout_follow_through_confirmed(
             df=df,
