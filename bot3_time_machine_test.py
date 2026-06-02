@@ -2489,7 +2489,33 @@ def check_ready_entry(symbol, data, df=None):
             return None
 
         if not vwap_reclaim and not ema_reclaim and not real_breakout:
-            print(f"❌ Weak entry rejected: no VWAP/EMA reclaim and no real breakout: {symbol}", flush=True)
+
+            record_rejection(
+                symbol,
+                "VWAP_EMA_BREAKOUT_GATE",
+                cp,
+                {
+                    "instant_rvol": instant_rvol,
+                    "recent_move": recent_move,
+                    "move_3m": move_3m,
+                    "move_5m": move_5m,
+                    "rsi": rsi,
+                    "vwap": vwap,
+                    "ema9": ema9,
+                    "ema20": ema20,
+                    "close_position": close_position,
+                    "distribution_score": distribution_score,
+                    "vwap_reclaim": vwap_reclaim,
+                    "ema_reclaim": ema_reclaim,
+                    "real_breakout": real_breakout
+                }
+            )
+
+            print(
+                f"❌ Weak entry rejected: no VWAP/EMA reclaim and no real breakout: {symbol}",
+                flush=True
+            )
+
             return None
 
         if (
