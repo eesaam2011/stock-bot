@@ -104,11 +104,7 @@ PRICE_MAX = 25
 TIME_MACHINE_MODE = True
 
 TEST_DATES = [
-    "2026-05-11",
-    "2026-05-12",
-    "2026-05-13",
-    "2026-05-14",
-    "2026-05-15",
+    "2026-06-01"
 ]
 
 TEST_DATE = TEST_DATES[0]
