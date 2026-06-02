@@ -2206,6 +2206,7 @@ def check_ready_entry(symbol, data, df=None):
             volume_acceleration=volume_acceleration,
             close_position=close_position,
             upper_wick_pct=upper_wick_pct,
+            distribution_score=distribution_score,
         )
         
         if not continuation_ok:
