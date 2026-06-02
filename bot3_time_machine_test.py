@@ -2718,6 +2718,11 @@ def check_ready_entry(symbol, data, df=None):
             f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
         )
 
+        print(
+            f"✅ ALERT BLOCK REACHED: {symbol} | entry={entry:.2f} | stage={entry_stage}",
+            flush=True
+        )
+
         send_telegram_msg(
             msg,
             TELEGRAM_BOT3_CHAT_ID
