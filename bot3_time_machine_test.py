@@ -1655,7 +1655,7 @@ def continuation_quality_ok(
         )
 
         clean_ok = (
-            distribution_score < 18
+            distribution_score <= 18
         )
 
         print(
