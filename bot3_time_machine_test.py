@@ -1658,6 +1658,17 @@ def continuation_quality_ok(
             distribution_score < 18
         )
 
+        print(
+            f"CONTINUATION | "
+            f"strength={continuation_strength} | "
+            f"rvol={instant_rvol:.2f} | "
+            f"vol_acc={volume_acceleration} | "
+            f"close_pos={close_position:.2f} | "
+            f"wick={upper_wick_pct:.2f} | "
+            f"dist={distribution_score:.2f}",
+            flush=True
+        )
+
         return (
             continuation_strength
             and structure_ok
