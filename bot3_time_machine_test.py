@@ -1908,12 +1908,7 @@ def check_ready_entry(symbol, data, df=None):
             and not strong_explosion_candidate
             and not runner_escape_mode
         ):
-            record_rejection(
-                symbol,
-                "Late Entry Risk",
-                cp
-            )
-
+            
             print(
                 f"❌ Rejected late entry risk: {symbol}",
                 flush=True
@@ -2327,31 +2322,6 @@ def check_ready_entry(symbol, data, df=None):
             and recent_move >= 1.80
         ):
 
-            record_rejection(
-                symbol,
-                "Not enough current acceleration",
-                cp,
-                {
-                    "instant_rvol": instant_rvol,
-                    "recent_move": recent_move,
-                    "move_3m": move_3m,
-                    "move_5m": move_5m,
-                    "rsi": rsi,
-                    "vwap": vwap,
-                    "ema9": ema9,
-                    "ema20": ema20,
-                    "close_position": close_position,
-                    "distribution_score": distribution_score
-                }
-            )  
-
-            print(
-                f"❌ Not enough current acceleration: {symbol}",
-                flush=True
-            )
-
-            return None
-
             print(
                 f"❌ Not enough current acceleration: {symbol}",
                 flush=True
@@ -2383,28 +2353,7 @@ def check_ready_entry(symbol, data, df=None):
             return None
 
         if not vwap_reclaim and not ema_reclaim and not real_breakout:
-
-            record_rejection(
-                symbol,
-                "VWAP_EMA_BREAKOUT_GATE",
-                cp,
-                {
-                    "instant_rvol": instant_rvol,
-                    "recent_move": recent_move,
-                    "move_3m": move_3m,
-                    "move_5m": move_5m,
-                    "rsi": rsi,
-                    "vwap": vwap,
-                    "ema9": ema9,
-                    "ema20": ema20,
-                    "close_position": close_position,
-                    "distribution_score": distribution_score,
-                    "vwap_reclaim": vwap_reclaim,
-                    "ema_reclaim": ema_reclaim,
-                    "real_breakout": real_breakout
-                }
-            )
-
+            
             print(
                 f"❌ Weak entry rejected: no VWAP/EMA reclaim and no real breakout: {symbol}",
                 flush=True
