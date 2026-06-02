@@ -4287,6 +4287,8 @@ for current_test_date in TEST_DATES:
 
                 time.sleep(0.05)
 
+            monitor_momentum_watchlist()
+
             monitor_active_trades()
             monitor_explosion_tracking()
 
