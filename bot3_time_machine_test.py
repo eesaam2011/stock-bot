@@ -2154,7 +2154,7 @@ def check_ready_entry(symbol, data, df=None):
         add_to_pending(
             symbol,
             cp,
-            "فرصة جيدة لكن جودة الدخول الآن غير كافية"
+            "IGNITION_RECHECK"
         )
 
         print(
@@ -2425,7 +2425,7 @@ def check_ready_entry(symbol, data, df=None):
                     "close_position": close_position,
                     "distribution_score": distribution_score
                 }
-            )
+            )  
 
             print(
                 f"❌ Not enough current acceleration: {symbol}",
