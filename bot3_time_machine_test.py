@@ -685,8 +685,11 @@ def self_scan_top_400():
     live_symbols = []
     master_symbols = load_master_list()
 
-    symbols = master_symbols[:SELF_SCAN_COUNT]
-
+    if TEST_SYMBOLS:
+        symbols = TEST_SYMBOLS
+    else:
+        symbols = master_symbols[:SELF_SCAN_COUNT]
+        
     print(
         f"🧪 Time Machine using Master List: {len(symbols)} symbols",
         flush=True
