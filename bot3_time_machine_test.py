@@ -3851,11 +3851,6 @@ def print_weekly_alert_summary():
         )
 
         print(
-            f"fail_reasons={item.get('fail_reasons', [])}",
-            flush=True
-        )
-
-        print(
             f"T1={item.get('hit_t1', False)} | "
             f"T2={item.get('hit_t2', False)} | "
             f"stop={item.get('hit_stop', False)} | "
@@ -4012,11 +4007,6 @@ def print_top_missed_ignition_stocks(limit=10):
             print(
                 f"close_position={r['close_position']:.2f} | "
                 f"distribution={r['distribution_score']:.2f}",
-                flush=True
-            )
-
-            print(
-                f"fail_reasons={r.get('fail_reasons', [])}",
                 flush=True
             )
             print(
