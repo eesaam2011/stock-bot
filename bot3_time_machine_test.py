@@ -1592,6 +1592,21 @@ def ignition_confirmation_ok(
             distribution_score < 18
         )
 
+        print(
+            f"IGNITION | "
+            f"price_expand={price_expanding_now} | "
+            f"volume_expand={volume_expanding_now} | "
+            f"candle={candle_confirms_now} | "
+            f"trend={trend_holding_now} | "
+            f"clean={clean_enough} | "
+            f"move_3m={move_3m:.2f} | "
+            f"move_5m={move_5m:.2f} | "
+            f"close_pos={close_position:.2f} | "
+            f"wick={upper_wick_pct:.2f} | "
+            f"dist={distribution_score:.2f}",
+            flush=True
+        )
+
         return (
             price_expanding_now
             and volume_expanding_now
