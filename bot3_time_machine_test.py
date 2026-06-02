@@ -4009,12 +4009,6 @@ def print_top_missed_ignition_stocks(limit=10):
                 f"distribution={r['distribution_score']:.2f}",
                 flush=True
             )
-            print(
-                f"scenario={r.get('scenario_explosion_setup', False)} | "
-                f"runner={r.get('runner_escape_mode', False)} | "
-                f"breakout={r.get('real_breakout', False)}",
-                flush=True
-            )
             
     except Exception as e:
         print(
