@@ -1443,13 +1443,18 @@ def breakout_follow_through_confirmed(
             and distribution_score < 25
             and candle_ok
             and holding_above_vwap_ema
-            and higher_lows
+            and (
+                higher_lows
+    or          real_breakout
+    or          scenario_explosion_setup
+    or          runner_escape_mode
+)
             and continuation_ok
             and (
                 holding_above_breakout
-                or scenario_explosion_setup
-                or runner_escape_mode
-                or real_breakout
+            or scenario_explosion_setup
+            or runner_escape_mode
+            or real_breakout
             )
         )
 
