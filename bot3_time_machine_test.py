@@ -2074,17 +2074,6 @@ def check_ready_entry(symbol, data, df=None):
             and strong_candle
         )
 
-        early_ignition_path = (
-            instant_rvol >= 2.5
-            and recent_move >= 0.80
-            and move_3m >= 0.60
-            and move_5m >= 0.80
-            and cp > vwap
-            and cp > ema9
-            and close_position >= 0.60
-            and distribution_score < 25
-        )
-
         ignition_quality = (
             volume_acceleration
             and close_position >= 0.78
@@ -2093,7 +2082,6 @@ def check_ready_entry(symbol, data, df=None):
             and (
                 scenario_explosion_setup
                 or runner_escape_mode
-                or early_ignition_path
                 or (
                     real_breakout
                     and move_3m >= 0.45
@@ -2151,11 +2139,11 @@ def check_ready_entry(symbol, data, df=None):
         if move_3m < move_5m * 0.60:
             ignition_fail_reasons.append("move_ratio")
             
-        record_rejection(
+        add_to_pending(
             symbol,
-            "Ignition Quality",
             cp,
-            {
+            "فرصة جيدة لكن جودة الدخول الآن غير كافية"
+        )
                 "instant_rvol": instant_rvol,
                 "recent_move": recent_move,
                 "move_3m": move_3m,
@@ -2178,7 +2166,7 @@ def check_ready_entry(symbol, data, df=None):
         add_to_pending(
             symbol,
             cp,
-            "IGNITION_RECHECK"
+            "فرصة جيدة لكن جودة الدخول الآن غير كافية"
         )
 
         print(
