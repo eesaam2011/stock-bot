@@ -1426,7 +1426,7 @@ def breakout_follow_through_confirmed(
         holding_above_vwap_ema = (
             cp > vwap
             and cp > ema9
-            and last_3_closes.min() > vwap * 0.99
+            and last_3_closes.min() > vwap * 0.985
             and last_3_closes.min() > ema9 * 0.99
         )
 
