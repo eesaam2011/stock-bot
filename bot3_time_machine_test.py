@@ -107,11 +107,7 @@ TEST_DATES = [
     "2026-06-01"
 ]
 
-TEST_SYMBOLS = [
-    "BRBR",
-    "GRRR",
-    "SNBR",
-]
+TEST_SYMBOLS = []
 
 TEST_DATE = TEST_DATES[0]
 TEST_START_HOUR_NY = 9
@@ -685,14 +681,10 @@ def self_scan_top_400():
     live_symbols = []
     master_symbols = load_master_list()
 
-    if TEST_SYMBOLS:
-        symbols = TEST_SYMBOLS
-    else:
-        symbols = master_symbols[:SELF_SCAN_COUNT]
-        
+    symbols = master_symbols[:SELF_SCAN_COUNT]   
+    
     print(
-        f"🧪 TEST_SYMBOLS active: {symbols}" if TEST_SYMBOLS
-        else f"🧪 Time Machine using Master List: {len(symbols)} symbols",
+        f"🧪 Time Machine using Master List: {len(symbols)} symbols",
         flush=True
     )
 
@@ -4286,8 +4278,6 @@ for current_test_date in TEST_DATES:
                 )
 
                 time.sleep(0.05)
-
-            monitor_momentum_watchlist()
 
             monitor_active_trades()
             monitor_explosion_tracking()
