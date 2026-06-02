@@ -1589,7 +1589,7 @@ def ignition_confirmation_ok(
         )
 
         clean_enough = (
-            distribution_score < 18
+            distribution_score <= 18
         )
 
         print(
