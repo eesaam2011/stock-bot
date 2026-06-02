@@ -1835,6 +1835,30 @@ def check_ready_entry(symbol, data, df=None):
             )
             pending = pending_watchlist.get(symbol, {})
 
+            pending_reason = str(
+                pending.get("reason", pending.get("note", ""))
+            )
+
+            ignition_recheck_ready = (
+                "IGNITION_RECHECK" in pending_reason
+                and instant_rvol >= 2.5
+                and move_3m >= 0.60
+                and move_5m >= 0.80
+                and cp > vwap
+                and cp > ema9
+                and distribution_score < 25
+                and not pending.get("early_alert_sent", False)
+            )
+
+            if ignition_recheck_ready:
+                early_momentum_mode = True
+                pending["early_alert_sent"] = True
+                pending_watchlist[symbol] = pending
+                print(
+                    f"🔥 IGNITION_RECHECK promoted: {symbol}",
+                    flush=True
+                )
+
             if (
                 pending_score >= 75
                 and int(pending.get("improve_count", 0)) >= 2
