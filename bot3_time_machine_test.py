@@ -1438,6 +1438,17 @@ def breakout_follow_through_confirmed(
             and upper_wick_pct <= 0.35
         )
 
+        print(
+           f"🔍 FT {symbol} | "
+           f"vol_acc={volume_acceleration} | "
+           f"dist={distribution_score < 25} | "
+           f"candle={candle_ok} | "
+           f"vwap_ema={holding_above_vwap_ema} | "
+           f"higher_lows={higher_lows} | "
+           f"continuation={continuation_ok}",
+           flush=True
+        )
+
         return (
             volume_acceleration
             and distribution_score < 25
