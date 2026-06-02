@@ -2162,8 +2162,18 @@ def check_ready_entry(symbol, data, df=None):
 
             return None
 
-        continuation_ok = True
-
+        continuation_ok = continuation_quality_ok(
+            cp=cp,
+            vwap=vwap,
+            ema9=ema9,
+            move_3m=move_3m,
+            move_5m=move_5m,
+            instant_rvol=instant_rvol,
+            volume_acceleration=volume_acceleration,
+            close_position=close_position,
+            upper_wick_pct=upper_wick_pct,
+        )
+        
         if not continuation_ok:
             add_to_pending(
                 symbol,
