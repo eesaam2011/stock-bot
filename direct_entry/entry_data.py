@@ -261,21 +261,7 @@ def calculate_resistance_levels(bars):
     }
 
 
-def get_day_volume(symbol):
-    daily_dict = get_daily_bars(
-        symbols=[symbol],
-        limit=1,
-    )
-
-    daily_bars = daily_dict.get(symbol)
-
-    if daily_bars is None or daily_bars.empty:
-        return 0
-
-    return float(daily_bars["volume"].iloc[-1])
-
-
-def build_entry_data(symbol):
+def build_entry_data(symbol, daily_bar=None):
     bars_dict = get_1m_bars(
         symbols=[symbol],
         limit=120,
@@ -292,13 +278,16 @@ def build_entry_data(symbol):
 
     price = float(bars["close"].iloc[-1])
     recent_volume = float(bars["volume"].sum())
-    day_volume = get_day_volume(symbol)
 
-    if day_volume <= 0:
+    if daily_bar is not None and not daily_bar.empty:
+        day_volume = float(
+            daily_bar["volume"].iloc[-1]
+        )
+    else:
         day_volume = recent_volume
 
     dollar_volume = float(day_volume * price)
-
+    
     vwap = calculate_vwap(bars)
     ema9 = calculate_ema(bars, 9)
     ema20 = calculate_ema(bars, 20)
