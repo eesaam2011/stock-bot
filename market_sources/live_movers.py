@@ -23,6 +23,12 @@ def get_live_movers(symbols):
             first_close = float(bars["close"].iloc[0])
             last_close = float(bars["close"].iloc[-1])
             avg_volume = float(bars["volume"].mean())
+            day_high = float(bars["high"].max())
+
+            vwap = float(
+                (bars["close"] * bars["volume"]).sum()
+                / bars["volume"].sum()
+            )
         except Exception:
             continue
 
@@ -37,7 +43,7 @@ def get_live_movers(symbols):
         except Exception:
             current_price = last_close
 
-        if current_price <= 0:
+        if current_price <= 0 or day_high <= 0 or vwap <= 0:
             continue
 
         gain_pct = (
@@ -63,12 +69,19 @@ def get_live_movers(symbols):
             recent_volume > previous_volume
         )
 
+        near_high = current_price >= day_high * 0.97
+        above_vwap = current_price > vwap
+
         movers.append({
             "symbol": symbol,
             "price": current_price,
             "gain_pct": gain_pct,
             "rvol": float(rvol),
             "volume_acceleration": volume_acceleration,
+            "day_high": day_high,
+            "vwap": vwap,
+            "near_high": near_high,
+            "above_vwap": above_vwap,
             "source": "live_movers",
         })
 
@@ -82,4 +95,4 @@ def get_live_movers(symbols):
     )
 
     return movers
-  
+    
