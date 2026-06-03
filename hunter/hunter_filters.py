@@ -6,9 +6,9 @@ from shared.config import (
 )
 
 from shared.blacklist import (
-    SYMBOL_BLACKLIST,
     BAD_KEYWORDS,
 )
+
 def is_clean_symbol(symbol):
     if not symbol:
         return False
@@ -25,7 +25,8 @@ def is_clean_symbol(symbol):
         return False
 
     return True
-    def has_bad_keywords(text):
+    
+def has_bad_keywords(text):
     if not text:
         return False
 
@@ -36,27 +37,11 @@ def is_clean_symbol(symbol):
         for keyword in BAD_KEYWORDS
     )
 
-def passes_layer0(
-    symbol,
+def passes_market_layer0(
     price,
     day_volume,
     dollar_volume,
-    tradable=True,
-    name="",
-    sector="",
-    industry="",
 ):
-    if not tradable:
-        return False
-
-    if not is_clean_symbol(symbol):
-        return False
-
-    symbol = str(symbol).upper().strip()
-
-    if symbol in SYMBOL_BLACKLIST:
-        return False
-
     if price is None or price < PRICE_MIN or price > PRICE_MAX:
         return False
 
@@ -64,15 +49,6 @@ def passes_layer0(
         return False
 
     if dollar_volume is None or dollar_volume < MIN_DOLLAR_VOLUME:
-        return False
-
-    combined_text = " ".join([
-        str(name),
-        str(sector),
-        str(industry),
-    ])
-
-    if has_bad_keywords(combined_text):
         return False
 
     return True
