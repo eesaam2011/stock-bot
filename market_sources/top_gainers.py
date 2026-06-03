@@ -19,6 +19,7 @@ def get_top_gainers(symbols):
         try:
             first_close = float(bars["close"].iloc[0])
             last_close = float(bars["close"].iloc[-1])
+            total_volume = float(bars["volume"].sum())
             day_high = float(bars["high"].max())
 
             vwap = float(
@@ -44,12 +45,16 @@ def get_top_gainers(symbols):
             / first_close
         ) * 100
 
+        dollar_volume = total_volume * current_price
+
         near_high = current_price >= day_high * 0.97
         above_vwap = current_price > vwap
 
         gainers.append({
             "symbol": symbol,
             "price": current_price,
+            "day_volume": total_volume,
+            "dollar_volume": dollar_volume,
             "gain_pct": gain_pct,
             "day_high": day_high,
             "vwap": vwap,
@@ -64,5 +69,4 @@ def get_top_gainers(symbols):
         reverse=True,
     )
 
-    return gainers
-    
+    return gainers 
