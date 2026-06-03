@@ -67,7 +67,8 @@ def get_5m_bars(
             bars_by_symbol[symbol] = symbol_bars
 
     return bars_by_symbol
-    
+
+
 # =========================================
 # Alpaca Snapshots Loader
 # =========================================
@@ -106,7 +107,12 @@ def get_snapshots(symbols):
 
             snapshots_by_symbol[symbol] = snapshot
 
-    return snapshots_by_symbol 
+    return snapshots_by_symbol
+
+
+# =========================================
+# Alpaca Daily Bars Loader
+# =========================================
 
 def get_daily_bars(
     symbols,
@@ -160,17 +166,4 @@ def get_daily_bars(
 
             daily_by_symbol[symbol] = symbol_bars
 
-    return daily_by_symbol
-            continue
-
-        for symbol in batch_symbols:
-            symbol_bars = bars[
-                bars["symbol"] == symbol
-            ]
-
-            if symbol_bars.empty:
-                continue
-
-            daily_by_symbol[symbol] = symbol_bars
-
-    return daily_by_symbol
+    return daily_by_symbol 
