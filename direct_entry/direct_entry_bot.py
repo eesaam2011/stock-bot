@@ -90,7 +90,15 @@ def update_active_alerts():
     if not active_alerts:
         return
 
-    symbols = list(active_alerts.keys())
+    symbols = []
+
+    for alert in active_alerts:
+        symbol = alert.get("symbol")
+
+        if symbol:
+            symbols.append(
+                str(symbol).upper().strip()
+            )
 
     daily_bars = get_daily_bars(
         symbols=symbols,
