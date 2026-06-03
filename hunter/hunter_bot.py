@@ -150,19 +150,19 @@ def process_candidate(row):
             reason=reason,
         )
 
-    candidate["price"] = price
-    candidate["day_volume"] = day_volume
-    candidate["premarket_volume"] = row.get("premarket_volume", 0)
-    candidate["dollar_volume"] = dollar_volume
-    candidate["rvol"] = row.get("rvol", 0)
-    candidate["gap_pct"] = row.get("gap_pct", 0)
-    candidate["gain_pct"] = row.get("gain_pct", 0)
-    candidate["day_high"] = row.get("day_high", 0)
-    candidate["vwap"] = row.get("vwap", 0)
-    candidate["near_high"] = row.get("near_high", False)
-    candidate["above_vwap"] = row.get("above_vwap", False)
-    candidate["volume_acceleration"] = row.get("volume_acceleration", False)
-    candidate["sources"] = row.get("sources", [])
+    candidate["price"] = float(price)
+    candidate["day_volume"] = float(day_volume)
+    candidate["premarket_volume"] = float(row.get("premarket_volume", 0))
+    candidate["dollar_volume"] = float(dollar_volume)
+    candidate["rvol"] = float(row.get("rvol", 0))
+    candidate["gap_pct"] = float(row.get("gap_pct", 0))
+    candidate["gain_pct"] = float(row.get("gain_pct", 0))
+    candidate["day_high"] = float(row.get("day_high", 0))
+    candidate["vwap"] = float(row.get("vwap", 0))
+    candidate["near_high"] = bool(row.get("near_high", False))
+    candidate["above_vwap"] = bool(row.get("above_vwap", False))
+    candidate["volume_acceleration"] = bool(row.get("volume_acceleration", False))
+    candidate["sources"] = list(row.get("sources", []))
 
     return candidate
 
