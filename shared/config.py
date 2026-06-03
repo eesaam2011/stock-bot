@@ -1,1 +1,17 @@
-# Shared configuration for Hunter Bot and Bot Clean Direct Entry
+# =========================================
+# Shared Configuration
+# Hunter Bot + Bot Clean Direct Entry
+# =========================================
+
+PRICE_MIN = 0.5
+PRICE_MAX = 25.0
+
+MIN_DAY_VOLUME = 150_000
+MIN_DOLLAR_VOLUME = 500_000
+
+CANDIDATE_EXPIRE_HOURS = 24
+
+HUNTER_SCAN_INTERVAL_OVERNIGHT = 1800
+HUNTER_SCAN_INTERVAL_AFTER_HOURS = 900
+HUNTER_SCAN_INTERVAL_PREMARKET = 300
+HUNTER_SCAN_INTERVAL_MARKET = 120
