@@ -38,4 +38,3 @@ def get_top_gainers(symbols):
     )
 
     return gainers
-  
