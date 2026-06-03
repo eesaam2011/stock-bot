@@ -37,14 +37,15 @@ def save_candidate(candidate):
         response = requests.post(
             url,
             headers=redis_headers(),
-            data=json.dumps(candidate),
+            data=json.dumps([
+                json.dumps(candidate)
+            ]),
             timeout=10,
         )
     except Exception:
         return False
 
     return response.status_code == 200
-
 
 def get_candidate(symbol):
     if not redis_ready():
