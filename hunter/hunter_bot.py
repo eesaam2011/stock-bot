@@ -229,15 +229,12 @@ def run_hunter_scan():
     )
 
     saved_count = 0
-    passed_layer0_count = 0
 
     for row in merged_candidates:
         candidate = process_candidate(row)
 
         if not candidate:
             continue
-
-        passed_layer0_count += 1
 
         if save_candidate(candidate):
             saved_count += 1
@@ -246,10 +243,6 @@ def run_hunter_scan():
         f"✅ Candidates saved to Redis: {saved_count}",
         flush=True,
     )
-    print(
-        f"✅ Passed Layer0: {passed_layer0_count}",
-        flush=True,
-    )
-
+    
     return saved_count
     
