@@ -31,18 +31,13 @@ def save_candidate(candidate):
     if not symbol:
         return False
 
-    symbol = str(symbol).upper().strip()
+    url = f"{REDIS_URL}/hset/{REDIS_CANDIDATES_KEY}/{symbol}"
 
     try:
         response = requests.post(
-            REDIS_URL,
+            url,
             headers=redis_headers(),
-            data=json.dumps([
-                "HSET",
-                REDIS_CANDIDATES_KEY,
-                symbol,
-                json.dumps(candidate),
-            ]),
+            data=json.dumps(candidate),
             timeout=10,
         )
     except Exception:
