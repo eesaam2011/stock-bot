@@ -124,15 +124,15 @@ def get_daily_bars(
     if not symbols:
         return {}
 
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(days=30)
+
     daily_by_symbol = {}
 
     for i in range(0, len(symbols), BARS_BATCH_SIZE):
         batch_symbols = symbols[i:i + BARS_BATCH_SIZE]
 
         try:
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=30)
-
             bars = api.get_bars(
                 batch_symbols,
                 tradeapi.TimeFrame.Day,
@@ -141,36 +141,26 @@ def get_daily_bars(
                 limit=limit,
                 adjustment="raw",
             ).df
-        except Exception as error:
-            print(
-                f"❌ get_daily_bars error: {error}",
-                flush=True,
-            )
+        except Exception:
             continue
 
         if bars is None or bars.empty:
-            print(
-                f"⚠️ Empty daily bars batch: {batch_symbols[:5]}",
-                flush=True,
-            )
             continue
 
-        print(
-            f"✅ Daily bars batch received: {len(batch_symbols)} symbols",
-            flush=True,
-        )
-
-        print(
-            f"DAILY INDEX TYPE: {type(bars.index)}",
-            flush=True,
-        )
-
-        print(
-            f"DAILY COLUMNS: {list(bars.columns)}",
-            flush=True,
-        )
-
         if "symbol" not in bars.columns:
+            continue
+
+        for symbol in batch_symbols:
+            symbol_bars = bars[
+                bars["symbol"] == symbol
+            ]
+
+            if symbol_bars.empty:
+                continue
+
+            daily_by_symbol[symbol] = symbol_bars
+
+    return daily_by_symbol
             continue
 
         for symbol in batch_symbols:
