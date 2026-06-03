@@ -130,9 +130,14 @@ def get_daily_bars(
         batch_symbols = symbols[i:i + BARS_BATCH_SIZE]
 
         try:
+            end_time = datetime.utcnow()
+            start_time = end_time - timedelta(days=30)
+
             bars = api.get_bars(
                 batch_symbols,
                 tradeapi.TimeFrame.Day,
+                start=start_time.isoformat() + "Z",
+                end=end_time.isoformat() + "Z",
                 limit=limit,
                 adjustment="raw",
             ).df
