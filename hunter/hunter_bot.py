@@ -45,7 +45,8 @@ def merge_source_results(source_results):
 
             existing = merged[symbol]
 
-            existing["sources"].append(source_name)
+            if source_name not in existing["sources"]:
+                existing["sources"].append(source_name)
 
             for key, value in row.items():
                 if key in ["symbol", "source", "sources"]:
@@ -58,20 +59,21 @@ def merge_source_results(source_results):
                     existing[key] = value
                     continue
 
-                if isinstance(value, (int, float)):
-                    existing[key] = max(
-                        existing.get(key, 0),
-                        value,
-                    )
-                elif isinstance(value, bool):
+                if isinstance(value, bool):
                     existing[key] = (
                         existing.get(key, False)
                         or value
+                    )
+                elif isinstance(value, (int, float)):
+                    existing[key] = max(
+                        existing.get(key, 0),
+                        value,
                     )
                 else:
                     existing[key] = value
 
     return list(merged.values())
+
 
 def build_candidate_reason(row):
     reasons = []
@@ -91,6 +93,12 @@ def build_candidate_reason(row):
     if row.get("dollar_volume", 0) >= 2_000_000:
         reasons.append("Strong Dollar Volume")
 
+    if row.get("near_high"):
+        reasons.append("Near High")
+
+    if row.get("above_vwap"):
+        reasons.append("Above VWAP")
+
     if not reasons:
         reasons.append("Hunter Candidate")
 
@@ -102,6 +110,9 @@ def process_candidate(row):
     price = row.get("price")
     day_volume = row.get("day_volume") or row.get("premarket_volume") or 0
     dollar_volume = row.get("dollar_volume") or 0
+
+    if not symbol:
+        return None
 
     if not passes_market_layer0(
         price=price,
@@ -141,10 +152,15 @@ def process_candidate(row):
 
     candidate["price"] = price
     candidate["day_volume"] = day_volume
+    candidate["premarket_volume"] = row.get("premarket_volume", 0)
     candidate["dollar_volume"] = dollar_volume
     candidate["rvol"] = row.get("rvol", 0)
     candidate["gap_pct"] = row.get("gap_pct", 0)
     candidate["gain_pct"] = row.get("gain_pct", 0)
+    candidate["day_high"] = row.get("day_high", 0)
+    candidate["vwap"] = row.get("vwap", 0)
+    candidate["near_high"] = row.get("near_high", False)
+    candidate["above_vwap"] = row.get("above_vwap", False)
     candidate["volume_acceleration"] = row.get("volume_acceleration", False)
     candidate["sources"] = row.get("sources", [])
 
@@ -229,4 +245,4 @@ def run_hunter_scan():
     )
 
     return saved_count
-  
+    
