@@ -5,9 +5,8 @@ from shared.config import (
     MIN_DOLLAR_VOLUME,
 )
 
-from shared.blacklist import (
-    BAD_KEYWORDS,
-)
+from shared.blacklist import BAD_KEYWORDS
+
 
 def is_clean_symbol(symbol):
     if not symbol:
@@ -25,7 +24,8 @@ def is_clean_symbol(symbol):
         return False
 
     return True
-    
+
+
 def has_bad_keywords(text):
     if not text:
         return False
@@ -36,6 +36,7 @@ def has_bad_keywords(text):
         keyword in text
         for keyword in BAD_KEYWORDS
     )
+
 
 def passes_market_layer0(
     price,
@@ -52,6 +53,8 @@ def passes_market_layer0(
         return False
 
     return True
+
+
 # =========================================
 # Candidate Score
 # =========================================
@@ -109,4 +112,4 @@ def calculate_candidate_score(
         score += 5
 
     return min(score, 100)
-
+    
