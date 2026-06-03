@@ -36,10 +36,7 @@ def get_5m_bars(
         batch_symbols = symbols[i:i + BARS_BATCH_SIZE]
 
         try:
-            request_limit = min(
-                limit * len(batch_symbols),
-                10000,
-            )
+            request_limit = 3000
 
             bars = api.get_bars(
                 batch_symbols,
