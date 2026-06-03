@@ -37,9 +37,7 @@ def save_candidate(candidate):
         response = requests.post(
             url,
             headers=redis_headers(),
-            data=json.dumps([
-                json.dumps(candidate)
-            ]),
+            data=json.dumps(candidate),
             timeout=10,
         )
     except Exception:
