@@ -8,6 +8,7 @@ from datetime import datetime
 
 from hunter.hunter_bot import run_hunter_scan
 from direct_entry.direct_entry_bot import run_direct_entry_scan
+from direct_entry.alert_manager import send_telegram_message
 
 from shared.config import (
     HUNTER_SCAN_INTERVAL_OVERNIGHT,
@@ -45,6 +46,13 @@ def run_bot_runner():
     print(
         "🚀 Unified Bot Runner started",
         flush=True,
+    )
+
+    send_telegram_message(
+        "🚀 تم تشغيل Hunter Direct Entry بنجاح\n\n"
+        "✅ Hunter جاهز\n"
+        "✅ Direct Entry جاهز\n"
+        "✅ بدأ التشغيل بنجاح"
     )
 
     last_hunter_run = 0
