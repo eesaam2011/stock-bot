@@ -184,3 +184,26 @@ def run_direct_entry_scan():
     )
 
     return alerts 
+
+def run_direct_entry_loop(
+    scan_interval_seconds=60,
+):
+    print(
+        "🚀 Bot Clean Direct Entry loop started",
+        flush=True,
+    )
+
+    while True:
+        try:
+            run_direct_entry_scan()
+
+        except Exception as error:
+            print(
+                f"Direct Entry loop error: {error}",
+                flush=True,
+            )
+
+        time.sleep(scan_interval_seconds)
+
+if __name__ == "__main__":
+    run_direct_entry_loop()
