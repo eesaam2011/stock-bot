@@ -36,8 +36,6 @@ def get_5m_bars(
         batch_symbols = symbols[i:i + BARS_BATCH_SIZE]
 
         try:
-            request_limit = 3000
-
             bars = api.get_bars(
                 batch_symbols,
                 tradeapi.TimeFrame(
@@ -46,11 +44,13 @@ def get_5m_bars(
                 ),
                 start=start_time.isoformat() + "Z",
                 end=end_time.isoformat() + "Z",
-                limit=request_limit,
+                limit=limit,
                 adjustment="raw",
             ).df
+            
         except Exception:
             continue
+        
 
         if bars is None or bars.empty:
             continue
