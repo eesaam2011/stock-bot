@@ -107,3 +107,52 @@ def get_snapshots(symbols):
             snapshots_by_symbol[symbol] = snapshot
 
     return snapshots_by_symbol 
+
+def get_daily_bars(
+    symbols,
+    limit=1,
+):
+    if not symbols:
+        return {}
+
+    symbols = [
+        str(symbol).upper().strip()
+        for symbol in symbols
+        if symbol
+    ]
+
+    if not symbols:
+        return {}
+
+    daily_by_symbol = {}
+
+    for i in range(0, len(symbols), BARS_BATCH_SIZE):
+        batch_symbols = symbols[i:i + BARS_BATCH_SIZE]
+
+        try:
+            bars = api.get_bars(
+                batch_symbols,
+                tradeapi.TimeFrame.Day,
+                limit=limit,
+                adjustment="raw",
+            ).df
+        except Exception:
+            continue
+
+        if bars is None or bars.empty:
+            continue
+
+        if "symbol" not in bars.columns:
+            continue
+
+        for symbol in batch_symbols:
+            symbol_bars = bars[
+                bars["symbol"] == symbol
+            ]
+
+            if symbol_bars.empty:
+                continue
+
+            daily_by_symbol[symbol] = symbol_bars
+
+    return daily_by_symbol 
