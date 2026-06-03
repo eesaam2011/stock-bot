@@ -142,6 +142,14 @@ def run_direct_entry_scan():
         live_symbols=live_symbols,
     )
 
+    print(
+        f"✅ Direct Entry Sources | "
+        f"Hunter: {len(hunter_symbols)} | "
+        f"Live: {len(live_symbols)} | "
+        f"Merged: {len(symbols)}",
+        flush=True,
+    )
+
     if not symbols:
         print("No symbols for Direct Entry scan", flush=True)
         return []
