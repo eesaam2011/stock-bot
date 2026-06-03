@@ -1,11 +1,13 @@
 from market_sources.bars_data import (
     get_5m_bars,
+    get_daily_bars,
     get_snapshots,
 )
 
 
 def get_premarket_movers(symbols):
     bars_by_symbol = get_5m_bars(symbols)
+    daily_by_symbol = get_daily_bars(symbols)
     snapshots_by_symbol = get_snapshots(symbols)
 
     premarket_rows = []
@@ -17,12 +19,18 @@ def get_premarket_movers(symbols):
         if len(bars) < 20:
             continue
 
+        daily_bars = daily_by_symbol.get(symbol)
         snapshot = snapshots_by_symbol.get(symbol)
 
+        if daily_bars is None or daily_bars.empty:
+            continue
+
         try:
+            daily_bar = daily_bars.iloc[-1]
+
+            day_volume = float(daily_bar["volume"])
             first_close = float(bars["close"].iloc[0])
             last_close = float(bars["close"].iloc[-1])
-            total_volume = float(bars["volume"].sum())
             avg_volume = float(bars["volume"].mean())
             day_high = float(bars["high"].max())
 
@@ -44,7 +52,7 @@ def get_premarket_movers(symbols):
         except Exception:
             current_price = last_close
 
-        if current_price <= 0 or day_high <= 0 or vwap <= 0:
+        if current_price <= 0 or day_volume <= 0 or day_high <= 0 or vwap <= 0:
             continue
 
         gap_pct = (
@@ -70,7 +78,7 @@ def get_premarket_movers(symbols):
             recent_volume > previous_volume
         )
 
-        dollar_volume = total_volume * current_price
+        dollar_volume = day_volume * current_price
 
         near_high = current_price >= day_high * 0.97
         above_vwap = current_price > vwap
@@ -78,9 +86,10 @@ def get_premarket_movers(symbols):
         premarket_rows.append({
             "symbol": symbol,
             "price": current_price,
-            "gap_pct": gap_pct,
-            "premarket_volume": total_volume,
+            "day_volume": day_volume,
+            "premarket_volume": day_volume,
             "dollar_volume": dollar_volume,
+            "gap_pct": gap_pct,
             "rvol": float(rvol),
             "volume_acceleration": volume_acceleration,
             "day_high": day_high,
@@ -100,5 +109,4 @@ def get_premarket_movers(symbols):
         reverse=True,
     )
 
-    return premarket_rows
-    
+    return premarket_rows 
