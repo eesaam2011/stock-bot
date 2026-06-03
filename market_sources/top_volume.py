@@ -19,6 +19,12 @@ def get_top_volume(symbols):
         try:
             total_volume = float(bars["volume"].sum())
             last_close = float(bars["close"].iloc[-1])
+            day_high = float(bars["high"].max())
+
+            vwap = float(
+                (bars["close"] * bars["volume"]).sum()
+                / bars["volume"].sum()
+            )
         except Exception:
             continue
 
@@ -30,16 +36,23 @@ def get_top_volume(symbols):
         except Exception:
             current_price = last_close
 
-        if current_price <= 0:
+        if current_price <= 0 or day_high <= 0 or vwap <= 0:
             continue
 
         dollar_volume = total_volume * current_price
+
+        near_high = current_price >= day_high * 0.97
+        above_vwap = current_price > vwap
 
         volume_rows.append({
             "symbol": symbol,
             "price": current_price,
             "day_volume": total_volume,
             "dollar_volume": dollar_volume,
+            "day_high": day_high,
+            "vwap": vwap,
+            "near_high": near_high,
+            "above_vwap": above_vwap,
             "source": "top_volume",
         })
 
