@@ -47,7 +47,8 @@ DIRECT_ENTRY_INTERVAL_SECONDS = 60
 
 
 def get_hunter_interval():
-    now = datetime.utcnow()
+    from datetime import datetime, UTC
+    now = datetime.now(UTC)
 
     hour = now.hour
 
