@@ -1,10 +1,7 @@
 from market_sources.bars_data import get_5m_bars
 
 
-def get_top_volume(
-    symbols,
-    limit=50,
-):
+def get_top_volume(symbols):
     bars_by_symbol = get_5m_bars(symbols)
 
     volume_rows = []
@@ -13,8 +10,15 @@ def get_top_volume(
         if bars is None or bars.empty:
             continue
 
-        total_volume = float(bars["volume"].sum())
-        last_close = float(bars["close"].iloc[-1])
+        try:
+            total_volume = float(bars["volume"].sum())
+            last_close = float(bars["close"].iloc[-1])
+        except Exception:
+            continue
+
+        if last_close <= 0:
+            continue
+
         dollar_volume = total_volume * last_close
 
         volume_rows.append({
@@ -31,5 +35,4 @@ def get_top_volume(
         reverse=True,
     )
 
-    return volume_rows[:limit]
-
+    return volume_rows
