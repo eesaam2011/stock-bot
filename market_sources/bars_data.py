@@ -47,11 +47,24 @@ def get_5m_bars(
                 limit=limit,
                 adjustment="raw",
             ).df
-        except Exception:
+        except Exception as error:
+            print(
+                f"❌ get_5m_bars error: {error}",
+                flush=True,
+            )
             continue
 
         if bars is None or bars.empty:
+            print(
+                f"⚠️ Empty bars batch: {batch_symbols[:5]}",
+                flush=True,
+            )
             continue
+
+        print(
+            f"✅ Bars batch received: {len(batch_symbols)} symbols",
+            flush=True,
+        )
 
         for symbol in batch_symbols:
             try:
@@ -59,7 +72,11 @@ def get_5m_bars(
                     symbol,
                     level="symbol",
                 )
-            except Exception:
+            except Exception as error:
+                print(
+                    f"⚠️ No bars for {symbol}: {error}",
+                    flush=True,
+                )
                 continue
 
             if symbol_bars is None or symbol_bars.empty:
