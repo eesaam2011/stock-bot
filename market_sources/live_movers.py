@@ -22,6 +22,7 @@ def get_live_movers(symbols):
         try:
             first_close = float(bars["close"].iloc[0])
             last_close = float(bars["close"].iloc[-1])
+            total_volume = float(bars["volume"].sum())
             avg_volume = float(bars["volume"].mean())
             day_high = float(bars["high"].max())
 
@@ -69,12 +70,16 @@ def get_live_movers(symbols):
             recent_volume > previous_volume
         )
 
+        dollar_volume = total_volume * current_price
+
         near_high = current_price >= day_high * 0.97
         above_vwap = current_price > vwap
 
         movers.append({
             "symbol": symbol,
             "price": current_price,
+            "day_volume": total_volume,
+            "dollar_volume": dollar_volume,
             "gain_pct": gain_pct,
             "rvol": float(rvol),
             "volume_acceleration": volume_acceleration,
@@ -94,5 +99,4 @@ def get_live_movers(symbols):
         reverse=True,
     )
 
-    return movers
-    
+    return movers 
