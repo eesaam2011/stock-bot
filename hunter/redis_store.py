@@ -1,20 +1,26 @@
 import os
 import json
 import requests
+
 from hunter.candidate_manager import is_candidate_expired
+
 
 REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 REDIS_CANDIDATES_KEY = "hunter_candidates"
+
 
 def redis_headers():
     return {
         "Authorization": f"Bearer {REDIS_TOKEN}",
         "Content-Type": "application/json",
     }
+
+
 def redis_ready():
     return bool(REDIS_URL and REDIS_TOKEN)
-  
+
+
 def save_candidate(candidate):
     if not redis_ready():
         print("❌ Redis settings are missing", flush=True)
@@ -27,12 +33,15 @@ def save_candidate(candidate):
 
     url = f"{REDIS_URL}/hset/{REDIS_CANDIDATES_KEY}/{symbol}"
 
-    response = requests.post(
-        url,
-        headers=redis_headers(),
-        data=json.dumps(candidate),
-        timeout=10,
-    )
+    try:
+        response = requests.post(
+            url,
+            headers=redis_headers(),
+            data=json.dumps(candidate),
+            timeout=10,
+        )
+    except Exception:
+        return False
 
     return response.status_code == 200
 
@@ -46,11 +55,14 @@ def get_candidate(symbol):
 
     url = f"{REDIS_URL}/hget/{REDIS_CANDIDATES_KEY}/{symbol}"
 
-    response = requests.get(
-        url,
-        headers=redis_headers(),
-        timeout=10,
-    )
+    try:
+        response = requests.get(
+            url,
+            headers=redis_headers(),
+            timeout=10,
+        )
+    except Exception:
+        return None
 
     if response.status_code != 200:
         return None
@@ -60,7 +72,11 @@ def get_candidate(symbol):
     if not data:
         return None
 
-    return json.loads(data)
+    try:
+        return json.loads(data)
+    except Exception:
+        return None
+
 
 def delete_candidate(symbol):
     if not redis_ready():
@@ -71,13 +87,17 @@ def delete_candidate(symbol):
 
     url = f"{REDIS_URL}/hdel/{REDIS_CANDIDATES_KEY}/{symbol}"
 
-    response = requests.post(
-        url,
-        headers=redis_headers(),
-        timeout=10,
-    )
+    try:
+        response = requests.post(
+            url,
+            headers=redis_headers(),
+            timeout=10,
+        )
+    except Exception:
+        return False
 
     return response.status_code == 200
+
 
 def get_all_candidates():
     if not redis_ready():
@@ -86,11 +106,14 @@ def get_all_candidates():
 
     url = f"{REDIS_URL}/hgetall/{REDIS_CANDIDATES_KEY}"
 
-    response = requests.get(
-        url,
-        headers=redis_headers(),
-        timeout=10,
-    )
+    try:
+        response = requests.get(
+            url,
+            headers=redis_headers(),
+            timeout=10,
+        )
+    except Exception:
+        return []
 
     if response.status_code != 200:
         return []
@@ -104,9 +127,14 @@ def get_all_candidates():
 
     for i in range(0, len(result), 2):
         candidate_data = result[i + 1]
-        candidates.append(json.loads(candidate_data))
+
+        try:
+            candidates.append(json.loads(candidate_data))
+        except Exception:
+            continue
 
     return candidates
+
 
 def delete_expired_candidates():
     candidates = get_all_candidates()
