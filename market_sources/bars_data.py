@@ -98,7 +98,6 @@ def get_snapshots(symbols):
             continue
 
         if not snapshots:
-            
             continue
 
         for symbol in batch_symbols:
@@ -109,5 +108,4 @@ def get_snapshots(symbols):
 
             snapshots_by_symbol[symbol] = snapshot
 
-    return snapshots_by_symbol
-    
+    return snapshots_by_symbol 
