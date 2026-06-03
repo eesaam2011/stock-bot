@@ -136,11 +136,34 @@ def get_daily_bars(
                 limit=limit,
                 adjustment="raw",
             ).df
-        except Exception:
+        except Exception as error:
+            print(
+                f"❌ get_daily_bars error: {error}",
+                flush=True,
+            )
             continue
 
         if bars is None or bars.empty:
+            print(
+                f"⚠️ Empty daily bars batch: {batch_symbols[:5]}",
+                flush=True,
+            )
             continue
+
+        print(
+            f"✅ Daily bars batch received: {len(batch_symbols)} symbols",
+            flush=True,
+        )
+
+        print(
+            f"DAILY INDEX TYPE: {type(bars.index)}",
+            flush=True,
+        )
+
+        print(
+            f"DAILY COLUMNS: {list(bars.columns)}",
+            flush=True,
+        )
 
         if "symbol" not in bars.columns:
             continue
@@ -155,4 +178,4 @@ def get_daily_bars(
 
             daily_by_symbol[symbol] = symbol_bars
 
-    return daily_by_symbol 
+    return daily_by_symbol
