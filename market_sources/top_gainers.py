@@ -1,8 +1,12 @@
-from market_sources.bars_data import get_5m_bars
+from market_sources.bars_data import (
+    get_5m_bars,
+    get_snapshots,
+)
 
 
 def get_top_gainers(symbols):
     bars_by_symbol = get_5m_bars(symbols)
+    snapshots_by_symbol = get_snapshots(symbols)
 
     gainers = []
 
@@ -10,23 +14,33 @@ def get_top_gainers(symbols):
         if bars is None or bars.empty:
             continue
 
+        snapshot = snapshots_by_symbol.get(symbol)
+
         try:
             first_close = float(bars["close"].iloc[0])
             last_close = float(bars["close"].iloc[-1])
         except Exception:
             continue
 
-        if first_close <= 0:
+        current_price = last_close
+
+        try:
+            if snapshot and snapshot.latest_trade:
+                current_price = float(snapshot.latest_trade.price)
+        except Exception:
+            current_price = last_close
+
+        if first_close <= 0 or current_price <= 0:
             continue
 
         gain_pct = (
-            (last_close - first_close)
+            (current_price - first_close)
             / first_close
         ) * 100
 
         gainers.append({
             "symbol": symbol,
-            "price": last_close,
+            "price": current_price,
             "gain_pct": gain_pct,
             "source": "top_gainers",
         })
@@ -38,3 +52,4 @@ def get_top_gainers(symbols):
     )
 
     return gainers
+    
