@@ -66,6 +66,16 @@ def get_5m_bars(
             flush=True,
         )
 
+        print(
+            f"INDEX TYPE: {type(bars.index)}",
+            flush=True,
+        )
+
+        print(
+            f"COLUMNS: {list(bars.columns)}",
+            flush=True,
+        )
+
         for symbol in batch_symbols:
             try:
                 symbol_bars = bars.xs(
