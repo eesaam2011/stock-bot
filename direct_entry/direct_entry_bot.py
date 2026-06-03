@@ -28,12 +28,13 @@ def get_hunter_symbols():
 
     symbols = []
 
-    for symbol in candidates.keys():
+    for candidate in candidates:
+        symbol = candidate.get("symbol")
+
         if symbol:
             symbols.append(str(symbol).upper().strip())
 
     return symbols
-
 
 def get_clean_asset_symbols():
     assets = get_static_clean_assets()
