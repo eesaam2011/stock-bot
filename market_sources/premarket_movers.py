@@ -24,6 +24,12 @@ def get_premarket_movers(symbols):
             last_close = float(bars["close"].iloc[-1])
             total_volume = float(bars["volume"].sum())
             avg_volume = float(bars["volume"].mean())
+            day_high = float(bars["high"].max())
+
+            vwap = float(
+                (bars["close"] * bars["volume"]).sum()
+                / bars["volume"].sum()
+            )
         except Exception:
             continue
 
@@ -38,7 +44,7 @@ def get_premarket_movers(symbols):
         except Exception:
             current_price = last_close
 
-        if current_price <= 0:
+        if current_price <= 0 or day_high <= 0 or vwap <= 0:
             continue
 
         gap_pct = (
@@ -66,6 +72,9 @@ def get_premarket_movers(symbols):
 
         dollar_volume = total_volume * current_price
 
+        near_high = current_price >= day_high * 0.97
+        above_vwap = current_price > vwap
+
         premarket_rows.append({
             "symbol": symbol,
             "price": current_price,
@@ -74,6 +83,10 @@ def get_premarket_movers(symbols):
             "dollar_volume": dollar_volume,
             "rvol": float(rvol),
             "volume_acceleration": volume_acceleration,
+            "day_high": day_high,
+            "vwap": vwap,
+            "near_high": near_high,
+            "above_vwap": above_vwap,
             "source": "premarket_movers",
         })
 
@@ -88,4 +101,4 @@ def get_premarket_movers(symbols):
     )
 
     return premarket_rows
-  
+    
