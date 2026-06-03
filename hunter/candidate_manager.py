@@ -32,16 +32,13 @@ def update_candidate_record(
     is_active_now=True,
 ):
     now = get_current_time()
+    expires_at = now + timedelta(hours=CANDIDATE_EXPIRE_HOURS)
 
-    expires_at = (
-    now
-    + timedelta(hours=CANDIDATE_EXPIRE_HOURS)
-    )
-    candidate["expires_at"] = expires_at.isoformat()
     candidate["reason"] = reason
     candidate["is_active_now"] = is_active_now
     candidate["updated_at"] = now.isoformat()
     candidate["last_seen_at"] = now.isoformat()
+    candidate["expires_at"] = expires_at.isoformat()
 
     return candidate
 
