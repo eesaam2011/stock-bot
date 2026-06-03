@@ -3,7 +3,12 @@
 # Hunter + Direct Entry
 # =========================
 
+import os
 import time
+import threading
+
+from flask import Flask
+
 from datetime import datetime
 
 from hunter.hunter_bot import run_hunter_scan
@@ -17,7 +22,27 @@ from shared.config import (
     HUNTER_SCAN_INTERVAL_MARKET,
 )
 
+app = Flask(__name__)
 
+
+@app.route("/")
+def home():
+    return "Hunter Direct Entry Runner Running"
+
+
+def run_web_server():
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000,
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+    )
+    
 DIRECT_ENTRY_INTERVAL_SECONDS = 60
 
 
@@ -108,4 +133,9 @@ def run_bot_runner():
 
 
 if __name__ == "__main__":
-    run_bot_runner()
+    threading.Thread(
+        target=run_bot_runner,
+        daemon=True,
+    ).start()
+
+    run_web_server()
