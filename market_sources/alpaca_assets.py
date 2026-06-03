@@ -1,13 +1,17 @@
 from market_sources.alpaca_client import api
+
 from hunter.hunter_filters import (
     is_clean_symbol,
     has_bad_keywords,
 )
+
 from shared.blacklist import SYMBOL_BLACKLIST
 
+
 # =========================================
-# Layer 0 Asset Loader
+# Static Asset Loader
 # =========================================
+
 def get_static_clean_assets():
     assets = api.list_assets(status="active")
 
@@ -37,4 +41,3 @@ def get_static_clean_assets():
         })
 
     return clean_assets
-
