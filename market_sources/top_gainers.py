@@ -1,11 +1,12 @@
 from market_sources.bars_data import (
     get_5m_bars,
+    get_daily_bars,
     get_snapshots,
 )
 
-
 def get_top_gainers(symbols):
     bars_by_symbol = get_5m_bars(symbols)
+    daily_by_symbol = get_daily_bars(symbols)
     snapshots_by_symbol = get_snapshots(symbols)
 
     gainers = []
@@ -14,12 +15,18 @@ def get_top_gainers(symbols):
         if bars is None or bars.empty:
             continue
 
+        daily_bars = daily_by_symbol.get(symbol)
         snapshot = snapshots_by_symbol.get(symbol)
 
+        if daily_bars is None or daily_bars.empty:
+            continue
+
         try:
+            daily_bar = daily_bars.iloc[-1]
+
+            day_volume = float(daily_bar["volume"])
             first_close = float(bars["close"].iloc[0])
             last_close = float(bars["close"].iloc[-1])
-            total_volume = float(bars["volume"].sum())
             day_high = float(bars["high"].max())
 
             vwap = float(
@@ -37,7 +44,7 @@ def get_top_gainers(symbols):
         except Exception:
             current_price = last_close
 
-        if first_close <= 0 or current_price <= 0 or day_high <= 0 or vwap <= 0:
+        if first_close <= 0 or current_price <= 0 or day_volume <= 0 or day_high <= 0 or vwap <= 0:
             continue
 
         gain_pct = (
@@ -45,7 +52,7 @@ def get_top_gainers(symbols):
             / first_close
         ) * 100
 
-        dollar_volume = total_volume * current_price
+        dollar_volume = day_volume * current_price
 
         near_high = current_price >= day_high * 0.97
         above_vwap = current_price > vwap
@@ -53,7 +60,7 @@ def get_top_gainers(symbols):
         gainers.append({
             "symbol": symbol,
             "price": current_price,
-            "day_volume": total_volume,
+            "day_volume": day_volume,
             "dollar_volume": dollar_volume,
             "gain_pct": gain_pct,
             "day_high": day_high,
@@ -69,4 +76,4 @@ def get_top_gainers(symbols):
         reverse=True,
     )
 
-    return gainers 
+    return gainers
