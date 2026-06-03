@@ -31,20 +31,25 @@ def save_candidate(candidate):
     if not symbol:
         return False
 
-    url = f"{REDIS_URL}/hset/{REDIS_CANDIDATES_KEY}/{symbol}"
+    symbol = str(symbol).upper().strip()
 
     try:
         response = requests.post(
-            url,
+            REDIS_URL,
             headers=redis_headers(),
-            data=json.dumps(candidate),
+            data=json.dumps([
+                "HSET",
+                REDIS_CANDIDATES_KEY,
+                symbol,
+                json.dumps(candidate),
+            ]),
             timeout=10,
         )
     except Exception:
         return False
 
     return response.status_code == 200
-
+    
 def get_candidate(symbol):
     if not redis_ready():
         print("❌ Redis settings are missing", flush=True)
