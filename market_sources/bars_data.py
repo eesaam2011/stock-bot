@@ -68,4 +68,46 @@ def get_5m_bars(
             bars_by_symbol[symbol] = symbol_bars
 
     return bars_by_symbol
+
+
+# =========================================
+# Alpaca Snapshots Loader
+# =========================================
+
+def get_snapshots(symbols):
+    if not symbols:
+        return {}
+
+    symbols = [
+        str(symbol).upper().strip()
+        for symbol in symbols
+        if symbol
+    ]
+
+    if not symbols:
+        return {}
+
+    snapshots_by_symbol = {}
+
+    for i in range(0, len(symbols), BARS_BATCH_SIZE):
+        batch_symbols = symbols[i:i + BARS_BATCH_SIZE]
+
+        try:
+            snapshots = api.get_snapshots(batch_symbols)
+        except Exception:
+            continue
+
+        if not snapshots:
+            
+            continue
+
+        for symbol in batch_symbols:
+            snapshot = snapshots.get(symbol)
+
+            if not snapshot:
+                continue
+
+            snapshots_by_symbol[symbol] = snapshot
+
+    return snapshots_by_symbol
     
