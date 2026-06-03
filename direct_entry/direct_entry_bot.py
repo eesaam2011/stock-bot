@@ -12,6 +12,12 @@ from market_sources.bars_data import get_daily_bars
 
 from direct_entry.entry_data import build_entry_data
 from direct_entry.entry_filters import analyze_entry_opportunity
+from direct_entry.alert_manager import send_direct_entry_alert
+from direct_entry.alert_tracker import (
+    add_alert_to_monitoring,
+    get_active_alerts,
+    update_alert_tracking,
+)
 
 
 def get_hunter_symbols():
@@ -77,7 +83,46 @@ def merge_symbols(
     return merged
 
 
+def update_active_alerts():
+    active_alerts = get_active_alerts()
+
+    if not active_alerts:
+        return
+
+    symbols = list(active_alerts.keys())
+
+    daily_bars = get_daily_bars(
+        symbols=symbols,
+        limit=1,
+    )
+
+    for symbol in symbols:
+        entry_data = build_entry_data(
+            symbol=symbol,
+            daily_bar=daily_bars.get(symbol),
+        )
+
+        if entry_data is None:
+            continue
+
+        current_price = entry_data.get("price")
+
+        status = update_alert_tracking(
+            symbol=symbol,
+            current_price=current_price,
+        )
+
+        if status:
+            print(
+                f"📌 Alert tracking update: "
+                f"{symbol} | {status}",
+                flush=True,
+            )
+
+
 def run_direct_entry_scan():
+    update_active_alerts()
+
     clean_symbols = get_clean_asset_symbols()
 
     hunter_symbols = get_hunter_symbols()
@@ -118,6 +163,11 @@ def run_direct_entry_scan():
             **result,
         }
 
+        sent = send_direct_entry_alert(alert)
+
+        if sent:
+            add_alert_to_monitoring(alert)
+
         alerts.append(alert)
 
         print(
@@ -133,4 +183,4 @@ def run_direct_entry_scan():
         flush=True,
     )
 
-    return alerts
+    return alerts 
