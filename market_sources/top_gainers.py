@@ -4,6 +4,7 @@ from market_sources.bars_data import (
     get_snapshots,
 )
 
+
 def get_top_gainers(symbols):
     bars_by_symbol = get_5m_bars(symbols)
     daily_by_symbol = get_daily_bars(symbols)
