@@ -119,6 +119,14 @@ def process_candidate(row):
         day_volume=day_volume,
         dollar_volume=dollar_volume,
     ):
+        print(
+            f"❌ Layer0 Reject: "
+            f"{symbol} | "
+            f"price={price} | "
+            f"day_volume={day_volume} | "
+            f"dollar_volume={dollar_volume}",
+            flush=True,
+        )
         return None
 
     candidate_score = calculate_candidate_score(
