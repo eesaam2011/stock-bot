@@ -36,6 +36,11 @@ def get_5m_bars(
         batch_symbols = symbols[i:i + BARS_BATCH_SIZE]
 
         try:
+            request_limit = min(
+                limit * len(batch_symbols),
+                10000,
+            )
+
             bars = api.get_bars(
                 batch_symbols,
                 tradeapi.TimeFrame(
@@ -44,7 +49,7 @@ def get_5m_bars(
                 ),
                 start=start_time.isoformat() + "Z",
                 end=end_time.isoformat() + "Z",
-                limit=limit,
+                limit=request_limit,
                 adjustment="raw",
             ).df
         except Exception:
@@ -67,7 +72,6 @@ def get_5m_bars(
             bars_by_symbol[symbol] = symbol_bars
 
     return bars_by_symbol
-
 
 # =========================================
 # Alpaca Snapshots Loader
