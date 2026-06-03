@@ -39,12 +39,39 @@ def merge_source_results(source_results):
 
             if symbol not in merged:
                 merged[symbol] = row.copy()
+                merged[symbol]["symbol"] = symbol
                 merged[symbol]["sources"] = [source_name]
-            else:
-                merged[symbol]["sources"].append(source_name)
+                continue
+
+            existing = merged[symbol]
+
+            existing["sources"].append(source_name)
+
+            for key, value in row.items():
+                if key in ["symbol", "source", "sources"]:
+                    continue
+
+                if value is None:
+                    continue
+
+                if key not in existing:
+                    existing[key] = value
+                    continue
+
+                if isinstance(value, (int, float)):
+                    existing[key] = max(
+                        existing.get(key, 0),
+                        value,
+                    )
+                elif isinstance(value, bool):
+                    existing[key] = (
+                        existing.get(key, False)
+                        or value
+                    )
+                else:
+                    existing[key] = value
 
     return list(merged.values())
-
 
 def build_candidate_reason(row):
     reasons = []
