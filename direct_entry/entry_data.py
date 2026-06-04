@@ -5,6 +5,7 @@
 from market_sources.bars_data import (
     get_1m_bars,
     get_daily_bars,
+    get_snapshots,
 )
 
 
@@ -276,7 +277,29 @@ def build_entry_data(symbol, daily_bar=None):
     if len(bars) < 60:
         return None
 
-    price = float(bars["close"].iloc[-1])
+    snapshots = get_snapshots(
+        [
+            symbol,
+        ]
+    )
+
+    snapshot = snapshots.get(symbol)
+
+    price = None
+
+    try:
+        if snapshot and snapshot.latest_trade:
+            price = float(
+                snapshot.latest_trade.price
+            )
+    except Exception:
+        price = None
+
+    if not price:
+        price = float(
+            bars["close"].iloc[-1]
+        )
+        
     recent_volume = float(bars["volume"].sum())
 
     if daily_bar is not None and not daily_bar.empty:
