@@ -128,7 +128,7 @@ def update_active_alerts():
             current_price=current_price,
         )
 
-        if status:
+        if status and status != "monitoring":
             print(
                 f"📌 Alert tracking update: "
                 f"{symbol} | {status}",
