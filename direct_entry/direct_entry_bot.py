@@ -17,13 +17,8 @@ from direct_entry.alert_tracker import (
     add_alert_to_monitoring,
     get_active_alerts,
     update_alert_tracking,
+
 )
-WATCH_DEBUG_SYMBOLS = [
-    "LASE",
-    "STI",
-    "FOXX",
-    "SPRC",
-]
 
 def get_hunter_symbols():
     candidates = get_all_candidates()
@@ -171,6 +166,7 @@ def run_direct_entry_scan():
     )
 
     alerts = []
+    reject_reasons = {}
 
     for symbol in symbols:
         entry_data = build_entry_data(
@@ -185,16 +181,20 @@ def run_direct_entry_scan():
             entry_data
         )
 
-        if symbol in WATCH_DEBUG_SYMBOLS:
-            print(
-                f"🔎 Direct Entry Debug | "
-                f"{symbol} | "
-                f"ready={result.get('ready_to_alert')} | "
-                f"reason={result.get('reason')}",
-                flush=True,
+        if not result.get("ready_to_alert"):
+            reason = result.get(
+                "reason",
+                "Unknown",
             )
 
-        if not result.get("ready_to_alert"):
+            reject_reasons[reason] = (
+                reject_reasons.get(
+                    reason,
+                    0,
+                )
+                + 1
+            )
+
             continue
 
         alert = {
@@ -214,6 +214,13 @@ def run_direct_entry_scan():
             f"{symbol} | "
             f"Grade: {result.get('grade')} | "
             f"Reason: {result.get('reason')}",
+            flush=True,
+        )
+
+    if reject_reasons:
+        print(
+            f"📊 Direct Entry Reject Summary: "
+            f"{reject_reasons}",
             flush=True,
         )
 
