@@ -9,8 +9,7 @@ import threading
 
 from flask import Flask
 
-from datetime import datetime
-
+from datetime import datetime, UTC
 from hunter.hunter_bot import run_hunter_scan
 from direct_entry.direct_entry_bot import run_direct_entry_scan
 from direct_entry.alert_manager import send_telegram_message
