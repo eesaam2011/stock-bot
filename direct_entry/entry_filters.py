@@ -146,8 +146,14 @@ def grade_entry(row):
     volume_acceleration = bool(row.get("volume_acceleration", False))
     close_position = float(row.get("close_position", 0) or 0)
 
+    fresh_breakout_zone = (
+        resistance_distance_pct <= 0
+        and resistance_distance_pct >= -1.0
+    )
+
     if (
         real_breakout
+        and fresh_breakout_zone
         and instant_rvol >= 4
         and volume_acceleration
         and close_position >= 0.75
@@ -155,7 +161,7 @@ def grade_entry(row):
         return "A++"
 
     if (
-        resistance_distance_pct <= 2.0
+        resistance_distance_pct <= 1.0
         and instant_rvol >= 2.5
         and volume_acceleration
         and close_position >= 0.65
@@ -187,8 +193,15 @@ def analyze_entry_opportunity(row):
 
     grade = grade_entry(row)
 
+    if grade == "A":
+        return {
+            "ready_to_alert": False,
+            "grade": grade,
+            "reason": "Grade A filtered",
+        }
+
     return {
         "ready_to_alert": True,
         "grade": grade,
         "reason": "Direct entry confirmed",
-  }
+    }
