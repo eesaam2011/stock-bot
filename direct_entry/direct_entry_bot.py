@@ -18,7 +18,12 @@ from direct_entry.alert_tracker import (
     get_active_alerts,
     update_alert_tracking,
 )
-
+WATCH_DEBUG_SYMBOLS = [
+    "LASE",
+    "STI",
+    "FOXX",
+    "SPRC",
+]
 
 def get_hunter_symbols():
     candidates = get_all_candidates()
@@ -176,7 +181,18 @@ def run_direct_entry_scan():
         if entry_data is None:
             continue
 
-        result = analyze_entry_opportunity(entry_data)
+        result = analyze_entry_opportunity(
+            entry_data
+        )
+
+        if symbol in WATCH_DEBUG_SYMBOLS:
+            print(
+                f"🔎 Direct Entry Debug | "
+                f"{symbol} | "
+                f"ready={result.get('ready_to_alert')} | "
+                f"reason={result.get('reason')}",
+                flush=True,
+            )
 
         if not result.get("ready_to_alert"):
             continue
