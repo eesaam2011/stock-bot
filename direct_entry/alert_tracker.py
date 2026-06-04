@@ -292,6 +292,13 @@ def update_alert_tracking(symbol, current_price):
 
     record = active_alerts[symbol]
 
+    if isinstance(record, str):
+        try:
+            record = json.loads(record)
+        except Exception:
+            remove_alert_from_monitoring(symbol)
+            return "invalid_tracking_record_removed"
+            
     record["highest_price"] = max(
         float(record.get("highest_price", 0) or 0),
         current_price,
