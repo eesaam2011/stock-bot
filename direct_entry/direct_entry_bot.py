@@ -42,7 +42,10 @@ def get_clean_asset_symbols():
     symbols = []
 
     for asset in assets:
-        symbol = getattr(asset, "symbol", None)
+        if isinstance(asset, dict):
+            symbol = asset.get("symbol")
+        else:
+            symbol = getattr(asset, "symbol", None)
 
         if symbol:
             symbols.append(str(symbol).upper().strip())
