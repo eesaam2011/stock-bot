@@ -97,6 +97,9 @@ def passes_smart_resistance_layer(row):
         and close_position >= 0.65
     )
 
+    if resistance_distance_pct <= 0.20 and not real_breakout:
+    return False, "Too close to resistance without breakout"
+
     if real_breakout:
         return True, "Resistance breakout"
 
