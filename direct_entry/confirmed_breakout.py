@@ -71,10 +71,10 @@ def analyze_confirmed_breakout(row):
         "ready_to_alert": True,
         "grade": "CONFIRMED_BREAKOUT",
         "reason": "Confirmed breakout with 3 closes above resistance",
+        "price": entry_price,
+        "stop_loss": stop_loss,
         "confirmed_resistance": resistance,
         "confirmation_close_1": close_1,
         "confirmation_close_2": close_2,
         "confirmation_close_3": close_3,
-        "confirmed_entry_price": entry_price,
-        "confirmed_stop_loss": stop_loss,
-  }
+    }
