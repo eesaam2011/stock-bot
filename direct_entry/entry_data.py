@@ -349,6 +349,7 @@ def build_entry_data(symbol, daily_bar=None):
     )
     return {
         "symbol": symbol,
+        "bars": bars,
         "price": price,
         "recent_volume": recent_volume,
         "day_volume": day_volume,
