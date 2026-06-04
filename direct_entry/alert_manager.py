@@ -105,11 +105,42 @@ def format_price(value):
         return f"{value:.3f}"
 
     return f"{value:.2f}"
+def build_confirmed_breakout_message(alert):
+    symbol = alert.get("symbol", "N/A")
 
+    resistance = alert.get("confirmed_resistance")
+    close_1 = alert.get("confirmation_close_1")
+    close_2 = alert.get("confirmation_close_2")
+    close_3 = alert.get("confirmation_close_3")
+    entry_price = alert.get("price")
+    stop_loss = alert.get("stop_loss")
+
+    return (
+        f"🧱 بوت الدخول المباشر\n\n"
+        f"اختراق مؤكد - دخول محافظ\n\n"
+        f"السهم: {symbol}\n\n"
+        f"المقاومة:\n"
+        f"{format_price(resistance)}\n\n"
+        f"إغلاقات التأكيد:\n"
+        f"1) {format_price(close_1)}\n"
+        f"2) {format_price(close_2)}\n"
+        f"3) {format_price(close_3)}\n\n"
+        f"الدخول المباشر:\n"
+        f"{format_price(entry_price)}\n\n"
+        f"وقف الخسارة:\n"
+        f"كسر {format_price(stop_loss)}\n\n"
+        f"TradingView:\n"
+        f"https://www.tradingview.com/chart/?symbol={symbol}"
+    )
+    
 def build_direct_entry_message(alert):
     symbol = alert.get("symbol", "N/A")
     grade = alert.get("grade", "A")
     title = get_entry_title(grade)
+    if grade == "CONFIRMED_BREAKOUT":
+        return build_confirmed_breakout_message(
+            alert
+        )
 
     price = float(alert.get("price", 0) or 0)
 
