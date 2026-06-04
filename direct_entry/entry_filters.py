@@ -162,12 +162,13 @@ def grade_entry(row):
 
     if (
         resistance_distance_pct <= 1.0
+        and resistance_distance_pct >= -1.0
         and instant_rvol >= 2.5
         and volume_acceleration
         and close_position >= 0.65
     ):
         return "A+"
-
+        
     return "A"
 
 
