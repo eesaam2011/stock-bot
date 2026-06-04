@@ -8,7 +8,9 @@ from shared.config import (
     MIN_DAY_VOLUME,
     MIN_DOLLAR_VOLUME,
 )
-
+from direct_entry.confirmed_breakout import (
+    analyze_confirmed_breakout,
+)
 
 def passes_layer0(row):
     price = float(row.get("price", 0) or 0)
@@ -192,6 +194,12 @@ def analyze_entry_opportunity(row):
                 "reason": reason,
             }
 
+    confirmed_result = analyze_confirmed_breakout(
+        row
+    )
+
+    if confirmed_result:
+        return confirmed_result 
     grade = grade_entry(row)
 
     if grade == "A":
