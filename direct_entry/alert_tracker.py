@@ -233,17 +233,60 @@ def build_final_update_message(record, current_price):
     entry_price = float(record.get("entry_price", 0) or 0)
     highest_price = float(record.get("highest_price", 0) or 0)
 
+    target_1_hit = bool(
+        record.get("target_1_hit", False)
+    )
+
+    target_2_hit = bool(
+        record.get("target_2_hit", False)
+    )
+
+    stop_hit = bool(
+        record.get("stop_hit", False)
+    )
+
     change_pct = 0
     highest_pct = 0
 
     if entry_price > 0:
-        change_pct = ((current_price - entry_price) / entry_price) * 100
-        highest_pct = ((highest_price - entry_price) / entry_price) * 100
+        change_pct = (
+            (current_price - entry_price)
+            / entry_price
+        ) * 100
 
-    if record.get("target_1_hit"):
-        target_1_status = "✅ وصل الهدف الأول"
+        highest_pct = (
+            (highest_price - entry_price)
+            / entry_price
+        ) * 100
+
+    status_lines = []
+
+    if stop_hit:
+        status_lines.append(
+            "❌ ضرب وقف الخسارة"
+        )
+
+    if target_1_hit:
+        status_lines.append(
+            "✅ تحقق الهدف الأول"
+        )
     else:
-        target_1_status = "❌ لم يصل الهدف الأول"
+        status_lines.append(
+            "⌛ الهدف الأول لم يتحقق"
+        )
+
+    if target_2_hit:
+        status_lines.append(
+            "✅ تحقق الهدف الثاني"
+        )
+    else:
+        status_lines.append(
+            "⌛ الهدف الثاني لم يتحقق"
+        )
+
+    status_text = "\n".join(
+        status_lines
+    )
 
     if current_price > entry_price:
         price_status = "🟢 ما زال فوق سعر الدخول"
@@ -258,17 +301,16 @@ def build_final_update_message(record, current_price):
         f"السهم: {symbol}\n"
         f"التقييم: {grade}\n\n"
         f"سعر الدخول:\n"
-        f"{format_number(entry_price, 4)}\n\n"
+        f"{format_price(entry_price)}\n\n"
         f"السعر الحالي:\n"
-        f"{format_number(current_price, 4)}\n\n"
+        f"{format_price(current_price)}\n\n"
         f"التغير:\n"
         f"{format_number(change_pct, 2)}%\n\n"
         f"أعلى سعر أثناء المتابعة:\n"
-        f"{format_number(highest_price, 4)} "
+        f"{format_price(highest_price)} "
         f"({format_number(highest_pct, 2)}%)\n\n"
         f"الحالة الحالية:\n"
-        f"{target_1_status}\n"
-        f"⏳ لم يصل الهدف الثاني\n"
+        f"{status_text}\n"
         f"{price_status}\n\n"
         f"تقييم نهاية المتابعة:\n"
         f"انتهت مدة المتابعة دون وصول الهدف الثاني أو ضرب الوقف.\n"
