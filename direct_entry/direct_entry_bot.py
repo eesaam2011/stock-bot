@@ -93,15 +93,19 @@ def update_active_alerts():
     if not active_alerts:
         return
 
-    symbols = []
+    if isinstance(active_alerts, dict):
+        symbols = list(active_alerts.keys())
+    else:
+        symbols = []
 
-    for alert in active_alerts:
-        symbol = alert.get("symbol")
+        for alert in active_alerts:
+            if isinstance(alert, dict):
+                symbol = alert.get("symbol")
+            else:
+                symbol = alert
 
-        if symbol:
-            symbols.append(
-                str(symbol).upper().strip()
-            )
+            if symbol:
+                symbols.append(str(symbol).upper().strip())
 
     daily_bars = get_daily_bars(
         symbols=symbols,
@@ -130,8 +134,7 @@ def update_active_alerts():
                 f"{symbol} | {status}",
                 flush=True,
             )
-
-
+            
 def run_direct_entry_scan():
     update_active_alerts()
 
