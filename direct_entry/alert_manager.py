@@ -92,6 +92,19 @@ def estimate_target_time(alert):
 
     return "30 - 60 دقيقة"
 
+def format_price(value):
+    try:
+        value = float(value)
+    except Exception:
+        return "N/A"
+
+    if value < 1:
+        return f"{value:.4f}"
+
+    if value < 10:
+        return f"{value:.3f}"
+
+    return f"{value:.2f}"
 
 def build_direct_entry_message(alert):
     symbol = alert.get("symbol", "N/A")
@@ -109,21 +122,21 @@ def build_direct_entry_message(alert):
         f"{title}\n\n"
         f"السهم: {symbol}\n"
         f"التقييم: {grade}\n"
-        f"سعر الدخول: {format_number(price, 4)}\n\n"
+        f"سعر الدخول: {format_price(price)}\n\n"
         f"القوة اللحظية:\n"
         f"RVOL: {format_number(alert.get('instant_rvol'), 2)}\n"
         f"حركة 3 دقائق: {format_number(alert.get('move_3m'), 2)}%\n"
         f"حركة 5 دقائق: {format_number(alert.get('move_5m'), 2)}%\n\n"
         f"المقاومة:\n"
-        f"المستوى: {format_number(alert.get('nearest_resistance'), 4)}\n"
+        f"المستوى: {format_price(alert.get('nearest_resistance'))}\n"
         f"البعد عن المقاومة: "
         f"{format_number(alert.get('resistance_distance_pct'), 2)}%\n\n"
         f"المدة المتوقعة للهدف:\n"
         f"{estimate_target_time(alert)}\n\n"
         f"الخطة:\n"
-        f"وقف الخسارة: {format_number(stop_loss, 4)}\n"
-        f"الهدف الأول: {format_number(target_1, 4)}\n"
-        f"الهدف الثاني: {format_number(target_2, 4)}\n\n"
+        f"وقف الخسارة: {format_price(stop_loss)}\n"
+        f"الهدف الأول: {format_price(target_1)}\n"
+        f"الهدف الثاني: {format_price(target_2)}\n\n"
         f"سبب التنبيه:\n"
         f"{alert.get('reason', 'تم تأكيد الدخول المباشر')}\n\n"
         f"TradingView:\n"
@@ -131,7 +144,6 @@ def build_direct_entry_message(alert):
     )
 
     return message
-
 
 def send_telegram_message(message):
     if not telegram_ready():
@@ -169,6 +181,22 @@ def send_telegram_message(message):
 
 
 def send_direct_entry_alert(alert):
+    symbol = str(alert.get("symbol", "")).upper().strip()
+
+    if not symbol:
+        return False
+
+    from direct_entry.alert_tracker import get_active_alerts
+
+    active_alerts = get_active_alerts()
+
+    if symbol in active_alerts:
+        print(
+            f"⏳ Alert skipped. {symbol} is already under monitoring.",
+            flush=True,
+        )
+        return False
+
     if not can_send_alert(alert):
         return False
 
