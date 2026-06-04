@@ -218,7 +218,10 @@ def calculate_overextended(bars):
     )
 
 
-def calculate_resistance_levels(bars):
+def calculate_resistance_levels(
+    bars,
+    current_price=None,
+):
     if len(bars) < 60:
         return {
             "resistance_30m": 0,
@@ -227,7 +230,10 @@ def calculate_resistance_levels(bars):
             "resistance_distance_pct": 0,
         }
 
-    current_price = float(bars["close"].iloc[-1])
+    if current_price is None:
+        current_price = float(
+            bars["close"].iloc[-1]
+        )
 
     resistance_30m = float(bars["high"].tail(30).max())
     resistance_60m = float(bars["high"].tail(60).max())
@@ -251,7 +257,11 @@ def calculate_resistance_levels(bars):
         resistance_distance_pct = 0
     else:
         resistance_distance_pct = float(
-            ((nearest_resistance - current_price) / current_price) * 100
+            (
+                (nearest_resistance - current_price)
+                / current_price
+            )
+            * 100
         )
 
     return {
@@ -333,8 +343,10 @@ def build_entry_data(symbol, daily_bar=None):
     real_breakout = calculate_real_breakout(bars)
     overextended = calculate_overextended(bars)
 
-    resistance_data = calculate_resistance_levels(bars)
-
+    resistance_data = calculate_resistance_levels(
+        bars,
+        current_price=price,
+    )
     return {
         "symbol": symbol,
         "price": price,
