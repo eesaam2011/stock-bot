@@ -7,8 +7,10 @@ import json
 import requests
 from datetime import datetime, timedelta
 
-from direct_entry.alert_manager import send_telegram_message
-
+from direct_entry.alert_manager import (
+    send_telegram_message,
+    format_price,
+)
 
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
