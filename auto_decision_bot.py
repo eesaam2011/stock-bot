@@ -743,8 +743,10 @@ def add_to_pending(symbol, price, reason=""):
         print(f"🟡 Added pending candidate: {symbol} | {reason}", flush=True)
 
     else:
+        p = pending_watchlist.get(symbol)
 
-        p = pending_watchlist[symbol]
+        if not p:
+            return
 
         p["last_price"] = float(price)
         p["best_price"] = max(float(p.get("best_price", price)), float(price))
@@ -752,6 +754,7 @@ def add_to_pending(symbol, price, reason=""):
 
         if reason and reason not in str(p.get("reason", "")):
             p["reason"] = str(p.get("reason", "")) + " | " + reason
+            
 def update_pending_behavior(symbol, price, instant_rvol, recent_move, volume_acceleration, strong_candle, vwap_reclaim, ema_reclaim, distribution_score):
     if symbol not in pending_watchlist:
         return
