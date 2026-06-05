@@ -137,6 +137,7 @@ def build_direct_entry_message(alert):
     symbol = alert.get("symbol", "N/A")
     grade = alert.get("grade", "A")
     title = get_entry_title(grade)
+
     if grade == "CONFIRMED_BREAKOUT":
         return build_confirmed_breakout_message(
             alert
