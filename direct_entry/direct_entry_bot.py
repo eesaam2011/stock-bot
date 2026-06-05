@@ -195,8 +195,14 @@ def run_direct_entry_scan():
                 + 1
             )
 
-            continue
+            print(
+                f"❌ Direct Entry rejected: "
+                f"{symbol} | {reason}",
+                flush=True,
+            )
 
+            continue
+    
         alert = {
             **entry_data,
             **result,
