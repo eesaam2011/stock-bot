@@ -147,10 +147,22 @@ def grade_entry(row):
     instant_rvol = float(row.get("instant_rvol", 0) or 0)
     volume_acceleration = bool(row.get("volume_acceleration", False))
     close_position = float(row.get("close_position", 0) or 0)
+    move_3m = float(row.get("move_3m", 0) or 0)
+    move_5m = float(row.get("move_5m", 0) or 0)
 
     fresh_breakout_zone = (
         resistance_distance_pct <= 0
         and resistance_distance_pct >= -1.0
+    )
+
+    strong_momentum = (
+        move_3m >= 0.60
+        or move_5m >= 1.00
+    )
+
+    acceptable_momentum = (
+        move_3m >= 0.40
+        or move_5m >= 0.70
     )
 
     if (
@@ -159,6 +171,7 @@ def grade_entry(row):
         and instant_rvol >= 4
         and volume_acceleration
         and close_position >= 0.75
+        and strong_momentum
     ):
         return "A++"
 
@@ -168,11 +181,11 @@ def grade_entry(row):
         and instant_rvol >= 2.5
         and volume_acceleration
         and close_position >= 0.65
+        and acceptable_momentum
     ):
         return "A+"
-        
-    return "A"
 
+    return "A"
 
 def analyze_entry_opportunity(row):
     checks = [
