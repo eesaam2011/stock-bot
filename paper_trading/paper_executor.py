@@ -22,6 +22,10 @@ PAPER_ACTIVE_TRADES_KEY = "paper_active_trades"
 PAPER_TRADE_DOLLARS = float(os.getenv("PAPER_TRADE_DOLLARS", "100"))
 DEFAULT_STOP_LOSS_PCT = 1.5
 
+PAPER_TRADING_ENABLED = (
+    os.getenv("PAPER_TRADING_ENABLED", "false").lower() == "true"
+)
+
 
 api = tradeapi.REST(
     APCA_API_KEY_ID,
@@ -295,9 +299,12 @@ def execute_paper_trade_request(trade_request):
 
 
 def run_paper_executor_once():
+    if not PAPER_TRADING_ENABLED:
+        return False
+
     trade_request = pop_paper_trade_request()
 
     if not trade_request:
         return False
 
-    return execute_paper_trade_request(trade_request)
+    return execute_paper_trade_request(trade_request) 
