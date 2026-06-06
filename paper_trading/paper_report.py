@@ -161,7 +161,7 @@ def build_single_trade_report(symbol, trade):
     current_price = get_current_price(symbol, fallback_price=last_price)
 
     if trade.get("status") == "closed":
-    pl_dollars = float(
+        pl_dollars = float(
         trade.get("paper_pl_dollars") or 0
     )
 
