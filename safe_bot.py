@@ -806,8 +806,8 @@ def analyze_symbol(symbol, source_group, df=None):
             and close_position >= 0.80
             and upper_wick_pct <= 0.20
             and body_ratio >= 0.35
-            and move_3m >= 0.20
-            and move_5m >= 0.35
+            and move_3m >= 0.25
+            and move_5m >= 0.45
             and move_3m >= move_5m * 0.55
             and distribution_score < 10
             and not overextended
