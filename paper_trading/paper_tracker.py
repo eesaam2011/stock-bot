@@ -342,16 +342,66 @@ def update_trade_metrics(trade, current_price):
 
     return trade
 
+def get_existing_position(symbol):
+    try:
+        return api.get_position(symbol)
+    except Exception:
+        return None
 
+
+def calculate_closed_trade_pl(trade, exit_price):
+    entry_price = float(trade.get("entry_price") or 0)
+    qty = float(trade.get("qty") or 0)
+
+    if not entry_price or not qty or not exit_price:
+        return 0.0, 0.0
+
+    pl_dollars = (exit_price - entry_price) * qty
+    pl_pct = ((exit_price - entry_price) / entry_price) * 100
+
+    return round(pl_dollars, 2), round(pl_pct, 2)
+
+
+def mark_trade_closed(trade, exit_price, exit_reason):
+    pl_dollars, pl_pct = calculate_closed_trade_pl(
+        trade=trade,
+        exit_price=exit_price,
+    )
+
+    trade["status"] = "closed"
+    trade["exit_price"] = exit_price
+    trade["exit_time"] = datetime.now(UTC).isoformat()
+    trade["exit_reason"] = exit_reason
+    trade["paper_pl_dollars"] = pl_dollars
+    trade["paper_pl_pct"] = pl_pct
+    trade["updated_at"] = datetime.now(UTC).isoformat()
+
+    save_active_paper_trade(trade)
+
+    return trade
+    
 def track_single_trade(trade):
     symbol = trade.get("symbol")
 
     if not symbol:
         return
 
+    if trade.get("status") == "closed":
+        return
+
     current_price = get_current_price(symbol)
 
     if not current_price:
+        return
+
+    position = get_existing_position(symbol)
+
+    if not position:
+        mark_trade_closed(
+            trade=trade,
+            exit_price=current_price,
+            exit_reason="Position closed / stop likely filled",
+        )
         return
 
     trade = update_trade_metrics(
@@ -365,7 +415,6 @@ def track_single_trade(trade):
     )
 
     save_active_paper_trade(trade)
-
 
 def run_paper_tracker_once():
     if not PAPER_TRADING_ENABLED:
