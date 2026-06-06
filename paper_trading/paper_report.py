@@ -162,19 +162,19 @@ def build_single_trade_report(symbol, trade):
 
     if trade.get("status") == "closed":
         pl_dollars = float(
-        trade.get("paper_pl_dollars") or 0
-    )
+            trade.get("paper_pl_dollars") or 0
+        )
 
-    pl_pct = float(
-        trade.get("paper_pl_pct") or 0
-    )
+        pl_pct = float(
+            trade.get("paper_pl_pct") or 0
+        )
 
-else:
-    pl_dollars, pl_pct = calculate_trade_pl(
-        trade=trade,
-        current_price=current_price,
-    )
-    
+    else:
+        pl_dollars, pl_pct = calculate_trade_pl(
+            trade=trade,
+            current_price=current_price,
+        )
+
     max_gain_pct = trade.get("max_gain_pct", 0)
     max_drawdown_pct = trade.get("max_drawdown_pct", 0)
 
@@ -182,7 +182,7 @@ else:
     target2_hit = "نعم" if trade.get("target2_hit") else "لا"
 
     stop_events_text = build_stop_events_text(trade)
-
+    
     report = (
         f"━━━━━━━━━━━━━━\n"
         f"📌 السهم: {symbol}\n"
