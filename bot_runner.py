@@ -20,6 +20,7 @@ from shared.config import (
     HUNTER_SCAN_INTERVAL_PREMARKET,
     HUNTER_SCAN_INTERVAL_MARKET,
 )
+from paper_trading.paper_executor import run_paper_executor_once
 
 app = Flask(__name__)
 
@@ -120,6 +121,7 @@ def run_bot_runner():
                 )
 
                 run_direct_entry_scan()
+                run_paper_executor_once()
 
                 last_direct_entry_run = current_time
 
