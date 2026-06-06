@@ -3,7 +3,7 @@ import json
 import requests
 import alpaca_trade_api as tradeapi
 from datetime import datetime, UTC
-
+import pytz
 
 PAPER_TRADING_ENABLED = (
     os.getenv("PAPER_TRADING_ENABLED", "false").lower() == "true"
@@ -22,6 +22,8 @@ APCA_API_BASE_URL = os.getenv(
 PAPER_ACTIVE_TRADES_KEY = "paper_active_trades"
 
 TRAILING_STOP_PCT = 1.5
+MAX_MONITOR_MINUTES = 120
+saudi_tz = pytz.timezone("Asia/Riyadh")
 
 
 api = tradeapi.REST(
@@ -379,7 +381,101 @@ def mark_trade_closed(trade, exit_price, exit_reason):
     save_active_paper_trade(trade)
 
     return trade
-    
+
+def minutes_since_opened(trade):
+    try:
+        opened_at = datetime.fromisoformat(
+            trade.get("opened_at").replace("Z", "+00:00")
+        )
+
+        now = datetime.now(UTC)
+        return (now - opened_at).total_seconds() / 60
+
+    except Exception:
+        return 0
+
+
+def close_trade_market(symbol, qty):
+    try:
+        order = api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side="sell",
+            type="market",
+            time_in_force="day",
+        )
+
+        print(
+            f"🔚 Paper MARKET SELL submitted: {symbol} | qty={qty}",
+            flush=True,
+        )
+
+        return order
+
+    except Exception as e:
+        print(
+            f"❌ Paper MARKET SELL error: {symbol} | {e}",
+            flush=True,
+        )
+        return None
+
+
+def send_two_hour_close_message(trade):
+    try:
+        from direct_entry.alert_manager import send_telegram_message, format_price
+
+        symbol = trade.get("symbol")
+        pl_dollars = trade.get("paper_pl_dollars", 0)
+        pl_pct = trade.get("paper_pl_pct", 0)
+
+        message = (
+            "⏱️ انتهت مدة مراقبة صفقة Paper\n\n"
+            f"السهم: {symbol}\n"
+            f"الدخول: {format_price(trade.get('entry_price'))}\n"
+            f"الخروج: {format_price(trade.get('exit_price'))}\n"
+            f"الربح/الخسارة التجريبية: ${pl_dollars} ({pl_pct}%)\n\n"
+            "🔚 تم الإغلاق بسعر السوق بعد ساعتين"
+        )
+
+        send_telegram_message(message)
+
+    except Exception as e:
+        print(
+            f"❌ Two-hour close telegram error: {e}",
+            flush=True,
+        )
+
+def send_late_trade_pending_message(trade):
+    if trade.get("late_pending_message_sent"):
+        return
+
+    try:
+        from direct_entry.alert_manager import send_telegram_message, format_price
+
+        symbol = trade.get("symbol")
+        opened_minutes = round(minutes_since_opened(trade), 1)
+
+        message = (
+            "🌙 صفقة Paper متأخرة لم تكتمل مراقبتها بعد\n\n"
+            f"السهم: {symbol}\n"
+            f"الدخول: {format_price(trade.get('entry_price'))}\n"
+            f"آخر سعر: {format_price(trade.get('last_price'))}\n"
+            f"مدة المراقبة حتى الآن: {opened_minutes} دقيقة\n\n"
+            "الحالة: لم يقفل بعد\n"
+            "سيتم إرسال تنبيه خاص عند اكتمال ساعتين."
+        )
+
+        send_telegram_message(message)
+
+        trade["late_pending_message_sent"] = True
+        save_active_paper_trade(trade)
+
+    except Exception as e:
+        print(
+            f"❌ Late trade pending telegram error: {e}",
+            flush=True,
+        )
+        
 def track_single_trade(trade):
     symbol = trade.get("symbol")
 
@@ -404,6 +500,25 @@ def track_single_trade(trade):
         )
         return
 
+    if minutes_since_opened(trade) >= MAX_MONITOR_MINUTES:
+        qty = trade.get("qty")
+
+        close_order = close_trade_market(
+            symbol=symbol,
+            qty=qty,
+        )
+
+        if close_order:
+            closed_trade = mark_trade_closed(
+                trade=trade,
+                exit_price=current_price,
+                exit_reason="2-hour monitoring ended / market close",
+            )
+
+            send_two_hour_close_message(closed_trade)
+
+        return
+
     trade = update_trade_metrics(
         trade=trade,
         current_price=current_price,
@@ -414,6 +529,15 @@ def track_single_trade(trade):
         current_price=current_price,
     )
 
+    if minutes_since_opened(trade) < MAX_MONITOR_MINUTES:
+    now_saudi = datetime.now(saudi_tz)
+
+    if (
+        now_saudi.hour >= 22
+        and now_saudi.minute >= 5
+    ):
+        send_late_trade_pending_message(trade)
+        
     save_active_paper_trade(trade)
 
 def run_paper_tracker_once():
