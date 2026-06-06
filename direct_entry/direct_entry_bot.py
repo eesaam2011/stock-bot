@@ -17,8 +17,8 @@ from direct_entry.alert_tracker import (
     add_alert_to_monitoring,
     get_active_alerts,
     update_alert_tracking,
-
 )
+from paper_trading.paper_trade_queue import queue_paper_trade
 
 def get_hunter_symbols():
     candidates = get_all_candidates()
