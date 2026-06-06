@@ -4,7 +4,7 @@ import time
 import requests
 import alpaca_trade_api as tradeapi
 from datetime import datetime, UTC
-
+import pytz
 
 APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID")
 APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
@@ -28,6 +28,10 @@ PAPER_TRADING_ENABLED = (
     os.getenv("PAPER_TRADING_ENABLED", "false").lower() == "true"
 )
 
+saudi_tz = pytz.timezone("Asia/Riyadh")
+
+PAPER_MARKET_START_HOUR = 11
+PAPER_MARKET_END_HOUR = 23
 
 api = tradeapi.REST(
     APCA_API_KEY_ID,
@@ -36,6 +40,14 @@ api = tradeapi.REST(
     api_version="v2",
 )
 
+def paper_trading_session_open():
+    now = datetime.now(saudi_tz)
+
+    return (
+        PAPER_MARKET_START_HOUR
+        <= now.hour
+        < PAPER_MARKET_END_HOUR
+    )
 
 def redis_ready():
     return bool(UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)
@@ -337,9 +349,12 @@ def run_paper_executor_once():
     if not PAPER_TRADING_ENABLED:
         return False
 
+    if not paper_trading_session_open():
+        return False
+
     trade_request = pop_paper_trade_request()
 
     if not trade_request:
         return False
 
-    return execute_paper_trade_request(trade_request) 
+    return execute_paper_trade_request(trade_request)
