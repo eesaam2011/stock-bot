@@ -160,11 +160,15 @@ def build_single_trade_report(symbol, trade):
     last_price = trade.get("last_price") or entry_price
     current_price = get_current_price(symbol, fallback_price=last_price)
 
+    if trade.get("status") == "closed":
+    pl_dollars = float(trade.get("paper_pl_dollars") or 0)
+    pl_pct = float(trade.get("paper_pl_pct") or 0)
+else:
     pl_dollars, pl_pct = calculate_trade_pl(
         trade=trade,
         current_price=current_price,
     )
-
+    
     max_gain_pct = trade.get("max_gain_pct", 0)
     max_drawdown_pct = trade.get("max_drawdown_pct", 0)
 
@@ -178,6 +182,9 @@ def build_single_trade_report(symbol, trade):
         f"📌 السهم: {symbol}\n"
         f"النوع: {trade.get('grade', '-')}\n"
         f"الحالة: {trade.get('status', '-')}\n"
+        f"وقت الخروج: {trade.get('exit_time', '-')}\n"
+        f"سعر الخروج: {format_price_safe(trade.get('exit_price'))}\n"
+        f"سبب الخروج: {trade.get('exit_reason', '-')}\n"
         f"وقت الدخول: {trade.get('opened_at', '-')}\n\n"
         f"الدخول: {format_price_safe(entry_price)}\n"
         f"آخر سعر/سعر التقييم: {format_price_safe(current_price)}\n"
