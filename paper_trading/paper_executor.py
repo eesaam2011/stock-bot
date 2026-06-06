@@ -19,7 +19,9 @@ UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 PAPER_TRADE_QUEUE_KEY = "direct_entry_paper_trade_queue"
 PAPER_ACTIVE_TRADES_KEY = "paper_active_trades"
 
-PAPER_TRADE_DOLLARS = float(os.getenv("PAPER_TRADE_DOLLARS", "100"))
+PAPER_TRADE_DOLLARS = float(
+    os.getenv("PAPER_TRADE_DOLLARS", "300")
+)
 DEFAULT_STOP_LOSS_PCT = 1.5
 
 PAPER_TRADING_ENABLED = (
