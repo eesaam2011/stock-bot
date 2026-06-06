@@ -119,7 +119,7 @@ def save_active_paper_trade(trade):
         )
         return False
 
-  def get_current_price(symbol):
+def get_current_price(symbol):
     try:
         trade = api.get_latest_trade(symbol)
         return float(trade.price)
