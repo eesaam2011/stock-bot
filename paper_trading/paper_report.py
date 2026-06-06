@@ -180,6 +180,10 @@ def build_single_trade_report(symbol, trade):
 
     target1_hit = "نعم" if trade.get("target1_hit") else "لا"
     target2_hit = "نعم" if trade.get("target2_hit") else "لا"
+    status_text = trade.get("status", "-")
+
+    if status_text != "closed":
+        status_text = "لم يقفل بعد"
 
     stop_events_text = build_stop_events_text(trade)
     
@@ -187,7 +191,7 @@ def build_single_trade_report(symbol, trade):
         f"━━━━━━━━━━━━━━\n"
         f"📌 السهم: {symbol}\n"
         f"النوع: {trade.get('grade', '-')}\n"
-        f"الحالة: {trade.get('status', '-')}\n"
+        f"الحالة: {status}\n"
         f"وقت الخروج: {trade.get('exit_time', '-')}\n"
         f"سعر الخروج: {format_price_safe(trade.get('exit_price'))}\n"
         f"سبب الخروج: {trade.get('exit_reason', '-')}\n"
