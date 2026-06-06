@@ -222,7 +222,39 @@ def submit_stop_loss(symbol, qty, stop_price):
         )
         return None
 
+def send_paper_trade_opened_message(active_trade):
+    try:
+        from direct_entry.alert_manager import send_telegram_message, format_price
 
+        symbol = active_trade.get("symbol")
+        grade = active_trade.get("grade")
+        qty = active_trade.get("qty")
+        entry_price = active_trade.get("entry_price")
+        stop_price = active_trade.get("stop_price")
+        target1 = active_trade.get("target1")
+        target2 = active_trade.get("target2")
+
+        message = (
+            "🧪 تم فتح صفقة تجريبية Paper\n\n"
+            f"السهم: {symbol}\n"
+            f"القوة: {grade}\n"
+            f"الكمية: {qty}\n"
+            f"الدخول: {format_price(entry_price)}\n"
+            f"وقف الخسارة: {format_price(stop_price)}\n"
+            f"الهدف الأول: {format_price(target1)}\n"
+            f"الهدف الثاني: {format_price(target2)}\n\n"
+            "✅ تم الشراء التجريبي\n"
+            "🛑 تم وضع وقف الخسارة مباشرة"
+        )
+
+        send_telegram_message(message)
+
+    except Exception as e:
+        print(
+            f"❌ Paper opened telegram error: {e}",
+            flush=True,
+        )
+        
 def execute_paper_trade_request(trade_request):
     symbol = str(trade_request.get("symbol", "")).upper().strip()
     grade = trade_request.get("grade")
@@ -289,6 +321,7 @@ def execute_paper_trade_request(trade_request):
     }
 
     save_active_paper_trade(active_trade)
+    send_paper_trade_opened_message(active_trade)
 
     print(
         f"✅ Paper trade active: {symbol} | entry={filled_price} | stop={stop_price}",
