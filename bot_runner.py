@@ -48,8 +48,8 @@ def run_web_server():
 DIRECT_ENTRY_INTERVAL_SECONDS = 60
 saudi_tz = pytz.timezone("Asia/Riyadh")
 
-PAPER_REPORT_HOUR = 23
-PAPER_REPORT_MINUTE = 10
+PAPER_REPORT_HOUR = 0
+PAPER_REPORT_MINUTE = 5
 
 last_paper_report_date = None
 
