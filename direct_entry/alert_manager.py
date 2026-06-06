@@ -219,6 +219,7 @@ def send_direct_entry_alert(alert):
         return False
 
     from direct_entry.alert_tracker import get_active_alerts
+    from paper_trading.paper_trade_queue import queue_paper_trade
 
     active_alerts = get_active_alerts()
 
@@ -237,5 +238,6 @@ def send_direct_entry_alert(alert):
 
     if sent:
         mark_alert_sent(alert)
+        queue_paper_trade(alert)
 
     return sent
