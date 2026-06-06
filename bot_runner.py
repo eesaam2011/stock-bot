@@ -6,7 +6,8 @@
 import os
 import time
 import threading
-
+import pytz
+from paper_trading.paper_report import send_daily_paper_report
 from flask import Flask
 
 from datetime import datetime, UTC
@@ -45,7 +46,12 @@ def run_web_server():
     )
     
 DIRECT_ENTRY_INTERVAL_SECONDS = 60
+saudi_tz = pytz.timezone("Asia/Riyadh")
 
+PAPER_REPORT_HOUR = 23
+PAPER_REPORT_MINUTE = 10
+
+last_paper_report_date = None
 
 def get_hunter_interval():
     from datetime import datetime, UTC
@@ -84,6 +90,7 @@ def run_bot_runner():
 
     last_hunter_run = 0
     last_direct_entry_run = 0
+    global last_paper_report_date
 
     while True:
         current_time = time.time()
@@ -130,6 +137,24 @@ def run_bot_runner():
         except Exception as error:
             print(
                 f"Direct Entry error: {error}",
+                flush=True,
+            )
+
+        try:
+            now = datetime.now(saudi_tz)
+            today = now.date()
+
+            if (
+                now.hour == PAPER_REPORT_HOUR
+                and now.minute >= PAPER_REPORT_MINUTE
+                and last_paper_report_date != today
+            ):
+                send_daily_paper_report()
+                last_paper_report_date = today
+
+        except Exception as error:
+            print(
+                f"Paper report error: {error}",
                 flush=True,
             )
 
