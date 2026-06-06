@@ -530,7 +530,7 @@ def track_single_trade(trade):
     )
 
     if minutes_since_opened(trade) < MAX_MONITOR_MINUTES:
-    now_saudi = datetime.now(saudi_tz)
+        now_saudi = datetime.now(saudi_tz)
 
     if (
         now_saudi.hour >= 22
