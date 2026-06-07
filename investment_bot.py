@@ -351,6 +351,7 @@ def get_recent_sent_symbols(state, days=REPEAT_BLOCK_DAYS):
             cleaned_history.append(item)
 
     state["sent_history"] = cleaned_history
+    save_state(state)
     return blocked
 
 
@@ -1361,7 +1362,7 @@ while True:
 
         if should_run_deep_close_recheck():
             print("🔍 Running deep close recheck", flush=True)
-            run_scheduler()
+            deep_review_500()
 
         time.sleep(SCAN_INTERVAL)
 
