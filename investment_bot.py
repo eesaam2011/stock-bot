@@ -111,7 +111,7 @@ MAX_INSTANT_ALERTS = 5
 MAX_CANDIDATES_TO_COLLECT = 15
 
 REPEAT_BLOCK_DAYS = 30
-
+CLOSED_PICK_KEEP_DAYS = 3
 
 @app.route("/")
 def home():
@@ -335,7 +335,28 @@ def get_latest_prices_for_symbols(symbols):
         print(f"get_latest_prices_for_symbols error: {e}", flush=True)
 
     return prices
+def get_latest_prices_batch(symbols):
+    prices = {}
 
+    try:
+        snapshots = api.get_snapshots(symbols)
+
+        for symbol, snapshot in snapshots.items():
+            price = None
+
+            if snapshot.latest_trade:
+                price = getattr(snapshot.latest_trade, "price", None)
+
+            if price is None and snapshot.daily_bar:
+                price = getattr(snapshot.daily_bar, "close", None)
+
+            if price is not None:
+                prices[symbol.upper()] = float(price)
+
+    except Exception as e:
+        print(f"get_latest_prices_batch error: {e}", flush=True)
+
+    return prices
 
 def filter_symbols_by_price_before_bars(symbols):
     filtered = []
@@ -757,7 +778,10 @@ def scan_for_instant_alerts(state):
             if result.get("score", 0) >= MIN_SCORE_FOR_ALERT:
                 breakout_candidates.append(result)
 
-        if len(breakout_candidates) >= MAX_CANDIDATES_TO_COLLECT:
+        if (
+            len(breakout_candidates) >= MAX_CANDIDATES_TO_COLLECT
+            and i >= len(symbols) * 0.50
+        ):
             break
 
         time.sleep(0.5)
@@ -815,12 +839,62 @@ def get_latest_price(symbol):
 
     return None
 
-
-def monitor_active_picks(state):
+def cleanup_closed_active_picks(state):
     active_picks = state.get("active_picks", [])
+    cleaned_picks = []
+    now = now_saudi()
+    changed = False
 
+    for p in active_picks:
+        status = p.get("status", "active")
+
+        if status == "active":
+            cleaned_picks.append(p)
+            continue
+
+        closed_at = p.get("closed_at")
+
+        if not closed_at:
+            p["closed_at"] = now.isoformat()
+            cleaned_picks.append(p)
+            changed = True
+            continue
+
+        try:
+            dt = datetime.fromisoformat(closed_at)
+
+            if dt.tzinfo is None:
+                dt = saudi_tz.localize(dt)
+
+            age_days = (now - dt.astimezone(saudi_tz)).days
+
+            if age_days < CLOSED_PICK_KEEP_DAYS:
+                cleaned_picks.append(p)
+            else:
+                changed = True
+
+        except Exception:
+            cleaned_picks.append(p)
+
+    if changed:
+        state["active_picks"] = cleaned_picks
+        save_state(state)
+
+    return state.get("active_picks", [])
+    
+def monitor_active_picks(state):
+    active_picks = cleanup_closed_active_picks(state)
+    
     if not active_picks:
         return
+
+    symbols = [
+        str(p.get("symbol", "")).upper()
+        for p in active_picks
+        if p.get("symbol") and p.get("status") == "active"
+    ]
+
+    prices = get_latest_prices_batch(symbols)
 
     changed = False
 
@@ -899,6 +973,7 @@ def monitor_active_picks(state):
             if price >= target4 and not p.get("hit_target4"):
                 p["hit_target4"] = True
                 p["status"] = "target4_done"
+                p["closed_at"] = now_saudi().isoformat()
                 changed = True
 
                 send_telegram_message(
@@ -911,6 +986,7 @@ def monitor_active_picks(state):
 
             if price <= raised_stop:
                 p["status"] = "stopped"
+                p["closed_at"] = now_saudi().isoformat()
                 changed = True
 
                 send_telegram_message(
