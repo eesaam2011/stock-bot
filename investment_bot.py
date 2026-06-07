@@ -53,6 +53,12 @@ BAD_NAME_KEYWORDS = [
     "notes",
     "income",
     "index",
+    "acquisition",
+    "blank check",
+    "spac",
+    "holdings acquisition",
+    "acquisition corp",
+    "acquisition corporation",
     "bank",
     "bancorp",
     "credit",
@@ -421,10 +427,14 @@ def get_bars_batch(symbols, timeframe=tradeapi.TimeFrame.Day, limit=240):
 def calculate_rsi(series, period=14):
     try:
         delta = series.diff()
-        gain = delta.where(delta > 0, 0).rolling(period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
 
-        rs = gain / loss
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+
+        avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+
+        rs = avg_gain / avg_loss.replace(0, 0.000001)
         rsi = 100 - (100 / (1 + rs))
 
         return float(rsi.iloc[-1])
