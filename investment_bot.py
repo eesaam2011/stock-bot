@@ -494,9 +494,9 @@ def investment_score(symbol, df=None):
         slow_runner = (
             price > sma20
             and price > sma50
-            and 3 <= move_20d <= 45
+            and 3 <= move_20d <= 30
             and move_5d >= -5
-            and 45 <= rsi <= 70
+            and 45 <= rsi <= 64
             and range_20 <= 65
         )
 
