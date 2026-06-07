@@ -31,7 +31,76 @@ ACTIVE_TRADES_FILE = "investment_active_trades.json"
 PRICE_MIN = 0.5
 PRICE_MAX = 10.0
 BATCH_SIZE = 100
+SYMBOL_BLACKLIST = {
+    "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC", "PNC", "COF", "DFS",
+    "MET", "PRU", "ALL", "AIG", "AFL", "TRV", "HIG", "CB",
+    "DKNG", "PENN", "WYNN", "LVS", "MGM", "CZR", "RSI",
+    "BUD", "TAP", "STZ", "DEO", "PM", "MO", "BTI",
+    "CGC", "TLRY", "ACB", "SNDL", "CRON",
+    "NCLH", "CCL", "RCL",
+    "AMC", "CNK", "IMAX",
+}
 
+BAD_NAME_KEYWORDS = [
+    "etf",
+    "fund",
+    "trust",
+    "warrant",
+    "unit",
+    "right",
+    "preferred",
+    "bond",
+    "notes",
+    "income",
+    "index",
+    "bank",
+    "bancorp",
+    "credit",
+    "lending",
+    "loan",
+    "mortgage",
+    "insurance",
+    "casino",
+    "gambling",
+    "betting",
+    "sportsbook",
+    "alcohol",
+    "beer",
+    "wine",
+    "tobacco",
+    "cannabis",
+    "marijuana",
+    "hemp",
+    "cruise",
+    "cinema",
+    "movie",
+    "theater",
+]
+
+
+def is_clean_symbol(symbol):
+    symbol = str(symbol).upper().strip()
+
+    if not symbol:
+        return False
+
+    if "." in symbol or "/" in symbol or "-" in symbol or "^" in symbol:
+        return False
+
+    if len(symbol) > 5:
+        return False
+
+    if not symbol.isalpha():
+        return False
+
+    if symbol.endswith(("W", "U", "R", "P", "Q", "Z")):
+        return False
+
+    if symbol in SYMBOL_BLACKLIST:
+        return False
+
+    return True
+    
 SCAN_INTERVAL = 300
 MONITOR_INTERVAL = 60 * 30
 DAILY_ACCUMULATION_HOUR = 18
@@ -193,7 +262,14 @@ def get_nasdaq_symbols_from_alpaca():
     try:
         assets = api.list_assets(status="active")
 
+        raw_count = 0
+        clean_symbol_count = 0
+        blacklist_count = 0
+        bad_name_count = 0
+
         for asset in assets:
+            raw_count += 1
+
             symbol = getattr(asset, "symbol", "")
             name = getattr(asset, "name", "") or ""
 
@@ -205,39 +281,36 @@ def get_nasdaq_symbols_from_alpaca():
             if not getattr(asset, "tradable", False):
                 continue
 
-            if "." in symbol or "/" in symbol or "-" in symbol:
+            if not is_clean_symbol(symbol):
                 continue
 
-            if len(symbol) > 5:
+            clean_symbol_count += 1
+
+            if symbol in SYMBOL_BLACKLIST:
+                blacklist_count += 1
                 continue
 
             lowered_name = name.lower()
 
-            bad_keywords = [
-                "etf",
-                "fund",
-                "trust",
-                "warrant",
-                "unit",
-                "right",
-                "preferred",
-                "bond",
-                "notes",
-                "income",
-                "index",
-            ]
-
-            if any(k in lowered_name for k in bad_keywords):
+            if any(k in lowered_name for k in BAD_NAME_KEYWORDS):
+                bad_name_count += 1
                 continue
 
             symbols.append(symbol)
 
+        symbols = list(set(symbols))
+
+        print(
+            f"✅ Asset filter: raw={raw_count} | clean_symbols={clean_symbol_count} | "
+            f"bad_name_rejected={bad_name_count} | final={len(symbols)}",
+            flush=True,
+        )
+
     except Exception as e:
         print(f"get_nasdaq_symbols_from_alpaca error: {e}", flush=True)
 
-    return list(set(symbols))
-
-
+    return symbols
+    
 def get_latest_prices_for_symbols(symbols):
     prices = {}
 
