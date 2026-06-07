@@ -319,12 +319,15 @@ def get_nasdaq_symbols_from_alpaca():
 
     return symbols
     
-def get_latest_prices_for_symbols(symbols):
+def get_latest_prices_batch(symbols):
     prices = {}
+
+    if not symbols:
+        return prices
 
     try:
         snapshots = api.get_snapshots(symbols)
-
+        
         for symbol, snapshot in snapshots.items():
             price = None
 
@@ -904,8 +907,11 @@ def monitor_active_picks(state):
         if p.get("symbol") and p.get("status") == "active"
     ]
 
-    prices = get_latest_prices_batch(symbols)
+    if not symbols:
+        return
 
+    prices = get_latest_prices_batch(symbols)
+    
     changed = False
 
     for p in active_picks:
