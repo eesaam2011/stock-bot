@@ -1005,6 +1005,8 @@ def monitor_active_picks(state):
                     f"الوقف: {round(raised_stop, 4)}"
                 )
 
+                continue
+
             weakness = (
                 gain_pct <= -7
                 or price <= entry * 0.93
