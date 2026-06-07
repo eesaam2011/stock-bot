@@ -6,7 +6,7 @@ import threading
 import pandas as pd
 import alpaca_trade_api as tradeapi
 from flask import Flask
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -21,33 +21,25 @@ SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL)
-saudi_tz = pytz.timezone("Asia/Riyadh")
-
-PRICE_MIN = 1.0
-PRICE_MAX = 15.0
-
-WEEKEND_TOP_N = 700
-FINAL_MAX_PICKS = 5
-FINAL_MIN_PICKS = 3
-
-SCAN_INTERVAL = 900
-MONITOR_INTERVAL = 4 * 60 * 60
-last_deep_close_recheck_date = ""
-
-THURSDAY_REPORT_HOUR = 15
-THURSDAY_REPORT_MINUTE = 0
-THURSDAY_ALERT_HOUR = 16
-THURSDAY_ALERT_MINUTE = 0
-
-REPEAT_BLOCK_DAYS = 30
-
-STATE_FILE = "investment_state.json"
-
-INVESTMENT_500_FILE = "investment_500_candidates.json"
-INVESTMENT_FINAL_FILE = "investment_final_results.json"
-INVESTMENT_ACTIVE_FILE = "investment_active_trades.json"
 
 app = Flask(__name__)
+saudi_tz = pytz.timezone("Asia/Riyadh")
+
+STATE_FILE = "investment_state.json"
+ACTIVE_TRADES_FILE = "investment_active_trades.json"
+
+PRICE_MIN = 0.5
+PRICE_MAX = 10.0
+BATCH_SIZE = 100
+
+SCAN_INTERVAL = 300
+MONITOR_INTERVAL = 60 * 30
+DAILY_ACCUMULATION_HOUR = 18
+
+MIN_SCORE_FOR_ALERT = 82
+MAX_INSTANT_ALERTS = 5
+
+REPEAT_BLOCK_DAYS = 30
 
 
 @app.route("/")
@@ -55,330 +47,326 @@ def home():
     return "Investment Bot Running"
 
 
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+def now_saudi():
+    return datetime.now(saudi_tz)
 
 
-def send_telegram_msg(message, chat_id):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram keys missing", flush=True)
-        return
-
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "Markdown"
-            },
-            timeout=10
-        )
-    except Exception as e:
-        print("Telegram error:", e, flush=True)
+def today_str():
+    return now_saudi().strftime("%Y-%m-%d")
 
 
-def read_gist_file(filename, default_value):
+def gist_headers():
+    return {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+
+
+def load_from_gist(filename, default):
     if not GIST_ID or not GITHUB_TOKEN:
-        return default_value
+        return default
 
     try:
         url = f"https://api.github.com/gists/{GIST_ID}"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
+        r = requests.get(url, headers=gist_headers(), timeout=20)
 
-        res = requests.get(url, headers=headers, timeout=15)
-        data = res.json()
+        if r.status_code != 200:
+            print(f"Gist load failed: {r.status_code}", flush=True)
+            return default
 
-        file_data = data.get("files", {}).get(filename)
-        if not file_data:
-            return default_value
+        files = r.json().get("files", {})
 
-        content = file_data.get("content", "")
+        if filename not in files:
+            return default
+
+        content = files[filename].get("content", "")
+
         if not content:
-            return default_value
+            return default
 
         return json.loads(content)
 
     except Exception as e:
-        print(f"Read gist error {filename}: {e}", flush=True)
-        return default_value
+        print(f"load_from_gist error: {e}", flush=True)
+        return default
 
-def make_json_safe(obj):
-    if isinstance(obj, dict):
-        return {
-            k: make_json_safe(v)
-            for k, v in obj.items()
-        }
 
-    if isinstance(obj, list):
-        return [
-            make_json_safe(v)
-            for v in obj
-        ]
-
-    if hasattr(obj, "item"):
-        return obj.item()
-
-    return obj
-    
-def save_gist_file(filename, content_obj):
+def save_to_gist(filename, data):
     if not GIST_ID or not GITHUB_TOKEN:
-        print("Gist keys missing", flush=True)
-        return
+        return False
 
     try:
         url = f"https://api.github.com/gists/{GIST_ID}"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
+        payload = {
+            "files": {
+                filename: {
+                    "content": json.dumps(data, ensure_ascii=False, indent=2)
+                }
+            }
         }
 
-        res = requests.patch(
+        r = requests.patch(
             url,
-            headers=headers,
-            json={
-                "files": {
-                    filename: {
-                        "content": json.dumps(
-                            make_json_safe(content_obj),
-                            ensure_ascii=False
-                        )
-                    }
-                }
-            },
-            timeout=15
+            headers=gist_headers(),
+            json=payload,
+            timeout=20,
         )
 
-        if res.status_code not in [200, 201]:
-            print(f"Save failed {filename}: {res.text[:300]}", flush=True)
-            return
+        if r.status_code not in [200, 201]:
+            print(f"Gist save failed: {r.status_code} {r.text[:200]}", flush=True)
+            return False
 
-        print(f"Gist saved: {filename}", flush=True)
+        return True
 
     except Exception as e:
-        print(f"Save gist error {filename}: {e}", flush=True)
+        print(f"save_to_gist error: {e}", flush=True)
+        return False
+
+
+def default_state():
+    return {
+        "last_monitor": None,
+        "last_instant_alert": None,
+        "last_daily_accumulation_alert": None,
+        "active_picks": [],
+        "sent_history": [],
+    }
 
 
 def load_state():
-    default_state = {
-        "cycle_week": "",
-        "last_weekend_build": "",
-        "last_weekend_midday_rebuild": "",
-        "last_deep_review": "",
-        "last_previous_report": "",
-        "last_thursday_alert": "",
-        "last_monitor": "",
-        "weekend_500": [],
-        "reviewed_results": [],
-        "final_picks": [],
-        "active_picks": [],
-        "sent_history": []
-    }
+    state = load_from_gist(STATE_FILE, None)
 
-    state = read_gist_file(STATE_FILE, default_state)
+    if isinstance(state, dict):
+        return state
 
-    for k, v in default_state.items():
-        if k not in state:
-            state[k] = v
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
 
-    return state
+            if isinstance(state, dict):
+                return state
+
+    except Exception as e:
+        print(f"load_state error: {e}", flush=True)
+
+    return default_state()
 
 
 def save_state(state):
-    save_gist_file(STATE_FILE, state)
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"save_state local error: {e}", flush=True)
+
+    save_to_gist(STATE_FILE, state)
 
 
-BLACKLIST_SYMBOLS = [
-    "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC",
-    "MET", "PRU", "ALL", "AIG", "CB",
-    "DKNG", "PENN", "WYNN", "LVS",
-    "BUD", "TAP", "STZ", "DEO",
-    "PM", "MO",
-    "CGC", "TLRY", "ACB",
-    "NCLH", "CCL", "RCL",
-    "AMC", "GPRE", "SKLZ", "PGY", "JELD", "TWO", "PGEN", "GENI", "TRC",
-]
+def send_telegram_message(message):
+    try:
+        chat_id = TELEGRAM_INVESTMENT_CHAT_ID or TELEGRAM_CHAT_ID
 
-BLACKLIST_KEYWORDS = [
-    "bank", "finance", "capital", "credit", "lending",
-    "casino", "gambling", "bet", "betting", "sportsbook",
-    "alcohol", "beer", "wine", "spirits", "distillery",
-    "tobacco", "cigarette", "smoke",
-    "cannabis", "marijuana", "weed", "thc", "cbd",
-    "cruise", "cruises", "shipping",
-    "adult", "xxx", "porn",
-    "cinema", "theater", "movie", "film"
-]
+        if not TELEGRAM_TOKEN or not chat_id:
+            print("Telegram token/chat id missing", flush=True)
+            return False
 
-BAD_NAME_KEYWORDS = [
-    "etf", "fund", "trust", "warrant", "unit", "rights",
-    "preferred", "depositary", "notes", "bond",
-    "spdr", "ishares", "proshares", "invesco", "vanguard"
-]
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
 
+        r = requests.post(url, json=payload, timeout=15)
+        return r.status_code == 200
 
-def is_clean_symbol(symbol):
-    if not symbol or not isinstance(symbol, str):
+    except Exception as e:
+        print(f"Telegram error: {e}", flush=True)
         return False
-    if "." in symbol or "^" in symbol or "-" in symbol or "/" in symbol:
-        return False
-    if len(symbol) > 5:
-        return False
-    if not symbol.isalpha():
-        return False
-    return True
-
-
-def is_blacklisted(symbol, name=""):
-    text = f"{symbol} {name}".lower()
-
-    if symbol.upper() in BLACKLIST_SYMBOLS:
-        return True
-
-    for word in BLACKLIST_KEYWORDS:
-        if word in text:
-            return True
-
-    for word in BAD_NAME_KEYWORDS:
-        if word in text:
-            return True
-
-    return False
 
 
 def get_nasdaq_symbols_from_alpaca():
+    symbols = []
+
     try:
         assets = api.list_assets(status="active")
-        symbols = []
 
-        for i, asset in enumerate(assets, start=1):
-
+        for asset in assets:
             symbol = getattr(asset, "symbol", "")
-            name = getattr(asset, "name", "")
+            name = getattr(asset, "name", "") or ""
 
-            if not is_clean_symbol(symbol):
+            if not symbol:
                 continue
 
-            if is_blacklisted(symbol, name):
+            symbol = symbol.upper().strip()
+
+            if not getattr(asset, "tradable", False):
                 continue
 
-            symbols.append(symbol.upper())
+            if "." in symbol or "/" in symbol or "-" in symbol:
+                continue
 
-        symbols = list(dict.fromkeys(symbols))
-        print(f"✅ Nasdaq clean symbols: {len(symbols)}", flush=True)
-        return symbols
+            if len(symbol) > 5:
+                continue
+
+            lowered_name = name.lower()
+
+            bad_keywords = [
+                "etf",
+                "fund",
+                "trust",
+                "warrant",
+                "unit",
+                "right",
+                "preferred",
+                "bond",
+                "notes",
+                "income",
+                "index",
+            ]
+
+            if any(k in lowered_name for k in bad_keywords):
+                continue
+
+            symbols.append(symbol)
 
     except Exception as e:
-        print("Alpaca asset list error:", e, flush=True)
-        return []
+        print(f"get_nasdaq_symbols_from_alpaca error: {e}", flush=True)
+
+    return list(set(symbols))
 
 
-def get_daily_bars(symbol, days=240):
+def get_latest_prices_for_symbols(symbols):
+    prices = {}
+
     try:
-        end = datetime.utcnow()
-        start = end - timedelta(days=days)
+        snapshots = api.get_snapshots(symbols)
 
+        for symbol, snapshot in snapshots.items():
+            price = None
+
+            if snapshot.latest_trade:
+                price = getattr(snapshot.latest_trade, "price", None)
+
+            if price is None and snapshot.daily_bar:
+                price = getattr(snapshot.daily_bar, "close", None)
+
+            if price is not None:
+                prices[symbol] = float(price)
+
+    except Exception as e:
+        print(f"get_latest_prices_for_symbols error: {e}", flush=True)
+
+    return prices
+
+
+def filter_symbols_by_price_before_bars(symbols):
+    filtered = []
+
+    for i in range(0, len(symbols), BATCH_SIZE):
+        batch = symbols[i:i + BATCH_SIZE]
+        prices = get_latest_prices_for_symbols(batch)
+
+        for symbol in batch:
+            price = prices.get(symbol)
+
+            if price is None:
+                continue
+
+            if PRICE_MIN <= price <= PRICE_MAX:
+                filtered.append(symbol)
+
+        time.sleep(0.2)
+
+    print(
+        f"✅ Price pre-filter: {len(filtered)} / {len(symbols)} داخل السعر {PRICE_MIN}-{PRICE_MAX}",
+        flush=True,
+    )
+
+    return filtered
+
+
+def get_bars_batch(symbols, timeframe=tradeapi.TimeFrame.Day, limit=240):
+    try:
         bars = api.get_bars(
-            symbol,
-            tradeapi.TimeFrame.Day,
-            start=start.isoformat() + "Z",
-            end=end.isoformat() + "Z",
-            adjustment="raw"
+            symbols,
+            timeframe,
+            limit=limit,
+            adjustment="raw",
         ).df
 
         if bars is None or bars.empty:
-            return pd.DataFrame()
+            return {}
 
-        df = bars.copy()
+        bars_map = {}
 
-        if "symbol" in df.columns:
-            df = df[df["symbol"] == symbol]
+        if isinstance(bars.index, pd.MultiIndex):
+            for symbol in symbols:
+                try:
+                    df = bars.xs(symbol)
+                    if df is not None and not df.empty:
+                        bars_map[symbol] = df.copy()
+                except Exception:
+                    continue
+        else:
+            if "symbol" in bars.columns:
+                for symbol, df in bars.groupby("symbol"):
+                    bars_map[symbol] = df.copy()
 
-        df = df.rename(columns={
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-            "volume": "Volume"
-        })
-
-        needed = ["Open", "High", "Low", "Close", "Volume"]
-        for col in needed:
-            if col not in df.columns:
-                return pd.DataFrame()
-
-        return df[needed].dropna()
+        return bars_map
 
     except Exception as e:
-        print(f"Alpaca daily bars error {symbol}: {e}", flush=True)
-        return pd.DataFrame()
+        print(f"get_bars_batch error: {e}", flush=True)
+        return {}
 
 
-def calculate_rsi(close, period=14):
-    if len(close) < period + 1:
-        return 50
-
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0).rolling(period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(period).mean()
-
-    if loss.iloc[-1] == 0:
-        return 100
-
-    rs = gain.iloc[-1] / loss.iloc[-1]
-    return 100 - (100 / (1 + rs))
-
-def get_recent_sent_symbols(state, days=REPEAT_BLOCK_DAYS):
-    now_ts = time.time()
-    blocked = set()
-    cleaned_history = []
-
-    for item in state.get("sent_history", []):
-        symbol = item.get("symbol")
-        sent_time = float(item.get("time", 0) or 0)
-
-        if not symbol:
-            continue
-
-        age_days = (now_ts - sent_time) / 86400
-
-        if age_days <= days:
-            blocked.add(symbol.upper())
-            cleaned_history.append(item)
-
-    state["sent_history"] = cleaned_history
-    return blocked
-
-
-def investment_score(symbol, deep=False):
+def calculate_rsi(series, period=14):
     try:
-        df = get_daily_bars(symbol, days=240)
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0).rolling(period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
 
-        if df.empty or len(df) < 80:
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+
+        return float(rsi.iloc[-1])
+
+    except Exception:
+        return 50.0
+
+
+def pct_change(new, old):
+    try:
+        if old == 0:
+            return 0
+        return ((new - old) / old) * 100
+    except Exception:
+        return 0
+
+
+def investment_score(symbol, df=None):
+    try:
+        if df is None or df.empty:
             return None
 
-        close = df["Close"]
-        volume = df["Volume"]
+        df = df.copy()
+
+        if len(df) < 80:
+            return None
+
+        if "close" not in df.columns:
+            return None
+
+        close = df["close"]
+        high = df["high"]
+        low = df["low"]
+        volume = df["volume"]
 
         price = float(close.iloc[-1])
 
         if not (PRICE_MIN <= price <= PRICE_MAX):
-            return None
-
-        avg_vol_30 = float(volume.tail(30).mean())
-        avg_vol_10 = float(volume.tail(10).mean())
-        avg_vol_5 = float(volume.tail(5).mean())
-
-        dollar_volume = price * avg_vol_30
-
-        if avg_vol_30 < 250_000:
-            return None
-
-        if dollar_volume < 500_000:
             return None
 
         df["SMA5"] = close.rolling(5).mean()
@@ -391,980 +379,534 @@ def investment_score(symbol, deep=False):
         sma20 = float(df["SMA20"].iloc[-1])
         sma50 = float(df["SMA50"].iloc[-1])
 
-        sma20_prev = float(df["SMA20"].iloc[-6]) if len(df) >= 26 else sma20
-        sma50_prev = float(df["SMA50"].iloc[-11]) if len(df) >= 61 else sma50
-
         rsi = calculate_rsi(close)
 
-        high30 = float(df["High"].tail(30).max())
-        low30 = float(df["Low"].tail(30).min())
-        high60 = float(df["High"].tail(60).max())
+        avg_vol_20 = float(volume.tail(20).mean())
+        avg_vol_60 = float(volume.tail(60).mean())
+        recent_vol = float(volume.tail(5).mean())
 
-        recent_range_15 = ((close.tail(15).max() - close.tail(15).min()) / price) * 100
-        distance_sma20 = ((price - sma20) / sma20) * 100 if sma20 > 0 else 99
+        if avg_vol_20 < 150_000:
+            return None
 
-        move1 = ((price - float(close.iloc[-2])) / float(close.iloc[-2])) * 100
-        move5 = ((price - float(close.iloc[-6])) / float(close.iloc[-6])) * 100
-        move10 = ((price - float(close.iloc[-11])) / float(close.iloc[-11])) * 100
-        move20 = ((price - float(close.iloc[-21])) / float(close.iloc[-21])) * 100
+        dollar_volume = price * avg_vol_20
 
-        vol_ratio_5_20 = avg_vol_5 / max(float(volume.tail(20).mean()), 1)
-        vol_ratio_10_30 = avg_vol_10 / max(avg_vol_30, 1)
+        if dollar_volume < 500_000:
+            return None
 
-        last_open = float(df["Open"].iloc[-1])
-        last_close = float(df["Close"].iloc[-1])
-        last_high = float(df["High"].iloc[-1])
-        last_low = float(df["Low"].iloc[-1])
+        move_5d = pct_change(price, float(close.iloc[-6]))
+        move_10d = pct_change(price, float(close.iloc[-11]))
+        move_20d = pct_change(price, float(close.iloc[-21]))
+        move_60d = pct_change(price, float(close.iloc[-61]))
 
-        candle_range = last_high - last_low
+        high_20 = float(high.tail(20).max())
+        low_20 = float(low.tail(20).min())
+        range_20 = pct_change(high_20, low_20)
 
-        if candle_range <= 0:
-            close_position = 0.5
-        else:
-            close_position = (last_close - last_low) / candle_range
+        close_position = 0.5
+        today_range = float(high.iloc[-1] - low.iloc[-1])
+        if today_range > 0:
+            close_position = float((price - low.iloc[-1]) / today_range)
 
-        recent_move = move5
-        instant_rvol = avg_vol_5 / max(avg_vol_30, 1)
-
-        higher_lows = (
-            float(close.iloc[-1]) > float(close.iloc[-5]) > float(close.iloc[-10])
-        )
-
-        weekly_higher_lows = (
-            float(df["Low"].iloc[-1]) >= float(df["Low"].iloc[-5]) * 0.98
-            and float(df["Low"].iloc[-5]) >= float(df["Low"].iloc[-10]) * 0.98
-        )
-
-        ma_stack = (
-            price > sma5 > sma10 > sma20
-            and sma20 >= sma50 * 0.97
-        )
-
-        ma20_rising = sma20 > sma20_prev
-        ma50_stable = sma50 >= sma50_prev * 0.98
-
-        green_days_10 = int((close.tail(10).diff() > 0).sum())
-
-        pullback_depth = ((high30 - price) / high30) * 100 if high30 > 0 else 99
-
-        stable_above_ma20_days = int((close.tail(10) >= df["SMA20"].tail(10) * 0.97).sum())
+        volume_ratio = recent_vol / avg_vol_20 if avg_vol_20 else 0
+        accumulation_ratio = avg_vol_20 / avg_vol_60 if avg_vol_60 else 0
 
         trend_ok = (
-            price > sma20 * 0.98
-            and sma20 >= sma50 * 0.97
-            and ma20_rising
-        )
-
-        not_extended = (
-            distance_sma20 <= 10
-            and move1 <= 12
-            and move10 <= 18
-            and move20 <= 32
-        )
-
-        accumulation = recent_range_15 <= 16
-
-        near_breakout = (
-            price >= high30 * 0.88
-            or price >= high60 * 0.82
-        )
-
-        volume_improving = (
-            vol_ratio_5_20 >= 0.85
-            or vol_ratio_10_30 >= 0.95
-        )
-
-        slow_runner_setup = (
-            ma_stack
-            and ma20_rising
-            and ma50_stable
-            and weekly_higher_lows
-            and stable_above_ma20_days >= 7
-            and 3 <= move20 <= 55
-            and -4 <= move5 <= 14
-            and recent_range_15 <= 18
-            and pullback_depth <= 18
-            and 40 <= rsi <= 72
-        )
-
-        continuation_setup = (
             price > sma20
-            and sma20 >= sma50 * 0.97
-            and weekly_higher_lows
-            and volume_improving
-            and stable_above_ma20_days >= 6
-            and move20 > 0
-            and move1 <= 12
-            and distance_sma20 <= 10
+            and sma20 > sma50 * 0.97
+            and sma5 >= sma10 * 0.98
         )
 
-        # فلتر ضد الأسهم التي قفزت يوم واحد ثم قد تهدأ مباشرة
-        if move1 >= 15 and not slow_runner_setup:
-            return None
+        slow_runner = (
+            price > sma20
+            and price > sma50
+            and 3 <= move_20d <= 45
+            and move_5d >= -5
+            and 45 <= rsi <= 70
+            and range_20 <= 65
+        )
 
-        if not trend_ok and not slow_runner_setup:
-            return None
+        accumulation_ok = (
+            accumulation_ratio >= 1.05
+            and volume_ratio >= 0.80
+            and close_position >= 0.45
+            and move_20d >= 0
+        )
 
-        if not not_extended and not slow_runner_setup:
-            return None
+        not_late = (
+            move_5d <= 25
+            and move_10d <= 45
+            and rsi <= 72
+            and price <= sma20 * 1.35
+        )
 
-        if not accumulation and not slow_runner_setup:
-            return None
-
-        if not near_breakout and not slow_runner_setup:
-            return None
-
-        if deep:
-            if not (volume_improving or slow_runner_setup):
-                return None
-            if not (42 <= rsi <= 72):
-                return None
-        else:
-            if not (40 <= rsi <= 72):
-                return None
+        technical_strength = (
+            close_position >= 0.55
+            and price >= high_20 * 0.75
+            and move_60d > -35
+        )
 
         score = 0
         reasons = []
 
-        # =========================
-        # Trend Quality / جودة الاتجاه
-        # =========================
+        if trend_ok:
+            score += 25
+            reasons.append("ترند صاعد فوق المتوسطات")
 
-        if ma_stack:
-            score += 18
-            reasons.append("ترتيب متوسطات صاعد MA5>MA10>MA20")
+        if slow_runner:
+            score += 25
+            reasons.append("Slow runner مناسب للاستثمار")
 
-        if ma20_rising:
-            score += 12
-            reasons.append("MA20 صاعد")
+        if accumulation_ok:
+            score += 20
+            reasons.append("تجميع وسيولة هادئة")
 
-        if ma50_stable:
-            score += 6
-            reasons.append("MA50 مستقر")
+        if not_late:
+            score += 15
+            reasons.append("ليس دخولاً متأخراً")
 
-        if stable_above_ma20_days >= 8:
-            score += 12
-            reasons.append("ثبات قوي فوق MA20")
+        if technical_strength:
+            score += 15
+            reasons.append("قوة فنية جيدة")
 
-        if weekly_higher_lows:
-            score += 12
-            reasons.append("قيعان صاعدة أسبوعية")
+        if rsi > 74:
+            score -= 20
+            reasons.append("RSI مرتفع")
 
-        # =========================
-        # Slow Runner / صعود هادئ مستمر
-        # =========================
+        if move_5d > 30:
+            score -= 20
+            reasons.append("ارتفاع سريع قد يكون متأخر")
 
-        if slow_runner_setup:
-            score += 22
-            reasons.append("صعود هادئ مستمر")
+        if price < sma20 * 0.92:
+            score -= 25
+            reasons.append("كسر متوسط 20 يوم")
 
-        if 4 <= green_days_10 <= 7:
-            score += 8
-            reasons.append("أيام خضراء متوازنة")
+        if score < MIN_SCORE_FOR_ALERT:
+            return None
 
-        if 5 <= move20 <= 45 and move1 < 10:
-            score += 10
-            reasons.append("صعود شهري صحي بدون قفزة يومية")
+        stop_loss = round(min(sma20 * 0.96, price * 0.90), 4)
 
-        if -3 <= move5 <= 12:
-            score += 8
-            reasons.append("حركة قصيرة صحية")
-
-        # =========================
-        # Continuation Score / استمرارية
-        # =========================
-
-        if continuation_setup:
-            score += 18
-            reasons.append("استمرارية اتجاه جيدة")
-
-        if volume_improving:
-            score += 12
-            reasons.append("تحسن سيولة تدريجي")
-
-        if instant_rvol >= 1.2 and recent_move < 8:
-            score += 6
-            reasons.append("سيولة هادئة داعمة")
-
-        if instant_rvol >= 5 and recent_move < 1:
-            score -= 10
-            reasons.append("سيولة بدون استجابة")
-
-        # =========================
-        # Base / Breakout
-        # =========================
-
-        if recent_range_15 <= 10:
-            score += 14
-            reasons.append("تجميع هادئ")
-        elif recent_range_15 <= 16:
-            score += 8
-            reasons.append("نطاق مقبول")
-
-        if price >= high30 * 0.92:
-            score += 14
-            reasons.append("قريب من اختراق 30 يوم")
-        elif price >= high30 * 0.88:
-            score += 8
-            reasons.append("قريب من مقاومة")
-
-        if higher_lows:
-            score += 8
-            reasons.append("قيعان صاعدة")
-
-        if close_position >= 0.70:
-            score += 8
-            reasons.append("إغلاق قوي")
-
-        if 45 <= rsi <= 64:
-            score += 12
-            reasons.append("RSI صحي")
-        elif 64 < rsi <= 72:
-            score += 4
-            reasons.append("RSI قوي لكن يحتاج مراقبة")
-
-        # =========================
-        # Penalties / منع التوقيت المتأخر
-        # =========================
-
-        if move1 >= 10:
-            score -= 10
-            reasons.append("قفزة يومية كبيرة - احتمال توقيت متأخر")
-
-        if recent_move >= 12 and not slow_runner_setup:
-            score -= 12
-            reasons.append("حركة قصيرة مبالغ فيها")
-
-        if distance_sma20 > 10:
-            score -= 12
-            reasons.append("بعيد عن SMA20")
-
-        if rsi >= 78:
-            score -= 15
-            reasons.append("RSI مرتفع جدًا")
-
-        if dollar_volume >= 5_000_000:
-            score += 8
-            reasons.append("سيولة دولارية قوية")
-        elif dollar_volume >= 1_500_000:
-            score += 5
-            reasons.append("سيولة مناسبة")
-
-        if deep:
-            score += 5
-
-        stop = min(price * 0.90, low30 * 0.98)
-        t1 = price * 1.15
-        t2 = price * 1.35
+        target1 = round(price * 1.25, 4)
+        target2 = round(price * 1.75, 4)
+        target3 = round(price * 3.00, 4)
+        target4 = round(price * 5.00, 4)
 
         return {
             "symbol": symbol,
             "price": round(price, 4),
             "entry": round(price, 4),
-            "stop": round(stop, 4),
-            "t1": round(t1, 4),
-            "t2": round(t2, 4),
             "score": round(score, 2),
             "rsi": round(rsi, 2),
-            "avg_vol_30": round(avg_vol_30, 2),
-            "dollar_volume": round(dollar_volume, 2),
-            "move1": round(move1, 2),
-            "move5": round(move5, 2),
-            "move10": round(move10, 2),
-            "move20": round(move20, 2),
-            "distance_sma20": round(distance_sma20, 2),
-            "range15": round(recent_range_15, 2),
-            "near_breakout": near_breakout,
-            "volume_improving": volume_improving,
-            "slow_runner_setup": slow_runner_setup,
-            "continuation_setup": continuation_setup,
-            "trend_quality": ma_stack,
+            "move_5d": round(move_5d, 2),
+            "move_10d": round(move_10d, 2),
+            "move_20d": round(move_20d, 2),
+            "move_60d": round(move_60d, 2),
+            "volume_ratio": round(volume_ratio, 2),
+            "accumulation_ratio": round(accumulation_ratio, 2),
+            "close_position": round(close_position, 2),
+            "sma20": round(sma20, 4),
+            "sma50": round(sma50, 4),
+            "stop_loss": stop_loss,
+            "target1": target1,
+            "target2": target2,
+            "target3": target3,
+            "target4": target4,
             "reasons": reasons,
-            "alerts": {},
-            "time": time.time(),
-            "created_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+            "alerted_at": now_saudi().isoformat(),
+            "status": "active",
+            "hit_target1": False,
+            "hit_target2": False,
+            "hit_target3": False,
+            "hit_target4": False,
+            "weakness_alerted": False,
+            "movement_alerted": False,
+            "stop_raised_to": stop_loss,
         }
 
     except Exception as e:
-        print(f"Investment score error {symbol}: {e}", flush=True)
+        print(f"investment_score error {symbol}: {e}", flush=True)
         return None
 
 
-def build_weekend_500():
-    print("🔎 Investment Bot - Building weekend 700 from Nasdaq...", flush=True)
+def get_recent_sent_symbols(state):
+    sent_history = state.get("sent_history", [])
+    blocked = set()
+    cleaned_history = []
 
-    symbols = get_nasdaq_symbols_from_alpaca()
-    print(f"DEBUG symbols loaded: {len(symbols)}", flush=True)
+    now = now_saudi()
 
-    if not symbols:
-        print("❌ No symbols loaded from Alpaca. Check exchange filter or API keys.", flush=True)
-        return []
+    for item in sent_history:
+        try:
+            symbol = item.get("symbol")
+            sent_at = item.get("sent_at")
 
-    scored = []
+            if not symbol or not sent_at:
+                continue
 
-    for i, symbol in enumerate(symbols, start=1):
-        item = investment_score(symbol, deep=False)
-        
-        if item:
-            scored.append(item)
+            dt = datetime.fromisoformat(sent_at)
 
-        if i % 100 == 0:
-            print(f"Weekend checked {i}/{len(symbols)} | accepted: {len(scored)}", flush=True)
+            if dt.tzinfo is None:
+                dt = saudi_tz.localize(dt)
 
-        time.sleep(0.03)
+            age_days = (now - dt.astimezone(saudi_tz)).days
 
-    scored = sorted(
-        scored,
-        key=lambda x: (
-            x.get("slow_runner_setup", False),
-            x.get("continuation_setup", False),
-            x["score"],
-            x["dollar_volume"],
-            x["avg_vol_30"]
-        ),
-        reverse=True
-    )
+            if age_days < REPEAT_BLOCK_DAYS:
+                blocked.add(symbol)
+                cleaned_history.append(item)
 
-    top500 = scored[:WEEKEND_TOP_N]
-
-    save_gist_file(INVESTMENT_500_FILE, top500)
-
-    state = load_state()
-    state["weekend_500"] = top500
-    state["last_weekend_build"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
-    state["reviewed_results"] = []
-    state["final_picks"] = []
-    save_state(state)
-
-    print(f"✅ Investment Bot - Weekend candidates ready: {len(top500)}", flush=True)
-    return top500
-
-
-def deep_review_500():
-    state = load_state()
-    candidates = state.get("weekend_500", [])
-
-    if not candidates:
-        candidates = read_gist_file(INVESTMENT_500_FILE, [])
-
-    symbols = [x["symbol"] for x in candidates if x.get("symbol")]
-
-    print(f"🔍 Investment Bot - Deep review: {len(symbols)}", flush=True)
-
-    reviewed = []
-
-    for i, symbol in enumerate(symbols, start=1):
-        item = investment_score(symbol, deep=True)
-
-        if item:
-            reviewed.append(item)
-
-        if i % 50 == 0:
-            print(f"Deep reviewed {i}/{len(symbols)} | accepted: {len(reviewed)}", flush=True)
-
-        time.sleep(0.04)
-
-    reviewed = sorted(
-        reviewed,
-        key=lambda x: (
-            x.get("slow_runner_setup", False),
-            x.get("continuation_setup", False),
-            x["score"],
-            x["dollar_volume"],
-            x["avg_vol_30"]
-        ),
-        reverse=True
-    )
-
-    state["reviewed_results"] = reviewed
-    state["last_deep_review"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
-    save_state(state)
-
-    print(f"✅ Investment Bot - Deep review done: {len(reviewed)}", flush=True)
-    return reviewed
-
-def get_target_timing():
-    now = datetime.now(saudi_tz)
-    return {
-        "target1_date": (now + timedelta(days=14)).strftime("%Y-%m-%d"),
-        "target2_date": (now + timedelta(days=30)).strftime("%Y-%m-%d"),
-        "target1_duration": "تقريبًا خلال أسبوعين",
-        "target2_duration": "تقريبًا خلال شهر"
-    }
-
-
-def build_final_picks():
-    state = load_state()
-    reviewed = state.get("reviewed_results", [])
-
-    if not reviewed:
-        reviewed = deep_review_500()
-
-    symbols = [x["symbol"] for x in reviewed if x.get("symbol")]
-
-    print(f"🏁 Investment Bot - Building final picks from reviewed results: {len(symbols)}", flush=True)
-    
-    recent_sent = get_recent_sent_symbols(state, REPEAT_BLOCK_DAYS)
-    final = []
-
-    for symbol in symbols:
-        if symbol.upper() in recent_sent:
-            print(f"⏭️ Skipped repeated investment pick within {REPEAT_BLOCK_DAYS} days: {symbol}", flush=True)
+        except Exception:
             continue
 
-        item = investment_score(symbol, deep=True)
+    state["sent_history"] = cleaned_history
+    return blocked
 
-        if item:
-            final.append(item)
 
-        time.sleep(0.04)
-
-    final = sorted(
-        final,
-        key=lambda x: (
-            x.get("slow_runner_setup", False),
-            x.get("continuation_setup", False),
-            x["score"],
-            x["dollar_volume"]
-        ),
-        reverse=True
-    )
-
-    picks = final[:FINAL_MAX_PICKS]
-
-    timing = get_target_timing()
+def add_to_sent_history(state, picks):
+    sent_history = state.get("sent_history", [])
 
     for p in picks:
-        p["target1_date"] = timing["target1_date"]
-        p["target2_date"] = timing["target2_date"]
-        p["target1_duration"] = timing["target1_duration"]
-        p["target2_duration"] = timing["target2_duration"]
-        p["alerts"] = {}
-
-    save_gist_file(INVESTMENT_FINAL_FILE, picks)
-
-    state["final_picks"] = picks
-    state["active_picks"] = picks
-    save_state(state)
-
-    return picks
-
-
-def send_previous_picks_report():
-    state = load_state()
-    picks = state.get("active_picks", [])
-
-    if not picks:
-        send_telegram_msg(
-            "📊 *Investment Bot - تقرير الأسبوع السابق*\n\n"
-            "لا توجد أسهم نشطة من الأسبوع السابق للمتابعة.",
-            TELEGRAM_INVESTMENT_CHAT_ID
-        )
-        state["last_previous_report"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
-        save_state(state)
-        return
-
-    msg = "📊 *Investment Bot - تقرير أسهم الأسبوع السابق*\n\n"
-
-    strong_count = 0
-    weak_count = 0
-    target_count = 0
-    stop_count = 0
-
-    for p in picks:
-        try:
-            symbol = p["symbol"]
-            df = get_daily_bars(symbol, days=90)
-
-            if df.empty or len(df) < 30:
-                continue
-
-            price = float(df["Close"].iloc[-1])
-            entry = float(p["entry"])
-            stop = float(p["stop"])
-            t1 = float(p["t1"])
-            t2 = float(p["t2"])
-
-            gain = ((price - entry) / entry) * 100
-
-            df["SMA20"] = df["Close"].rolling(20).mean()
-            sma20 = float(df["SMA20"].iloc[-1])
-            rsi = calculate_rsi(df["Close"])
-
-            if price <= stop:
-                status = "🛑 كسر الوقف"
-                stop_count += 1
-            elif price >= t2:
-                status = "🚀 وصل هدف 2"
-                target_count += 1
-            elif price >= t1:
-                status = "🎯 وصل هدف 1"
-                target_count += 1
-            elif price > sma20 and rsi >= 45:
-                status = "✅ ما زال صحي"
-                strong_count += 1
-            else:
-                status = "⚠️ ضعف / يحتاج مراقبة"
-                weak_count += 1
-
-            msg += (
-                f"🎫 `{symbol}`\n"
-                f"💰 الحالي: {price:.2f} | الدخول: {entry:.2f}\n"
-                f"📈 الأداء: {gain:.2f}%\n"
-                f"📊 RSI: {rsi:.1f} | SMA20: {sma20:.2f}\n"
-                f"📌 الحالة: {status}\n\n"
-            )
-
-        except Exception as e:
-            print(f"Previous report error {p.get('symbol')}: {e}", flush=True)
-
-    msg += (
-        f"🧠 *الخلاصة:*\n"
-        f"✅ صحي: {strong_count}\n"
-        f"🎯/🚀 أهداف: {target_count}\n"
-        f"⚠️ ضعيف: {weak_count}\n"
-        f"🛑 وقف: {stop_count}\n"
-    )
-
-    send_telegram_msg(msg, TELEGRAM_INVESTMENT_CHAT_ID)
-    
-    state["last_previous_report"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
-    save_state(state)
-
-
-def send_thursday_alert():
-    picks = build_final_picks()
-
-    if len(picks) < FINAL_MIN_PICKS:
-        send_telegram_msg(
-            "📈 *Investment Bot - البوت الاستثماري*\n\n"
-            "📉 لا توجد فرص استثمارية كافية هذا الأسبوع.",
-            TELEGRAM_INVESTMENT_CHAT_ID
-        )
-        return
-
-    msg = "📈 *Investment Bot - البوت الاستثماري*\n"
-    msg += "🏆 *أفضل فرص استثمارية لمدة 2 إلى 4 أسابيع*\n"
-    msg += "🎯 تركيز النسخة الحالية: صعود هادئ + استمرارية + تجميع صحي\n\n"
-
-    for r in picks:
-        setup_tags = []
-
-        if r.get("slow_runner_setup"):
-            setup_tags.append("صعود هادئ مستمر")
-
-        if r.get("continuation_setup"):
-            setup_tags.append("استمرارية جيدة")
-
-        if r.get("trend_quality"):
-            setup_tags.append("Trend Quality")
-
-        setup_text = " / ".join(setup_tags) if setup_tags else "فرصة استثمارية"
-
-        msg += (
-            f"🎫 `{r['symbol']}`\n"
-            f"🏷️ النوع: {setup_text}\n"
-            f"💰 دخول: {r['entry']:.2f}\n"
-            f"🛑 وقف: {r['stop']:.2f}\n"
-            f"🎯 هدف 1: {r['t1']:.2f}\n"
-            f"📅 هدف 1: {r['target1_date']} - {r['target1_duration']}\n"
-            f"🚀 هدف 2: {r['t2']:.2f}\n"
-            f"📅 هدف 2: {r['target2_date']} - {r['target2_duration']}\n"
-            f"⭐ الدرجة: {r['score']:.1f}\n"
-            f"📊 RSI: {r['rsi']:.1f}\n"
-            f"📦 Range15: {r['range15']:.1f}%\n"
-            f"📈 Move20: {r.get('move20', 0):.1f}%\n"
-            f"🧠 الأسباب: {', '.join(r['reasons'][:6])}\n"
-        )
-
-        msg += f"🔗 https://www.tradingview.com/chart/?symbol={r['symbol']}\n\n"
-
-    send_telegram_msg(msg, TELEGRAM_INVESTMENT_CHAT_ID)
-
-    state = load_state()
-    today = datetime.now(saudi_tz).strftime("%Y-%m-%d")
-
-    state["last_thursday_alert"] = today
-    state["active_picks"] = picks
-
-    history = state.get("sent_history", [])
-    now_ts = time.time()
-
-    for p in picks:
-        history.append({
-            "symbol": p["symbol"],
-            "time": now_ts,
-            "date": today,
-            "score": p.get("score", 0),
-            "entry": p.get("entry", 0)
+        sent_history.append({
+            "symbol": p.get("symbol"),
+            "sent_at": now_saudi().isoformat(),
+            "entry": p.get("entry"),
+            "score": p.get("score"),
         })
 
-    state["sent_history"] = history
-    save_state(state)
-    save_gist_file(INVESTMENT_ACTIVE_FILE, picks)
+    state["sent_history"] = sent_history
 
 
-def monitor_active_picks():
-    state = load_state()
-    picks = state.get("active_picks", [])
+def add_breakout_candidates_to_active_picks(state, breakout_candidates):
+    active_picks = state.get("active_picks", [])
 
-    if not picks:
-        return
+    existing_symbols = {
+        str(p.get("symbol", "")).upper()
+        for p in active_picks
+        if p.get("symbol")
+    }
 
-    updated = []
+    for p in breakout_candidates:
+        symbol = str(p.get("symbol", "")).upper()
 
-    for p in picks:
-        try:
-            symbol = p["symbol"]
-            df = get_daily_bars(symbol, days=90)
+        if not symbol:
+            continue
 
-            if df.empty or len(df) < 30:
-                updated.append(p)
+        if symbol in existing_symbols:
+            continue
+
+        active_picks.append(p)
+        existing_symbols.add(symbol)
+
+    state["active_picks"] = active_picks
+
+
+def send_instant_breakout_alert(breakout_candidates):
+    if not breakout_candidates:
+        return False
+
+    msg = "🚀 <b>تنبيه استثماري فوري</b>\n"
+    msg += "فرص استثمارية جديدة داخل نطاق السعر 0.5 إلى 10 دولار\n\n"
+
+    for p in breakout_candidates:
+        msg += f"📌 <b>{p['symbol']}</b>\n"
+        msg += f"السعر: {p['price']}\n"
+        msg += f"الدرجة: {p['score']}\n"
+        msg += f"RSI: {p['rsi']}\n"
+        msg += f"حركة 5 أيام: {p['move_5d']}%\n"
+        msg += f"حركة 20 يوم: {p['move_20d']}%\n"
+        msg += f"وقف الخسارة: {p['stop_loss']}\n"
+        msg += f"هدف 1: {p['target1']}\n"
+        msg += f"هدف 2: {p['target2']}\n"
+        msg += f"هدف 3: {p['target3']}\n"
+        msg += f"هدف 4: {p['target4']}\n"
+
+        reasons = p.get("reasons", [])
+        if reasons:
+            msg += "الأسباب: " + "، ".join(reasons[:4]) + "\n"
+
+        msg += "\n"
+
+    msg += "⚠️ فلتر السعر يخص الفرص الجديدة فقط. بعد دخول السهم في المتابعة يستمر حتى لو تجاوز 10 دولار."
+
+    return send_telegram_message(msg)
+
+
+def send_daily_accumulation_alert(candidates):
+    if not candidates:
+        return False
+
+    msg = "📊 <b>تقرير التجميع اليومي للبوت الاستثماري</b>\n\n"
+
+    for p in candidates[:10]:
+        msg += f"📌 <b>{p['symbol']}</b> | السعر: {p['price']} | الدرجة: {p['score']}\n"
+        msg += f"20D: {p['move_20d']}% | RSI: {p['rsi']} | Vol Ratio: {p['volume_ratio']}\n\n"
+
+    return send_telegram_message(msg)
+
+
+def scan_for_instant_alerts(state):
+    print("🔎 Investment scan started...", flush=True)
+
+    symbols = get_nasdaq_symbols_from_alpaca()
+
+    symbols = filter_symbols_by_price_before_bars(symbols)
+
+    recent_sent = get_recent_sent_symbols(state)
+    active_symbols = {
+        str(p.get("symbol", "")).upper()
+        for p in state.get("active_picks", [])
+        if p.get("symbol")
+    }
+
+    breakout_candidates = []
+    accumulation_candidates = []
+
+    for i in range(0, len(symbols), BATCH_SIZE):
+        batch_symbols = symbols[i:i + BATCH_SIZE]
+        bars_map = get_bars_batch(batch_symbols, limit=240)
+
+        for symbol, df in bars_map.items():
+            symbol = symbol.upper()
+
+            if symbol in recent_sent:
                 continue
 
-            price = float(df["Close"].iloc[-1])
-            entry = float(p["entry"])
-            stop = float(p["stop"])
-            t1 = float(p["t1"])
-            t2 = float(p["t2"])
+            if symbol in active_symbols:
+                continue
 
-            gain = ((price - entry) / entry) * 100
+            result = investment_score(symbol, df)
 
-            df["SMA20"] = df["Close"].rolling(20).mean()
-            df["SMA50"] = df["Close"].rolling(50).mean()
+            if not result:
+                continue
 
-            sma20 = float(df["SMA20"].iloc[-1])
-            sma50 = float(df["SMA50"].iloc[-1]) if not pd.isna(df["SMA50"].iloc[-1]) else sma20
-            rsi = calculate_rsi(df["Close"])
+            accumulation_candidates.append(result)
 
-            alerts = p.get("alerts", {})
+            if result.get("score", 0) >= MIN_SCORE_FOR_ALERT:
+                breakout_candidates.append(result)
 
-            healthy_pullback = (
-                price >= sma20 * 0.97
-                and rsi >= 40
-                and price >= sma50 * 0.95
-                and gain > -8
+        if len(breakout_candidates) >= MAX_INSTANT_ALERTS:
+            break
+
+        time.sleep(0.5)
+
+    breakout_candidates = sorted(
+        breakout_candidates,
+        key=lambda x: x.get("score", 0),
+        reverse=True,
+    )[:MAX_INSTANT_ALERTS]
+
+    if breakout_candidates:
+        sent = send_instant_breakout_alert(breakout_candidates)
+
+        if sent:
+            add_to_sent_history(state, breakout_candidates)
+            add_breakout_candidates_to_active_picks(state, breakout_candidates)
+
+            state["last_instant_alert"] = now_saudi().isoformat()
+            save_state(state)
+
+    today = today_str()
+    if state.get("last_daily_accumulation_alert") != today:
+        if now_saudi().hour >= DAILY_ACCUMULATION_HOUR:
+            accumulation_candidates = sorted(
+                accumulation_candidates,
+                key=lambda x: x.get("score", 0),
+                reverse=True,
             )
 
-            true_weakness = (
-                price < sma20 * 0.95
-                or rsi < 38
-                or price < stop
-            )
-
-            if price <= stop and not alerts.get("stop"):
-                send_telegram_msg(
-                    f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"🛑 *كسر وقف الخسارة*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"💰 السعر الحالي: {price:.2f}\n"
-                    f"🚀 الدخول: {entry:.2f}\n"
-                    f"🛑 الوقف: {stop:.2f}",
-                    
-                    TELEGRAM_INVESTMENT_CHAT_ID
-                )
-                alerts["stop"] = True
-
-            if gain >= 5 and not alerts.get("start"):
-                send_telegram_msg(
-                    f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"🚀 *بدأ التحرك*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"💰 السعر الحالي: {price:.2f}\n"
-                    f"📈 الربح الحالي: {gain:.2f}%",
-                    
-                    TELEGRAM_INVESTMENT_CHAT_ID
-                )
-                alerts["start"] = True
-
-            if gain >= 10 and not alerts.get("raise_stop"):
-                new_stop = max(entry * 1.02, price * 0.92)
-
-                send_telegram_msg(
-                    f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"🔒 *رفع وقف مقترح*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"💰 السعر الحالي: {price:.2f}\n"
-                    f"📈 الربح الحالي: {gain:.2f}%\n\n"
-                    f"✅ الوقف المقترح الآن: {new_stop:.2f}",
-                    
-                    TELEGRAM_INVESTMENT_CHAT_ID
-                )
-                
-                p["stop"] = round(new_stop, 4)
-                alerts["raise_stop"] = True
-
-            if price >= t1 and not alerts.get("target1"):
-                new_stop = max(entry * 1.05, price * 0.90)
-
-                send_telegram_msg(
-                    f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"🎯 *وصل هدف 1*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"💰 السعر الحالي: {price:.2f}\n"
-                    f"🎯 هدف 1: {t1:.2f}\n\n"
-                    f"✅ الوقف المقترح بعد الهدف: {new_stop:.2f}",
-
-                    TELEGRAM_INVESTMENT_CHAT_ID
-                )
-
-                p["stop"] = round(new_stop, 4)
-                alerts["target1"] = True
-
-            if price >= t2 and not alerts.get("target2"):
-
-                smart_continue = (
-                    price > sma20
-                    and rsi <= 72
-                    and gain >= 20
-                )
-
-                if smart_continue:
-
-                    new_stop = max(t1, price * 0.92)
-
-                    p["stop"] = round(new_stop, 4)
-
-                    action_text = (
-                        f"🔥 السهم ما زال قويًا بعد هدف 2\n"
-                        f"✅ السعر فوق SMA20\n"
-                        f"✅ RSI ما زال صحي\n"
-                        f"📌 الأفضل: الاستمرار مع رفع الوقف\n"
-                        f"🔒 الوقف المقترح الآن: {new_stop:.2f}\n\n"
-                        f"🧠 سيستمر البوت بمتابعة السهم "
-                        f"وإرسال تنبيه إذا ظهر ضعف أو فقدان زخم"
-                    )
-
-                else:
-
-                    action_text = (
-                        f"✅ وصل الهدف الثاني\n"
-                        f"⚠️ الزخم لم يعد مثاليًا\n"
-                        f"📌 الأفضل جني جزء كبير من الربح "
-                        f"أو تشديد الوقف"
-                    )
-
-                send_telegram_msg(
-                    f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"🚀 *وصل هدف 2*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"💰 السعر الحالي: {price:.2f}\n"
-                    f"🚀 هدف 2: {t2:.2f}\n"
-                    f"📈 الربح الحالي: {gain:.2f}%\n"
-                    f"📊 RSI: {rsi:.1f}\n"
-                    f"📉 SMA20: {sma20:.2f}\n\n"
-                    f"{action_text}",
-
-                    TELEGRAM_INVESTMENT_CHAT_ID
-                )
-
-                alerts["target2"] = True
-
-            if true_weakness and not healthy_pullback and not alerts.get("weakness"):
-                send_telegram_msg(
-                    f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"⚠️ *ضعف فني حقيقي*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"💰 السعر الحالي: {price:.2f}\n"
-                    f"📊 RSI: {rsi:.1f}\n"
-                    f"📉 SMA20: {sma20:.2f}\n\n"
-                    f"❌ الضعف ليس مجرد تهدئة بسيطة\n"
-                    f"يفضل المراقبة الجادة أو تخفيف الكمية.",
-
-                    TELEGRAM_INVESTMENT_CHAT_ID
-                )
-                alerts["weakness"] = True
-
-            elif healthy_pullback and not alerts.get("healthy_pullback") and gain < 3:
-                send_telegram_msg(
-                    f"📈 *Investment Bot - البوت الاستثماري*\n"
-                    f"🟡 *تهدئة صحية وليست ضعفًا واضحًا*\n\n"
-                    f"🎫 `{symbol}`\n"
-                    f"💰 السعر الحالي: {price:.2f}\n"
-                    f"📈 الأداء الحالي: {gain:.2f}%\n"
-                    f"📊 RSI: {rsi:.1f}\n"
-                    f"📉 SMA20: {sma20:.2f}\n\n"
-                    f"✅ السهم ما زال قريبًا من الاتجاه الصحي\n"
-                    f"📌 لا يوجد سبب قوي للخروج حتى الآن.",
-
-                    TELEGRAM_INVESTMENT_CHAT_ID
-                )
-                alerts["healthy_pullback"] = True
-
-            p["current_price"] = round(price, 4)
-            p["current_gain_pct"] = round(gain, 2)
-            p["alerts"] = alerts
-            p["last_monitor"] = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
-
-            updated.append(p)
-
-        except Exception as e:
-            print(f"Monitor error {p.get('symbol')}: {e}", flush=True)
-            updated.append(p)
-
-    state["active_picks"] = updated
-    state["last_monitor"] = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
-    save_state(state)
-    save_gist_file(INVESTMENT_ACTIVE_FILE, updated)
-
-
-def load_active_picks_from_gist():
-    state = load_state()
-
-    saved_active = read_gist_file(
-        INVESTMENT_ACTIVE_FILE,
-        []
-    )
-
-    if isinstance(saved_active, list) and len(saved_active) > 0:
-        state["active_picks"] = saved_active
-        save_state(state)
-
-        print(
-            f"✅ Restored investment active picks: {len(saved_active)}",
-            flush=True
-        )
-
-    else:
-        print(
-            "⚠️ No investment active picks found",
-            flush=True
-        )
-
-
-def run_scheduler():
-    now = datetime.now(saudi_tz)
-    today = now.strftime("%Y-%m-%d")
-    state = load_state()
-
-    # =================================
-    # Weekend Build (Morning)
-    # =================================
-
-    if now.weekday() in [4, 5, 6]:
-
-        if state.get("last_weekend_build") != today:
-
-            build_weekend_500()
-
-    # =================================
-    # Weekend Rebuild (12 PM Saudi)
-    # =================================
-
-    if now.weekday() in [4, 5, 6]:
-
-        current_minutes = (
-            now.hour * 60 + now.minute
-        )
-
-        rebuild_window = (
-            12 * 60 <= current_minutes <= 12 * 60 + 20
-        )
-
-        if rebuild_window:
-
-            last_rebuild = state.get(
-                "last_weekend_midday_rebuild",
-                ""
-            )
-
-            if last_rebuild != today:
-
-                print(
-                    "🔄 Weekend midday rebuild started",
-                    flush=True
-                )
-
-                build_weekend_500()
-
-                state = load_state()
-
-                state[
-                    "last_weekend_midday_rebuild"
-                ] = today
-
+            if accumulation_candidates:
+                send_daily_accumulation_alert(accumulation_candidates)
+                state["last_daily_accumulation_alert"] = today
                 save_state(state)
 
-    if now.weekday() in [0, 1]:
-        if state.get("last_deep_review") != today:
-            deep_review_500()
-
-    if now.weekday() == 2 and now.hour >= 8:
-        if state.get("last_deep_review") != today:
-            deep_review_500()
-
-    if (
-        now.weekday() == 3
-        and now.hour == THURSDAY_REPORT_HOUR
-        and now.minute >= THURSDAY_REPORT_MINUTE
-        and state.get("last_previous_report") != today
-    ):
-        send_previous_picks_report()
-
-    if (
-        now.weekday() == 3
-        and now.hour == THURSDAY_ALERT_HOUR
-        and now.minute >= THURSDAY_ALERT_MINUTE
-        and state.get("last_thursday_alert") != today
-    ):
-        send_thursday_alert()
-
-    last_monitor = state.get("last_monitor", "")
-    should_monitor = True
-
-    if last_monitor:
-        try:
-            last_dt = saudi_tz.localize(datetime.strptime(last_monitor, "%Y-%m-%d %H:%M:%S"))
-            should_monitor = (now - last_dt).total_seconds() >= MONITOR_INTERVAL
-        except Exception:
-            should_monitor = True
-
-    if should_monitor:
-        monitor_active_picks()
+    print(
+        f"✅ Investment scan completed | alerts={len(breakout_candidates)}",
+        flush=True,
+    )
 
 
-def should_run_deep_close_recheck():
-    global last_deep_close_recheck_date
-
-    now = datetime.now(saudi_tz)
-    today = now.strftime("%Y-%m-%d")
-
-    # Tuesday = 1, Wednesday = 2
-    if now.weekday() not in [1, 2]:
-        return False
-
-    current_minutes = now.hour * 60 + now.minute
-
-    # around 11 PM Saudi time
-    if not (22 * 60 + 55 <= current_minutes <= 23 * 60 + 20):
-        return False
-
-    if last_deep_close_recheck_date == today:
-        return False
-
-    last_deep_close_recheck_date = today
-    return True
-
-
-threading.Thread(target=run_web_server, daemon=True).start()
-
-load_active_picks_from_gist()
-
-print("📈 Investment Bot Started", flush=True)
-send_telegram_msg(
-    "📈 *Investment Bot - البوت الاستثماري*\n\nتم تشغيل النظام الأسبوعي الجديد.",
-    TELEGRAM_INVESTMENT_CHAT_ID
-)
-while True:
+def get_latest_price(symbol):
     try:
-        run_scheduler()
+        snapshot = api.get_snapshot(symbol)
 
-        if should_run_deep_close_recheck():
-            print("🔍 Running deep close recheck", flush=True)
-            deep_review_500()
+        if snapshot.latest_trade:
+            return float(snapshot.latest_trade.price)
 
-        time.sleep(SCAN_INTERVAL)
+        if snapshot.daily_bar:
+            return float(snapshot.daily_bar.close)
 
     except Exception as e:
-        print("Main error:", e, flush=True)
-        time.sleep(30)
+        print(f"get_latest_price error {symbol}: {e}", flush=True)
+
+    return None
+
+
+def monitor_active_picks(state):
+    active_picks = state.get("active_picks", [])
+
+    if not active_picks:
+        return
+
+    changed = False
+
+    for p in active_picks:
+        try:
+            symbol = p.get("symbol")
+
+            if not symbol:
+                continue
+
+            if p.get("status") != "active":
+                continue
+
+            price = get_latest_price(symbol)
+
+            if price is None:
+                continue
+
+            entry = float(p.get("entry", p.get("price", 0)))
+            stop_loss = float(p.get("stop_loss", 0))
+            target1 = float(p.get("target1", 0))
+            target2 = float(p.get("target2", 0))
+            target3 = float(p.get("target3", 0))
+            target4 = float(p.get("target4", 0))
+
+            gain_pct = pct_change(price, entry)
+
+            p["last_price"] = round(price, 4)
+            p["last_gain_pct"] = round(gain_pct, 2)
+            p["last_checked_at"] = now_saudi().isoformat()
+
+            if gain_pct >= 4 and not p.get("movement_alerted"):
+                p["movement_alerted"] = True
+                changed = True
+
+                send_telegram_message(
+                    f"🚀 <b>{symbol}</b> بدأ التحرك\n"
+                    f"الدخول: {entry}\n"
+                    f"السعر الحالي: {round(price, 4)}\n"
+                    f"الربح الحالي: {round(gain_pct, 2)}%"
+                )
+
+            if price >= target1 and not p.get("hit_target1"):
+                p["hit_target1"] = True
+                p["stop_raised_to"] = max(entry, float(p.get("stop_raised_to", stop_loss)))
+                changed = True
+
+                send_telegram_message(
+                    f"✅ <b>{symbol}</b> حقق الهدف 1\n"
+                    f"السعر الحالي: {round(price, 4)}\n"
+                    f"المقترح: رفع الوقف إلى الدخول {entry}"
+                )
+
+            if price >= target2 and not p.get("hit_target2"):
+                p["hit_target2"] = True
+                p["stop_raised_to"] = max(target1, float(p.get("stop_raised_to", stop_loss)))
+                changed = True
+
+                send_telegram_message(
+                    f"🔥 <b>{symbol}</b> حقق الهدف 2\n"
+                    f"السعر الحالي: {round(price, 4)}\n"
+                    f"المقترح: رفع الوقف إلى هدف 1: {target1}"
+                )
+
+            if price >= target3 and not p.get("hit_target3"):
+                p["hit_target3"] = True
+                p["stop_raised_to"] = max(target2, float(p.get("stop_raised_to", stop_loss)))
+                changed = True
+
+                send_telegram_message(
+                    f"💎 <b>{symbol}</b> حقق الهدف 3\n"
+                    f"السعر الحالي: {round(price, 4)}\n"
+                    f"المقترح: رفع الوقف إلى هدف 2: {target2}"
+                )
+
+            if price >= target4 and not p.get("hit_target4"):
+                p["hit_target4"] = True
+                p["status"] = "target4_done"
+                changed = True
+
+                send_telegram_message(
+                    f"🏁 <b>{symbol}</b> حقق الهدف 4\n"
+                    f"السعر الحالي: {round(price, 4)}\n"
+                    f"النتيجة: اكتمل المسار الاستثماري بنجاح"
+                )
+
+            raised_stop = float(p.get("stop_raised_to", stop_loss))
+
+            if price <= raised_stop:
+                p["status"] = "stopped"
+                changed = True
+
+                send_telegram_message(
+                    f"🛑 <b>{symbol}</b> وصل الوقف\n"
+                    f"السعر الحالي: {round(price, 4)}\n"
+                    f"الوقف: {round(raised_stop, 4)}"
+                )
+
+            weakness = (
+                gain_pct <= -7
+                or price <= entry * 0.93
+            )
+
+            if weakness and not p.get("weakness_alerted"):
+                p["weakness_alerted"] = True
+                changed = True
+
+                send_telegram_message(
+                    f"⚠️ <b>{symbol}</b> ضعف فني\n"
+                    f"الدخول: {entry}\n"
+                    f"السعر الحالي: {round(price, 4)}\n"
+                    f"التغير: {round(gain_pct, 2)}%\n"
+                    f"المقترح: راقب الوقف أو خفف حسب خطتك"
+                )
+
+        except Exception as e:
+            print(f"monitor_active_picks error: {e}", flush=True)
+
+    if changed:
+        state["active_picks"] = active_picks
+        state["last_monitor"] = now_saudi().isoformat()
+        save_state(state)
+
+
+def run_bot():
+    state = load_state()
+
+    while True:
+        try:
+            monitor_active_picks(state)
+
+            last_scan = state.get("last_instant_alert")
+            should_scan = True
+
+            if last_scan:
+                try:
+                    dt = datetime.fromisoformat(last_scan)
+
+                    if dt.tzinfo is None:
+                        dt = saudi_tz.localize(dt)
+
+                    minutes_since = (
+                        now_saudi() - dt.astimezone(saudi_tz)
+                    ).total_seconds() / 60
+
+                    if minutes_since < 60:
+                        should_scan = False
+
+                except Exception:
+                    should_scan = True
+
+            if should_scan:
+                scan_for_instant_alerts(state)
+
+            time.sleep(SCAN_INTERVAL)
+
+        except Exception as e:
+            print(f"run_bot error: {e}", flush=True)
+            time.sleep(60)
+
+
+if __name__ == "__main__":
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
