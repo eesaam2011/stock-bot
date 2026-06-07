@@ -495,9 +495,9 @@ def investment_score(symbol, df=None):
             price > sma20
             and price > sma50
             and 3 <= move_20d <= 30
-            and move_5d >= -5
+            and move_5d >= -2
             and 45 <= rsi <= 64
-            and range_20 <= 65
+            and range_20 <= 45
         )
 
         accumulation_ok = (
@@ -508,10 +508,10 @@ def investment_score(symbol, df=None):
         )
 
         not_late = (
-            move_5d <= 25
-            and move_10d <= 45
-            and rsi <= 72
-            and price <= sma20 * 1.35
+            move_5d <= 18
+            and move_10d <= 30
+            and rsi <= 62
+            and price <= sma20 * 1.25
         )
 
         technical_strength = (
