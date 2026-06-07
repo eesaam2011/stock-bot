@@ -102,7 +102,8 @@ def is_clean_symbol(symbol):
     return True
     
 SCAN_INTERVAL = 300
-MONITOR_INTERVAL = 60 * 30
+INSTANT_SCAN_INTERVAL = 30 * 60
+MONITOR_INTERVAL = 30 * 60
 DAILY_ACCUMULATION_HOUR = 18
 
 MIN_SCORE_FOR_ALERT = 82
@@ -794,6 +795,8 @@ def scan_for_instant_alerts(state):
         f"✅ Investment scan completed | alerts={len(breakout_candidates)}",
         flush=True,
     )
+    state["last_instant_alert"] = now_saudi().isoformat()
+    save_state(state)
 
 
 def get_latest_price(symbol):
@@ -958,11 +961,11 @@ def run_bot():
                     if dt.tzinfo is None:
                         dt = saudi_tz.localize(dt)
 
-                    minutes_since = (
+                    seconds_since = (
                         now_saudi() - dt.astimezone(saudi_tz)
-                    ).total_seconds() / 60
+                    ).total_seconds()
 
-                    if minutes_since < 60:
+                    if seconds_since < INSTANT_SCAN_INTERVAL:
                         should_scan = False
 
                 except Exception:
