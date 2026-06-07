@@ -108,6 +108,7 @@ DAILY_ACCUMULATION_HOUR = 18
 
 MIN_SCORE_FOR_ALERT = 82
 MAX_INSTANT_ALERTS = 5
+MAX_CANDIDATES_TO_COLLECT = 15
 
 REPEAT_BLOCK_DAYS = 30
 
@@ -756,7 +757,7 @@ def scan_for_instant_alerts(state):
             if result.get("score", 0) >= MIN_SCORE_FOR_ALERT:
                 breakout_candidates.append(result)
 
-        if len(breakout_candidates) >= MAX_INSTANT_ALERTS:
+        if len(breakout_candidates) >= MAX_CANDIDATES_TO_COLLECT:
             break
 
         time.sleep(0.5)
