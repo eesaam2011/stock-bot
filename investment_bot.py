@@ -908,7 +908,7 @@ def monitor_active_picks(state):
             if p.get("status") != "active":
                 continue
 
-            price = get_latest_price(symbol)
+            price = prices.get(symbol.upper())
 
             if price is None:
                 continue
