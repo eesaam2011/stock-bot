@@ -918,18 +918,15 @@ def send_previous_picks_report():
         except Exception as e:
             print(f"Previous report error {p.get('symbol')}: {e}", flush=True)
 
-            msg += (
-                f"🧠 *الخلاصة:*\n"
-                f"✅ صحي: {strong_count}\n"
-                f"🎯/🚀 أهداف: {target_count}\n"
-                f"⚠️ ضعيف: {weak_count}\n"
-                f"🛑 وقف: {stop_count}\n"
-            )
+    msg += (
+        f"🧠 *الخلاصة:*\n"
+        f"✅ صحي: {strong_count}\n"
+        f"🎯/🚀 أهداف: {target_count}\n"
+        f"⚠️ ضعيف: {weak_count}\n"
+        f"🛑 وقف: {stop_count}\n"
+    )
 
-            send_telegram_msg(
-                msg,
-                TELEGRAM_INVESTMENT_CHAT_ID
-            )
+    send_telegram_msg(msg, TELEGRAM_INVESTMENT_CHAT_ID)
     
     state["last_previous_report"] = datetime.now(saudi_tz).strftime("%Y-%m-%d")
     save_state(state)
@@ -980,14 +977,9 @@ def send_thursday_alert():
             f"🧠 الأسباب: {', '.join(r['reasons'][:6])}\n"
         )
 
-        
         msg += f"🔗 https://www.tradingview.com/chart/?symbol={r['symbol']}\n\n"
 
-        send_telegram_msg(
-            "📈 *Investment Bot - البوت الاستثماري*\n\n"
-            "📉 لا توجد فرص استثمارية كافية هذا الأسبوع.",
-            TELEGRAM_INVESTMENT_CHAT_ID
-        )
+    send_telegram_msg(msg, TELEGRAM_INVESTMENT_CHAT_ID)
 
     state = load_state()
     today = datetime.now(saudi_tz).strftime("%Y-%m-%d")
