@@ -6,10 +6,9 @@ import threading
 import pandas as pd
 import alpaca_trade_api as tradeapi
 from flask import Flask
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
-# ─── إعدادات ───────────────────────────────────────────
 API_KEY    = os.getenv("APCA_API_KEY_ID")
 SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL   = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
@@ -25,7 +24,6 @@ app      = Flask(__name__)
 saudi_tz = pytz.timezone("Asia/Riyadh")
 ny_tz    = pytz.timezone("America/New_York")
 
-# ─── ثوابت ─────────────────────────────────────────────
 PRICE_MIN          = 0.3
 PRICE_MAX          = 25.0
 MIN_AVG_VOL        = 50_000
@@ -61,9 +59,6 @@ sent_alerts = {}
 @app.route("/")
 def home():
     return "Explosion Bot Running"
-
-def now_saudi():
-    return datetime.now(saudi_tz)
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -236,7 +231,7 @@ def filter_by_price(symbols):
     print(f"✅ After price filter: {len(filtered)}", flush=True)
     return filtered
 
-def get_daily_bars(symbols, limit=30):
+def get_daily_bars(symbols, limit=70):
     bars_map = {}
 
     try:
@@ -263,18 +258,18 @@ def get_daily_bars(symbols, limit=30):
 
         elif "symbol" in bars.columns:
             for sym, df in bars.groupby("symbol"):
-                bars_map[sym] = df.copy()
+                bars_map[str(sym).upper()] = df.copy()
 
     except Exception as e:
         print(f"get_daily_bars error: {e}", flush=True)
 
     return bars_map
 
-def get_intraday_volume_bulk(symbols):
-    volumes = {}
+def get_intraday_stats_bulk(symbols):
+    stats = {}
 
     if not symbols:
-        return volumes
+        return stats
 
     try:
         now_ny = datetime.now(ny_tz)
@@ -295,35 +290,65 @@ def get_intraday_volume_bulk(symbols):
         ).df
 
         if bars is None or bars.empty:
-            return volumes
+            return stats
 
         if isinstance(bars.index, pd.MultiIndex):
             for sym in symbols:
                 try:
                     df = bars.xs(sym)
 
-                    if df is not None and not df.empty and "volume" in df.columns:
-                        volumes[sym.upper()] = float(df["volume"].sum())
+                    if df is not None and not df.empty:
+                        volume_sum = float(df["volume"].sum()) if "volume" in df.columns else 0
+                        high_of_day = float(df["high"].max()) if "high" in df.columns else 0
+
+                        stats[sym.upper()] = {
+                            "intraday_volume": volume_sum,
+                            "high_of_day": high_of_day,
+                        }
 
                 except Exception:
                     continue
 
         elif "symbol" in bars.columns:
             for sym, df in bars.groupby("symbol"):
-                if df is not None and not df.empty and "volume" in df.columns:
-                    volumes[str(sym).upper()] = float(df["volume"].sum())
+                if df is not None and not df.empty:
+                    volume_sum = float(df["volume"].sum()) if "volume" in df.columns else 0
+                    high_of_day = float(df["high"].max()) if "high" in df.columns else 0
+
+                    stats[str(sym).upper()] = {
+                        "intraday_volume": volume_sum,
+                        "high_of_day": high_of_day,
+                    }
 
     except Exception as e:
-        print(f"get_intraday_volume_bulk error: {e}", flush=True)
+        print(f"get_intraday_stats_bulk error: {e}", flush=True)
 
-    return volumes
+    return stats
 
-def check_explosion(symbol, df, current_price, intraday_volume):
+def calculate_atr_14(df):
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    atr_14 = float(true_range.tail(14).mean())
+    return atr_14
+
+def check_explosion(symbol, df, current_price, intraday_volume, high_of_day):
     try:
-        if df is None or df.empty or len(df) < 10:
+        if df is None or df.empty or len(df) < 50:
             return None
 
-        if "close" not in df.columns or "volume" not in df.columns:
+        required_cols = {"close", "high", "low", "volume"}
+        if not required_cols.issubset(set(df.columns)):
             return None
 
         close  = df["close"]
@@ -331,7 +356,7 @@ def check_explosion(symbol, df, current_price, intraday_volume):
 
         prev_close = float(close.iloc[-2])
         avg_vol_20 = float(volume.iloc[:-1].tail(20).mean())
-        today_vol  = float(intraday_volume or 0)
+        today_vol = float(intraday_volume or 0)
 
         if not (MIN_AVG_VOL <= avg_vol_20 <= MAX_AVG_VOL):
             return None
@@ -356,19 +381,47 @@ def check_explosion(symbol, df, current_price, intraday_volume):
             return None
 
         resistance_20 = float(close.iloc[:-1].tail(20).max())
+        resistance_50 = float(close.iloc[:-1].tail(50).max())
 
         if current_price < resistance_20 * 1.01:
             return None
 
+        atr_14 = calculate_atr_14(df)
+
+        if atr_14 <= 0:
+            return None
+
+        breakout_strength_pct = ((current_price - resistance_20) / resistance_20) * 100
+
+        target1 = round(current_price + atr_14 * 1.0, 4)
+        target2 = round(current_price + atr_14 * 2.0, 4)
+        target3 = round(max(resistance_50, current_price + atr_14 * 3.0), 4)
+
+        stop_loss = round(
+            max(
+                resistance_20 * 0.97,
+                current_price - atr_14 * 1.2,
+            ),
+            4,
+        )
+
         return {
-            "symbol":           symbol,
-            "price":            round(current_price, 4),
-            "prev_close":       round(prev_close, 4),
+            "symbol": symbol,
+            "price": round(current_price, 4),
+            "prev_close": round(prev_close, 4),
             "price_change_pct": round(price_change_pct, 2),
-            "rvol":             round(rvol, 2),
-            "avg_vol_20":       int(avg_vol_20),
-            "today_vol":        int(today_vol),
-            "resistance_20":    round(resistance_20, 4),
+            "rvol": round(rvol, 2),
+            "avg_vol_20": int(avg_vol_20),
+            "today_vol": int(today_vol),
+            "high_of_day": round(float(high_of_day or current_price), 4),
+            "resistance_20": round(resistance_20, 4),
+            "resistance_50": round(resistance_50, 4),
+            "breakout_strength_pct": round(breakout_strength_pct, 2),
+            "atr_14": round(atr_14, 4),
+            "target1": target1,
+            "target2": target2,
+            "target3": target3,
+            "stop_loss": stop_loss,
         }
 
     except Exception as e:
@@ -382,7 +435,15 @@ def send_explosion_alert(result):
     rvol  = result["rvol"]
     avg_v = result["avg_vol_20"]
     t_v   = result["today_vol"]
-    res   = result["resistance_20"]
+    hod   = result["high_of_day"]
+    res20 = result["resistance_20"]
+    res50 = result["resistance_50"]
+    brk   = result["breakout_strength_pct"]
+    atr   = result["atr_14"]
+    t1    = result["target1"]
+    t2    = result["target2"]
+    t3    = result["target3"]
+    stop  = result["stop_loss"]
 
     msg = (
         f"🔥 <b>بداية اشتعال سهم - {sym}</b>\n\n"
@@ -390,8 +451,17 @@ def send_explosion_alert(result):
         f"📈 الارتفاع عن إغلاق أمس: +{chg}%\n"
         f"🔥 RVOL intraday: {rvol}x المعدل\n"
         f"📊 حجم اليوم الفعلي intraday: {t_v:,}\n"
-        f"📊 معدل الحجم 20 يوم: {avg_v:,}\n"
-        f"🧱 اختراق مقاومة 20 يوم: {res}\n\n"
+        f"📊 معدل الحجم 20 يوم: {avg_v:,}\n\n"
+        f"🧱 مقاومة 20 يوم: {res20}\n"
+        f"🧱 مقاومة 50 يوم: {res50}\n"
+        f"📍 أعلى سعر اليوم: {hod}\n"
+        f"💪 قوة الاختراق: +{brk}% فوق مقاومة 20 يوم\n"
+        f"📏 ATR 14: {atr}\n\n"
+        f"🎯 الهدف الأول: {t1}\n"
+        f"🎯 الهدف الثاني: {t2}\n"
+        f"🚀 الهدف الأعلى المتوقع: {t3}\n"
+        f"🛑 وقف الخسارة المقترح: {stop}\n\n"
+        f"⚠️ الأهداف تقديرية وتعتمد على استمرار الحجم والزخم\n"
         f"⚠️ سهم سريع الحركة — تقلب عالٍ جداً\n"
         f"🔗 https://www.tradingview.com/chart/?symbol={sym}"
     )
@@ -411,9 +481,9 @@ def full_scan():
     for i in range(0, len(symbols), BATCH_SIZE):
         batch = symbols[i:i + BATCH_SIZE]
 
-        prices           = get_prices_bulk(batch)
-        bars_map         = get_daily_bars(batch, limit=30)
-        intraday_volumes = get_intraday_volume_bulk(batch)
+        prices = get_prices_bulk(batch)
+        bars_map = get_daily_bars(batch, limit=70)
+        intraday_stats = get_intraday_stats_bulk(batch)
 
         for sym in batch:
             last_alert = sent_alerts.get(sym, 0)
@@ -427,13 +497,14 @@ def full_scan():
                 continue
 
             df = bars_map.get(sym)
-            intraday_volume = intraday_volumes.get(sym, 0)
+            stats = intraday_stats.get(sym, {})
 
             result = check_explosion(
                 symbol=sym,
                 df=df,
                 current_price=cp,
-                intraday_volume=intraday_volume,
+                intraday_volume=stats.get("intraday_volume", 0),
+                high_of_day=stats.get("high_of_day", cp),
             )
 
             if result:
@@ -501,4 +572,4 @@ if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
 
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port) 
