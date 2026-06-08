@@ -372,7 +372,7 @@ def filter_symbols_by_price_before_bars(symbols):
 
     for i in range(0, len(symbols), BATCH_SIZE):
         batch = symbols[i:i + BATCH_SIZE]
-        prices = get_latest_prices_for_symbols(batch)
+        prices = get_latest_prices_batch(batch)
 
         for symbol in batch:
             price = prices.get(symbol)
