@@ -60,6 +60,28 @@ sent_alerts = {}
 def home():
     return "Explosion Bot Running"
 
+def is_scan_time_allowed():
+    now_ny = datetime.now(ny_tz)
+
+    if now_ny.weekday() >= 5:
+        return False
+
+    start = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
+    end   = now_ny.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    return start <= now_ny <= end
+
+def normalize_sent_alerts(raw_alerts):
+    normalized = {}
+
+    for symbol, ts in raw_alerts.items():
+        try:
+            normalized[str(symbol).upper()] = float(ts)
+        except Exception:
+            continue
+
+    return normalized
+
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -281,6 +303,9 @@ def get_intraday_stats_bulk(symbols):
             microsecond=0,
         )
 
+        if now_ny < start_ny:
+            return stats
+
         bars = api.get_bars(
             symbols,
             tradeapi.TimeFrame(5, tradeapi.TimeFrameUnit.Minute),
@@ -339,8 +364,7 @@ def calculate_atr_14(df):
         axis=1,
     ).max(axis=1)
 
-    atr_14 = float(true_range.tail(14).mean())
-    return atr_14
+    return float(true_range.tail(14).mean())
 
 def check_explosion(symbol, df, current_price, intraday_volume, high_of_day):
     try:
@@ -397,14 +421,8 @@ def check_explosion(symbol, df, current_price, intraday_volume, high_of_day):
         target2 = round(current_price + atr_14 * 2.0, 4)
         target3 = round(max(resistance_50, current_price + atr_14 * 3.0), 4)
 
-        stop_loss = round(
-            max(
-                resistance_20 * 0.97,
-                current_price - atr_14 * 1.2,
-            ),
-            4,
-        )
-
+        stop_loss = round(current_price - (atr_14 * 1.5), 4)
+        
         return {
             "symbol": symbol,
             "price": round(current_price, 4),
@@ -548,7 +566,7 @@ def run_bot():
     global sent_alerts
 
     state = load_state()
-    sent_alerts = state.get("sent_alerts", {})
+    sent_alerts = normalize_sent_alerts(state.get("sent_alerts", {}))
 
     last_full_scan = 0
 
@@ -556,12 +574,14 @@ def run_bot():
         try:
             now_ts = time.time()
 
-            if now_ts - last_full_scan >= FULL_SCAN_INTERVAL:
-                full_scan()
-                last_full_scan = time.time()
+            if is_scan_time_allowed():
+                if now_ts - last_full_scan >= FULL_SCAN_INTERVAL:
+                    full_scan()
+                    last_full_scan = time.time()
+            else:
+                print("⏸️ Scan skipped: outside US premarket/market hours", flush=True)
 
             quick_monitor()
-
             time.sleep(SCAN_INTERVAL)
 
         except Exception as e:
