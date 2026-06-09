@@ -31,11 +31,11 @@ MAX_AVG_VOL        = 800_000
 RVOL_MIN           = 3.0
 MIN_PRICE_CHANGE   = 5.0
 
-MOMENTUM_RVOL_MIN             = 2.0
-MOMENTUM_PRICE_CHANGE_MIN     = 12.0
-MOMENTUM_MIN_DOLLAR_VOLUME    = 300_000
-MOMENTUM_NEAR_HOD_PCT         = 0.97
-MOMENTUM_RESISTANCE_TOLERANCE = 0.98
+MOMENTUM_RVOL_MIN             = 1.5
+MOMENTUM_PRICE_CHANGE_MIN     = 3.0
+MOMENTUM_MIN_DOLLAR_VOLUME    = 150_000
+MOMENTUM_NEAR_HOD_PCT         = 0.96
+MOMENTUM_RESISTANCE_TOLERANCE = 0.95
 
 BATCH_SIZE         = 200
 SCAN_INTERVAL      = 60
@@ -613,11 +613,8 @@ def check_momentum_explosion(symbol, df, current_price, intraday_volume, high_of
             and price_change_pct >= MOMENTUM_PRICE_CHANGE_MIN
             and dollar_volume >= MOMENTUM_MIN_DOLLAR_VOLUME
             and current_price >= resistance_20 * MOMENTUM_RESISTANCE_TOLERANCE
-            and (
-                volume_acceleration
-                or near_hod
-                or price_change_pct >= 30
-            )
+            and volume_acceleration
+            and near_hod
         )
 
         if not momentum_path:
