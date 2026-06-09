@@ -36,6 +36,14 @@ FULL_SCAN_INTERVAL = 10 * 60
 REPEAT_BLOCK_HOURS = 12
 STATE_FILE         = "explosion_state.json"
 
+# ─── Explosion Candidate Layer ─────────────────────────
+# هذه الطبقة لا تمنع السهم ولا ترفضه، فقط تضيف تصنيف ودرجة.
+# إذا توفر Float حقيقي لاحقاً، ضعه هنا:
+# مثال: "INHD": 4_500_000
+KNOWN_FLOATS = {}
+
+EXPLOSION_CANDIDATE_MIN_SCORE = 70
+
 SYMBOL_BLACKLIST = {
     "JPM","BAC","WFC","C","GS","MS","AXP","USB","TFC","PNC","COF","DFS",
     "MET","PRU","ALL","AIG","AFL","TRV","HIG","CB",
@@ -177,6 +185,78 @@ def is_clean_symbol(symbol):
         return False
 
     return True
+
+def get_float_tier(symbol, avg_vol_20):
+    real_float = KNOWN_FLOATS.get(symbol)
+
+    if real_float is not None:
+        if real_float <= 5_000_000:
+            return "ULTRA_LOW_FLOAT", real_float, "REAL"
+        if real_float <= 10_000_000:
+            return "VERY_LOW_FLOAT", real_float, "REAL"
+        if real_float <= 20_000_000:
+            return "LOW_FLOAT", real_float, "REAL"
+        return "NORMAL_FLOAT", real_float, "REAL"
+
+    # تقدير مؤقت عند عدم توفر float الحقيقي
+    if avg_vol_20 <= 150_000:
+        return "ULTRA_LOW_FLOAT_LIKE", None, "ESTIMATED"
+    if avg_vol_20 <= 300_000:
+        return "VERY_LOW_FLOAT_LIKE", None, "ESTIMATED"
+    if avg_vol_20 <= 800_000:
+        return "LOW_FLOAT_LIKE", None, "ESTIMATED"
+
+    return "NORMAL_FLOAT_LIKE", None, "ESTIMATED"
+
+def calculate_explosion_score(
+    float_tier,
+    rvol,
+    volume_acceleration,
+    breakout_strength_pct,
+    dollar_volume,
+):
+    score = 0
+
+    if float_tier in ["ULTRA_LOW_FLOAT", "ULTRA_LOW_FLOAT_LIKE"]:
+        score += 30
+    elif float_tier in ["VERY_LOW_FLOAT", "VERY_LOW_FLOAT_LIKE"]:
+        score += 24
+    elif float_tier in ["LOW_FLOAT", "LOW_FLOAT_LIKE"]:
+        score += 18
+    else:
+        score += 8
+
+    if rvol >= 10:
+        score += 25
+    elif rvol >= 7:
+        score += 20
+    elif rvol >= 5:
+        score += 16
+    elif rvol >= 3:
+        score += 12
+
+    if volume_acceleration:
+        score += 20
+
+    if breakout_strength_pct >= 10:
+        score += 15
+    elif breakout_strength_pct >= 5:
+        score += 12
+    elif breakout_strength_pct >= 2:
+        score += 8
+    elif breakout_strength_pct >= 1:
+        score += 5
+
+    if dollar_volume >= 5_000_000:
+        score += 10
+    elif dollar_volume >= 2_000_000:
+        score += 8
+    elif dollar_volume >= 1_000_000:
+        score += 6
+    elif dollar_volume >= 500_000:
+        score += 4
+
+    return min(score, 100)
 
 def get_all_symbols():
     symbols = []
@@ -326,9 +406,18 @@ def get_intraday_stats_bulk(symbols):
                         volume_sum = float(df["volume"].sum()) if "volume" in df.columns else 0
                         high_of_day = float(df["high"].max()) if "high" in df.columns else 0
 
+                        recent_volume = float(df["volume"].tail(3).mean()) if len(df) >= 3 else 0
+                        previous_volume = float(df["volume"].tail(12).head(9).mean()) if len(df) >= 12 else 0
+
+                        volume_acceleration = (
+                            previous_volume > 0
+                            and recent_volume > previous_volume * 1.5
+                        )
+
                         stats[sym.upper()] = {
                             "intraday_volume": volume_sum,
                             "high_of_day": high_of_day,
+                            "volume_acceleration": volume_acceleration,
                         }
 
                 except Exception:
@@ -340,9 +429,18 @@ def get_intraday_stats_bulk(symbols):
                     volume_sum = float(df["volume"].sum()) if "volume" in df.columns else 0
                     high_of_day = float(df["high"].max()) if "high" in df.columns else 0
 
+                    recent_volume = float(df["volume"].tail(3).mean()) if len(df) >= 3 else 0
+                    previous_volume = float(df["volume"].tail(12).head(9).mean()) if len(df) >= 12 else 0
+
+                    volume_acceleration = (
+                        previous_volume > 0
+                        and recent_volume > previous_volume * 1.5
+                    )
+
                     stats[str(sym).upper()] = {
                         "intraday_volume": volume_sum,
                         "high_of_day": high_of_day,
+                        "volume_acceleration": volume_acceleration,
                     }
 
     except Exception as e:
@@ -366,7 +464,7 @@ def calculate_atr_14(df):
 
     return float(true_range.tail(14).mean())
 
-def check_explosion(symbol, df, current_price, intraday_volume, high_of_day):
+def check_explosion(symbol, df, current_price, intraday_volume, high_of_day, volume_acceleration):
     try:
         if df is None or df.empty or len(df) < 50:
             return None
@@ -416,13 +514,26 @@ def check_explosion(symbol, df, current_price, intraday_volume, high_of_day):
             return None
 
         breakout_strength_pct = ((current_price - resistance_20) / resistance_20) * 100
+        dollar_volume = current_price * today_vol
+
+        float_tier, float_value, float_source = get_float_tier(symbol, avg_vol_20)
+
+        explosion_score = calculate_explosion_score(
+            float_tier=float_tier,
+            rvol=rvol,
+            volume_acceleration=volume_acceleration,
+            breakout_strength_pct=breakout_strength_pct,
+            dollar_volume=dollar_volume,
+        )
+
+        explosion_candidate = explosion_score >= EXPLOSION_CANDIDATE_MIN_SCORE
 
         target1 = round(current_price + atr_14 * 1.0, 4)
         target2 = round(current_price + atr_14 * 2.0, 4)
         target3 = round(max(resistance_50, current_price + atr_14 * 3.0), 4)
 
         stop_loss = round(current_price - (atr_14 * 1.5), 4)
-        
+
         return {
             "symbol": symbol,
             "price": round(current_price, 4),
@@ -431,6 +542,7 @@ def check_explosion(symbol, df, current_price, intraday_volume, high_of_day):
             "rvol": round(rvol, 2),
             "avg_vol_20": int(avg_vol_20),
             "today_vol": int(today_vol),
+            "dollar_volume": int(dollar_volume),
             "high_of_day": round(float(high_of_day or current_price), 4),
             "resistance_20": round(resistance_20, 4),
             "resistance_50": round(resistance_50, 4),
@@ -440,6 +552,12 @@ def check_explosion(symbol, df, current_price, intraday_volume, high_of_day):
             "target2": target2,
             "target3": target3,
             "stop_loss": stop_loss,
+            "float_tier": float_tier,
+            "float_value": float_value,
+            "float_source": float_source,
+            "volume_acceleration": volume_acceleration,
+            "explosion_candidate": explosion_candidate,
+            "explosion_score": explosion_score,
         }
 
     except Exception as e:
@@ -453,6 +571,7 @@ def send_explosion_alert(result):
     rvol  = result["rvol"]
     avg_v = result["avg_vol_20"]
     t_v   = result["today_vol"]
+    dvol  = result["dollar_volume"]
     hod   = result["high_of_day"]
     res20 = result["resistance_20"]
     res50 = result["resistance_50"]
@@ -463,13 +582,28 @@ def send_explosion_alert(result):
     t3    = result["target3"]
     stop  = result["stop_loss"]
 
+    float_tier = result["float_tier"]
+    float_source = result["float_source"]
+    volume_acceleration = result["volume_acceleration"]
+    explosion_score = result["explosion_score"]
+    explosion_candidate = result["explosion_candidate"]
+
+    candidate_label = "✅ نعم" if explosion_candidate else "⚠️ مراقبة فقط"
+    acceleration_label = "✅ موجود" if volume_acceleration else "❌ غير واضح"
+
     msg = (
         f"🔥 <b>بداية اشتعال سهم - {sym}</b>\n\n"
         f"💰 السعر الحالي: {price}\n"
         f"📈 الارتفاع عن إغلاق أمس: +{chg}%\n"
         f"🔥 RVOL intraday: {rvol}x المعدل\n"
         f"📊 حجم اليوم الفعلي intraday: {t_v:,}\n"
+        f"💵 Dollar Volume: ${dvol:,}\n"
         f"📊 معدل الحجم 20 يوم: {avg_v:,}\n\n"
+        f"🧬 Float Tier: {float_tier}\n"
+        f"🧬 Float Source: {float_source}\n"
+        f"🚀 Explosion Score: {explosion_score}/100\n"
+        f"🚀 Explosion Candidate: {candidate_label}\n"
+        f"⚡ تسارع الحجم: {acceleration_label}\n\n"
         f"🧱 مقاومة 20 يوم: {res20}\n"
         f"🧱 مقاومة 50 يوم: {res50}\n"
         f"📍 أعلى سعر اليوم: {hod}\n"
@@ -479,13 +613,17 @@ def send_explosion_alert(result):
         f"🎯 الهدف الثاني: {t2}\n"
         f"🚀 الهدف الأعلى المتوقع: {t3}\n"
         f"🛑 وقف الخسارة المقترح: {stop}\n\n"
+        f"⚠️ طبقة Explosion Candidate لا تمنع ولا تؤكد الدخول، فقط تصنيف إضافي\n"
         f"⚠️ الأهداف تقديرية وتعتمد على استمرار الحجم والزخم\n"
         f"⚠️ سهم سريع الحركة — تقلب عالٍ جداً\n"
         f"🔗 https://www.tradingview.com/chart/?symbol={sym}"
     )
 
     send_telegram(msg)
-    print(f"🔥 Alert sent: {sym} | +{chg}% | RVOL={rvol}x", flush=True)
+    print(
+        f"🔥 Alert sent: {sym} | +{chg}% | RVOL={rvol}x | Explosion={explosion_score}/100",
+        flush=True,
+    )
 
 def full_scan():
     print("🔎 Full scan started...", flush=True)
@@ -523,6 +661,7 @@ def full_scan():
                 current_price=cp,
                 intraday_volume=stats.get("intraday_volume", 0),
                 high_of_day=stats.get("high_of_day", cp),
+                volume_acceleration=stats.get("volume_acceleration", False),
             )
 
             if result:
@@ -592,4 +731,4 @@ if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
 
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port) 
+    app.run(host="0.0.0.0", port=port)
