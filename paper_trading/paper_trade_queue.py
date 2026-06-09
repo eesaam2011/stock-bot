@@ -40,6 +40,9 @@ def queue_paper_trade(alert):
         print("❌ Paper trade queue skipped: missing symbol or price", flush=True)
         return False
 
+    safe_alert = dict(alert)
+    safe_alert.pop("bars", None)
+
     trade_request = {
         "trade_id": str(uuid.uuid4()),
         "symbol": symbol,
@@ -52,7 +55,7 @@ def queue_paper_trade(alert):
         "created_at": datetime.now(UTC).isoformat(),
         "source": "Bot Clean Direct Entry",
         "status": "queued",
-        "alert": alert,
+        "alert": safe_alert,
     }
 
     try:
