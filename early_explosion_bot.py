@@ -30,18 +30,20 @@ MIN_AVG_VOL        = 50_000
 MAX_AVG_VOL        = 800_000
 RVOL_MIN           = 3.0
 MIN_PRICE_CHANGE   = 5.0
+
+MOMENTUM_RVOL_MIN             = 2.0
+MOMENTUM_PRICE_CHANGE_MIN     = 12.0
+MOMENTUM_MIN_DOLLAR_VOLUME    = 300_000
+MOMENTUM_NEAR_HOD_PCT         = 0.97
+MOMENTUM_RESISTANCE_TOLERANCE = 0.98
+
 BATCH_SIZE         = 200
 SCAN_INTERVAL      = 60
 FULL_SCAN_INTERVAL = 10 * 60
 REPEAT_BLOCK_HOURS = 12
 STATE_FILE         = "explosion_state.json"
 
-# ─── Explosion Candidate Layer ─────────────────────────
-# هذه الطبقة لا تمنع السهم ولا ترفضه، فقط تضيف تصنيف ودرجة.
-# إذا توفر Float حقيقي لاحقاً، ضعه هنا:
-# مثال: "INHD": 4_500_000
 KNOWN_FLOATS = {}
-
 EXPLOSION_CANDIDATE_MIN_SCORE = 70
 
 SYMBOL_BLACKLIST = {
@@ -198,7 +200,6 @@ def get_float_tier(symbol, avg_vol_20):
             return "LOW_FLOAT", real_float, "REAL"
         return "NORMAL_FLOAT", real_float, "REAL"
 
-    # تقدير مؤقت عند عدم توفر float الحقيقي
     if avg_vol_20 <= 150_000:
         return "ULTRA_LOW_FLOAT_LIKE", None, "ESTIMATED"
     if avg_vol_20 <= 300_000:
@@ -558,11 +559,141 @@ def check_explosion(symbol, df, current_price, intraday_volume, high_of_day, vol
             "volume_acceleration": volume_acceleration,
             "explosion_candidate": explosion_candidate,
             "explosion_score": explosion_score,
+            "near_hod": current_price >= float(high_of_day or current_price) * MOMENTUM_NEAR_HOD_PCT,
+            "alert_path": "EARLY_EXPLOSION",
+            "alert_path_ar": "Early Explosion",
         }
 
     except Exception as e:
         print(f"check_explosion error {symbol}: {e}", flush=True)
         return None
+
+def check_momentum_explosion(symbol, df, current_price, intraday_volume, high_of_day, volume_acceleration):
+    try:
+        if df is None or df.empty or len(df) < 50:
+            return None
+
+        required_cols = {"close", "high", "low", "volume"}
+        if not required_cols.issubset(set(df.columns)):
+            return None
+
+        close  = df["close"]
+        volume = df["volume"]
+
+        prev_close = float(close.iloc[-2])
+        avg_vol_20 = float(volume.iloc[:-1].tail(20).mean())
+        today_vol = float(intraday_volume or 0)
+
+        if avg_vol_20 <= 0:
+            return None
+
+        if today_vol <= 0:
+            return None
+
+        if prev_close <= 0:
+            return None
+
+        rvol = today_vol / avg_vol_20
+        price_change_pct = ((current_price - prev_close) / prev_close) * 100
+        dollar_volume = current_price * today_vol
+
+        resistance_20 = float(close.iloc[:-1].tail(20).max())
+        resistance_50 = float(close.iloc[:-1].tail(50).max())
+
+        if resistance_20 <= 0:
+            return None
+
+        high_of_day = float(high_of_day or current_price)
+        near_hod = current_price >= high_of_day * MOMENTUM_NEAR_HOD_PCT
+
+        breakout_strength_pct = ((current_price - resistance_20) / resistance_20) * 100
+
+        momentum_path = (
+            rvol >= MOMENTUM_RVOL_MIN
+            and price_change_pct >= MOMENTUM_PRICE_CHANGE_MIN
+            and dollar_volume >= MOMENTUM_MIN_DOLLAR_VOLUME
+            and current_price >= resistance_20 * MOMENTUM_RESISTANCE_TOLERANCE
+            and (
+                volume_acceleration
+                or near_hod
+                or price_change_pct >= 30
+            )
+        )
+
+        if not momentum_path:
+            return None
+
+        atr_14 = calculate_atr_14(df)
+
+        if atr_14 <= 0:
+            return None
+
+        float_tier, float_value, float_source = get_float_tier(symbol, avg_vol_20)
+
+        explosion_score = calculate_explosion_score(
+            float_tier=float_tier,
+            rvol=rvol,
+            volume_acceleration=volume_acceleration,
+            breakout_strength_pct=breakout_strength_pct,
+            dollar_volume=dollar_volume,
+        )
+
+        explosion_candidate = explosion_score >= EXPLOSION_CANDIDATE_MIN_SCORE
+
+        target1 = round(current_price + atr_14 * 1.0, 4)
+        target2 = round(current_price + atr_14 * 2.0, 4)
+        target3 = round(max(resistance_50, current_price + atr_14 * 3.0), 4)
+
+        stop_loss = round(current_price - (atr_14 * 1.5), 4)
+
+        return {
+            "symbol": symbol,
+            "price": round(current_price, 4),
+            "prev_close": round(prev_close, 4),
+            "price_change_pct": round(price_change_pct, 2),
+            "rvol": round(rvol, 2),
+            "avg_vol_20": int(avg_vol_20),
+            "today_vol": int(today_vol),
+            "dollar_volume": int(dollar_volume),
+            "high_of_day": round(high_of_day, 4),
+            "resistance_20": round(resistance_20, 4),
+            "resistance_50": round(resistance_50, 4),
+            "breakout_strength_pct": round(breakout_strength_pct, 2),
+            "atr_14": round(atr_14, 4),
+            "target1": target1,
+            "target2": target2,
+            "target3": target3,
+            "stop_loss": stop_loss,
+            "float_tier": float_tier,
+            "float_value": float_value,
+            "float_source": float_source,
+            "volume_acceleration": volume_acceleration,
+            "explosion_candidate": explosion_candidate,
+            "explosion_score": explosion_score,
+            "near_hod": near_hod,
+            "alert_path": "MOMENTUM_EXPLOSION",
+            "alert_path_ar": "Momentum Explosion",
+        }
+
+    except Exception as e:
+        print(f"check_momentum_explosion error {symbol}: {e}", flush=True)
+        return None
+
+def merge_alert_results(early_result, momentum_result):
+    if early_result and momentum_result:
+        result = early_result.copy()
+        result["alert_path"] = "BOTH"
+        result["alert_path_ar"] = "Early Explosion + Momentum Explosion"
+        result["near_hod"] = momentum_result.get("near_hod", early_result.get("near_hod", False))
+        return result
+
+    if early_result:
+        return early_result
+
+    if momentum_result:
+        return momentum_result
+
+    return None
 
 def send_explosion_alert(result):
     sym   = result["symbol"]
@@ -587,12 +718,16 @@ def send_explosion_alert(result):
     volume_acceleration = result["volume_acceleration"]
     explosion_score = result["explosion_score"]
     explosion_candidate = result["explosion_candidate"]
+    alert_path_ar = result["alert_path_ar"]
+    near_hod = result.get("near_hod", False)
 
     candidate_label = "✅ نعم" if explosion_candidate else "⚠️ مراقبة فقط"
     acceleration_label = "✅ موجود" if volume_acceleration else "❌ غير واضح"
+    near_hod_label = "✅ قريب من High of Day" if near_hod else "⚠️ ليس قريباً جداً"
 
     msg = (
         f"🔥 <b>بداية اشتعال سهم - {sym}</b>\n\n"
+        f"🧭 مسار التنبيه: {alert_path_ar}\n\n"
         f"💰 السعر الحالي: {price}\n"
         f"📈 الارتفاع عن إغلاق أمس: +{chg}%\n"
         f"🔥 RVOL intraday: {rvol}x المعدل\n"
@@ -603,7 +738,8 @@ def send_explosion_alert(result):
         f"🧬 Float Source: {float_source}\n"
         f"🚀 Explosion Score: {explosion_score}/100\n"
         f"🚀 Explosion Candidate: {candidate_label}\n"
-        f"⚡ تسارع الحجم: {acceleration_label}\n\n"
+        f"⚡ تسارع الحجم: {acceleration_label}\n"
+        f"📍 القرب من High of Day: {near_hod_label}\n\n"
         f"🧱 مقاومة 20 يوم: {res20}\n"
         f"🧱 مقاومة 50 يوم: {res50}\n"
         f"📍 أعلى سعر اليوم: {hod}\n"
@@ -613,6 +749,7 @@ def send_explosion_alert(result):
         f"🎯 الهدف الثاني: {t2}\n"
         f"🚀 الهدف الأعلى المتوقع: {t3}\n"
         f"🛑 وقف الخسارة المقترح: {stop}\n\n"
+        f"⚠️ مسار Momentum يبحث عن الزخم الحالي حتى لو لم يكن السهم مثالياً فنياً\n"
         f"⚠️ طبقة Explosion Candidate لا تمنع ولا تؤكد الدخول، فقط تصنيف إضافي\n"
         f"⚠️ الأهداف تقديرية وتعتمد على استمرار الحجم والزخم\n"
         f"⚠️ سهم سريع الحركة — تقلب عالٍ جداً\n"
@@ -621,7 +758,7 @@ def send_explosion_alert(result):
 
     send_telegram(msg)
     print(
-        f"🔥 Alert sent: {sym} | +{chg}% | RVOL={rvol}x | Explosion={explosion_score}/100",
+        f"🔥 Alert sent: {sym} | Path={alert_path_ar} | +{chg}% | RVOL={rvol}x | Explosion={explosion_score}/100",
         flush=True,
     )
 
@@ -655,7 +792,7 @@ def full_scan():
             df = bars_map.get(sym)
             stats = intraday_stats.get(sym, {})
 
-            result = check_explosion(
+            early_result = check_explosion(
                 symbol=sym,
                 df=df,
                 current_price=cp,
@@ -663,6 +800,17 @@ def full_scan():
                 high_of_day=stats.get("high_of_day", cp),
                 volume_acceleration=stats.get("volume_acceleration", False),
             )
+
+            momentum_result = check_momentum_explosion(
+                symbol=sym,
+                df=df,
+                current_price=cp,
+                intraday_volume=stats.get("intraday_volume", 0),
+                high_of_day=stats.get("high_of_day", cp),
+                volume_acceleration=stats.get("volume_acceleration", False),
+            )
+
+            result = merge_alert_results(early_result, momentum_result)
 
             if result:
                 send_explosion_alert(result)
