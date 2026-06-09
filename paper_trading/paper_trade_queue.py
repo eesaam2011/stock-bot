@@ -10,11 +10,7 @@ UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
 PAPER_TRADE_QUEUE_KEY = "direct_entry_paper_trade_queue"
 
-ALLOWED_PAPER_GRADES = {
-    "A++",
-    "CONFIRMED_BREAKOUT",
-}
-
+ALLOWED_PAPER_GRADES = ["A++", "++A", "CONFIRMED_BREAKOUT"]
 
 def redis_ready():
     return bool(UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)
