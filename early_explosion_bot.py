@@ -30,7 +30,7 @@ MIN_AVG_VOL        = 50_000
 MAX_AVG_VOL        = 800_000
 RVOL_MIN           = 3.0
 MIN_PRICE_CHANGE   = 5.0
-BATCH_SIZE         = 100
+BATCH_SIZE         = 200
 SCAN_INTERVAL      = 60
 FULL_SCAN_INTERVAL = 10 * 60
 REPEAT_BLOCK_HOURS = 12
@@ -75,7 +75,7 @@ def is_scan_time_allowed():
         return False
 
     start = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
-    end   = now_ny.replace(hour=16, minute=0, second=0, microsecond=0)
+    end   = now_ny.replace(hour=20, minute=0, second=0, microsecond=0)
 
     return start <= now_ny <= end
 
