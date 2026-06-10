@@ -16,6 +16,15 @@ app = Flask(__name__)
 total_scans_performed = 0
 last_scan_timestamp = "Never"
 
+# ==============================================================================
+# 1. إعداد سيرفر Flask لإبقاء السيرفر مستيقظاً على Render
+# ==============================================================================
+app = Flask(__name__)
+
+# متغيرات لمراقبة الحالة الحية من المتصفح
+total_scans_performed = 0
+last_scan_timestamp = "Never"
+
 @app.route('/')
 def home():
     global total_scans_performed, last_scan_timestamp
@@ -28,8 +37,9 @@ def home():
 
 def run_flask():
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
+    # التعديل هنا: أضفنا use_reloader=False لمنع الـ Debug mode من تعليق السيرفر
+    app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
+    
 # ==============================================================================
 # 2. الإعدادات والمتغيرات البيئية (Environment Variables)
 # ==============================================================================
