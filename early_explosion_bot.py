@@ -543,6 +543,14 @@ def main_scanner():
 
                 for asset in batch:      # 16 مسافة داخل الحلقة الكبيرة
                     sym = asset.symbol   # 20 مسافة
+                    exchange = asset._raw.get("exchange", "")
+
+                    if exchange not in [
+                        "NASDAQ",
+                        "NYSE",
+                        "AMEX"
+                    ]:
+                        continue
 
                     if "/" in sym:
                         continue
