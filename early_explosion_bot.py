@@ -361,4 +361,7 @@ if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    main_scanner() 
+    # سطر اختبار تليجرام فور التشغيل (اختياري لطمأنتك)
+    send_telegram_message("🟢 تم تشغيل بوت رادار النخبة بنجاح على سيرفر Render وبدأ مراقبة السوق الآن!")
+    
+    main_scanner()
