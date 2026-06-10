@@ -15,7 +15,6 @@ saudi_tz = zoneinfo.ZoneInfo("Asia/Riyadh")
 # ==============================================================================
 app = Flask(__name__)
 
-# متغيرات لمراقبة الحالة الحية من المتصفح
 total_scans_performed = 0
 last_scan_timestamp = "Never"
 
@@ -31,11 +30,10 @@ def home():
 
 def run_flask():
     port = int(os.getenv("PORT", 10000))
-    # use_reloader=False لمنع التعليق
     app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
-    
+
 # ==============================================================================
-# 2. الإعدادات والمتغيرات البيئية (Environment Variables)
+# 2. الإعدادات والمتغيرات البيئية
 # ==============================================================================
 ALPACA_API_KEY      = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET_KEY   = os.getenv("APCA_API_SECRET_KEY")
@@ -48,25 +46,24 @@ GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN")
 GIST_ID             = os.getenv("GIST_ID")
 
 # ==============================================================================
-# 3. إعدادات الفلاتر المتفق عليها والقائمة السوداء الخاصة بك تماماً
+# 3. إعدادات الفلاتر
 # ==============================================================================
 PRICE_MIN          = 0.3
 PRICE_MAX          = 25.0
 MIN_AVG_VOL        = 50_000
-MAX_AVG_VOL        = 5_000_000  
-RVOL_MIN           = 1.8        
-MIN_PRICE_CHANGE   = 4.0        
+MAX_AVG_VOL        = 5_000_000
+MIN_DOLLAR_VOLUME  = 300_000
+
+RVOL_MIN           = 1.8
+MIN_PRICE_CHANGE   = 4.0
 
 MOMENTUM_RVOL_MIN             = 1.2
 MOMENTUM_PRICE_CHANGE_MIN     = 3.0
-# الفلتر الحاسم للدرجة النخبة
-EXPLOSION_CANDIDATE_MIN_SCORE = 80 
+EXPLOSION_CANDIDATE_MIN_SCORE = 80
 
-# حجم الدفعة والاستراحة لمنع الـ Rate Limit
-BATCH_SIZE         = 200 
-BATCH_DELAY_SEC    = 0.5
+BATCH_SIZE         = 100
+BATCH_DELAY_SEC    = 1.0
 
-# 🌟 القائمة السوداء الصحيحة والخاصة بك تماماً (تم دمجها) 🌟
 SYMBOL_BLACKLIST = {
     "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC", "PNC", "COF", "DFS",
     "MET", "PRU", "ALL", "AIG", "AFL", "TRV", "HIG", "CB",
@@ -76,7 +73,6 @@ SYMBOL_BLACKLIST = {
     "NCLH", "CCL", "RCL", "AMC", "CNK", "IMAX"
 }
 
-# الكلمات الدلالية المستبعدة للأسماء الخاصة بك
 BAD_NAME_KEYWORDS = [
     "etf", "fund", "trust", "warrant", "unit", "right", "preferred",
     "bond", "notes", "income", "index", "acquisition", "blank check",
@@ -86,192 +82,333 @@ BAD_NAME_KEYWORDS = [
     "hemp", "cruise", "cinema", "movie", "theater"
 ]
 
-# هياكل البيانات للتحكم بالخيوط (Threading)
-active_monitors = {}              
-sent_alerts = {}                  
-SCAN_INTERVAL_SEC  = 180          # المسح الشامل للسوق كل 3 دقائق
-TRACK_INTERVAL_SEC = 10           # المراقبة الشرسة لكل سهم ينفجر (كل 10 ثوانٍ)
-ALERT_COOLDOWN_SEC = 3600         # منع إعادة إرسال نفس السهم لمدة ساعة
+active_monitors = {}
+sent_alerts = {}
+
+SCAN_INTERVAL_SEC  = 300
+TRACK_INTERVAL_SEC = 10
+ALERT_COOLDOWN_SEC = 3600
 
 # ==============================================================================
-# 4. الدوال المساعدة (تليجرام، جيت هاب، وألباكا)
+# 4. الدوال المساعدة
 # ==============================================================================
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print(f"[Telegram-Sim] {text}", flush=True)
         return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
     try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
+        requests.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "Markdown"
+            },
+            timeout=10
+        )
     except Exception as e:
         print(f"❌ Telegram Error: {e}", flush=True)
 
 def update_gist_state(symbol, data_dict):
     if not GITHUB_TOKEN or not GIST_ID:
         return
+
     url = f"https://api.github.com/gists/{GIST_ID}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
     try:
         res = requests.get(url, headers=headers, timeout=10)
         current_content = {}
+
         if res.status_code == 200:
             files = res.json().get("files", {})
             if "bot_state.json" in files:
                 import json
-                try: current_content = json.loads(files["bot_state.json"]["content"])
-                except: current_content = {}
-        
+                try:
+                    current_content = json.loads(files["bot_state.json"]["content"])
+                except:
+                    current_content = {}
+
         current_content[symbol] = data_dict
+
         import json
-        payload = {"files": {"bot_state.json": {"content": json.dumps(current_content, indent=4)}}}
+        payload = {
+            "files": {
+                "bot_state.json": {
+                    "content": json.dumps(current_content, indent=4)
+                }
+            }
+        }
+
         requests.patch(url, headers=headers, json=payload, timeout=10)
+
     except Exception as e:
         print(f"❌ Gist Update Error: {e}", flush=True)
 
 def is_scan_time_allowed():
     tz_ny = pytz.timezone("America/New_York")
     now_ny = datetime.now(tz_ny)
+
     if now_ny.weekday() >= 5:
         return False
+
     start_time = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
     end_time = now_ny.replace(hour=20, minute=0, second=0, microsecond=0)
+
     return start_time <= now_ny <= end_time
 
 # ==============================================================================
-# 5. محرك الفحص الرياضي (التحليل وتوليد الإشارات والنقاط)
+# 5. محرك الفحص
 # ==============================================================================
 def check_explosion(api, symbol, asset_name):
     if symbol in SYMBOL_BLACKLIST:
         return None
-        
+
     name_lower = asset_name.lower()
     if any(kw in name_lower for kw in BAD_NAME_KEYWORDS):
         return None
 
     try:
-        resistance_20 = recent_bars['high'].max()
-        
+        bars = api.get_bars(
+            symbol,
+            tradeapi.rest.TimeFrame.Day,
+            limit=60,
+            adjustment="raw"
+        ).df
+
+        if bars is None or bars.empty or len(bars) < 25:
+            return None
+
+        bars = bars.sort_index()
+
         today_bar = bars.iloc[-1]
-        current_price = today_bar['close']
-        today_vol = today_bar['volume']
-        open_price = today_bar['open']
-        
+        previous_bars = bars.iloc[:-1]
+
+        if len(previous_bars) < 20:
+            return None
+
+        current_price = float(today_bar["close"])
+        open_price = float(today_bar["open"])
+        today_vol = float(today_bar["volume"])
+
+        if open_price <= 0:
+            return None
+
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             return None
-        
+
+        avg_vol_20 = float(previous_bars["volume"].tail(20).mean())
+
+        if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
+            return None
+
+        resistance_20 = float(previous_bars["high"].tail(20).max())
+
         price_change_pct = ((current_price - open_price) / open_price) * 100
+
         if price_change_pct < MIN_PRICE_CHANGE:
             return None
-            
+
         rvol = today_vol / avg_vol_20 if avg_vol_20 > 0 else 0
+
         if rvol < RVOL_MIN:
             return None
-            
+
+        dollar_volume = today_vol * current_price
+
+        if dollar_volume < MIN_DOLLAR_VOLUME:
+            return None
+
         if current_price < resistance_20 * 0.99:
             return None
 
-        bars_5m = api.get_bars(symbol, tradeapi.rest.TimeFrame.Minute, 
-                               limit=6, adjustment='raw').df
+        bars_1m = api.get_bars(
+            symbol,
+            tradeapi.rest.TimeFrame.Minute,
+            limit=10,
+            adjustment="raw"
+        ).df
+
         vol_acceleration = 1.0
-        if not bars_5m.empty and len(bars_5m) >= 2:
-            last_5m_vol = bars_5m.iloc[-1]['volume']
-            prev_5m_vol = bars_5m.iloc[-2]['volume']
-            if prev_5m_vol > 0:
-                vol_acceleration = last_5m_vol / prev_5m_vol
+
+        if bars_1m is not None and not bars_1m.empty and len(bars_1m) >= 4:
+            bars_1m = bars_1m.sort_index()
+
+            recent_vol = float(bars_1m["volume"].tail(2).mean())
+            previous_vol = float(bars_1m["volume"].iloc[-6:-2].mean())
+
+            if previous_vol > 0:
+                vol_acceleration = recent_vol / previous_vol
 
         score = 0
-        if rvol >= 3.0: score += 30
-        elif rvol >= RVOL_MIN: score += 20
-        
-        if price_change_pct >= 15: score += 30
-        elif price_change_pct >= 8: score += 20
-        elif price_change_pct >= MIN_PRICE_CHANGE: score += 10
-        
-        if current_price >= resistance_20: score += 20
-        else: score += 10
-        
-        if vol_acceleration >= 2.0: score += 20
-        elif vol_acceleration >= MOMENTUM_RVOL_MIN: score += 10
-        
-        dollar_volume = today_vol * current_price
-        if dollar_volume > 1_000_000: score += 10
-        
+
+        if rvol >= 3.0:
+            score += 30
+        elif rvol >= RVOL_MIN:
+            score += 20
+
+        if price_change_pct >= 15:
+            score += 30
+        elif price_change_pct >= 8:
+            score += 20
+        elif price_change_pct >= MIN_PRICE_CHANGE:
+            score += 10
+
+        if current_price >= resistance_20:
+            score += 20
+        else:
+            score += 10
+
+        if vol_acceleration >= 2.0:
+            score += 20
+        elif vol_acceleration >= 1.2:
+            score += 10
+
+        if dollar_volume >= 1_000_000:
+            score += 10
+        elif dollar_volume >= MIN_DOLLAR_VOLUME:
+            score += 5
+
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
             return None
 
-        stop_loss = round(current_price * 0.93, 2)
-        target1   = round(current_price * 1.10, 2)
-        target2   = round(current_price * 1.25, 2)
-        target3   = round(current_price * 1.50, 2)
+        digits = 4 if current_price < 1 else 2
+
+        stop_loss = round(current_price * 0.93, digits)
+        target1   = round(current_price * 1.10, digits)
+        target2   = round(current_price * 1.25, digits)
+        target3   = round(current_price * 1.50, digits)
 
         return {
-            "symbol": symbol, "price": round(current_price, 2), "rvol": round(rvol, 2),
-            "change_pct": round(price_change_pct, 2), "score": score,
-            "target1": target1, "target2": target2, "target3": target3, "stop_loss": stop_loss,
+            "symbol": symbol,
+            "price": round(current_price, digits),
+            "rvol": round(rvol, 2),
+            "change_pct": round(price_change_pct, 2),
+            "score": score,
+            "resistance_20": round(resistance_20, digits),
+            "vol_acceleration": round(vol_acceleration, 2),
+            "dollar_volume": round(dollar_volume, 0),
+            "target1": target1,
+            "target2": target2,
+            "target3": target3,
+            "stop_loss": stop_loss,
             "explosion_candidate": True
         }
-        
+
     except Exception as e:
+        print(f"❌ check_explosion error {symbol}: {e}", flush=True)
         return None
 
 # ==============================================================================
-# 6. خيط المراقبة اللحظية الشرسة (مستقل لكل سهم متفجر)
+# 6. خيط المراقبة اللحظية
 # ==============================================================================
 def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
     print(f"🎯 [بدء المراقبة اللحظية الشرسة] خيط مستقل انطلق لملاحقة سهم: {symbol}", flush=True)
-    api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
-    
+
+    api = tradeapi.REST(
+        ALPACA_API_KEY,
+        ALPACA_SECRET_KEY,
+        ALPACA_BASE_URL,
+        api_version='v2'
+    )
+
     h1_hit, h2_hit, h3_hit = False, False, False
     max_gain_pct = 0.0
-    
+
     update_gist_state(symbol, {
-        "entry_price": entry_price, "t1": t1, "t2": t2, "t3": t3, "sl": sl,
-        "h1_hit": h1_hit, "h2_hit": h2_hit, "h3_hit": h3_hit, "max_gain": 0.0, "status": "active"
+        "entry_price": entry_price,
+        "t1": t1,
+        "t2": t2,
+        "t3": t3,
+        "sl": sl,
+        "h1_hit": h1_hit,
+        "h2_hit": h2_hit,
+        "h3_hit": h3_hit,
+        "max_gain": 0.0,
+        "status": "active"
     })
 
     while True:
         if not is_scan_time_allowed():
             print(f"💤 [إيقاف المراقبة] خروج مؤقت لسهم {symbol} بسبب إغلاق الجلسة.", flush=True)
             break
-            
+
         try:
             trade = api.get_latest_trade(symbol)
             current_p = trade.price
-            
+
             current_gain = ((current_p - entry_price) / entry_price) * 100
+
             if current_gain > max_gain_pct:
                 max_gain_pct = round(current_gain, 2)
 
             if current_p <= sl:
-                msg = f"🚨 *[{symbol}] ضرب وقف الخسارة!* 🚨\n• سعر الخروج: ${current_p}\n• خسارة: {round(current_gain, 2)}%\n• أعلى ربح وصل له: {max_gain_pct}%"
+                msg = (
+                    f"🚨 *[{symbol}] ضرب وقف الخسارة!* 🚨\n"
+                    f"• سعر الخروج: ${current_p}\n"
+                    f"• خسارة: {round(current_gain, 2)}%\n"
+                    f"• أعلى ربح وصل له: {max_gain_pct}%"
+                )
                 send_telegram_message(msg)
-                update_gist_state(symbol, {"status": "stopped_by_sl", "exit_price": current_p, "max_gain": max_gain_pct})
+                update_gist_state(symbol, {
+                    "status": "stopped_by_sl",
+                    "exit_price": current_p,
+                    "max_gain": max_gain_pct
+                })
                 break
-                
+
             if current_p >= t1 and not h1_hit:
                 h1_hit = True
-                msg = f"✅ *[{symbol}] تحقق الهدف الأول تبارك الله! (10%+)*\n• السعر الحالي: ${current_p}\n• الدخول: ${entry_price}\n• الأهداف القادمة: ${t2} | ${t3}"
+                msg = (
+                    f"✅ *[{symbol}] تحقق الهدف الأول تبارك الله! (10%+)*\n"
+                    f"• السعر الحالي: ${current_p}\n"
+                    f"• الدخول: ${entry_price}\n"
+                    f"• الأهداف القادمة: ${t2} | ${t3}"
+                )
                 send_telegram_message(msg)
-                update_gist_state(symbol, {"h1_hit": True, "max_gain": max_gain_pct})
-                
+                update_gist_state(symbol, {
+                    "h1_hit": True,
+                    "max_gain": max_gain_pct
+                })
+
             if current_p >= t2 and not h2_hit:
                 h2_hit = True
-                msg = f"🔥 *[{symbol}] انفجار مستمر! تحقق الهدف الثاني (25%+)*\n• السعر الحالي: ${current_p}\n• أرباح ممتازة، تذكر تأمين صفقاتك!"
+                msg = (
+                    f"🔥 *[{symbol}] انفجار مستمر! تحقق الهدف الثاني (25%+)*\n"
+                    f"• السعر الحالي: ${current_p}\n"
+                    f"• أرباح ممتازة، تذكر تأمين صفقاتك!"
+                )
                 send_telegram_message(msg)
-                update_gist_state(symbol, {"h2_hit": True, "max_gain": max_gain_pct})
-                
+                update_gist_state(symbol, {
+                    "h2_hit": True,
+                    "max_gain": max_gain_pct
+                })
+
             if current_p >= t3 and not h3_hit:
                 h3_hit = True
-                msg = f"🚀🚀 *[{symbol}] القناص ضرب الهدف الثالث الأسطوري (50%+)!*\n• السعر الحالي: ${current_p}\n• السهم مفرقع بالكامل اليوم!"
+                msg = (
+                    f"🚀🚀 *[{symbol}] القناص ضرب الهدف الثالث الأسطوري (50%+)!*\n"
+                    f"• السعر الحالي: ${current_p}\n"
+                    f"• السهم مفرقع بالكامل اليوم!"
+                )
                 send_telegram_message(msg)
-                update_gist_state(symbol, {"h3_hit": True, "max_gain": max_gain_pct})
+                update_gist_state(symbol, {
+                    "h3_hit": True,
+                    "max_gain": max_gain_pct
+                })
                 break
-                
+
         except Exception as e:
             print(f"⚠️ Error tracking {symbol}: {e}", flush=True)
-            
+
         time.sleep(TRACK_INTERVAL_SEC)
-        
+
     if symbol in active_monitors:
         del active_monitors[symbol]
 
@@ -283,7 +420,10 @@ def send_explosion_alert(res):
         f"📊 *التغير اليومي:* `+{res['change_pct']}%`\n"
         f"ركائز القوة اللحظية:\n"
         f"🔥 *قوة الانفجار (Score):* `{res['score']}/100`\n"
-        f"📈 *الـ RVOL الحالي:* `{res['rvol']}x`\n\n"
+        f"📈 *الـ RVOL الحالي:* `{res['rvol']}x`\n"
+        f"🧱 *المقاومة 20 يوم:* `${res['resistance_20']}`\n"
+        f"⚡ *تسارع الفوليوم:* `{res['vol_acceleration']}x`\n"
+        f"💰 *Dollar Volume:* `${res['dollar_volume']}`\n\n"
         f"🎯 *الأهداف الفنية المحسوبة:*\n"
         f" ├─ Target 1 (10%): `${res['target1']}`\n"
         f" ├─ Target 2 (25%): `${res['target2']}`\n"
@@ -291,70 +431,95 @@ def send_explosion_alert(res):
         f"🛑 *وقف الخسارة الصارع (7%-):* `${res['stop_loss']}`\n"
         f"⏱️ _بدأت الآن خيوط المطاردة الشرسة كل 10 ثوانٍ._"
     )
+
     send_telegram_message(msg)
 
 # ==============================================================================
-# 7. المحرك الرئيسي للرادار (Main Loop المحدث بالدفعات)
+# 7. المحرك الرئيسي
 # ==============================================================================
 def main_scanner():
     global total_scans_performed, last_scan_timestamp
+
     print("🚀 [رادار النخبة] بدأ العمل بكامل الفلاتر المحدثة والقائمة السوداء الحقيقية...", flush=True)
-    api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
-    
+
+    api = tradeapi.REST(
+        ALPACA_API_KEY,
+        ALPACA_SECRET_KEY,
+        ALPACA_BASE_URL,
+        api_version='v2'
+    )
+
     while True:
         if not is_scan_time_allowed():
             print("⏸️ Scan skipped: outside US premarket/market hours. Sleeping...", flush=True)
             time.sleep(60)
             continue
-            
+
         print(f"🔍 [بدء مسح شامل للسوق] جاري جلب ومطابقة الأسهم...", flush=True)
+
         try:
             assets = api.list_assets(status='active')
-            tradable_assets = [a for a in assets if a.tradable and a.fractionable]
-            
+            tradable_assets = [a for a in assets if a.tradable]
+
             now_ts = time.time()
             alerts_sent = 0
-            
+
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
-                
+
                 for asset in batch:
                     sym = asset.symbol
-                    if sym in active_monitors: continue
-                    if sym in sent_alerts and (now_ts - sent_alerts[sym] < ALERT_COOLDOWN_SEC): continue
-                    
+
+                    if sym in active_monitors:
+                        continue
+
+                    if sym in sent_alerts and (now_ts - sent_alerts[sym] < ALERT_COOLDOWN_SEC):
+                        continue
+
                     result = check_explosion(api, sym, asset.name)
-                    
+
                     if result and result.get("explosion_candidate") is True:
                         send_explosion_alert(result)
+
                         sent_alerts[sym] = now_ts
                         alerts_sent += 1
-                        
+
                         if sym not in active_monitors:
                             active_monitors[sym] = True
+
                             t = threading.Thread(
                                 target=dedicated_ticker_tracker,
-                                args=(sym, result["price"], result["target1"], result["target2"], result["target3"], result["stop_loss"]),
+                                args=(
+                                    sym,
+                                    result["price"],
+                                    result["target1"],
+                                    result["target2"],
+                                    result["target3"],
+                                    result["stop_loss"]
+                                ),
                                 daemon=True
                             )
                             t.start()
-                
+
                 time.sleep(BATCH_DELAY_SEC)
-                        
+
             total_scans_performed += 1
             last_scan_timestamp = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
-            print(f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent} | إجمالي الفحوصات: {total_scans_performed}", flush=True)
-            
+
+            print(
+                f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent} | إجمالي الفحوصات: {total_scans_performed}",
+                flush=True
+            )
+
         except Exception as e:
             print(f"❌ Main Loop Error: {e}", flush=True)
-            
+
         time.sleep(SCAN_INTERVAL_SEC)
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    
-    # سطر اختبار تليجرام فور التشغيل (اختياري لطمأنتك)
+
     send_telegram_message("🟢 تم تشغيل بوت رادار النخبة بنجاح على سيرفر Render وبدأ مراقبة السوق الآن!")
-    
+
     main_scanner()
