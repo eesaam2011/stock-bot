@@ -59,7 +59,7 @@ MIN_PRICE_CHANGE   = 4.0
 
 MOMENTUM_RVOL_MIN             = 1.2
 MOMENTUM_PRICE_CHANGE_MIN     = 3.0
-EXPLOSION_CANDIDATE_MIN_SCORE = 80
+EXPLOSION_CANDIDATE_MIN_SCORE = 70
 
 BATCH_SIZE         = 100
 BATCH_DELAY_SEC    = 1.0
@@ -163,7 +163,18 @@ def is_scan_time_allowed():
     end_time = now_ny.replace(hour=20, minute=0, second=0, microsecond=0)
 
     return start_time <= now_ny <= end_time
+def get_float_tier(avg_vol_20):
 
+    if avg_vol_20 <= 150_000:
+        return "ULTRA_LOW_FLOAT"
+
+    elif avg_vol_20 <= 500_000:
+        return "VERY_LOW_FLOAT"
+
+    elif avg_vol_20 <= 1_000_000:
+        return "LOW_FLOAT"
+
+    return "NORMAL_FLOAT"
 # ==============================================================================
 # 5. محرك الفحص
 # ==============================================================================
@@ -195,23 +206,38 @@ def check_explosion(api, symbol, asset_name):
             return None
 
         current_price = float(today_bar["close"])
-        open_price = float(today_bar["open"])
         today_vol = float(today_bar["volume"])
 
-        if open_price <= 0:
-            return None
-
+        prev_close = float(
+            previous_bars["close"].iloc[-1]
+        )
+        
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             return None
 
         avg_vol_20 = float(previous_bars["volume"].tail(20).mean())
 
+        float_tier = get_float_tier(
+            avg_vol_20
+        )
+
         if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
             return None
 
         resistance_20 = float(previous_bars["high"].tail(20).max())
+        resistance_50 = float(
+            previous_bars["high"].tail(50).max()
+        )
 
-        price_change_pct = ((current_price - open_price) / open_price) * 100
+        atr_14 = calculate_atr_14(
+            previous_bars
+        )
+
+        price_change_pct = (
+            (current_price - prev_close)
+            / prev_close
+        ) * 100
+        
 
         if price_change_pct < MIN_PRICE_CHANGE:
             return None
@@ -282,17 +308,34 @@ def check_explosion(api, symbol, asset_name):
         digits = 4 if current_price < 1 else 2
 
         stop_loss = round(current_price * 0.93, digits)
-        target1   = round(current_price * 1.10, digits)
-        target2   = round(current_price * 1.25, digits)
-        target3   = round(current_price * 1.50, digits)
+        target1 = round(
+            current_price + atr_14,
+            digits
+        )
 
+        target2 = round(
+            current_price + (atr_14 * 2),
+            digits
+        )
+
+        target3 = round(
+            max(
+                resistance_50,
+                current_price + (atr_14 * 3)
+            ),
+            digits
+        )
+        
         return {
             "symbol": symbol,
             "price": round(current_price, digits),
             "rvol": round(rvol, 2),
             "change_pct": round(price_change_pct, 2),
             "score": score,
+            "float_tier": float_tier,
             "resistance_20": round(resistance_20, digits),
+            "atr_14": round(atr_14, digits),
+            "resistance_50": round(resistance_50, digits),
             "vol_acceleration": round(vol_acceleration, 2),
             "dollar_volume": round(dollar_volume, 0),
             "target1": target1,
@@ -306,6 +349,25 @@ def check_explosion(api, symbol, asset_name):
         print(f"❌ check_explosion error {symbol}: {e}", flush=True)
         return None
 
+def calculate_atr_14(df):
+
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    tr = (
+        (high - low)
+        .to_frame("hl")
+        .join(
+            (high - close.shift(1)).abs().rename("hc")
+        )
+        .join(
+            (low - close.shift(1)).abs().rename("lc")
+        )
+    ).max(axis=1)
+
+    return float(tr.tail(14).mean()) 
+    
 # ==============================================================================
 # 6. خيط المراقبة اللحظية
 # ==============================================================================
