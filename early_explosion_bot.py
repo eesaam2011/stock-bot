@@ -598,7 +598,7 @@ def main_scanner():
             total_scans_performed += 1
             last_scan_timestamp = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
             print(
-                f"✅ After crypto filter: {stock_count}",
+                f"✅ After exchange filter: {stock_count}",
                 flush=True
             )
 
