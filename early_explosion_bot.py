@@ -529,20 +529,23 @@ def main_scanner():
             assets = api.list_assets(status="active")
 
             # مؤقت للتأكد من شكل بيانات Alpaca
-            if assets:
-                print(vars(assets[0]), flush=True)
-
+            
             tradable_assets = [
                 a
                 for a in assets
                 if getattr(a, "tradable", False)
+                and getattr(a, "_raw", {}).get("class", "") == "us_equity"
                 and getattr(a, "_raw", {}).get("exchange", "") in [
                     "NASDAQ",
                     "NYSE",
                     "AMEX"
                 ]
+                and is_clean_symbol(a.symbol)
+                and not any(
+                    kw in (getattr(a, "name", "") or "").lower()
+                    for kw in BAD_NAME_KEYWORDS
+                )
             ]
-
             print(
                 f"✅ Total symbols after filter: {len(tradable_assets)}",
                 flush=True
