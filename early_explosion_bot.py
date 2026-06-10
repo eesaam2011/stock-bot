@@ -526,6 +526,10 @@ def main_scanner():
         )
         try:
             assets = api.list_assets(status='active')
+            print(
+                f"Asset class sample: {assets[0].asset_class}",
+                flush=True
+            )
             tradable_assets = [a for a in assets if a.tradable]
 
             print(
