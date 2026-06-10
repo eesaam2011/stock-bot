@@ -518,14 +518,24 @@ def main_scanner():
             time.sleep(60)
             continue
 
-        print(f"🔍 [بدء مسح شامل للسوق] جاري جلب ومطابقة الأسهم...", flush=True)
+        print("🔎 Full scan started...", flush=True)
 
+        print(
+            f"🔍 [بدء مسح شامل للسوق] جاري جلب ومطابقة الأسهم...",
+            flush=True
+        )
         try:
             assets = api.list_assets(status='active')
             tradable_assets = [a for a in assets if a.tradable]
 
+            print(
+                f"✅ Total symbols after filter: {len(tradable_assets)}",
+                flush=True
+            )
+            
             now_ts = time.time()
             alerts_sent = 0
+            stock_count = 0
 
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
@@ -533,8 +543,10 @@ def main_scanner():
                 for asset in batch:      # 16 مسافة داخل الحلقة الكبيرة
                     sym = asset.symbol   # 20 مسافة
 
-                    if "/" in sym:       # 20 مسافة
-                        continue         # 24 مسافة
+                    if "/" in sym:
+                        continue
+
+                    stock_count += 1         # 24 مسافة
 
                     if sym in active_monitors:
                         continue
@@ -572,6 +584,10 @@ def main_scanner():
 
             total_scans_performed += 1
             last_scan_timestamp = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+            print(
+                f"✅ After crypto filter: {stock_count}",
+                flush=True
+            )
 
             print(
                 f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent} | إجمالي الفحوصات: {total_scans_performed}",
