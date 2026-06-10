@@ -530,12 +530,15 @@ def main_scanner():
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
 
-                for asset in batch:
-                    sym = asset.symbol
+                for asset in batch:      # 16 مسافة داخل الحلقة الكبيرة
+                    sym = asset.symbol   # 20 مسافة
+
+                    if "/" in sym:       # 20 مسافة
+                        continue         # 24 مسافة
 
                     if sym in active_monitors:
                         continue
-
+                        
                     if sym in sent_alerts and (now_ts - sent_alerts[sym] < ALERT_COOLDOWN_SEC):
                         continue
 
