@@ -527,8 +527,16 @@ def main_scanner():
         try:
             assets = api.list_assets(status='active')
             print(vars(assets[0]), flush=True)
-            tradable_assets = [a for a in assets if a.tradable]
-
+            tradable_assets = [
+                a
+                for a in assets
+                if a.tradable
+                and a._raw.get("exchange", "") in [
+                    "NASDAQ",
+                    "NYSE",
+                    "AMEX"
+                ]
+            ]
             print(
                 f"✅ Total symbols after filter: {len(tradable_assets)}",
                 flush=True
@@ -545,18 +553,14 @@ def main_scanner():
                     sym = asset.symbol   # 20 مسافة
                     exchange = asset._raw.get("exchange", "")
 
-                    if exchange not in [
-                        "NASDAQ",
-                        "NYSE",
-                        "AMEX"
-                    ]:
+                    if exchange not in ["NASDAQ", "NYSE", "AMEX"]:
                         continue
 
                     if "/" in sym:
                         continue
 
-                    stock_count += 1         # 24 مسافة
-
+                    stock_count += 1
+                    
                     if sym in active_monitors:
                         continue
                         
