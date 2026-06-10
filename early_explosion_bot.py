@@ -1,20 +1,12 @@
 import os
 import time
 import datetime
+import zoneinfo  # مكتبة بايثون القياسية للمناطق الزمنية
 import pytz
 import threading
 import requests
 import alpaca_trade_api as tradeapi
 from flask import Flask
-
-# ==============================================================================
-# 1. إعداد سيرفر Flask لإبقاء السيرفر مستيقظاً على Render
-# ==============================================================================
-app = Flask(__name__)
-
-# متغيرات لمراقبة الحالة الحية من المتصفح
-total_scans_performed = 0
-last_scan_timestamp = "Never"
 
 # ==============================================================================
 # 1. إعداد سيرفر Flask لإبقاء السيرفر مستيقظاً على Render
@@ -31,13 +23,13 @@ def home():
     status_msg = (
         f"⚡ Early Explosion Radar is Running Perfectly 24/7!<br>"
         f"📊 Total Market Scans: {total_scans_performed}<br>"
-        f"⏱️ Last Scan Time (Riyadh): {last_scan_timestamp}"
+        f"⏱️ Last Scan Time: {last_scan_timestamp}"
     )
     return status_msg, 200
 
 def run_flask():
     port = int(os.getenv("PORT", 10000))
-    # التعديل هنا: أضفنا use_reloader=False لمنع الـ Debug mode من تعليق السيرفر
+    # use_reloader=False لمنع التعليق
     app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
     
 # ==============================================================================
