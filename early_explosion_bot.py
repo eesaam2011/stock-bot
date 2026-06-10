@@ -1,12 +1,13 @@
 import os
 import time
 import datetime
-import zoneinfo  # مكتبة بايثون القياسية للمناطق الزمنية
-import pytz
 import threading
 import requests
 import alpaca_trade_api as tradeapi
 from flask import Flask
+import zoneinfo
+
+saudi_tz = zoneinfo.ZoneInfo("Asia/Riyadh")import pytz
 
 # ==============================================================================
 # 1. إعداد سيرفر Flask لإبقاء السيرفر مستيقظاً على Render
@@ -351,7 +352,7 @@ def main_scanner():
                 time.sleep(BATCH_DELAY_SEC)
                         
             total_scans_performed += 1
-            last_scan_timestamp = datetime.datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+            last_scan_timestamp = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
             print(f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent} | إجمالي الفحوصات: {total_scans_performed}", flush=True)
             
         except Exception as e:
