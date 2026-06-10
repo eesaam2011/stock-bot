@@ -153,6 +153,7 @@ def update_gist_state(symbol, data_dict):
 
 def is_scan_time_allowed():
     tz_ny = pytz.timezone("America/New_York")
+    # ✅ تم تصحيح السطر لحذف الاستدعاء المكرر المسبب للانهيار
     now_ny = datetime.now(tz_ny)
 
     if now_ny.weekday() >= 5:
@@ -428,7 +429,7 @@ def send_explosion_alert(res):
         f" ├─ Target 1 (10%): `${res['target1']}`\n"
         f" ├─ Target 2 (25%): `${res['target2']}`\n"
         f" └─ Target 3 (50%): `${res['target3']}`\n\n"
-        f"🛑 *وقف الخسارة الصارع (7%-):* `${res['stop_loss']}`\n"
+        f"🛑 *وقف الخسارة الصارم (7%-):* `${res['stop_loss']}`\n"
         f"⏱️ _بدأت الآن خيوط المطاردة الشرسة كل 10 ثوانٍ._"
     )
 
@@ -476,6 +477,7 @@ def main_scanner():
                     if sym in sent_alerts and (now_ts - sent_alerts[sym] < ALERT_COOLDOWN_SEC):
                         continue
 
+                    # يعود الاستدعاء هنا أصلياً ومستقراً تماماً
                     result = check_explosion(api, sym, asset.name)
 
                     if result and result.get("explosion_candidate") is True:
