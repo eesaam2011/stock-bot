@@ -131,7 +131,7 @@ def update_gist_state(symbol, data_dict):
 
 def is_scan_time_allowed():
     tz_ny = pytz.timezone("America/New_York")
-    now_ny = datetime.datetime.now(tz_ny)
+    now_ny = datetime.now(tz_ny)
     if now_ny.weekday() >= 5:
         return False
     start_time = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
