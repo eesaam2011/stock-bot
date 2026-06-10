@@ -12,9 +12,19 @@ from flask import Flask
 # ==============================================================================
 app = Flask(__name__)
 
+# متغيرات لمراقبة الحالة الحية من المتصفح
+total_scans_performed = 0
+last_scan_timestamp = "Never"
+
 @app.route('/')
 def home():
-    return "Bot is running perfectly 24/7 with your Custom Symbol Blacklist!", 200
+    global total_scans_performed, last_scan_timestamp
+    status_msg = (
+        f"⚡ Early Explosion Radar is Running Perfectly 24/7!<br>"
+        f"📊 Total Market Scans: {total_scans_performed}<br>"
+        f"⏱️ Last Scan Time (Riyadh): {last_scan_timestamp}"
+    )
+    return status_msg, 200
 
 def run_flask():
     port = int(os.getenv("PORT", 10000))
@@ -85,13 +95,13 @@ ALERT_COOLDOWN_SEC = 3600         # منع إعادة إرسال نفس السه
 # ==============================================================================
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"[Telegram-Sim] {text}")
+        print(f"[Telegram-Sim] {text}", flush=True)
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
     except Exception as e:
-        print(f"❌ Telegram Error: {e}")
+        print(f"❌ Telegram Error: {e}", flush=True)
 
 def update_gist_state(symbol, data_dict):
     if not GITHUB_TOKEN or not GIST_ID:
@@ -113,7 +123,7 @@ def update_gist_state(symbol, data_dict):
         payload = {"files": {"bot_state.json": {"content": json.dumps(current_content, indent=4)}}}
         requests.patch(url, headers=headers, json=payload, timeout=10)
     except Exception as e:
-        print(f"❌ Gist Update Error: {e}")
+        print(f"❌ Gist Update Error: {e}", flush=True)
 
 def is_scan_time_allowed():
     tz_ny = pytz.timezone("America/New_York")
@@ -128,7 +138,6 @@ def is_scan_time_allowed():
 # 5. محرك الفحص الرياضي (التحليل وتوليد الإشارات والنقاط)
 # ==============================================================================
 def check_explosion(api, symbol, asset_name):
-    # 1. التصفية المباشرة عبر القائمة السوداء المحدثة الخاصة بك والاسم
     if symbol in SYMBOL_BLACKLIST:
         return None
         
@@ -165,7 +174,6 @@ def check_explosion(api, symbol, asset_name):
         if rvol < RVOL_MIN:
             return None
             
-        # 🌟 السماح بلقط السهم إذا كان عند المقاومة تماماً أو فوقها بقليل (0.99)
         if current_price < resistance_20 * 0.99:
             return None
 
@@ -178,7 +186,6 @@ def check_explosion(api, symbol, asset_name):
             if prev_5m_vol > 0:
                 vol_acceleration = last_5m_vol / prev_5m_vol
 
-        # حساب النقاط لفلترة النخبة بناءً على المعطيات المرنة المتفق عليها
         score = 0
         if rvol >= 3.0: score += 30
         elif rvol >= RVOL_MIN: score += 20
@@ -218,7 +225,7 @@ def check_explosion(api, symbol, asset_name):
 # 6. خيط المراقبة اللحظية الشرسة (مستقل لكل سهم متفجر)
 # ==============================================================================
 def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
-    print(f"🎯 [بدء المراقبة اللحظية الشرسة] خيط مستقل انطلق لملاحقة سهم: {symbol}")
+    print(f"🎯 [بدء المراقبة اللحظية الشرسة] خيط مستقل انطلق لملاحقة سهم: {symbol}", flush=True)
     api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
     
     h1_hit, h2_hit, h3_hit = False, False, False
@@ -231,7 +238,7 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
 
     while True:
         if not is_scan_time_allowed():
-            print(f"💤 [إيقاف المراقبة] خروج مؤقت لسهم {symbol} بسبب إغلاق الجلسة.")
+            print(f"💤 [إيقاف المراقبة] خروج مؤقت لسهم {symbol} بسبب إغلاق الجلسة.", flush=True)
             break
             
         try:
@@ -268,7 +275,7 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
                 break
                 
         except Exception as e:
-            print(f"⚠️ Error tracking {symbol}: {e}")
+            print(f"⚠️ Error tracking {symbol}: {e}", flush=True)
             
         time.sleep(TRACK_INTERVAL_SEC)
         
@@ -288,7 +295,7 @@ def send_explosion_alert(res):
         f" ├─ Target 1 (10%): `${res['target1']}`\n"
         f" ├─ Target 2 (25%): `${res['target2']}`\n"
         f" └─ Target 3 (50%): `${res['target3']}`\n\n"
-        f"🛑 *وقف الخسارة الصارم (7%-):* `${res['stop_loss']}`\n"
+        f"🛑 *وقف الخسارة الصارع (7%-):* `${res['stop_loss']}`\n"
         f"⏱️ _بدأت الآن خيوط المطاردة الشرسة كل 10 ثوانٍ._"
     )
     send_telegram_message(msg)
@@ -297,16 +304,17 @@ def send_explosion_alert(res):
 # 7. المحرك الرئيسي للرادار (Main Loop المحدث بالدفعات)
 # ==============================================================================
 def main_scanner():
-    print("🚀 [رادار النخبة] بدأ العمل بكامل الفلاتر المحدثة والقائمة السوداء الحقيقية...")
+    global total_scans_performed, last_scan_timestamp
+    print("🚀 [رادار النخبة] بدأ العمل بكامل الفلاتر المحدثة والقائمة السوداء الحقيقية...", flush=True)
     api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
     
     while True:
         if not is_scan_time_allowed():
-            print("⏸️ Scan skipped: outside US premarket/market hours. Sleeping...")
+            print("⏸️ Scan skipped: outside US premarket/market hours. Sleeping...", flush=True)
             time.sleep(60)
             continue
             
-        print(f"🔍 [بدء مسح شامل للسوق] جاري جلب ومطابقة الأسهم...")
+        print(f"🔍 [بدء مسح شامل للسوق] جاري جلب ومطابقة الأسهم...", flush=True)
         try:
             assets = api.list_assets(status='active')
             tradable_assets = [a for a in assets if a.tradable and a.fractionable]
@@ -340,10 +348,12 @@ def main_scanner():
                 
                 time.sleep(BATCH_DELAY_SEC)
                         
-            print(f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent}")
+            total_scans_performed += 1
+            last_scan_timestamp = datetime.datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent} | إجمالي الفحوصات: {total_scans_performed}", flush=True)
             
         except Exception as e:
-            print(f"❌ Main Loop Error: {e}")
+            print(f"❌ Main Loop Error: {e}", flush=True)
             
         time.sleep(SCAN_INTERVAL_SEC)
 
@@ -351,4 +361,4 @@ if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    main_scanner()
+    main_scanner() 
