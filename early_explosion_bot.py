@@ -602,7 +602,7 @@ def main_scanner():
             last_scan_timestamp = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
 
             print(
-                f"✅ After exchange filter: {stock_count}",
+                f"✅ Symbols checked this scan: {stock_count}",
                 flush=True
             )
 
