@@ -7,7 +7,8 @@ import alpaca_trade_api as tradeapi
 from flask import Flask
 import zoneinfo
 
-saudi_tz = zoneinfo.ZoneInfo("Asia/Riyadh")import pytz
+saudi_tz = zoneinfo.ZoneInfo("Asia/Riyadh")
+import pytz
 
 # ==============================================================================
 # 1. إعداد سيرفر Flask لإبقاء السيرفر مستيقظاً على Render
