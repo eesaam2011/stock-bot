@@ -59,7 +59,6 @@ MIN_PRICE_CHANGE   = 4.0
 
 MOMENTUM_RVOL_MIN             = 1.2
 MOMENTUM_PRICE_CHANGE_MIN     = 3.0
-MAX_ALLOWED_FLOAT = 50_000_000  # يمكنك تغيير الرقم حسب استراتيجيتك
 # الفلتر الحاسم للدرجة النخبة
 EXPLOSION_CANDIDATE_MIN_SCORE = 80 
 
@@ -150,16 +149,6 @@ def check_explosion(api, symbol, asset_name):
         return None
 
     try:
-        # 🌟 جلب بيانات الفلوت والأسهم المتاحة بفضل اشتراكك المدفوع
-        asset_details = api.get_asset(symbol)
-        
-        # بعض الحسابات تتطلب تفاصيل الفندمنتال، Alpaca توفر خاصية التحقق من الأسهم المصدرة:
-        # ملاحظة: يمكنك فحص الخاصية مباشرة إذا كانت مدعومة في حزمة الـ API لديك كالتالي:
-        if hasattr(asset_details, 'shares_outstanding') and asset_details.shares_outstanding:
-            approx_float = asset_details.shares_outstanding
-            if approx_float > MAX_ALLOWED_FLOAT:
-                return None  # استبعاد السهم فوراً إذا كان ثقيل الفلوت
-        
         resistance_20 = recent_bars['high'].max()
         
         today_bar = bars.iloc[-1]
