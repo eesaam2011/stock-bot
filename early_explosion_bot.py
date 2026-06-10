@@ -540,7 +540,6 @@ def main_scanner():
                     "NYSE",
                     "AMEX"
                 ]
-                and is_clean_symbol(a.symbol)
                 and not any(
                     kw in (getattr(a, "name", "") or "").lower()
                     for kw in BAD_NAME_KEYWORDS
