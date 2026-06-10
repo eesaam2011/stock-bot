@@ -521,27 +521,33 @@ def main_scanner():
         print("🔎 Full scan started...", flush=True)
 
         print(
-            f"🔍 [بدء مسح شامل للسوق] جاري جلب ومطابقة الأسهم...",
+            "🔍 [بدء مسح شامل للسوق] جاري جلب ومطابقة الأسهم...",
             flush=True
         )
+
         try:
-            assets = api.list_assets(status='active')
-            print(vars(assets[0]), flush=True)
+            assets = api.list_assets(status="active")
+
+            # مؤقت للتأكد من شكل بيانات Alpaca
+            if assets:
+                print(vars(assets[0]), flush=True)
+
             tradable_assets = [
                 a
                 for a in assets
-                if a.tradable
-                and a._raw.get("exchange", "") in [
+                if getattr(a, "tradable", False)
+                and getattr(a, "_raw", {}).get("exchange", "") in [
                     "NASDAQ",
                     "NYSE",
                     "AMEX"
                 ]
             ]
+
             print(
                 f"✅ Total symbols after filter: {len(tradable_assets)}",
                 flush=True
             )
-            
+
             now_ts = time.time()
             alerts_sent = 0
             stock_count = 0
@@ -549,25 +555,20 @@ def main_scanner():
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
 
-                for asset in batch:      # 16 مسافة داخل الحلقة الكبيرة
-                    sym = asset.symbol   # 20 مسافة
-                    exchange = asset._raw.get("exchange", "")
-
-                    if exchange not in ["NASDAQ", "NYSE", "AMEX"]:
-                        continue
+                for asset in batch:
+                    sym = asset.symbol
 
                     if "/" in sym:
                         continue
 
                     stock_count += 1
-                    
+
                     if sym in active_monitors:
                         continue
-                        
+
                     if sym in sent_alerts and (now_ts - sent_alerts[sym] < ALERT_COOLDOWN_SEC):
                         continue
 
-                    # يعود الاستدعاء هنا أصلياً ومستقراً تماماً
                     result = check_explosion(api, sym, asset.name)
 
                     if result and result.get("explosion_candidate") is True:
@@ -597,6 +598,7 @@ def main_scanner():
 
             total_scans_performed += 1
             last_scan_timestamp = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+
             print(
                 f"✅ After exchange filter: {stock_count}",
                 flush=True
