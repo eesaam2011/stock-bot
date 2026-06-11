@@ -206,6 +206,7 @@ def calculate_atr_14(df):
     ).max(axis=1)
 
     return float(tr.tail(14).mean())
+    
 def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
     now_ts = time.time()
 
@@ -223,17 +224,37 @@ def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
 
     existing = radar_watchlist.get(symbol, {})
 
+    previous_gain = existing.get(
+        "last_gain",
+        change_pct
+    )
+
+    gain_trend = (
+        change_pct - previous_gain
+    )
+
     radar_watchlist[symbol] = {
-        "first_seen": existing.get("first_seen", now_ts),
+        "first_seen": existing.get(
+            "first_seen",
+            now_ts
+        ),
         "last_seen": now_ts,
         "highest_gain": max(
-            existing.get("highest_gain", change_pct),
+            existing.get(
+                "highest_gain",
+                change_pct
+            ),
             change_pct
         ),
         "highest_dollar_volume": max(
-            existing.get("highest_dollar_volume", dollar_volume),
+            existing.get(
+                "highest_dollar_volume",
+                dollar_volume
+            ),
             dollar_volume
-        )
+        ),
+        "last_gain": change_pct,
+        "gain_trend": gain_trend
     }
 
     return True
@@ -323,6 +344,16 @@ def check_explosion(api, symbol, asset_name):
         if not in_radar and symbol not in radar_watchlist:
             return None
 
+        radar_data = radar_watchlist.get(
+            symbol,
+            {}
+        )
+
+        gain_trend = radar_data.get(
+            "gain_trend",
+            0
+        )
+
         if price_change_pct < MIN_PRICE_CHANGE:
             return None
 
@@ -389,6 +420,15 @@ def check_explosion(api, symbol, asset_name):
         if dollar_volume >= 1_000_000:
             score += 10
         elif dollar_volume >= MIN_DOLLAR_VOLUME:
+            score += 5
+
+        if gain_trend >= 1.0:
+            score += 15
+
+        elif gain_trend >= 0.5:
+            score += 10
+
+        elif gain_trend > 0:
             score += 5
 
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
@@ -775,6 +815,19 @@ def main_scanner():
             stock_count = 0
             clean_radar_watchlist()
             print(f"📡 Radar Watchlist size: {len(radar_watchlist)}", flush=True)
+            top_trends = sorted(
+                radar_watchlist.items(),
+                key=lambda x: x[1].get(
+                    "gain_trend",
+                    0
+                ),
+                reverse=True
+            )[:5]
+
+            print(
+                f"📈 Top Radar Trends: {[s for s, _ in top_trends]}",
+                flush=True
+            )
 
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
