@@ -10,9 +10,6 @@ import pytz
 
 saudi_tz = zoneinfo.ZoneInfo("Asia/Riyadh")
 
-# ==============================================================================
-# 1. إعداد سيرفر Flask لإبقاء السيرفر مستيقظاً على Render
-# ==============================================================================
 app = Flask(__name__)
 
 total_scans_performed = 0
@@ -32,9 +29,6 @@ def run_flask():
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
 
-# ==============================================================================
-# 2. الإعدادات والمتغيرات البيئية
-# ==============================================================================
 ALPACA_API_KEY      = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET_KEY   = os.getenv("APCA_API_SECRET_KEY")
 ALPACA_BASE_URL     = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
@@ -45,9 +39,6 @@ TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID")
 GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN")
 GIST_ID             = os.getenv("GIST_ID")
 
-# ==============================================================================
-# 3. إعدادات الفلاتر
-# ==============================================================================
 PRICE_MIN          = 0.3
 PRICE_MAX          = 25.0
 MIN_AVG_VOL        = 50_000
@@ -89,9 +80,6 @@ SCAN_INTERVAL_SEC  = 180
 TRACK_INTERVAL_SEC = 10
 ALERT_COOLDOWN_SEC = 3600
 
-# ==============================================================================
-# 4. الدوال المساعدة
-# ==============================================================================
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print(f"[Telegram-Sim] {text}", flush=True)
@@ -153,7 +141,6 @@ def update_gist_state(symbol, data_dict):
 
 def is_scan_time_allowed():
     tz_ny = pytz.timezone("America/New_York")
-    # ✅ تم تصحيح السطر لحذف الاستدعاء المكرر المسبب للانهيار
     now_ny = datetime.now(tz_ny)
 
     if now_ny.weekday() >= 5:
@@ -163,21 +150,30 @@ def is_scan_time_allowed():
     end_time = now_ny.replace(hour=20, minute=0, second=0, microsecond=0)
 
     return start_time <= now_ny <= end_time
-def get_float_tier(avg_vol_20):
 
+def get_float_tier(avg_vol_20):
     if avg_vol_20 <= 150_000:
         return "ULTRA_LOW_FLOAT"
-
     elif avg_vol_20 <= 500_000:
         return "VERY_LOW_FLOAT"
-
     elif avg_vol_20 <= 1_000_000:
         return "LOW_FLOAT"
-
     return "NORMAL_FLOAT"
-# ==============================================================================
-# 5. محرك الفحص
-# ==============================================================================
+
+def calculate_atr_14(df):
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    tr = (
+        (high - low)
+        .to_frame("hl")
+        .join((high - close.shift(1)).abs().rename("hc"))
+        .join((low - close.shift(1)).abs().rename("lc"))
+    ).max(axis=1)
+
+    return float(tr.tail(14).mean())
+
 def check_explosion(api, symbol, asset_name):
     if symbol in SYMBOL_BLACKLIST:
         return None
@@ -208,36 +204,23 @@ def check_explosion(api, symbol, asset_name):
         current_price = float(today_bar["close"])
         today_vol = float(today_bar["volume"])
 
-        prev_close = float(
-            previous_bars["close"].iloc[-1]
-        )
-        
+        prev_close = float(previous_bars["close"].iloc[-1])
+
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             return None
 
         avg_vol_20 = float(previous_bars["volume"].tail(20).mean())
-
-        float_tier = get_float_tier(
-            avg_vol_20
-        )
+        float_tier = get_float_tier(avg_vol_20)
 
         if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
             return None
 
         resistance_20 = float(previous_bars["high"].tail(20).max())
-        resistance_50 = float(
-            previous_bars["high"].tail(50).max()
-        )
+        resistance_50 = float(previous_bars["high"].tail(50).max())
 
-        atr_14 = calculate_atr_14(
-            previous_bars
-        )
+        atr_14 = calculate_atr_14(previous_bars)
 
-        price_change_pct = (
-            (current_price - prev_close)
-            / prev_close
-        ) * 100
-        
+        price_change_pct = ((current_price - prev_close) / prev_close) * 100
 
         if price_change_pct < MIN_PRICE_CHANGE:
             return None
@@ -308,24 +291,11 @@ def check_explosion(api, symbol, asset_name):
         digits = 4 if current_price < 1 else 2
 
         stop_loss = round(current_price * 0.93, digits)
-        target1 = round(
-            current_price + atr_14,
-            digits
-        )
 
-        target2 = round(
-            current_price + (atr_14 * 2),
-            digits
-        )
+        target1 = round(current_price + atr_14, digits)
+        target2 = round(current_price + (atr_14 * 2), digits)
+        target3 = round(max(resistance_50, current_price + (atr_14 * 3)), digits)
 
-        target3 = round(
-            max(
-                resistance_50,
-                current_price + (atr_14 * 3)
-            ),
-            digits
-        )
-        
         return {
             "symbol": symbol,
             "price": round(current_price, digits),
@@ -349,28 +319,6 @@ def check_explosion(api, symbol, asset_name):
         print(f"❌ check_explosion error {symbol}: {e}", flush=True)
         return None
 
-def calculate_atr_14(df):
-
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
-
-    tr = (
-        (high - low)
-        .to_frame("hl")
-        .join(
-            (high - close.shift(1)).abs().rename("hc")
-        )
-        .join(
-            (low - close.shift(1)).abs().rename("lc")
-        )
-    ).max(axis=1)
-
-    return float(tr.tail(14).mean()) 
-    
-# ==============================================================================
-# 6. خيط المراقبة اللحظية
-# ==============================================================================
 def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
     print(f"🎯 [بدء المراقبة اللحظية الشرسة] خيط مستقل انطلق لملاحقة سهم: {symbol}", flush=True)
 
@@ -382,6 +330,8 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
     )
 
     h1_hit, h2_hit, h3_hit = False, False, False
+    strong_momentum_sent = False
+    weak_momentum_sent = False
     max_gain_pct = 0.0
 
     update_gist_state(symbol, {
@@ -400,6 +350,13 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
     while True:
         if not is_scan_time_allowed():
             print(f"💤 [إيقاف المراقبة] خروج مؤقت لسهم {symbol} بسبب إغلاق الجلسة.", flush=True)
+            update_gist_state(symbol, {
+                "status": "session_closed",
+                "max_gain": max_gain_pct,
+                "h1_hit": h1_hit,
+                "h2_hit": h2_hit,
+                "h3_hit": h3_hit
+            })
             break
 
         try:
@@ -410,6 +367,66 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
 
             if current_gain > max_gain_pct:
                 max_gain_pct = round(current_gain, 2)
+
+            momentum_score = 50
+
+            if current_gain >= 10:
+                momentum_score += 15
+            elif current_gain >= 5:
+                momentum_score += 10
+
+            if current_p > entry_price:
+                momentum_score += 10
+
+            try:
+                bars_1m = api.get_bars(
+                    symbol,
+                    tradeapi.rest.TimeFrame.Minute,
+                    limit=10,
+                    adjustment="raw"
+                ).df
+
+                if bars_1m is not None and not bars_1m.empty and len(bars_1m) >= 5:
+                    bars_1m = bars_1m.sort_index()
+
+                    recent_high = float(bars_1m["high"].max())
+                    recent_vol = float(bars_1m["volume"].tail(2).mean())
+                    previous_vol = float(bars_1m["volume"].iloc[-6:-2].mean())
+
+                    near_recent_high = current_p >= recent_high * 0.97
+
+                    if near_recent_high:
+                        momentum_score += 15
+
+                    if previous_vol > 0 and recent_vol >= previous_vol * 1.5:
+                        momentum_score += 20
+
+            except Exception as e:
+                print(f"⚠️ Momentum check error {symbol}: {e}", flush=True)
+
+            momentum_score = min(momentum_score, 100)
+
+            if momentum_score >= 85 and not strong_momentum_sent:
+                strong_momentum_sent = True
+                msg = (
+                    f"🔥 *[{symbol}] الزخم يتسارع بقوة!*\n"
+                    f"• السعر الحالي: ${current_p}\n"
+                    f"• الربح الحالي: {round(current_gain, 2)}%\n"
+                    f"• Momentum Score: {momentum_score}/100\n"
+                    f"• السهم لا يزال يظهر إشارات استمرار."
+                )
+                send_telegram_message(msg)
+
+            if momentum_score <= 45 and current_gain > 0 and not weak_momentum_sent:
+                weak_momentum_sent = True
+                msg = (
+                    f"⚠️ *[{symbol}] تحذير ضعف زخم*\n"
+                    f"• السعر الحالي: ${current_p}\n"
+                    f"• الربح الحالي: {round(current_gain, 2)}%\n"
+                    f"• Momentum Score: {momentum_score}/100\n"
+                    f"• الزخم بدأ يضعف، راقب السهم بحذر."
+                )
+                send_telegram_message(msg)
 
             if current_p <= sl:
                 msg = (
@@ -422,50 +439,59 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
                 update_gist_state(symbol, {
                     "status": "stopped_by_sl",
                     "exit_price": current_p,
-                    "max_gain": max_gain_pct
+                    "max_gain": max_gain_pct,
+                    "h1_hit": h1_hit,
+                    "h2_hit": h2_hit,
+                    "h3_hit": h3_hit,
+                    "momentum_score": momentum_score
                 })
                 break
 
             if current_p >= t1 and not h1_hit:
                 h1_hit = True
                 msg = (
-                    f"✅ *[{symbol}] تحقق الهدف الأول تبارك الله! (10%+)*\n"
+                    f"✅ *[{symbol}] تحقق الهدف الفني الأول!*\n"
                     f"• السعر الحالي: ${current_p}\n"
                     f"• الدخول: ${entry_price}\n"
-                    f"• الأهداف القادمة: ${t2} | ${t3}"
+                    f"• Momentum Score: {momentum_score}/100\n"
+                    f"• المراقبة مستمرة."
                 )
                 send_telegram_message(msg)
                 update_gist_state(symbol, {
                     "h1_hit": True,
-                    "max_gain": max_gain_pct
+                    "max_gain": max_gain_pct,
+                    "momentum_score": momentum_score
                 })
 
             if current_p >= t2 and not h2_hit:
                 h2_hit = True
                 msg = (
-                    f"🔥 *[{symbol}] انفجار مستمر! تحقق الهدف الثاني (25%+)*\n"
+                    f"🔥 *[{symbol}] تحقق الهدف الفني الثاني!*\n"
                     f"• السعر الحالي: ${current_p}\n"
-                    f"• أرباح ممتازة، تذكر تأمين صفقاتك!"
+                    f"• Momentum Score: {momentum_score}/100\n"
+                    f"• المراقبة مستمرة طالما الزخم والسعر لم يكسرا الوقف."
                 )
                 send_telegram_message(msg)
                 update_gist_state(symbol, {
                     "h2_hit": True,
-                    "max_gain": max_gain_pct
+                    "max_gain": max_gain_pct,
+                    "momentum_score": momentum_score
                 })
 
             if current_p >= t3 and not h3_hit:
                 h3_hit = True
                 msg = (
-                    f"🚀🚀 *[{symbol}] القناص ضرب الهدف الثالث الأسطوري (50%+)!*\n"
+                    f"🚀🚀 *[{symbol}] وصل الهدف الفني الثالث!*\n"
                     f"• السعر الحالي: ${current_p}\n"
-                    f"• السهم مفرقع بالكامل اليوم!"
+                    f"• Momentum Score: {momentum_score}/100\n"
+                    f"• المراقبة مستمرة لأن السهم قد يتحول لانفجار أكبر."
                 )
                 send_telegram_message(msg)
                 update_gist_state(symbol, {
                     "h3_hit": True,
-                    "max_gain": max_gain_pct
+                    "max_gain": max_gain_pct,
+                    "momentum_score": momentum_score
                 })
-                break
 
         except Exception as e:
             print(f"⚠️ Error tracking {symbol}: {e}", flush=True)
@@ -484,22 +510,22 @@ def send_explosion_alert(res):
         f"ركائز القوة اللحظية:\n"
         f"🔥 *قوة الانفجار (Score):* `{res['score']}/100`\n"
         f"📈 *الـ RVOL الحالي:* `{res['rvol']}x`\n"
+        f"🧬 *تصنيف الفلوت التقريبي:* `{res['float_tier']}`\n"
         f"🧱 *المقاومة 20 يوم:* `${res['resistance_20']}`\n"
+        f"🧱 *المقاومة 50 يوم:* `${res['resistance_50']}`\n"
+        f"📏 *ATR 14:* `${res['atr_14']}`\n"
         f"⚡ *تسارع الفوليوم:* `{res['vol_acceleration']}x`\n"
         f"💰 *Dollar Volume:* `${res['dollar_volume']}`\n\n"
         f"🎯 *الأهداف الفنية المحسوبة:*\n"
-        f" ├─ Target 1 (10%): `${res['target1']}`\n"
-        f" ├─ Target 2 (25%): `${res['target2']}`\n"
-        f" └─ Target 3 (50%): `${res['target3']}`\n\n"
+        f" ├─ Target 1 (ATR ×1): `${res['target1']}`\n"
+        f" ├─ Target 2 (ATR ×2): `${res['target2']}`\n"
+        f" └─ Target 3 (ATR ×3 أو مقاومة 50 يوم): `${res['target3']}`\n\n"
         f"🛑 *وقف الخسارة الصارم (7%-):* `${res['stop_loss']}`\n"
-        f"⏱️ _بدأت الآن خيوط المطاردة الشرسة كل 10 ثوانٍ._"
+        f"⏱️ _بدأت الآن مراقبة الزخم كل 10 ثوانٍ._"
     )
 
     send_telegram_message(msg)
 
-# ==============================================================================
-# 7. المحرك الرئيسي
-# ==============================================================================
 def main_scanner():
     global total_scans_performed, last_scan_timestamp
 
@@ -528,8 +554,6 @@ def main_scanner():
         try:
             assets = api.list_assets(status="active")
 
-            # مؤقت للتأكد من شكل بيانات Alpaca
-            
             tradable_assets = [
                 a
                 for a in assets
@@ -545,6 +569,7 @@ def main_scanner():
                     for kw in BAD_NAME_KEYWORDS
                 )
             ]
+
             print(
                 f"✅ Total symbols after filter: {len(tradable_assets)}",
                 flush=True
