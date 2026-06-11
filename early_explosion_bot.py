@@ -216,11 +216,6 @@ def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
 
     change_pct = ((current_price - prev_close) / prev_close) * 100
     
-    if abs(change_pct) >= 3:
-        print(
-            f"📡 RADAR TEST {symbol} | Change={round(change_pct,2)}%",
-            flush=True
-        )
     dollar_volume = current_price * today_vol
 
     if change_pct >= 4:
