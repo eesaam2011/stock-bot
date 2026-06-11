@@ -456,15 +456,16 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
             break
 
         try:
-            trade = api.get_latest_trade(
-                symbol
-            )
+            trade = api.get_latest_trade(symbol)
 
             current_p = trade.price
 
             failed_attempts = 0
 
-            current_gain = ((current_p - entry_price) / entry_price) * 100
+            current_gain = (
+                (current_p - entry_price)
+                / entry_price
+            ) * 100
 
             if current_gain > max_gain_pct:
                 max_gain_pct = round(current_gain, 2)
@@ -503,27 +504,29 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
                         momentum_score += 20
 
             except Exception as e:
-                failed_attempts += 1
+            failed_attempts += 1
 
-                print(
-                    f"⚠️ Error tracking {symbol}: {e}",
-                    flush=True
+            print(
+                f"⚠️ Error tracking {symbol}: {e}",
+                flush=True
+            )
+
+            if failed_attempts >= MAX_FAILED_ATTEMPTS:
+                send_telegram_message(
+                    f"⚠️ تم إيقاف مراقبة {symbol} بسبب تعذر جلب البيانات لفترة طويلة."
                 )
 
-                if failed_attempts >= MAX_FAILED_ATTEMPTS:
-                    send_telegram_message(
-                        f"⚠️ تم إيقاف مراقبة {symbol} بسبب تعذر جلب البيانات لفترة طويلة."
-                    )
+                update_gist_state(symbol, {
+                    "status": "monitor_failed",
+                    "max_gain": max_gain_pct,
+                    "h1_hit": h1_hit,
+                    "h2_hit": h2_hit,
+                    "h3_hit": h3_hit,
+                    "strong_momentum_sent": strong_momentum_sent,
+                    "weak_momentum_sent": weak_momentum_sent
+                })
 
-                    update_gist_state(
-                        symbol,
-                        {
-                            "status": "monitor_failed",
-                            "max_gain": max_gain_pct
-                        }
-                    )
-
-                    break
+                break
                 
             momentum_score = min(momentum_score, 100)
 
