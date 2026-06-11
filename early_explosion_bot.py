@@ -817,21 +817,7 @@ def main_scanner():
             alerts_sent = 0
             stock_count = 0
             clean_radar_watchlist()
-            print(f"📡 Radar Watchlist size: {len(radar_watchlist)}", flush=True)
-            top_trends = sorted(
-                radar_watchlist.items(),
-                key=lambda x: x[1].get(
-                    "gain_trend",
-                    0
-                ),
-                reverse=True
-            )[:5]
-
-            print(
-                f"📈 Top Radar Trends: {[s for s, _ in top_trends]}",
-                flush=True
-            )
-
+            
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
 
@@ -883,6 +869,22 @@ def main_scanner():
                 f"✅ Symbols checked this scan: {stock_count}",
                 flush=True
             )
+            
+            print(f"📡 Radar Watchlist size: {len(radar_watchlist)}", flush=True)
+            top_trends = sorted(
+                radar_watchlist.items(),
+                key=lambda x: x[1].get(
+                    "gain_trend",
+                    0
+                ),
+                reverse=True
+            )[:5]
+
+            print(
+                f"📈 Top Radar Trends: {[s for s, _ in top_trends]}",
+                flush=True
+            )
+
 
             print(
                 f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent} | إجمالي الفحوصات: {total_scans_performed}",
