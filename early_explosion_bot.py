@@ -94,6 +94,10 @@ session_closed_reports = []
 report_lock = threading.Lock()
 final_session_report_sent = False
 last_session_date = None
+reject_rvol = 0
+reject_resistance = 0
+reject_score = 0
+reject_price_change = 0
 
 SCAN_INTERVAL_SEC  = 180
 TRACK_INTERVAL_SEC = 10
@@ -428,12 +432,18 @@ def check_explosion(api, symbol, asset_name):
 
         atr_14 = calculate_atr_14(previous_bars)
 
+        global reject_price_change
+
         if price_change_pct < MIN_PRICE_CHANGE:
+            reject_price_change += 1
             return None
 
         rvol = today_vol / avg_vol_20 if avg_vol_20 > 0 else 0
 
+        global reject_rvol
+
         if rvol < RVOL_MIN:
+            reject_rvol += 1
             return None
 
         dollar_volume = today_vol * current_price
@@ -441,7 +451,10 @@ def check_explosion(api, symbol, asset_name):
         if dollar_volume < MIN_DOLLAR_VOLUME:
             return None
 
+        global reject_resistance
+
         if current_price < resistance_20 * 0.99:
+            reject_resistance += 1
             return None
 
         bars_1m = api.get_bars(
@@ -505,7 +518,10 @@ def check_explosion(api, symbol, asset_name):
         elif gain_trend > 0:
             score += 5
 
+        global reject_score
+
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
+            reject_score += 1
             return None
 
         digits = 4 if current_price < 1 else 2
@@ -828,6 +844,10 @@ def send_explosion_alert(res):
 
 def main_scanner():
     global total_scans_performed, last_scan_timestamp
+    global reject_price_change
+    global reject_rvol
+    global reject_resistance
+    global reject_score
 
     print("🚀 [رادار النخبة] بدأ العمل بكامل الفلاتر المحدثة والقائمة السوداء الحقيقية...", flush=True)
 
@@ -961,6 +981,19 @@ def main_scanner():
                 flush=True
             )
 
+            print(
+                f"📊 Reject Stats | "
+                f"Change={reject_price_change} | "
+                f"RVOL={reject_rvol} | "
+                f"Resistance={reject_resistance} | "
+                f"Score={reject_score}",
+                flush=True
+            )
+
+            reject_price_change = 0
+            reject_rvol = 0
+            reject_resistance = 0
+            reject_score = 0
 
             print(
                 f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent} | إجمالي الفحوصات: {total_scans_performed}",
