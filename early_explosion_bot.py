@@ -305,17 +305,30 @@ def quick_radar_check(api, symbol):
         if previous_bars.empty:
             return False
 
-        trade = api.get_latest_trade(symbol)
+        prev_close = float(
+            previous_bars["close"].iloc[-1]
+        )
+
         snapshot = api.get_snapshot(symbol)
 
-        current_price = float(trade.price)
+        if snapshot and snapshot.latest_trade:
+            current_price = float(
+                snapshot.latest_trade.price
+            )
+        else:
+            trade = api.get_latest_trade(symbol)
+            current_price = float(
+                trade.price
+            )
 
         if snapshot and snapshot.daily_bar:
-            today_vol = float(snapshot.daily_bar.volume)
+            today_vol = float(
+                snapshot.daily_bar.volume
+            )
         else:
-            today_vol = float(bars.iloc[-1]["volume"])
-
-        prev_close = float(previous_bars["close"].iloc[-1])
+            today_vol = float(
+                bars.iloc[-1]["volume"]
+            )
 
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             return False
@@ -328,7 +341,11 @@ def quick_radar_check(api, symbol):
         )
 
     except Exception as e:
-        return False 
+        print(
+            f"⚠️ quick_radar_check error {symbol}: {e}",
+            flush=True
+        )
+        return False
         
 def check_explosion(api, symbol, asset_name):
     if symbol in SYMBOL_BLACKLIST:
