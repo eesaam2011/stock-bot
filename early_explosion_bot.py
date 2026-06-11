@@ -61,7 +61,7 @@ SYMBOL_BLACKLIST = {
     "DKNG", "PENN", "WYNN", "LVS", "MGM", "CZR",
     "BUD", "TAP", "STZ", "DEO", "PM", "MO", "BTI",
     "CGC", "TLRY", "ACB", "SNDL", "CRON",
-    "NCLH", "CCL", "RCL", "AMC", "CNK", "IMAX"
+    "NCLH", "CCL", "RCL", "AMC", "CNK", "IMAX", "HITI",
 }
 
 BAD_NAME_KEYWORDS = [
