@@ -318,22 +318,11 @@ def check_explosion(api, symbol, asset_name):
         prev_close = float(
             previous_bars["close"].iloc[-1]
         ) 
-        
-        if not (PRICE_MIN <= current_price <= PRICE_MAX):
-            return None
+        price_change_pct = (
+            (current_price - prev_close)
+            / prev_close
+        ) * 100
 
-        avg_vol_20 = float(previous_bars["volume"].tail(20).mean())
-        float_tier = get_float_tier(avg_vol_20)
-
-        if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
-            return None
-
-        resistance_20 = float(previous_bars["high"].tail(20).max())
-        resistance_50 = float(previous_bars["high"].tail(50).max())
-
-        atr_14 = calculate_atr_14(previous_bars)
-
-        price_change_pct = ((current_price - prev_close) / prev_close) * 100
         in_radar = update_radar_watchlist(
             symbol,
             current_price,
@@ -353,6 +342,20 @@ def check_explosion(api, symbol, asset_name):
             "gain_trend",
             0
         )
+        
+        if not (PRICE_MIN <= current_price <= PRICE_MAX):
+            return None
+
+        avg_vol_20 = float(previous_bars["volume"].tail(20).mean())
+        float_tier = get_float_tier(avg_vol_20)
+
+        if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
+            return None
+
+        resistance_20 = float(previous_bars["high"].tail(20).max())
+        resistance_50 = float(previous_bars["high"].tail(50).max())
+
+        atr_14 = calculate_atr_14(previous_bars)
 
         if price_change_pct < MIN_PRICE_CHANGE:
             return None
