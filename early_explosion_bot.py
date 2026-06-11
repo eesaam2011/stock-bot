@@ -429,7 +429,6 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
                         momentum_score += 20
 
             except Exception as e:
-
             failed_attempts += 1
 
             print(
@@ -438,7 +437,6 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
             )
 
             if failed_attempts >= MAX_FAILED_ATTEMPTS:
-
                 send_telegram_message(
                     f"⚠️ تم إيقاف مراقبة {symbol} بسبب تعذر جلب البيانات لفترة طويلة."
                 )
