@@ -208,16 +208,14 @@ def calculate_atr_14(df):
     return float(tr.tail(14).mean())
     
 def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
-    print(
-        f"📡 update_radar_watchlist called: {symbol}",
-        flush=True
-    )
+    
     now_ts = time.time()
 
     if prev_close <= 0:
         return False
 
     change_pct = ((current_price - prev_close) / prev_close) * 100
+    
     if abs(change_pct) >= 3:
         print(
             f"📡 RADAR TEST {symbol} | Change={round(change_pct,2)}%",
@@ -289,29 +287,12 @@ def clean_radar_watchlist():
 
 def quick_radar_check(api, symbol):
     try:
-        bars = api.get_bars(
-            symbol,
-            tradeapi.rest.TimeFrame.Day,
-            limit=3,
-            adjustment="raw"
-        ).df
-
-        if bars is None or bars.empty or len(bars) < 2:
-            return False
-
-        bars = bars.sort_index()
-        previous_bars = bars.iloc[:-1]
-
-        if previous_bars.empty:
-            return False
-
-        prev_close = float(
-            previous_bars["close"].iloc[-1]
-        )
-
         snapshot = api.get_snapshot(symbol)
 
-        if snapshot and snapshot.latest_trade:
+        if not snapshot:
+            return False
+
+        if snapshot.latest_trade:
             current_price = float(
                 snapshot.latest_trade.price
             )
@@ -321,14 +302,32 @@ def quick_radar_check(api, symbol):
                 trade.price
             )
 
-        if snapshot and snapshot.daily_bar:
+        prev_daily_bar = getattr(
+            snapshot,
+            "previous_daily_bar",
+            None
+        )
+
+        if prev_daily_bar is None:
+            prev_daily_bar = getattr(
+                snapshot,
+                "prev_daily_bar",
+                None
+            )
+
+        if prev_daily_bar is None:
+            return False
+
+        prev_close = float(
+            prev_daily_bar.close
+        )
+
+        if snapshot.daily_bar:
             today_vol = float(
                 snapshot.daily_bar.volume
             )
         else:
-            today_vol = float(
-                bars.iloc[-1]["volume"]
-            )
+            return False
 
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             return False
