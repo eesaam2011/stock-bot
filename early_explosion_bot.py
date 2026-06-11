@@ -298,7 +298,7 @@ def check_explosion(api, symbol, asset_name):
             adjustment="raw"
         ).df
 
-        if bars is None or bars.empty or len(bars) < 25:
+        if bars is None or bars.empty or len(bars) < 3:
             return None
 
         bars = bars.sort_index()
@@ -321,9 +321,14 @@ def check_explosion(api, symbol, asset_name):
             trade.price
         )
 
-        today_vol = float(
-            snapshot.daily_bar.volume
-        )
+        if snapshot and snapshot.daily_bar:
+            today_vol = float(
+                snapshot.daily_bar.volume
+            )
+        else:
+            today_vol = float(
+                today_bar["volume"]
+            )
 
         prev_close = float(
             previous_bars["close"].iloc[-1]
