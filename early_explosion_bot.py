@@ -286,6 +286,49 @@ def clean_radar_watchlist():
 
     for symbol in expired:
         radar_watchlist.pop(symbol, None)
+
+def quick_radar_check(api, symbol):
+    try:
+        bars = api.get_bars(
+            symbol,
+            tradeapi.rest.TimeFrame.Day,
+            limit=3,
+            adjustment="raw"
+        ).df
+
+        if bars is None or bars.empty or len(bars) < 2:
+            return False
+
+        bars = bars.sort_index()
+        previous_bars = bars.iloc[:-1]
+
+        if previous_bars.empty:
+            return False
+
+        trade = api.get_latest_trade(symbol)
+        snapshot = api.get_snapshot(symbol)
+
+        current_price = float(trade.price)
+
+        if snapshot and snapshot.daily_bar:
+            today_vol = float(snapshot.daily_bar.volume)
+        else:
+            today_vol = float(bars.iloc[-1]["volume"])
+
+        prev_close = float(previous_bars["close"].iloc[-1])
+
+        if not (PRICE_MIN <= current_price <= PRICE_MAX):
+            return False
+
+        return update_radar_watchlist(
+            symbol,
+            current_price,
+            prev_close,
+            today_vol
+        )
+
+    except Exception as e:
+        return False 
         
 def check_explosion(api, symbol, asset_name):
     if symbol in SYMBOL_BLACKLIST:
@@ -342,16 +385,6 @@ def check_explosion(api, symbol, asset_name):
             (current_price - prev_close)
             / prev_close
         ) * 100
-
-        in_radar = update_radar_watchlist(
-            symbol,
-            current_price,
-            prev_close,
-            today_vol
-        )
-
-        if not in_radar and symbol not in radar_watchlist:
-            return None
 
         radar_data = radar_watchlist.get(
             symbol,
@@ -856,6 +889,11 @@ def main_scanner():
                         continue
 
                     if sym in sent_alerts and (now_ts - sent_alerts[sym] < ALERT_COOLDOWN_SEC):
+                        continue
+
+                    quick_radar_check(api, sym)
+
+                    if sym not in radar_watchlist:
                         continue
 
                     result = check_explosion(api, sym, asset.name)
