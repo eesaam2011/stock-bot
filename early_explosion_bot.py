@@ -302,7 +302,7 @@ def check_explosion(api, symbol, asset_name):
         today_bar = bars.iloc[-1]
         previous_bars = bars.iloc[:-1]
 
-        if len(previous_bars) < 20:
+        if len(previous_bars) < 2:
             return None
 
         trade = api.get_latest_trade(
@@ -349,6 +349,9 @@ def check_explosion(api, symbol, asset_name):
             0
         )
         
+        if len(previous_bars) < 20:
+            return None
+            
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             return None
 
