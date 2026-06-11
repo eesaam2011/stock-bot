@@ -1,11 +1,20 @@
 SYMBOL_BLACKLIST = {
     "JPM", "BAC", "WFC", "C", "GS", "MS",
-    "DKNG", "PENN", "WYNN", "LVS",
-    "BUD", "STZ", "DEO",
-    "PM", "MO",
-    "CGC", "TLRY", "ACB",
+    "AXP", "USB", "TFC", "PNC", "COF", "DFS",
+    "MET", "PRU", "ALL", "AIG", "AFL", "TRV", "HIG", "CB",
+
+    "DKNG", "PENN", "WYNN", "LVS", "MGM", "CZR",
+
+    "BUD", "TAP", "STZ", "DEO",
+    "PM", "MO", "BTI",
+
+    "CGC", "TLRY", "ACB", "SNDL", "CRON",
+
     "NCLH", "CCL", "RCL",
-    "AMC", "GPRE", "SKLZ", "PGY", "JELD",
+
+    "AMC", "CNK", "IMAX", "HITI",
+
+    "GPRE", "SKLZ", "PGY", "JELD",
     "TWO", "PGEN", "GENI", "TRC",
 }
 
