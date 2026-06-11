@@ -75,6 +75,10 @@ BAD_NAME_KEYWORDS = [
 
 active_monitors = {}
 sent_alerts = {}
+radar_watchlist = {}
+RADAR_TRIGGER_CHANGE_PCT = 4.0
+RADAR_MIN_DOLLAR_VOLUME = 100_000
+RADAR_EXPIRE_MINUTES = 30
 gist_lock = threading.Lock()
 session_closed_reports = []
 report_lock = threading.Lock()
@@ -202,7 +206,51 @@ def calculate_atr_14(df):
     ).max(axis=1)
 
     return float(tr.tail(14).mean())
+def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
+    now_ts = time.time()
 
+    if prev_close <= 0:
+        return False
+
+    change_pct = ((current_price - prev_close) / prev_close) * 100
+    dollar_volume = current_price * today_vol
+
+    if change_pct < RADAR_TRIGGER_CHANGE_PCT:
+        return False
+
+    if dollar_volume < RADAR_MIN_DOLLAR_VOLUME:
+        return False
+
+    existing = radar_watchlist.get(symbol, {})
+
+    radar_watchlist[symbol] = {
+        "first_seen": existing.get("first_seen", now_ts),
+        "last_seen": now_ts,
+        "highest_gain": max(
+            existing.get("highest_gain", change_pct),
+            change_pct
+        ),
+        "highest_dollar_volume": max(
+            existing.get("highest_dollar_volume", dollar_volume),
+            dollar_volume
+        )
+    }
+
+    return True
+
+def clean_radar_watchlist():
+    now_ts = time.time()
+    expired = []
+
+    for symbol, data in radar_watchlist.items():
+        first_seen = data.get("first_seen", now_ts)
+
+        if now_ts - first_seen > RADAR_EXPIRE_MINUTES * 60:
+            expired.append(symbol)
+
+    for symbol in expired:
+        radar_watchlist.pop(symbol, None)
+        
 def check_explosion(api, symbol, asset_name):
     if symbol in SYMBOL_BLACKLIST:
         return None
@@ -265,6 +313,15 @@ def check_explosion(api, symbol, asset_name):
         atr_14 = calculate_atr_14(previous_bars)
 
         price_change_pct = ((current_price - prev_close) / prev_close) * 100
+        in_radar = update_radar_watchlist(
+            symbol,
+            current_price,
+            prev_close,
+            today_vol
+        )
+
+        if not in_radar and symbol not in radar_watchlist:
+            return None
 
         if price_change_pct < MIN_PRICE_CHANGE:
             return None
@@ -716,6 +773,8 @@ def main_scanner():
             now_ts = time.time()
             alerts_sent = 0
             stock_count = 0
+            clean_radar_watchlist()
+            print(f"📡 Radar Watchlist size: {len(radar_watchlist)}", flush=True)
 
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
