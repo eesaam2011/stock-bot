@@ -216,6 +216,12 @@ def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
     change_pct = ((current_price - prev_close) / prev_close) * 100
     dollar_volume = current_price * today_vol
 
+    if change_pct >= 4:
+        print(
+            f"📡 RADAR HIT {symbol} | Change={round(change_pct, 2)}%",
+            flush=True
+        )
+
     if change_pct < RADAR_TRIGGER_CHANGE_PCT:
         return False
 
