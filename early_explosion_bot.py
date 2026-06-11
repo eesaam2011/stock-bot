@@ -56,14 +56,24 @@ BATCH_SIZE         = 250
 BATCH_DELAY_SEC    = 1.0
 
 SYMBOL_BLACKLIST = {
-    "JPM", "BAC", "WFC", "C", "GS", "MS", "AXP", "USB", "TFC", "PNC", "COF", "DFS",
+    "JPM", "BAC", "WFC", "C", "GS", "MS",
+    "AXP", "USB", "TFC", "PNC", "COF", "DFS",
     "MET", "PRU", "ALL", "AIG", "AFL", "TRV", "HIG", "CB",
-    "DKNG", "PENN", "WYNN", "LVS", "MGM", "CZR",
-    "BUD", "TAP", "STZ", "DEO", "PM", "MO", "BTI",
-    "CGC", "TLRY", "ACB", "SNDL", "CRON",
-    "NCLH", "CCL", "RCL", "AMC", "CNK", "IMAX", "HITI",
-}
 
+    "DKNG", "PENN", "WYNN", "LVS", "MGM", "CZR",
+
+    "BUD", "TAP", "STZ", "DEO",
+    "PM", "MO", "BTI",
+
+    "CGC", "TLRY", "ACB", "SNDL", "CRON",
+
+    "NCLH", "CCL", "RCL",
+
+    "AMC", "CNK", "IMAX", "HITI",
+
+    "GPRE", "SKLZ", "PGY", "JELD",
+    "TWO", "PGEN", "GENI", "TRC",
+}
 BAD_NAME_KEYWORDS = [
     "etf", "fund", "trust", "warrant", "unit", "right", "preferred",
     "bond", "notes", "income", "index", "acquisition", "blank check",
