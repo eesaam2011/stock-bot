@@ -75,9 +75,11 @@ BAD_NAME_KEYWORDS = [
 
 active_monitors = {}
 sent_alerts = {}
+gist_lock = threading.Lock()
 session_closed_reports = []
 report_lock = threading.Lock()
 final_session_report_sent = False
+last_session_date = None
 
 SCAN_INTERVAL_SEC  = 180
 TRACK_INTERVAL_SEC = 10
@@ -107,41 +109,65 @@ def update_gist_state(symbol, data_dict):
     if not GITHUB_TOKEN or not GIST_ID:
         return
 
-    url = f"https://api.github.com/gists/{GIST_ID}"
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
+    with gist_lock:
 
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        current_content = {}
+        url = f"https://api.github.com/gists/{GIST_ID}"
 
-        if res.status_code == 200:
-            files = res.json().get("files", {})
-            if "bot_state.json" in files:
-                import json
-                try:
-                    current_content = json.loads(files["bot_state.json"]["content"])
-                except:
-                    current_content = {}
-
-        current_content[symbol] = data_dict
-
-        import json
-        payload = {
-            "files": {
-                "bot_state.json": {
-                    "content": json.dumps(current_content, indent=4)
-                }
-            }
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
         }
 
-        requests.patch(url, headers=headers, json=payload, timeout=10)
+        try:
+            res = requests.get(
+                url,
+                headers=headers,
+                timeout=10
+            )
 
-    except Exception as e:
-        print(f"❌ Gist Update Error: {e}", flush=True)
+            current_content = {}
 
+            if res.status_code == 200:
+                files = res.json().get("files", {})
+
+                if "bot_state.json" in files:
+                    import json
+
+                    try:
+                        current_content = json.loads(
+                            files["bot_state.json"]["content"]
+                        )
+                    except:
+                        current_content = {}
+
+            current_content[symbol] = data_dict
+
+            import json
+
+            payload = {
+                "files": {
+                    "bot_state.json": {
+                        "content": json.dumps(
+                            current_content,
+                            indent=4
+                        )
+                    }
+                }
+            }
+
+            requests.patch(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+
+        except Exception as e:
+            print(
+                f"❌ Gist Update Error: {e}",
+                flush=True
+            )
+            
 def is_scan_time_allowed():
     tz_ny = pytz.timezone("America/New_York")
     now_ny = datetime.now(tz_ny)
@@ -641,6 +667,15 @@ def main_scanner():
             print("⏸️ Scan skipped: outside US premarket/market hours. Sleeping...", flush=True)
             time.sleep(60)
             continue
+
+        global final_session_report_sent, session_closed_reports, last_session_date
+
+        today_key = datetime.now(saudi_tz).strftime("%Y-%m-%d")
+
+        if last_session_date != today_key:
+            final_session_report_sent = False
+            session_closed_reports = []
+            last_session_date = today_key
 
         print("🔎 Full scan started...", flush=True)
 
