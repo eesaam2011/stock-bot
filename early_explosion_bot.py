@@ -75,6 +75,9 @@ BAD_NAME_KEYWORDS = [
 
 active_monitors = {}
 sent_alerts = {}
+session_closed_reports = []
+report_lock = threading.Lock()
+final_session_report_sent = False
 
 SCAN_INTERVAL_SEC  = 180
 TRACK_INTERVAL_SEC = 10
@@ -338,7 +341,36 @@ def check_explosion(api, symbol, asset_name):
     except Exception as e:
         print(f"❌ check_explosion error {symbol}: {e}", flush=True)
         return None
+def send_final_session_report_if_ready():
+    global final_session_report_sent
 
+    with report_lock:
+        if final_session_report_sent:
+            return
+
+        if active_monitors:
+            return
+
+        if not session_closed_reports:
+            return
+
+        msg = "📋 *تقرير نهاية مراقبة الجلسة - Early Explosion*\n\n"
+
+        for r in session_closed_reports:
+            msg += (
+                f"🎫 *{r['symbol']}*\n"
+                f"• الدخول: ${r['entry_price']}\n"
+                f"• أعلى ربح: {r['max_gain']}%\n"
+                f"• T1: {'✅' if r['h1_hit'] else '❌'} | "
+                f"T2: {'✅' if r['h2_hit'] else '❌'} | "
+                f"T3: {'✅' if r['h3_hit'] else '❌'}\n"
+                f"• زخم قوي: {'✅' if r['strong_momentum_sent'] else '❌'}\n"
+                f"• ضعف زخم: {'⚠️' if r['weak_momentum_sent'] else '❌'}\n\n"
+            )
+
+        send_telegram_message(msg)
+        final_session_report_sent = True
+        
 def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
     print(f"🎯 [بدء المراقبة اللحظية الشرسة] خيط مستقل انطلق لملاحقة سهم: {symbol}", flush=True)
 
@@ -383,19 +415,17 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
                 "weak_momentum_sent": weak_momentum_sent
             })
 
-            msg = (
-                f"📋 *[{symbol}] تقرير نهاية مراقبة الجلسة*\n"
-                f"• الحالة: انتهت الجلسة بدون ضرب وقف الخسارة\n"
-                f"• الدخول: ${entry_price}\n"
-                f"• أعلى ربح وصل له: {max_gain_pct}%\n"
-                f"• الهدف الفني الأول: {'✅ تحقق' if h1_hit else '❌ لم يتحقق'}\n"
-                f"• الهدف الفني الثاني: {'✅ تحقق' if h2_hit else '❌ لم يتحقق'}\n"
-                f"• الهدف الفني الثالث: {'✅ تحقق' if h3_hit else '❌ لم يتحقق'}\n"
-                f"• تنبيه زخم قوي: {'✅ ظهر' if strong_momentum_sent else '❌ لم يظهر'}\n"
-                f"• تحذير ضعف الزخم: {'⚠️ ظهر' if weak_momentum_sent else '❌ لم يظهر'}"
-            )
-
-            send_telegram_message(msg)
+            with report_lock:
+                session_closed_reports.append({
+                    "symbol": symbol,
+                    "entry_price": entry_price,
+                    "max_gain": max_gain_pct,
+                    "h1_hit": h1_hit,
+                    "h2_hit": h2_hit,
+                    "h3_hit": h3_hit,
+                    "strong_momentum_sent": strong_momentum_sent,
+                    "weak_momentum_sent": weak_momentum_sent
+                })
 
             break
 
@@ -566,6 +596,9 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
     if symbol in active_monitors:
         del active_monitors[symbol]
 
+    if not is_scan_time_allowed():
+        send_final_session_report_if_ready()
+        
 def send_explosion_alert(res):
     msg = (
         f"🌟 *[إشارة انفجار ذهبية نخبة]* 🌟\n\n"
