@@ -208,6 +208,10 @@ def calculate_atr_14(df):
     return float(tr.tail(14).mean())
     
 def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
+    print(
+        f"📡 update_radar_watchlist called: {symbol}",
+        flush=True
+    )
     now_ts = time.time()
 
     if prev_close <= 0:
