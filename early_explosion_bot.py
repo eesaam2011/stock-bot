@@ -201,11 +201,26 @@ def check_explosion(api, symbol, asset_name):
         if len(previous_bars) < 20:
             return None
 
-        current_price = float(today_bar["close"])
-        today_vol = float(today_bar["volume"])
+        trade = api.get_latest_trade(
+            symbol
+        )
 
-        prev_close = float(previous_bars["close"].iloc[-1])
+        snapshot = api.get_snapshot(
+            symbol
+        )
 
+        current_price = float(
+            trade.price
+        )
+
+        today_vol = float(
+            snapshot.daily_bar.volume
+        )
+
+        prev_close = float(
+            previous_bars["close"].iloc[-1]
+        ) 
+        
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             return None
 
@@ -247,7 +262,11 @@ def check_explosion(api, symbol, asset_name):
 
         vol_acceleration = 1.0
 
-        if bars_1m is not None and not bars_1m.empty and len(bars_1m) >= 4:
+        if (
+            bars_1m is not None
+            and not bars_1m.empty
+            and len(bars_1m) >= 8
+        ):
             bars_1m = bars_1m.sort_index()
 
             recent_vol = float(bars_1m["volume"].tail(2).mean())
@@ -272,7 +291,8 @@ def check_explosion(api, symbol, asset_name):
 
         if current_price >= resistance_20:
             score += 20
-        else:
+
+        elif current_price >= resistance_20 * 0.99:
             score += 10
 
         if vol_acceleration >= 2.0:
@@ -333,6 +353,8 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
     strong_momentum_sent = False
     weak_momentum_sent = False
     max_gain_pct = 0.0
+    failed_attempts = 0
+    MAX_FAILED_ATTEMPTS = 20
 
     update_gist_state(symbol, {
         "entry_price": entry_price,
@@ -360,8 +382,13 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
             break
 
         try:
-            trade = api.get_latest_trade(symbol)
+            trade = api.get_latest_trade(
+                symbol
+            )
+
             current_p = trade.price
+
+            failed_attempts = 0
 
             current_gain = ((current_p - entry_price) / entry_price) * 100
 
@@ -402,8 +429,30 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
                         momentum_score += 20
 
             except Exception as e:
-                print(f"⚠️ Momentum check error {symbol}: {e}", flush=True)
 
+            failed_attempts += 1
+
+            print(
+                f"⚠️ Error tracking {symbol}: {e}",
+                flush=True
+            )
+
+            if failed_attempts >= MAX_FAILED_ATTEMPTS:
+
+                send_telegram_message(
+                    f"⚠️ تم إيقاف مراقبة {symbol} بسبب تعذر جلب البيانات لفترة طويلة."
+                )
+
+                update_gist_state(
+                    symbol,
+                    {
+                        "status": "monitor_failed",
+                        "max_gain": max_gain_pct
+                    }
+                )
+
+                break
+                
             momentum_score = min(momentum_score, 100)
 
             if momentum_score >= 85 and not strong_momentum_sent:
