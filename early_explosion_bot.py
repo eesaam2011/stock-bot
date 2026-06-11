@@ -372,13 +372,31 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
     while True:
         if not is_scan_time_allowed():
             print(f"💤 [إيقاف المراقبة] خروج مؤقت لسهم {symbol} بسبب إغلاق الجلسة.", flush=True)
+
             update_gist_state(symbol, {
                 "status": "session_closed",
                 "max_gain": max_gain_pct,
                 "h1_hit": h1_hit,
                 "h2_hit": h2_hit,
-                "h3_hit": h3_hit
+                "h3_hit": h3_hit,
+                "strong_momentum_sent": strong_momentum_sent,
+                "weak_momentum_sent": weak_momentum_sent
             })
+
+            msg = (
+                f"📋 *[{symbol}] تقرير نهاية مراقبة الجلسة*\n"
+                f"• الحالة: انتهت الجلسة بدون ضرب وقف الخسارة\n"
+                f"• الدخول: ${entry_price}\n"
+                f"• أعلى ربح وصل له: {max_gain_pct}%\n"
+                f"• الهدف الفني الأول: {'✅ تحقق' if h1_hit else '❌ لم يتحقق'}\n"
+                f"• الهدف الفني الثاني: {'✅ تحقق' if h2_hit else '❌ لم يتحقق'}\n"
+                f"• الهدف الفني الثالث: {'✅ تحقق' if h3_hit else '❌ لم يتحقق'}\n"
+                f"• تنبيه زخم قوي: {'✅ ظهر' if strong_momentum_sent else '❌ لم يظهر'}\n"
+                f"• تحذير ضعف الزخم: {'⚠️ ظهر' if weak_momentum_sent else '❌ لم يظهر'}"
+            )
+
+            send_telegram_message(msg)
+
             break
 
         try:
@@ -429,27 +447,27 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
                         momentum_score += 20
 
             except Exception as e:
-            failed_attempts += 1
+                failed_attempts += 1
 
-            print(
-                f"⚠️ Error tracking {symbol}: {e}",
-                flush=True
-            )
-
-            if failed_attempts >= MAX_FAILED_ATTEMPTS:
-                send_telegram_message(
-                    f"⚠️ تم إيقاف مراقبة {symbol} بسبب تعذر جلب البيانات لفترة طويلة."
+                print(
+                    f"⚠️ Error tracking {symbol}: {e}",
+                    flush=True
                 )
 
-                update_gist_state(
-                    symbol,
-                    {
-                        "status": "monitor_failed",
-                        "max_gain": max_gain_pct
-                    }
-                )
+                if failed_attempts >= MAX_FAILED_ATTEMPTS:
+                    send_telegram_message(
+                        f"⚠️ تم إيقاف مراقبة {symbol} بسبب تعذر جلب البيانات لفترة طويلة."
+                    )
 
-                break
+                    update_gist_state(
+                        symbol,
+                        {
+                            "status": "monitor_failed",
+                            "max_gain": max_gain_pct
+                        }
+                    )
+
+                    break
                 
             momentum_score = min(momentum_score, 100)
 
