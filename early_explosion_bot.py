@@ -72,7 +72,7 @@ SYMBOL_BLACKLIST = {
     "AMC", "CNK", "IMAX", "HITI",
 
     "GPRE", "SKLZ", "PGY", "JELD",
-    "TWO", "PGEN", "GENI", "TRC",
+    "TWO", "PGEN", "GENI", "TRC", "SVA",
 }
 BAD_NAME_KEYWORDS = [
     "etf", "fund", "trust", "warrant", "unit", "right", "preferred",
