@@ -98,6 +98,11 @@ reject_rvol = 0
 reject_resistance = 0
 reject_score = 0
 reject_price_change = 0
+reject_history = 0
+reject_price = 0
+reject_avg_vol = 0
+reject_dollar_volume = 0
+
 
 SCAN_INTERVAL_SEC  = 180
 TRACK_INTERVAL_SEC = 10
@@ -354,6 +359,10 @@ def check_explosion(api, symbol, asset_name):
     global reject_rvol
     global reject_resistance
     global reject_score
+    global reject_history
+    global reject_price
+    global reject_avg_vol
+    global reject_dollar_volume
     
     if symbol in SYMBOL_BLACKLIST:
         return None
@@ -421,15 +430,18 @@ def check_explosion(api, symbol, asset_name):
         )
         
         if len(previous_bars) < 20:
+            reject_history += 1
             return None
             
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
+            reject_price += 1
             return None
 
         avg_vol_20 = float(previous_bars["volume"].tail(20).mean())
         float_tier = get_float_tier(avg_vol_20)
 
         if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
+            reject_avg_vol += 1
             return None
 
         resistance_20 = float(previous_bars["high"].tail(20).max())
@@ -454,6 +466,7 @@ def check_explosion(api, symbol, asset_name):
         dollar_volume = today_vol * current_price
 
         if dollar_volume < MIN_DOLLAR_VOLUME:
+            reject_dollar_volume += 1
             return None
 
         global reject_resistance
@@ -559,6 +572,7 @@ def check_explosion(api, symbol, asset_name):
     except Exception as e:
         print(f"❌ check_explosion error {symbol}: {e}", flush=True)
         return None
+        
 def send_final_session_report_if_ready():
     global final_session_report_sent
 
@@ -849,6 +863,10 @@ def send_explosion_alert(res):
 
 def main_scanner():
     global total_scans_performed, last_scan_timestamp
+    global reject_history
+    global reject_price
+    global reject_avg_vol
+    global reject_dollar_volume
     global reject_price_change
     global reject_rvol
     global reject_resistance
@@ -988,6 +1006,10 @@ def main_scanner():
 
             print(
                 f"📊 Reject Stats | "
+                f"History={reject_history} | "
+                f"Price={reject_price} | "
+                f"AvgVol={reject_avg_vol} | "
+                f"DollarVol={reject_dollar_volume} | "
                 f"Change={reject_price_change} | "
                 f"RVOL={reject_rvol} | "
                 f"Resistance={reject_resistance} | "
@@ -995,6 +1017,10 @@ def main_scanner():
                 flush=True
             )
 
+            reject_history = 0
+            reject_price = 0
+            reject_avg_vol = 0
+            reject_dollar_volume = 0
             reject_price_change = 0
             reject_rvol = 0
             reject_resistance = 0
