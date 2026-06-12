@@ -183,7 +183,7 @@ def grade_entry(row):
         and close_position >= 0.65
         and acceptable_momentum
     ):
-        return "A+"
+        return "A"
 
     return "A"
 
