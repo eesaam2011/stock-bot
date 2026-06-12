@@ -35,6 +35,9 @@ ALPACA_BASE_URL     = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.m
 
 TELEGRAM_TOKEN      = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_INVESTMENT_CHAT_ID = os.getenv(
+    "TELEGRAM_INVESTMENT_CHAT_ID"
+)
 
 GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN")
 GIST_ID             = os.getenv("GIST_ID")
@@ -112,7 +115,7 @@ TRACK_INTERVAL_SEC = 10
 ALERT_COOLDOWN_SEC = 3600
 
 def send_telegram_message(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_TOKEN or not TELEGRAM_INVESTMENT_CHAT_ID:
         print(f"[Telegram-Sim] {text}", flush=True)
         return
 
@@ -122,7 +125,7 @@ def send_telegram_message(text):
         requests.post(
             url,
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
+                "chat_id": TELEGRAM_INVESTMENT_CHAT_ID,
                 "text": text,
                 "parse_mode": "Markdown"
             },
