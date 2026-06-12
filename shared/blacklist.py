@@ -15,7 +15,7 @@ SYMBOL_BLACKLIST = {
     "AMC", "CNK", "IMAX", "HITI",
 
     "GPRE", "SKLZ", "PGY", "JELD",
-    "TWO", "PGEN", "GENI", "TRC",
+    "TWO", "PGEN", "GENI", "TRC", "ELAN",
 }
 
 BAD_KEYWORDS = [
