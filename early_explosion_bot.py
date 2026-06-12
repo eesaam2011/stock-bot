@@ -40,6 +40,7 @@ TELEGRAM_INVESTMENT_CHAT_ID = os.getenv(
 )
 
 GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 GIST_ID             = os.getenv("GIST_ID")
 
 PRICE_MIN          = 0.3
@@ -89,6 +90,8 @@ BAD_NAME_KEYWORDS = [
 active_monitors = {}
 sent_alerts = {}
 radar_watchlist = {}
+float_cache = {}
+last_float_cache_date = None
 RADAR_TRIGGER_CHANGE_PCT = 4.0
 RADAR_MIN_DOLLAR_VOLUME = 100_000
 RADAR_EXPIRE_MINUTES = 30
@@ -113,6 +116,9 @@ reject_prev_bars = 0
 SCAN_INTERVAL_SEC  = 180
 TRACK_INTERVAL_SEC = 10
 ALERT_COOLDOWN_SEC = 3600
+FLOAT_CACHE_HOUR = 9
+FLOAT_CACHE_MINUTE = 0
+FINNHUB_DELAY_SEC = 1.05
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_INVESTMENT_CHAT_ID:
@@ -231,7 +237,117 @@ def calculate_atr_14(df):
     ).max(axis=1)
 
     return float(tr.tail(14).mean())
-    
+def fetch_finnhub_float(symbol):
+    if not FINNHUB_API_KEY:
+        return None
+
+    url = "https://finnhub.io/api/v1/stock/profile2"
+
+    try:
+        res = requests.get(
+            url,
+            params={
+                "symbol": symbol,
+                "token": FINNHUB_API_KEY
+            },
+            timeout=10
+        )
+
+        if res.status_code != 200:
+            return None
+
+        data = res.json()
+
+        floating_share = data.get("floatingShare")
+
+        if floating_share is None:
+            return None
+
+        real_float = float(floating_share) * 1_000_000
+
+        return real_float
+
+    except Exception:
+        return None
+
+def get_float_bonus(real_float):
+    if real_float is None:
+        return 0, "UNKNOWN_FLOAT"
+
+    if real_float <= 5_000_000:
+        return 20, "ULTRA_LOW_FLOAT"
+
+    if real_float <= 15_000_000:
+        return 15, "VERY_LOW_FLOAT"
+
+    if real_float <= 30_000_000:
+        return 10, "LOW_FLOAT"
+
+    if real_float <= 60_000_000:
+        return 5, "MEDIUM_FLOAT"
+
+    return 0, "HIGH_FLOAT"
+
+def should_build_float_cache():
+    global last_float_cache_date
+
+    now_ksa = datetime.now(saudi_tz)
+    today_key = now_ksa.strftime("%Y-%m-%d")
+
+    if last_float_cache_date == today_key:
+        return False
+
+    if now_ksa.hour == FLOAT_CACHE_HOUR and now_ksa.minute >= FLOAT_CACHE_MINUTE:
+        return True
+
+    return False
+
+def build_float_cache_for_assets(assets):
+    global last_float_cache_date
+
+    if not should_build_float_cache():
+        return
+
+    print("🧬 Starting Finnhub float cache build...", flush=True)
+
+    loaded = 0
+    skipped = 0
+
+    for asset in assets:
+        symbol = asset.symbol
+
+        if symbol in float_cache:
+            skipped += 1
+            continue
+
+        if symbol in SYMBOL_BLACKLIST:
+            skipped += 1
+            continue
+
+        asset_name = getattr(asset, "name", "") or ""
+
+        if any(kw in asset_name.lower() for kw in BAD_NAME_KEYWORDS):
+            skipped += 1
+            continue
+
+        real_float = fetch_finnhub_float(symbol)
+
+        if real_float is not None:
+            float_cache[symbol] = {
+                "float": real_float,
+                "updated": datetime.now(saudi_tz).strftime("%Y-%m-%d")
+            }
+            loaded += 1
+
+        time.sleep(FINNHUB_DELAY_SEC)
+
+    last_float_cache_date = datetime.now(saudi_tz).strftime("%Y-%m-%d")
+
+    print(
+        f"✅ Float cache build finished | Loaded={loaded} | Skipped={skipped} | Total={len(float_cache)}",
+        flush=True
+    )
+    وع
 def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
     
     now_ts = time.time()
@@ -469,7 +585,15 @@ def check_explosion(api, symbol, asset_name):
             return None
 
         avg_vol_20 = float(previous_bars["volume"].tail(20).mean())
-        float_tier = get_float_tier(avg_vol_20)
+
+        float_info = float_cache.get(symbol)
+        real_float = None
+
+        if float_info:
+            real_float = float_info.get("float")
+
+        float_bonus, float_tier = get_float_bonus(real_float)
+        
 
         if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
             reject_avg_vol += 1
@@ -529,6 +653,7 @@ def check_explosion(api, symbol, asset_name):
                 vol_acceleration = recent_vol / previous_vol
 
         score = 0
+        score += float_bonus
 
         if rvol >= 3.0:
             score += 30
@@ -590,6 +715,8 @@ def check_explosion(api, symbol, asset_name):
             "change_pct": round(price_change_pct, 2),
             "score": score,
             "float_tier": float_tier,
+            "real_float": round(real_float, 0) if real_float else None,
+            "float_bonus": float_bonus,
             "resistance_20": round(resistance_20, digits),
             "atr_14": round(atr_14, digits),
             "resistance_50": round(resistance_50, digits),
@@ -878,7 +1005,9 @@ def send_explosion_alert(res):
         f"ركائز القوة اللحظية:\n"
         f"🔥 *قوة الانفجار (Score):* `{res['score']}/100`\n"
         f"📈 *الـ RVOL الحالي:* `{res['rvol']}x`\n"
-        f"🧬 *تصنيف الفلوت التقريبي:* `{res['float_tier']}`\n"
+        f"🧬 *تصنيف الفلوت الحقيقي:* `{res['float_tier']}`\n"
+        f"🔢 *Real Float:* `{res.get('real_float')}`\n"
+        f"➕ *Float Bonus:* `+{res.get('float_bonus', 0)}`\n"
         f"🧱 *المقاومة 20 يوم:* `${res['resistance_20']}`\n"
         f"🧱 *المقاومة 50 يوم:* `${res['resistance_50']}`\n"
         f"📏 *ATR 14:* `${res['atr_14']}`\n"
@@ -942,6 +1071,7 @@ def main_scanner():
 
         try:
             assets = api.list_assets(status="active")
+            build_float_cache_for_assets(assets)
 
             tradable_assets = [
                 a
