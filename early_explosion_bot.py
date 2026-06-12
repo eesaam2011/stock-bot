@@ -350,6 +350,11 @@ def quick_radar_check(api, symbol):
         return False
         
 def check_explosion(api, symbol, asset_name):
+    global reject_price_change
+    global reject_rvol
+    global reject_resistance
+    global reject_score
+    
     if symbol in SYMBOL_BLACKLIST:
         return None
 
