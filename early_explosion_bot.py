@@ -350,11 +350,7 @@ def quick_radar_check(api, symbol):
             today_vol
         )
 
-    except Exception as e:
-        print(
-            f"⚠️ quick_radar_check error {symbol}: {e}",
-            flush=True
-        )
+    except Exception:
         return False
         
 def check_explosion(api, symbol, asset_name):
