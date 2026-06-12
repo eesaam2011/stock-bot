@@ -124,6 +124,8 @@ FLOAT_CACHE_HOUR = 9
 FLOAT_CACHE_MINUTE = 0
 FINNHUB_DELAY_SEC = 1.05
 
+FLOAT_CACHE_FILE = "float_cache.json"
+
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_INVESTMENT_CHAT_ID:
         print(f"[Telegram-Sim] {text}", flush=True)
@@ -293,6 +295,49 @@ def get_float_bonus(real_float):
 
     return 0, "HIGH_FLOAT"
 
+def load_float_cache():
+    global float_cache
+
+    try:
+        import json
+
+        if not os.path.exists(FLOAT_CACHE_FILE):
+            float_cache = {}
+            return
+
+        with open(FLOAT_CACHE_FILE, "r") as f:
+            float_cache = json.load(f)
+
+        print(
+            f"🧬 Float cache loaded | Total={len(float_cache)}",
+            flush=True
+        )
+
+    except Exception as e:
+        print(
+            f"⚠️ Float cache load error: {e}",
+            flush=True
+        )
+        float_cache = {}
+
+
+def save_float_cache():
+    try:
+        import json
+
+        with open(FLOAT_CACHE_FILE, "w") as f:
+            json.dump(
+                float_cache,
+                f,
+                indent=4
+            )
+
+    except Exception as e:
+        print(
+            f"⚠️ Float cache save error: {e}",
+            flush=True
+        )
+        
 def analyze_news_sentiment(text):
     text = (text or "").lower()
 
@@ -479,6 +524,8 @@ def build_float_cache_for_assets(assets):
             }
             loaded += 1
 
+        save_float_cache()
+
         time.sleep(FINNHUB_DELAY_SEC)
 
     last_float_cache_date = datetime.now(saudi_tz).strftime("%Y-%m-%d")
@@ -487,7 +534,7 @@ def build_float_cache_for_assets(assets):
         f"✅ Float cache build finished | Loaded={loaded} | Skipped={skipped} | Total={len(float_cache)}",
         flush=True
     )
-    وع
+    
 def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
     
     now_ts = time.time()
@@ -1346,7 +1393,6 @@ def main_scanner():
             reject_rvol = 0
             reject_resistance = 0
             reject_score = 0
-            reject_early = 0
             reject_blacklist = 0
             reject_bad_name = 0
             reject_bars = 0
@@ -1363,6 +1409,7 @@ def main_scanner():
         time.sleep(SCAN_INTERVAL_SEC)
 
 if __name__ == "__main__":
+    load_float_cache()
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
