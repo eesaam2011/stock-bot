@@ -91,6 +91,10 @@ active_monitors = {}
 sent_alerts = {}
 radar_watchlist = {}
 float_cache = {}
+news_cache = {}
+NEWS_CACHE_MINUTES = 10
+NEWS_LOOKBACK_HOURS = 12
+
 last_float_cache_date = None
 RADAR_TRIGGER_CHANGE_PCT = 4.0
 RADAR_MIN_DOLLAR_VOLUME = 100_000
@@ -237,6 +241,7 @@ def calculate_atr_14(df):
     ).max(axis=1)
 
     return float(tr.tail(14).mean())
+    
 def fetch_finnhub_float(symbol):
     if not FINNHUB_API_KEY:
         return None
@@ -288,6 +293,141 @@ def get_float_bonus(real_float):
 
     return 0, "HIGH_FLOAT"
 
+def analyze_news_sentiment(text):
+    text = (text or "").lower()
+
+    positive_keywords = [
+        "approval", "approved", "fda", "contract", "partnership",
+        "acquisition", "merger", "patent", "launch", "breakthrough",
+        "grant", "agreement", "collaboration", "positive", "expands"
+    ]
+
+    negative_keywords = [
+        "offering", "dilution", "bankruptcy", "delisting", "lawsuit",
+        "investigation", "fraud", "warning", "delay", "halt",
+        "chapter 11", "public offering", "registered direct"
+    ]
+
+    positive_hits = sum(1 for kw in positive_keywords if kw in text)
+    negative_hits = sum(1 for kw in negative_keywords if kw in text)
+
+    if negative_hits > positive_hits:
+        return -10, "NEGATIVE"
+
+    if positive_hits > negative_hits:
+        return 10, "POSITIVE"
+
+    return 0, "NEUTRAL"
+
+
+def get_recent_finnhub_news(symbol):
+    if not FINNHUB_API_KEY:
+        return None
+
+    now_ts = time.time()
+    cached = news_cache.get(symbol)
+
+    if cached and now_ts - cached.get("checked_at", 0) < NEWS_CACHE_MINUTES * 60:
+        return cached.get("news")
+
+    now_ksa = datetime.now(saudi_tz)
+    from_date = (now_ksa - timedelta(hours=NEWS_LOOKBACK_HOURS)).strftime("%Y-%m-%d")
+    to_date = now_ksa.strftime("%Y-%m-%d")
+
+    try:
+        res = requests.get(
+            "https://finnhub.io/api/v1/company-news",
+            params={
+                "symbol": symbol,
+                "from": from_date,
+                "to": to_date,
+                "token": FINNHUB_API_KEY
+            },
+            timeout=10
+        )
+
+        if res.status_code != 200:
+            return None
+
+        news_list = res.json()
+
+        if not news_list:
+            news_cache[symbol] = {
+                "checked_at": now_ts,
+                "news": None
+            }
+            return None
+
+        newest = sorted(
+            news_list,
+            key=lambda x: x.get("datetime", 0),
+            reverse=True
+        )[0]
+
+        news_time = newest.get("datetime", 0)
+        age_hours = (now_ts - news_time) / 3600
+
+        if age_hours > NEWS_LOOKBACK_HOURS:
+            return None
+
+        news_cache[symbol] = {
+            "checked_at": now_ts,
+            "news": newest
+        }
+
+        return newest
+
+    except Exception:
+        return None
+
+
+def send_news_after_alert(alert):
+    symbol = alert["symbol"]
+    base_score = alert.get("score", 0)
+
+    news = get_recent_finnhub_news(symbol)
+
+    if not news:
+        return
+
+    headline = news.get("headline", "")
+    summary = news.get("summary", "")
+    url = news.get("url", "")
+    source = news.get("source", "Unknown")
+    news_time = news.get("datetime", 0)
+
+    age_hours = round((time.time() - news_time) / 3600, 2)
+
+    text_for_sentiment = f"{headline} {summary}"
+    news_score, sentiment = analyze_news_sentiment(text_for_sentiment)
+
+    adjusted_score = base_score + news_score
+
+    if sentiment == "POSITIVE":
+        sentiment_label = "🟢 إيجابي"
+        score_label = f"➕ News Bonus: +{news_score}"
+    elif sentiment == "NEGATIVE":
+        sentiment_label = "🔴 سلبي"
+        score_label = f"➖ News Penalty: {news_score}"
+    else:
+        sentiment_label = "⚪ محايد"
+        score_label = "➕ News Bonus: 0"
+
+    msg = (
+        f"📰 *محفز إخباري بعد التنبيه*\n\n"
+        f"🎫 *السهم:* `{symbol}`\n"
+        f"🏷️ *المصدر:* `{source}`\n"
+        f"⏰ *عمر الخبر:* `{age_hours}` ساعة\n"
+        f"{sentiment_label}\n"
+        f"{score_label}\n\n"
+        f"📈 *Score قبل الخبر:* `{base_score}/100`\n"
+        f"🚀 *Score بعد الخبر:* `{adjusted_score}/100`\n\n"
+        f"📝 *العنوان:*\n{headline}\n\n"
+        f"🔗 {url}"
+    )
+
+    send_telegram_message(msg)
+    
 def should_build_float_cache():
     global last_float_cache_date
 
@@ -1125,6 +1265,16 @@ def main_scanner():
 
                     if result and result.get("explosion_candidate") is True:
                         send_explosion_alert(result)
+
+                        threading.Thread(
+                            target=send_news_after_alert,
+                            args=(result,),
+                            daemon=True
+                        ).start()
+
+                        sent_alerts[sym] = now_ts
+                        alerts_sent += 1
+                        
 
                         sent_alerts[sym] = now_ts
                         alerts_sent += 1
