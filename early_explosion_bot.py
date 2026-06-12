@@ -960,11 +960,6 @@ def main_scanner():
                     if sym not in radar_watchlist:
                         continue
 
-                    print(
-                        f"🎯 Entered Explosion Check: {sym}",
-                        flush=True
-                    )
-
                     result = check_explosion(api, sym, asset.name)
 
                     if result and result.get("explosion_candidate") is True:
