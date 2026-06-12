@@ -381,7 +381,6 @@ def check_explosion(api, symbol, asset_name):
             symbol,
             tradeapi.rest.TimeFrame.Day,
             limit=60,
-            adjustment="raw"
         ).df
 
         if bars is None:
