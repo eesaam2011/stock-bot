@@ -561,7 +561,9 @@ def check_explosion(api, symbol, asset_name):
         elif gain_trend > 0:
             score += 5
 
-        global reject_score
+        if gain_trend <= 0:
+            reject_score += 1
+            return None
 
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
             reject_score += 1
