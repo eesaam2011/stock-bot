@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import requests
 import alpaca_trade_api as tradeapi
@@ -377,10 +377,18 @@ def check_explosion(api, symbol, asset_name):
         return None
 
     try:
+        tz_ny = pytz.timezone("America/New_York")
+        end_dt = datetime.now(tz_ny)
+        start_dt = end_dt - timedelta(days=120)
+
         bars = api.get_bars(
             symbol,
             tradeapi.rest.TimeFrame.Day,
+            start=start_dt.isoformat(),
+            end=end_dt.isoformat(),
             limit=60,
+            adjustment="raw",
+            feed="iex"
         ).df
 
         if bars is None:
