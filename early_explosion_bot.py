@@ -436,13 +436,25 @@ def check_explosion(api, symbol, asset_name):
                 today_bar["volume"]
             )
 
-        prev_close = float(
-            previous_bars["close"].iloc[-1]
-        ) 
+        if snapshot and snapshot.prev_daily_bar:
+    prev_close = float(
+        snapshot.prev_daily_bar.close
+    )
+else:
+    if snapshot and snapshot.prev_daily_bar:
+            prev_close = float(
+                snapshot.prev_daily_bar.close
+            )
+        else:
+            prev_close = float(
+                previous_bars["close"].iloc[-1]
+            )
+
         price_change_pct = (
             (current_price - prev_close)
             / prev_close
         ) * 100
+
         if price_change_pct > 100:
             print(
                 f"DEBUG {symbol} | "
@@ -451,7 +463,7 @@ def check_explosion(api, symbol, asset_name):
                 f"change={price_change_pct:.2f}%",
                 flush=True
             )
-            
+
         radar_data = radar_watchlist.get(
             symbol,
             {}
