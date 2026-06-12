@@ -399,8 +399,16 @@ def check_explosion(api, symbol, asset_name):
                 flush=True
             )
 
-        if bars is None or bars.empty or len(bars) < 3:
+        if bars is None:
             reject_bars += 1
+            return None
+
+        if bars.empty:
+            reject_bars += 1
+            return None
+
+        if len(bars) < 3:
+            reject_prev_bars += 1
             return None
 
         bars = bars.sort_index()
