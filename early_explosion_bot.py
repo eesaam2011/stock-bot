@@ -437,11 +437,6 @@ def check_explosion(api, symbol, asset_name):
             )
 
         if snapshot and snapshot.prev_daily_bar:
-    prev_close = float(
-        snapshot.prev_daily_bar.close
-    )
-else:
-    if snapshot and snapshot.prev_daily_bar:
             prev_close = float(
                 snapshot.prev_daily_bar.close
             )
