@@ -450,17 +450,6 @@ def check_explosion(api, symbol, asset_name):
             / prev_close
         ) * 100
 
-        if price_change_pct > 100:
-            print(
-                f"DEBUG {symbol} | "
-                f"price={current_price:.4f} | "
-                f"prev_daily={snapshot.prev_daily_bar.close if snapshot and snapshot.prev_daily_bar else 'NONE'} | "
-                f"daily_open={snapshot.daily_bar.open if snapshot and snapshot.daily_bar else 'NONE'} | "
-                f"daily_close={snapshot.daily_bar.close if snapshot and snapshot.daily_bar else 'NONE'} | "
-                f"change={price_change_pct:.2f}%",
-                flush=True
-            )
-
         radar_data = radar_watchlist.get(
             symbol,
             {}
