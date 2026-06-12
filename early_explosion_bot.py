@@ -443,7 +443,15 @@ def check_explosion(api, symbol, asset_name):
             (current_price - prev_close)
             / prev_close
         ) * 100
-
+        if price_change_pct > 100:
+            print(
+                f"DEBUG {symbol} | "
+                f"price={current_price:.4f} | "
+                f"prev_close={prev_close:.4f} | "
+                f"change={price_change_pct:.2f}%",
+                flush=True
+            )
+            
         radar_data = radar_watchlist.get(
             symbol,
             {}
