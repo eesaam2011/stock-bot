@@ -388,6 +388,17 @@ def check_explosion(api, symbol, asset_name):
             adjustment="raw"
         ).df
 
+        print(
+            f"DEBUG {symbol} | bars_none={bars is None}",
+            flush=True
+        )
+
+        if bars is not None:
+            print(
+                f"DEBUG {symbol} | bars_len={len(bars)}",
+                flush=True
+            )
+
         if bars is None or bars.empty or len(bars) < 3:
             reject_bars += 1
             return None
