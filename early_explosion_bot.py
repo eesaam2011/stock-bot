@@ -102,7 +102,7 @@ reject_history = 0
 reject_price = 0
 reject_avg_vol = 0
 reject_dollar_volume = 0
-
+reject_early = 0
 
 SCAN_INTERVAL_SEC  = 180
 TRACK_INTERVAL_SEC = 10
@@ -363,12 +363,15 @@ def check_explosion(api, symbol, asset_name):
     global reject_price
     global reject_avg_vol
     global reject_dollar_volume
+    global reject_early
     
     if symbol in SYMBOL_BLACKLIST:
+        reject_early += 1
         return None
 
     name_lower = asset_name.lower()
     if any(kw in name_lower for kw in BAD_NAME_KEYWORDS):
+        reject_early += 1
         return None
 
     try:
@@ -380,6 +383,7 @@ def check_explosion(api, symbol, asset_name):
         ).df
 
         if bars is None or bars.empty or len(bars) < 3:
+            reject_early += 1
             return None
 
         bars = bars.sort_index()
@@ -388,6 +392,7 @@ def check_explosion(api, symbol, asset_name):
         previous_bars = bars.iloc[:-1]
 
         if len(previous_bars) < 2:
+            reject_early += 1
             return None
 
         trade = api.get_latest_trade(
@@ -863,6 +868,7 @@ def send_explosion_alert(res):
 
 def main_scanner():
     global total_scans_performed, last_scan_timestamp
+    global reject_early
     global reject_history
     global reject_price
     global reject_avg_vol
@@ -1011,6 +1017,7 @@ def main_scanner():
 
             print(
                 f"📊 Reject Stats | "
+                f"Early={reject_early} | "
                 f"History={reject_history} | "
                 f"Price={reject_price} | "
                 f"AvgVol={reject_avg_vol} | "
@@ -1030,6 +1037,7 @@ def main_scanner():
             reject_rvol = 0
             reject_resistance = 0
             reject_score = 0
+            reject_early = 0
 
             print(
                 f"✅ [انتهاء الفحص الشامل] التنبيهات النخبة المرسلة بهذه الدورة: {alerts_sent} | إجمالي الفحوصات: {total_scans_performed}",
