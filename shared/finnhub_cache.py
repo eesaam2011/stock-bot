@@ -17,7 +17,7 @@ float_cache_loaded = False
 
 FLOAT_CACHE_TTL = 60 * 60 * 24
 NEWS_CACHE_TTL = 60 * 60
-NEWS_LOOKBACK_HOURS = 24
+NEWS_LOOKBACK_HOURS = 12
 
 
 def load_float_cache_from_gist():
