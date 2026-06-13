@@ -138,7 +138,35 @@ def passes_protection_layer(row):
 
     return True, "Protection passed"
 
+def calculate_float_bonus(row):
+    float_shares = float(row.get("float_shares", 0) or 0)
 
+    if float_shares <= 0:
+        return 0, "غير متوفر"
+
+    if float_shares <= 10_000_000:
+        return 15, "Low Float قوي"
+
+    if float_shares <= 25_000_000:
+        return 10, "Low Float جيد"
+
+    if float_shares <= 50_000_000:
+        return 5, "Float متوسط"
+
+    return 0, "Float مرتفع"
+
+
+def calculate_news_bonus(row):
+    sentiment = str(row.get("news_sentiment", "") or "").lower()
+
+    if sentiment in ["bullish", "positive", "إيجابي"]:
+        return 10
+
+    if sentiment in ["bearish", "negative", "سلبي"]:
+        return -10
+
+    return 0
+    
 def grade_entry(row):
     real_breakout = bool(row.get("real_breakout", False))
     resistance_distance_pct = float(
@@ -149,6 +177,14 @@ def grade_entry(row):
     close_position = float(row.get("close_position", 0) or 0)
     move_3m = float(row.get("move_3m", 0) or 0)
     move_5m = float(row.get("move_5m", 0) or 0)
+    float_bonus, float_tier = calculate_float_bonus(row)
+    news_bonus = calculate_news_bonus(row)
+
+    row["float_bonus"] = float_bonus
+    row["float_tier"] = float_tier
+    row["news_bonus"] = news_bonus
+
+    quality_bonus = float_bonus + news_bonus
 
     fresh_breakout_zone = (
         resistance_distance_pct <= 0
@@ -168,7 +204,13 @@ def grade_entry(row):
     if (
         real_breakout
         and fresh_breakout_zone
-        and instant_rvol >= 4
+        and (
+            instant_rvol >= 4
+            or (
+                instant_rvol >= 3.5
+                and quality_bonus >= 15
+            )
+        )
         and volume_acceleration
         and close_position >= 0.75
         and strong_momentum
