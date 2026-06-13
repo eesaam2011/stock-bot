@@ -373,9 +373,14 @@ def get_float_bonus(real_float):
 
 def load_float_cache():
     global float_cache
+    global last_float_cache_date
 
     try:
         import json
+
+        today_key = datetime.now(
+            saudi_tz
+        ).strftime("%Y-%m-%d")
 
         if GITHUB_TOKEN and GIST_ID:
             url = f"https://api.github.com/gists/{GIST_ID}"
@@ -398,6 +403,13 @@ def load_float_cache():
                         files[FLOAT_CACHE_FILE]["content"]
                     )
 
+                    if any(
+                        data.get("updated") == today_key
+                        for data in float_cache.values()
+                        if isinstance(data, dict)
+                    ):
+                        last_float_cache_date = today_key
+
                     print(
                         f"🧬 Float cache loaded from Gist | Total={len(float_cache)}",
                         flush=True
@@ -410,6 +422,13 @@ def load_float_cache():
 
         with open(FLOAT_CACHE_FILE, "r") as f:
             float_cache = json.load(f)
+
+        if any(
+            data.get("updated") == today_key
+            for data in float_cache.values()
+            if isinstance(data, dict)
+        ):
+            last_float_cache_date = today_key
 
         print(
             f"🧬 Float cache loaded locally | Total={len(float_cache)}",
