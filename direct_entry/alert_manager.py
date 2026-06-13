@@ -122,6 +122,45 @@ def format_float_value(value):
         return f"{value / 1_000:.1f}K"
 
     return str(int(value))
+
+def build_float_block(alert):
+    float_value = alert.get("float_shares")
+    float_tier = alert.get("float_tier", "غير متوفر")
+    float_bonus = alert.get("float_bonus", 0)
+
+    if not float_value:
+        return (
+            f"الفلوت:\n"
+            f"غير متوفر\n\n"
+        )
+
+    return (
+        f"الفلوت:\n"
+        f"القيمة: {format_float_value(float_value)}\n"
+        f"التصنيف: {float_tier}\n"
+        f"بونص الفلوت: +{format_number(float_bonus, 0)}\n\n"
+    )
+
+
+def build_news_block(alert):
+    news_headline = alert.get("news_headline")
+    news_sentiment = alert.get("news_sentiment")
+    news_age = alert.get("news_age")
+    news_bonus = alert.get("news_bonus", 0)
+
+    if not news_headline:
+        return (
+            f"المحفز الإخباري:\n"
+            f"لا يوجد خبر حديث مؤثر\n\n"
+        )
+
+    return (
+        f"المحفز الإخباري:\n"
+        f"{news_headline}\n"
+        f"التصنيف: {news_sentiment or 'neutral'}\n"
+        f"عمر الخبر: {news_age or 'غير متوفر'}\n"
+        f"بونص الخبر: +{format_number(news_bonus, 0)}\n\n"
+    )
     
 def build_confirmed_breakout_message(alert):
     symbol = alert.get("symbol", "N/A")
@@ -177,6 +216,8 @@ def build_direct_entry_message(alert):
         f"RVOL: {format_number(alert.get('instant_rvol'), 2)}\n"
         f"حركة 3 دقائق: {format_number(alert.get('move_3m'), 2)}%\n"
         f"حركة 5 دقائق: {format_number(alert.get('move_5m'), 2)}%\n\n"
+        f"{build_float_block(alert)}"
+        f"{build_news_block(alert)}"
         f"المقاومة:\n"
         f"المستوى: {format_price(alert.get('nearest_resistance'))}\n"
         f"البعد عن المقاومة: "
