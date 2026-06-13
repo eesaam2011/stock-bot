@@ -12,6 +12,7 @@ from direct_entry.confirmed_breakout import (
     analyze_confirmed_breakout,
 )
 
+
 def passes_layer0(row):
     price = float(row.get("price", 0) or 0)
     day_volume = float(row.get("day_volume", 0) or 0)
@@ -138,6 +139,7 @@ def passes_protection_layer(row):
 
     return True, "Protection passed"
 
+
 def calculate_float_bonus(row):
     float_shares = float(row.get("float_shares", 0) or 0)
 
@@ -166,7 +168,20 @@ def calculate_news_bonus(row):
         return -10
 
     return 0
-    
+
+
+def apply_quality_bonus(row):
+    float_bonus, float_tier = calculate_float_bonus(row)
+    news_bonus = calculate_news_bonus(row)
+
+    row["float_bonus"] = float_bonus
+    row["float_tier"] = float_tier
+    row["news_bonus"] = news_bonus
+    row["quality_bonus"] = float_bonus + news_bonus
+
+    return row["quality_bonus"]
+
+
 def grade_entry(row):
     real_breakout = bool(row.get("real_breakout", False))
     resistance_distance_pct = float(
@@ -177,14 +192,9 @@ def grade_entry(row):
     close_position = float(row.get("close_position", 0) or 0)
     move_3m = float(row.get("move_3m", 0) or 0)
     move_5m = float(row.get("move_5m", 0) or 0)
-    float_bonus, float_tier = calculate_float_bonus(row)
-    news_bonus = calculate_news_bonus(row)
-
-    row["float_bonus"] = float_bonus
-    row["float_tier"] = float_tier
-    row["news_bonus"] = news_bonus
-
-    quality_bonus = float_bonus + news_bonus
+    quality_bonus = float(
+        row.get("quality_bonus", 0) or 0
+    )
 
     fresh_breakout_zone = (
         resistance_distance_pct <= 0
@@ -229,7 +239,10 @@ def grade_entry(row):
 
     return "A"
 
+
 def analyze_entry_opportunity(row):
+    apply_quality_bonus(row)
+
     checks = [
         passes_layer0,
         passes_liquidity_layer,
@@ -254,7 +267,8 @@ def analyze_entry_opportunity(row):
     )
 
     if confirmed_result:
-        return confirmed_result 
+        return confirmed_result
+
     grade = grade_entry(row)
 
     if grade == "A":
