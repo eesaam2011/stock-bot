@@ -209,6 +209,39 @@ def update_gist_state(symbol, data_dict):
                 f"❌ Gist Update Error: {e}",
                 flush=True
             )
+
+def update_gist_file(filename, content):
+    if not GITHUB_TOKEN or not GIST_ID:
+        return
+
+    with gist_lock:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+
+        try:
+            payload = {
+                "files": {
+                    filename: {
+                        "content": content
+                    }
+                }
+            }
+
+            requests.patch(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+
+        except Exception as e:
+            print(
+                f"❌ Gist File Update Error ({filename}): {e}",
+                flush=True
+            )
             
 def is_scan_time_allowed():
     tz_ny = pytz.timezone("America/New_York")
@@ -302,6 +335,33 @@ def load_float_cache():
     try:
         import json
 
+        if GITHUB_TOKEN and GIST_ID:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            headers = {
+                "Authorization": f"token {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+
+            res = requests.get(
+                url,
+                headers=headers,
+                timeout=10
+            )
+
+            if res.status_code == 200:
+                files = res.json().get("files", {})
+
+                if FLOAT_CACHE_FILE in files:
+                    float_cache = json.loads(
+                        files[FLOAT_CACHE_FILE]["content"]
+                    )
+
+                    print(
+                        f"🧬 Float cache loaded from Gist | Total={len(float_cache)}",
+                        flush=True
+                    )
+                    return
+
         if not os.path.exists(FLOAT_CACHE_FILE):
             float_cache = {}
             return
@@ -310,7 +370,7 @@ def load_float_cache():
             float_cache = json.load(f)
 
         print(
-            f"🧬 Float cache loaded | Total={len(float_cache)}",
+            f"🧬 Float cache loaded locally | Total={len(float_cache)}",
             flush=True
         )
 
@@ -321,17 +381,22 @@ def load_float_cache():
         )
         float_cache = {}
 
-
 def save_float_cache():
     try:
         import json
 
+        content = json.dumps(
+            float_cache,
+            indent=4
+        )
+
         with open(FLOAT_CACHE_FILE, "w") as f:
-            json.dump(
-                float_cache,
-                f,
-                indent=4
-            )
+            f.write(content)
+
+        update_gist_file(
+            FLOAT_CACHE_FILE,
+            content
+        )
 
     except Exception as e:
         print(
