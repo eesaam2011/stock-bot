@@ -5,32 +5,105 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GIST_ID = os.getenv("GIST_ID")
+
+FLOAT_CACHE_FILE = "float_cache.json"
 
 float_cache = {}
 news_cache = {}
+
+float_cache_loaded = False
 
 FLOAT_CACHE_TTL = 60 * 60 * 24
 NEWS_CACHE_TTL = 60 * 60
 NEWS_LOOKBACK_HOURS = 24
 
-def load_float_cache():
+
+def load_float_cache_from_gist():
+    global float_cache
     global float_cache_loaded
 
     if float_cache_loaded:
         return
 
-    try:
-        with open(FLOAT_CACHE_FILE, "r") as file:
-            data = json.load(file)
-
-        for symbol, value in data.items():
-            float_cache[str(symbol).upper()] = value
-
+    if not GIST_ID:
+        print(
+            "Float cache skipped: missing GIST_ID",
+            flush=True,
+        )
         float_cache_loaded = True
+        return
+
+    url = f"https://api.github.com/gists/{GIST_ID}"
+
+    headers = {
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            print(
+                f"Float cache gist error: {response.status_code}",
+                flush=True,
+            )
+            float_cache_loaded = True
+            return
+
+        files = response.json().get("files", {})
+
+        if FLOAT_CACHE_FILE not in files:
+            print(
+                f"Float cache file not found in Gist: {FLOAT_CACHE_FILE}",
+                flush=True,
+            )
+            float_cache_loaded = True
+            return
+
+        content = files[FLOAT_CACHE_FILE].get(
+            "content",
+            "{}",
+        )
+
+        data = response.json()
+
+        import json
+
+        raw_cache = json.loads(content)
+
+        cleaned_cache = {}
+
+        for symbol, value in raw_cache.items():
+            symbol = str(symbol).upper().strip()
+
+            if isinstance(value, dict):
+                real_float = value.get("float")
+            else:
+                real_float = value
+
+            if real_float:
+                cleaned_cache[symbol] = real_float
+
+        float_cache = cleaned_cache
+        float_cache_loaded = True
+
+        print(
+            f"🧬 Float cache loaded from Gist | Total={len(float_cache)}",
+            flush=True,
+        )
 
     except Exception as error:
         print(
-            f"Float cache load skipped: {error}",
+            f"Float cache gist load error: {error}",
             flush=True,
         )
         float_cache_loaded = True
@@ -42,7 +115,7 @@ def get_float_data(symbol):
     if not symbol:
         return None
 
-    load_float_cache()
+    load_float_cache_from_gist()
 
     return float_cache.get(symbol)
 
