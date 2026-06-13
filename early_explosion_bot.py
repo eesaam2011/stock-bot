@@ -1354,6 +1354,24 @@ def main_scanner():
     )
 
     while True:
+        try:
+            if should_build_float_cache():
+                assets = api.list_assets(
+                    status="active"
+                )
+
+                threading.Thread(
+                    target=build_float_cache_for_assets,
+                    args=(assets,),
+                    daemon=True
+                ).start()
+
+        except Exception as e:
+            print(
+                f"⚠️ Float cache scheduler error: {e}",
+                flush=True
+            )
+            
         if not is_scan_time_allowed():
             print("⏸️ Scan skipped: outside US premarket/market hours. Sleeping...", flush=True)
             time.sleep(60)
@@ -1377,7 +1395,6 @@ def main_scanner():
 
         try:
             assets = api.list_assets(status="active")
-            build_float_cache_for_assets(assets)
 
             tradable_assets = [
                 a
