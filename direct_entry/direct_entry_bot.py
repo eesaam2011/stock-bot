@@ -19,6 +19,7 @@ from direct_entry.alert_tracker import (
     update_alert_tracking,
 )
 from paper_trading.paper_trade_queue import queue_paper_trade
+from shared.finnhub_cache import enrich_with_finnhub_data
 
 def get_hunter_symbols():
     candidates = get_all_candidates()
@@ -176,6 +177,10 @@ def run_direct_entry_scan():
 
         if entry_data is None:
             continue
+
+        entry_data = enrich_with_finnhub_data(
+            entry_data
+        )
 
         result = analyze_entry_opportunity(
             entry_data
