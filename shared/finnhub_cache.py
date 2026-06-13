@@ -13,52 +13,38 @@ FLOAT_CACHE_TTL = 60 * 60 * 24
 NEWS_CACHE_TTL = 60 * 60
 NEWS_LOOKBACK_HOURS = 24
 
+def load_float_cache():
+    global float_cache_loaded
 
-def get_float_data(symbol):
-    if not FINNHUB_API_KEY:
-        return None
-
-    cached = float_cache.get(symbol)
-
-    if cached:
-        ts, data = cached
-
-        if time.time() - ts < FLOAT_CACHE_TTL:
-            return data
+    if float_cache_loaded:
+        return
 
     try:
-        response = requests.get(
-            "https://finnhub.io/api/v1/stock/profile2",
-            params={
-                "symbol": symbol,
-                "token": FINNHUB_API_KEY,
-            },
-            timeout=10,
-        )
+        with open(FLOAT_CACHE_FILE, "r") as file:
+            data = json.load(file)
 
-        if response.status_code != 200:
-            return None
+        for symbol, value in data.items():
+            float_cache[str(symbol).upper()] = value
 
-        data = response.json() or {}
-
-        float_shares = (
-            data.get("floatingShare")
-            or 0
-        )
-
-        float_cache[symbol] = (
-            time.time(),
-            float_shares,
-        )
-
-        return float_shares
+        float_cache_loaded = True
 
     except Exception as error:
         print(
-            f"Finnhub float error {symbol}: {error}",
+            f"Float cache load skipped: {error}",
             flush=True,
         )
+        float_cache_loaded = True
+
+
+def get_float_data(symbol):
+    symbol = str(symbol or "").upper().strip()
+
+    if not symbol:
         return None
+
+    load_float_cache()
+
+    return float_cache.get(symbol)
 
 
 def detect_news_sentiment(headline):
