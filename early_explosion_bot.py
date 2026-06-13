@@ -277,6 +277,48 @@ def calculate_atr_14(df):
     ).max(axis=1)
 
     return float(tr.tail(14).mean())
+
+def calculate_obv_bonus(bars_1m):
+    if bars_1m is None:
+        return 0, "UNKNOWN_OBV"
+
+    if bars_1m.empty:
+        return 0, "UNKNOWN_OBV"
+
+    if len(bars_1m) < 10:
+        return 0, "UNKNOWN_OBV"
+
+    bars_1m = bars_1m.sort_index()
+
+    obv = 0
+    obv_history = []
+
+    closes = bars_1m["close"].tolist()
+    volumes = bars_1m["volume"].tolist()
+
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            obv += volumes[i]
+        elif closes[i] < closes[i - 1]:
+            obv -= volumes[i]
+
+        obv_history.append(obv)
+
+    if len(obv_history) < 5:
+        return 0, "UNKNOWN_OBV"
+
+    recent_obv = obv_history[-1]
+    older_obv = obv_history[-5]
+
+    obv_growth = recent_obv - older_obv
+
+    if obv_growth > 0 and recent_obv > 0:
+        return 10, "STRONG_OBV"
+
+    if obv_growth > 0:
+        return 5, "POSITIVE_OBV"
+
+    return 0, "WEAK_OBV"
     
 def fetch_finnhub_float(symbol):
     if not FINNHUB_API_KEY:
@@ -905,8 +947,14 @@ def check_explosion(api, symbol, asset_name):
             if previous_vol > 0:
                 vol_acceleration = recent_vol / previous_vol
 
+        obv_bonus, obv_tier = calculate_obv_bonus(
+            bars_1m
+        )
+
         score = 0
+
         score += float_bonus
+        score += obv_bonus
 
         if rvol >= 3.0:
             score += 30
@@ -953,6 +1001,7 @@ def check_explosion(api, symbol, asset_name):
             reject_score += 1
             return None
 
+
         digits = 4 if current_price < 1 else 2
 
         stop_loss = round(current_price * 0.93, digits)
@@ -970,6 +1019,8 @@ def check_explosion(api, symbol, asset_name):
             "float_tier": float_tier,
             "real_float": round(real_float, 0) if real_float else None,
             "float_bonus": float_bonus,
+            "obv_bonus": obv_bonus,
+            "obv_tier": obv_tier,
             "resistance_20": round(resistance_20, digits),
             "atr_14": round(atr_14, digits),
             "resistance_50": round(resistance_50, digits),
@@ -1261,6 +1312,8 @@ def send_explosion_alert(res):
         f"🧬 *تصنيف الفلوت الحقيقي:* `{res['float_tier']}`\n"
         f"🔢 *Real Float:* `{res.get('real_float')}`\n"
         f"➕ *Float Bonus:* `+{res.get('float_bonus', 0)}`\n"
+        f"📊 *OBV Status:* `{res.get('obv_tier')}`\n"
+        f"➕ *OBV Bonus:* `+{res.get('obv_bonus', 0)}`\n"
         f"🧱 *المقاومة 20 يوم:* `${res['resistance_20']}`\n"
         f"🧱 *المقاومة 50 يوم:* `${res['resistance_50']}`\n"
         f"📏 *ATR 14:* `${res['atr_14']}`\n"
