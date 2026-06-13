@@ -105,6 +105,24 @@ def format_price(value):
         return f"{value:.3f}"
 
     return f"{value:.2f}"
+
+def format_float_value(value):
+    try:
+        value = float(value)
+    except Exception:
+        return "غير متوفر"
+
+    if value <= 0:
+        return "غير متوفر"
+
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+
+    return str(int(value))
+    
 def build_confirmed_breakout_message(alert):
     symbol = alert.get("symbol", "N/A")
 
