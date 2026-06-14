@@ -784,8 +784,11 @@ def main_loop():
                     float_cache = new_float_cache
                     last_float_load_date = now_saudi().date().isoformat()
 
+            now_ts = time.time()
+
             if now_ts - last_universe_build_ts >= UNIVERSE_REBUILD_INTERVAL or not current_universe:
                 current_universe = build_universe()
+                
                 runtime_stats["universe_count"] = len(current_universe)
                 runtime_stats["last_universe_build"] = iso_now()
                 state["last_universe_build"] = iso_now()
