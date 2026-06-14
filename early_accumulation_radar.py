@@ -276,11 +276,11 @@ def has_bad_name(asset: Any) -> bool:
     return any(keyword in text for keyword in BAD_NAME_KEYWORDS)
 
 def build_universe() -> List[str]:
-    print("[UNIVERSE] Building universe from Alpaca assets...")
+    print("[UNIVERSE] Building universe from Alpaca assets...", flush=True)
     try:
         assets = api.list_assets(status="active")
     except Exception as e:
-        print(f"[UNIVERSE] Failed list_assets: {e}")
+        print(f"[UNIVERSE] Failed list_assets: {e}", flush=True)
         return []
     symbols = []
     for asset in assets:
@@ -296,7 +296,7 @@ def build_universe() -> List[str]:
         except Exception:
             continue
     symbols = sorted(set(symbols))
-    print(f"[UNIVERSE] Clean universe: {len(symbols)} symbols")
+    print(f"[UNIVERSE] Clean universe: {len(symbols)} symbols", flush=True)
     return symbols
 
 def get_snapshots(symbols: List[str]) -> Dict[str, Any]:
@@ -308,7 +308,7 @@ def get_snapshots(symbols: List[str]) -> Dict[str, Any]:
             if data:
                 snapshots.update(data)
         except Exception as e:
-            print(f"[SNAPSHOTS] Batch failed: {e}")
+            print(f"[SNAPSHOTS] Batch failed: {e}", flush=True)
         time.sleep(BATCH_SLEEP_SEC)
     return snapshots
 
@@ -349,22 +349,44 @@ def get_day_change_pct(snapshot: Any, price: float) -> float:
         return 0.0
     return ((price - prev_close) / prev_close) * 100.0
 
-def get_1m_bars(symbol: str, limit: int = BARS_LIMIT) -> pd.DataFrame:
-    try:
-        bars = api.get_bars(symbol, tradeapi.TimeFrame.Minute, limit=limit, adjustment="raw").df
-        if bars is None or bars.empty:
-            return pd.DataFrame()
-        if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.xs(symbol)
-        bars = bars.reset_index()
-        needed = {"open", "high", "low", "close", "volume"}
-        if not needed.issubset(set(bars.columns)):
-            return pd.DataFrame()
-        return bars.sort_values("timestamp").reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]].copy()
-    except Exception as e:
-        print(f"[BARS] {symbol} failed: {e}")
-        return pd.DataFrame()
-    
+def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, pd.DataFrame]:
+    results = {}
+    if not symbols:
+        return results
+
+    for i in range(0, len(symbols), MAX_SYMBOLS_PER_BATCH):
+        batch = symbols[i:i + MAX_SYMBOLS_PER_BATCH]
+        try:
+            bars_df = api.get_bars(batch, tradeapi.TimeFrame.Minute, limit=limit, adjustment="raw").df
+            if bars_df is None or bars_df.empty:
+                continue
+
+            if isinstance(bars_df.index, pd.MultiIndex):
+                available_symbols = bars_df.index.get_level_values(0).unique()
+                for sym in available_symbols:
+                    df = bars_df.xs(sym).reset_index()
+                    needed = {"open", "high", "low", "close", "volume"}
+                    if needed.issubset(set(df.columns)):
+                        if "timestamp" not in df.columns and "time" in df.columns:
+                            df.rename(columns={"time": "timestamp"}, inplace=True)
+                        if "timestamp" in df.columns:
+                            results[sym] = df.sort_values("timestamp").reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+            else:
+                if len(batch) == 1:
+                    sym = batch[0]
+                    df = bars_df.reset_index()
+                    needed = {"open", "high", "low", "close", "volume"}
+                    if needed.issubset(set(df.columns)):
+                        if "timestamp" not in df.columns and "time" in df.columns:
+                            df.rename(columns={"time": "timestamp"}, inplace=True)
+                        if "timestamp" in df.columns:
+                            results[sym] = df.sort_values("timestamp").reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+        except Exception as e:
+            print(f"[BARS] Batch failed for {len(batch)} symbols: {e}", flush=True)
+        time.sleep(BATCH_SLEEP_SEC)
+
+    return results
+
 def calculate_obv(df: pd.DataFrame) -> pd.Series:
     close = df["close"].astype(float)
     volume = df["volume"].astype(float)
@@ -508,7 +530,8 @@ def resistance_score(price: float, resistance: Optional[float]) -> int:
         return 1
     return 0
 
-def analyze_symbol(symbol: str, snapshot: Any, float_cache: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+# 🌟 تم إضافة متغير early_mode لتمكين تعطيل فلتر صعود اليوم أثناء المراقبة
+def analyze_symbol(symbol: str, snapshot: Any, df: pd.DataFrame, float_cache: Dict[str, Any], early_mode: bool = True) -> Optional[Dict[str, Any]]:
     price = get_latest_price_from_snapshot(snapshot)
     if not price or price < PRICE_MIN or price > PRICE_MAX:
         return None
@@ -517,17 +540,17 @@ def analyze_symbol(symbol: str, snapshot: Any, float_cache: Dict[str, Any]) -> O
     if dollar_volume < MIN_DOLLAR_VOLUME:
         return None
     day_change_pct = get_day_change_pct(snapshot, price)
-    if day_change_pct > MAX_DAY_GAIN_FOR_EARLY:
+    
+    # 🌟 تطبيق الفلتر فقط إذا كان الفحص تنبيهاً مبكراً (التعديل الخاص بك)
+    if early_mode and day_change_pct > MAX_DAY_GAIN_FOR_EARLY:
         return None
-
-    df = get_1m_bars(symbol, BARS_LIMIT)
 
     if df.empty or len(df) < OBV_LOOKBACK:
         return None
         
     rvol = calculate_rvol(df)
     
-    if rvol < MIN_RVOL_EARLY:
+    if early_mode and rvol < MIN_RVOL_EARLY:
         return None
     resistance = resistance_body_level(df, RESISTANCE_BODY_LOOKBACK)
     metrics = obv_metrics(df)
@@ -674,21 +697,29 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
         return
     symbols = list(watchlist.keys())
     snapshots = get_snapshots(symbols)
+    
+    batched_bars = get_1m_bars_batch(symbols, BARS_LIMIT)
+    
     to_remove = []
     for symbol in symbols:
         watch = watchlist.get(symbol, {})
         snapshot = snapshots.get(symbol)
-        df = get_1m_bars(symbol, BARS_LIMIT)
-        current_data = analyze_symbol(symbol, snapshot, float_cache) if snapshot is not None else None
+        df = batched_bars.get(symbol, pd.DataFrame())
+        
+        # 🌟 تم تعطيل الفلتر هنا بتمرير early_mode=False (التعديل الخاص بك)
+        current_data = analyze_symbol(symbol, snapshot, df, float_cache, early_mode=False) if snapshot is not None else None
         current_price = safe_float(watch.get("early_price"), 0)
+        
         if current_data:
             current_price = safe_float(current_data.get("price"), 0)
         elif snapshot is not None:
             current_price = safe_float(get_latest_price_from_snapshot(snapshot), current_price)
+            
         if current_data and current_data.get("score", 0) > watch.get("best_score", 0):
             watch["best_score"] = current_data["score"]
             watch["last_score"] = current_data["score"]
             watch["snapshot"] = current_data
+            
         if current_data and not df.empty and check_entry_conditions(current_data, df):
             if not state["sent_entry_alerts"].get(symbol):
                 if send_telegram_message(build_entry_alert_message(current_data, watch)):
@@ -696,6 +727,7 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
                     runtime_stats["entry_alerts_sent"] += 1
             to_remove.append(symbol)
             continue
+            
         reason = failure_reason(current_data, df, watch)
         if reason:
             if not state["sent_failure_alerts"].get(symbol):
@@ -704,7 +736,9 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
                     runtime_stats["failure_alerts_sent"] += 1
             to_remove.append(symbol)
             continue
+            
         watchlist[symbol] = watch
+        
     for symbol in to_remove:
         watchlist.pop(symbol, None)
     runtime_stats["watchlist_count"] = len(watchlist)
@@ -713,7 +747,8 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
     if not universe:
         return
     snapshots = get_snapshots(universe)
-    candidates = []
+    
+    candidates_symbols = []
     for symbol, snapshot in snapshots.items():
         if symbol in watchlist:
             continue
@@ -721,9 +756,30 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
             continue
         if already_sent_recently(state["sent_early_alerts"], symbol, 12):
             continue
-        data = analyze_symbol(symbol, snapshot, float_cache_data)
+            
+        price = get_latest_price_from_snapshot(snapshot)
+        if not price or price < PRICE_MIN or price > PRICE_MAX:
+            continue
+        daily_volume = get_daily_volume_from_snapshot(snapshot)
+        if price * daily_volume < MIN_DOLLAR_VOLUME:
+            continue
+        if get_day_change_pct(snapshot, price) > MAX_DAY_GAIN_FOR_EARLY:
+            continue
+            
+        candidates_symbols.append(symbol)
+
+    batched_bars = get_1m_bars_batch(candidates_symbols, BARS_LIMIT)
+
+    candidates = []
+    for symbol in candidates_symbols:
+        snapshot = snapshots.get(symbol)
+        df = batched_bars.get(symbol, pd.DataFrame())
+        
+        # 🌟 تم تمكين الفلتر هنا صراحة بتمرير early_mode=True (التعديل الخاص بك)
+        data = analyze_symbol(symbol, snapshot, df, float_cache_data, early_mode=True)
         if data and data["score"] >= EARLY_ALERT_MIN_SCORE:
             candidates.append(data)
+            
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
     for data in candidates:
         symbol = data["symbol"]
@@ -731,6 +787,7 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
             state["sent_early_alerts"][symbol] = {"time": iso_now(), "price": data["price"], "score": data["score"]}
             add_to_watchlist(watchlist, data)
             runtime_stats["early_alerts_sent"] += 1
+            
     runtime_stats["watchlist_count"] = len(watchlist)
 
 current_universe: List[str] = []
@@ -738,35 +795,26 @@ float_cache: Dict[str, Any] = {}
 
 def should_load_float_today(last_float_load_date: Optional[str]) -> bool:
     now_sa = now_saudi()
-
     if now_sa.hour < 11:
         return False
-
     today = now_sa.date().isoformat()
-
     return last_float_load_date != today
 
 def cleanup_old_alerts(state: Dict[str, Any], max_age_hours: int = 48) -> None:
     cutoff = now_saudi() - timedelta(hours=max_age_hours)
-
     for key in ("sent_early_alerts", "sent_entry_alerts", "sent_failure_alerts"):
         items = state.get(key, {})
-
         cleaned = {}
-
         for symbol, item in items.items():
             dt = parse_iso(item.get("time") if isinstance(item, dict) else item)
-
             if dt and dt >= cutoff:
                 cleaned[symbol] = item
-
         state[key] = cleaned
         
 def main_loop():
     global current_universe, float_cache
 
     runtime_stats["started_at"] = iso_now()
-
     state = load_state()
     watchlist = load_watchlist()
 
@@ -787,9 +835,7 @@ def main_loop():
 
             if should_load_float_today(last_float_load_date):
                 print("[FLOAT] Loading daily float cache from Gist...", flush=True)
-
                 new_float_cache = load_float_cache_from_gist()
-
                 if new_float_cache:
                     float_cache = new_float_cache
                     last_float_load_date = now_saudi().date().isoformat()
@@ -806,7 +852,6 @@ def main_loop():
 
             if now_ts - last_universe_build_ts >= UNIVERSE_REBUILD_INTERVAL or not current_universe:
                 current_universe = build_universe()
-                
                 runtime_stats["universe_count"] = len(current_universe)
                 runtime_stats["last_universe_build"] = iso_now()
                 state["last_universe_build"] = iso_now()
@@ -840,4 +885,3 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
-    
