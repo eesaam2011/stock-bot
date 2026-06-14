@@ -59,7 +59,19 @@ RECENT_LOW_LOOKBACK = 20
 MAX_SYMBOLS_PER_BATCH = 200
 BATCH_SLEEP_SEC = 0.8
 
+runtime_stats = {
+    "started_at": None,
+    "last_universe_build": None,
+    "last_accumulation_scan": None,
+    "last_watchlist_monitor": None,
+    "universe_count": 0,
+    "watchlist_count": 0,
+    "early_alerts_sent": 0,
+    "entry_alerts_sent": 0,
+    "failure_alerts_sent": 0,
+}
 BAD_SUFFIXES = ("W", "U", "R", "P", "Q", "Z")
+
 BAD_NAME_KEYWORDS = [
     "ETF", "ETN", "FUND", "TRUST", "INDEX",
     "WARRANT", "WARRANTS", "UNIT", "UNITS", "RIGHT", "RIGHTS",
