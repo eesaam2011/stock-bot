@@ -776,6 +776,7 @@ def main_loop():
     last_scan_ts = 0.0
     last_monitor_ts = 0.0
     last_float_load_date = None
+    last_cleanup_ts = 0.0
 
     while True:
         try:
@@ -799,7 +800,9 @@ def main_loop():
                 continue
 
             now_ts = time.time()
-            cleanup_old_alerts(state)
+            if now_ts - last_cleanup_ts >= 60 * 60:
+                cleanup_old_alerts(state)
+                last_cleanup_ts = now_ts
 
             if now_ts - last_universe_build_ts >= UNIVERSE_REBUILD_INTERVAL or not current_universe:
                 current_universe = build_universe()
