@@ -365,6 +365,56 @@ def get_1m_bars(symbol: str, limit: int = BARS_LIMIT) -> pd.DataFrame:
         print(f"[BARS] {symbol} failed: {e}")
         return pd.DataFrame()
 
+def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, pd.DataFrame]:
+    result = {}
+
+    if not symbols:
+        return result
+
+    for i in range(0, len(symbols), MAX_SYMBOLS_PER_BATCH):
+        batch = symbols[i:i + MAX_SYMBOLS_PER_BATCH]
+
+        try:
+            bars = api.get_bars(batch, tradeapi.TimeFrame.Minute, limit=limit, adjustment="raw").df
+
+            if bars is None or bars.empty:
+                continue
+
+            if isinstance(bars.index, pd.MultiIndex):
+                for symbol in batch:
+                    try:
+                        df = bars.xs(symbol).reset_index()
+                        needed = {"open", "high", "low", "close", "volume"}
+
+                        if needed.issubset(set(df.columns)):
+                            result[symbol] = (
+                                df.sort_values("timestamp")
+                                .reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]]
+                                .copy()
+                            )
+
+                    except Exception:
+                        continue
+
+            else:
+                # fallback نادر إذا رجع رمز واحد فقط
+                df = bars.reset_index()
+                needed = {"open", "high", "low", "close", "volume"}
+
+                if needed.issubset(set(df.columns)) and len(batch) == 1:
+                    result[batch[0]] = (
+                        df.sort_values("timestamp")
+                        .reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]]
+                        .copy()
+                    )
+
+        except Exception as e:
+            print(f"[BARS BATCH] Batch failed: {e}", flush=True)
+
+        time.sleep(BATCH_SLEEP_SEC)
+
+    return result
+    
 def calculate_obv(df: pd.DataFrame) -> pd.Series:
     close = df["close"].astype(float)
     volume = df["volume"].astype(float)
@@ -508,8 +558,7 @@ def resistance_score(price: float, resistance: Optional[float]) -> int:
         return 1
     return 0
 
-def analyze_symbol(symbol: str, snapshot: Any, float_cache: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    price = get_latest_price_from_snapshot(snapshot)
+def analyze_symbol(symbol: str, snapshot: Any, float_cache: Dict[str, Any], df: pd.DataFrame) -> Optional[Dict[str, Any]]:    price = get_latest_price_from_snapshot(snapshot)
     if not price or price < PRICE_MIN or price > PRICE_MAX:
         return None
     daily_volume = get_daily_volume_from_snapshot(snapshot)
@@ -519,9 +568,9 @@ def analyze_symbol(symbol: str, snapshot: Any, float_cache: Dict[str, Any]) -> O
     day_change_pct = get_day_change_pct(snapshot, price)
     if day_change_pct > MAX_DAY_GAIN_FOR_EARLY:
         return None
-    df = get_1m_bars(symbol, BARS_LIMIT)
-    if df.empty or len(df) < OBV_LOOKBACK:
+    if df is None or df.empty or len(df) < OBV_LOOKBACK:
         return None
+        
     rvol = calculate_rvol(df)
     if rvol < MIN_RVOL_EARLY:
         return None
