@@ -744,6 +744,16 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
 current_universe: List[str] = []
 float_cache: Dict[str, Any] = {}
 
+def should_load_float_today(last_float_load_date: Optional[str]) -> bool:
+    now_sa = now_saudi()
+
+    if now_sa.hour < 11:
+        return False
+
+    today = now_sa.date().isoformat()
+
+    return last_float_load_date != today
+    
 def main_loop():
     global current_universe, float_cache
 
@@ -757,7 +767,7 @@ def main_loop():
     last_universe_build_ts = 0.0
     last_scan_ts = 0.0
     last_monitor_ts = 0.0
-    last_float_reload_ts = 0.0
+    last_float_load_date = None
 
     while True:
         try:
@@ -766,19 +776,14 @@ def main_loop():
                 time.sleep(300)
                 continue
 
-            if not is_work_time():
-                print("[TIME] Outside work window. Sleeping...", flush=True)
-                time.sleep(300)
-                continue
-
-            if not float_cache or time.time() - last_float_reload_ts >= FLOAT_RELOAD_INTERVAL:
-                print("[FLOAT] Loading float cache from Gist...", flush=True)
+            if should_load_float_today(last_float_load_date):
+                print("[FLOAT] Loading daily float cache from Gist...", flush=True)
 
                 new_float_cache = load_float_cache_from_gist()
 
                 if new_float_cache:
                     float_cache = new_float_cache
-                    last_float_reload_ts = time.time()
+                    last_float_load_date = now_saudi().date().isoformat()
 
             if now_ts - last_universe_build_ts >= UNIVERSE_REBUILD_INTERVAL or not current_universe:
                 current_universe = build_universe()
