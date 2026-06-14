@@ -2,7 +2,6 @@ import os
 import json
 import time
 import math
-import threading
 from datetime import datetime, timedelta, time as dtime
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -10,7 +9,6 @@ import requests
 import pandas as pd
 import numpy as np
 import pytz
-from flask import Flask
 import alpaca_trade_api as tradeapi
 
 # ==============================================================================
@@ -77,39 +75,6 @@ SYMBOL_BLACKLIST = {
     "CGC", "TLRY", "ACB", "SNDL", "CRON",
     "NCLH", "CCL", "RCL", "AMC", "CNK", "IMAX", "HITI",
 }
-
-app = Flask(__name__)
-runtime_stats = {
-    "started_at": None,
-    "last_universe_build": None,
-    "last_accumulation_scan": None,
-    "last_watchlist_monitor": None,
-    "universe_count": 0,
-    "watchlist_count": 0,
-    "early_alerts_sent": 0,
-    "entry_alerts_sent": 0,
-    "failure_alerts_sent": 0,
-}
-
-@app.route("/")
-def home():
-    return (
-        f"{BOT_NAME} Running ✅<br>"
-        f"Started: {runtime_stats.get('started_at')}<br>"
-        f"Universe Count: {runtime_stats.get('universe_count')}<br>"
-        f"Watchlist Count: {runtime_stats.get('watchlist_count')}<br>"
-        f"Last Universe Build: {runtime_stats.get('last_universe_build')}<br>"
-        f"Last Accumulation Scan: {runtime_stats.get('last_accumulation_scan')}<br>"
-        f"Last Watchlist Monitor: {runtime_stats.get('last_watchlist_monitor')}<br>"
-        f"Early Alerts: {runtime_stats.get('early_alerts_sent')}<br>"
-        f"Entry Alerts: {runtime_stats.get('entry_alerts_sent')}<br>"
-        f"Failure Alerts: {runtime_stats.get('failure_alerts_sent')}",
-        200,
-    )
-
-def run_flask():
-    port = int(os.getenv("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port, use_reloader=False, threaded=True)
 
 def now_saudi() -> datetime:
     return datetime.now(SAUDI_TZ)
@@ -818,5 +783,4 @@ def main_loop():
             time.sleep(30)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
     main_loop()
