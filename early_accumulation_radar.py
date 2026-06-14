@@ -525,9 +525,6 @@ def analyze_symbol(symbol: str, snapshot: Any, float_cache: Dict[str, Any]) -> O
     if df.empty or len(df) < OBV_LOOKBACK:
         return None
         
-    if df is None or df.empty or len(df) < OBV_LOOKBACK:
-        return None
-        
     rvol = calculate_rvol(df)
     
     if rvol < MIN_RVOL_EARLY:
