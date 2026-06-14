@@ -747,7 +747,23 @@ def should_load_float_today(last_float_load_date: Optional[str]) -> bool:
     today = now_sa.date().isoformat()
 
     return last_float_load_date != today
-    
+
+def cleanup_old_alerts(state: Dict[str, Any], max_age_hours: int = 48) -> None:
+    cutoff = now_saudi() - timedelta(hours=max_age_hours)
+
+    for key in ("sent_early_alerts", "sent_entry_alerts", "sent_failure_alerts"):
+        items = state.get(key, {})
+
+        cleaned = {}
+
+        for symbol, item in items.items():
+            dt = parse_iso(item.get("time") if isinstance(item, dict) else item)
+
+            if dt and dt >= cutoff:
+                cleaned[symbol] = item
+
+        state[key] = cleaned
+        
 def main_loop():
     global current_universe, float_cache
 
@@ -780,6 +796,7 @@ def main_loop():
                     last_float_load_date = now_saudi().date().isoformat()
 
             now_ts = time.time()
+            cleanup_old_alerts(state)
 
             if now_ts - last_universe_build_ts >= UNIVERSE_REBUILD_INTERVAL or not current_universe:
                 current_universe = build_universe()
