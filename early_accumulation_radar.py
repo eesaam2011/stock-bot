@@ -2,7 +2,7 @@ import os
 import json
 import time
 import math
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 
 import requests
@@ -32,11 +32,6 @@ BOT_NAME = "🧠 رادار التجميع المبكر"
 
 SAUDI_TZ = pytz.timezone("Asia/Riyadh")
 NY_TZ = pytz.timezone("America/New_York")
-
-START_HOUR_SA = 11
-START_MINUTE_SA = 0
-END_HOUR_SA = 1
-END_MINUTE_SA = 0
 
 UNIVERSE_REBUILD_INTERVAL = 30 * 60
 ACCUMULATION_SCAN_INTERVAL = 5 * 60
@@ -104,14 +99,6 @@ def parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(dt_str)
     except Exception:
         return None
-
-def is_work_time() -> bool:
-    current = now_saudi().time()
-    start = dtime(START_HOUR_SA, START_MINUTE_SA)
-    end = dtime(END_HOUR_SA, END_MINUTE_SA)
-    if start < end:
-        return start <= current <= end
-    return current >= start or current <= end
 
 def is_weekday_ny() -> bool:
     return now_ny().weekday() < 5
