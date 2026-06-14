@@ -42,6 +42,7 @@ UNIVERSE_REBUILD_INTERVAL = 30 * 60
 ACCUMULATION_SCAN_INTERVAL = 5 * 60
 WATCHLIST_MONITOR_INTERVAL = 2 * 60
 WATCHLIST_TTL_HOURS = 24
+FLOAT_RELOAD_INTERVAL = 6 * 60 * 60
 
 PRICE_MIN = float(os.getenv("PRICE_MIN", "0.5"))
 PRICE_MAX = float(os.getenv("PRICE_MAX", "20.0"))
@@ -756,6 +757,7 @@ def main_loop():
     last_universe_build_ts = 0.0
     last_scan_ts = 0.0
     last_monitor_ts = 0.0
+    last_float_reload_ts = 0.0
 
     while True:
         try:
@@ -769,11 +771,14 @@ def main_loop():
                 time.sleep(300)
                 continue
 
-            if not float_cache:
+            if not float_cache or time.time() - last_float_reload_ts >= FLOAT_RELOAD_INTERVAL:
                 print("[FLOAT] Loading float cache from Gist...", flush=True)
-                float_cache = load_float_cache_from_gist()
 
-            now_ts = time.time()
+                new_float_cache = load_float_cache_from_gist()
+
+                if new_float_cache:
+                    float_cache = new_float_cache
+                    last_float_reload_ts = time.time()
 
             if now_ts - last_universe_build_ts >= UNIVERSE_REBUILD_INTERVAL or not current_universe:
                 current_universe = build_universe()
