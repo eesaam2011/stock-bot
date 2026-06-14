@@ -795,6 +795,11 @@ def main_loop():
                     float_cache = new_float_cache
                     last_float_load_date = now_saudi().date().isoformat()
 
+            if not float_cache:
+                print("[FLOAT] Waiting for daily float cache at 11:00 Saudi...", flush=True)
+                time.sleep(300)
+                continue
+
             now_ts = time.time()
             cleanup_old_alerts(state)
 
