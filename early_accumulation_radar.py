@@ -745,32 +745,36 @@ float_cache: Dict[str, Any] = {}
 
 def main_loop():
     global current_universe, float_cache
+
     runtime_stats["started_at"] = iso_now()
+
     state = load_state()
     watchlist = load_watchlist()
+
     print(f"[START] {BOT_NAME}", flush=True)
 
-last_universe_build_ts = 0.0
-last_scan_ts = 0.0
-last_monitor_ts = 0.0
+    last_universe_build_ts = 0.0
+    last_scan_ts = 0.0
+    last_monitor_ts = 0.0
 
-while True:
-    try:
-        if not is_weekday_ny():
-            print("[TIME] NY weekend. Sleeping...", flush=True)
-            time.sleep(300)
-            continue
+    while True:
+        try:
+            if not is_weekday_ny():
+                print("[TIME] NY weekend. Sleeping...", flush=True)
+                time.sleep(300)
+                continue
 
-        if not is_work_time():
-            print("[TIME] Outside work window. Sleeping...", flush=True)
-            time.sleep(300)
-            continue
+            if not is_work_time():
+                print("[TIME] Outside work window. Sleeping...", flush=True)
+                time.sleep(300)
+                continue
 
-        if not float_cache:
-            print("[FLOAT] Loading float cache from Gist...", flush=True)
-            float_cache = load_float_cache_from_gist()
+            if not float_cache:
+                print("[FLOAT] Loading float cache from Gist...", flush=True)
+                float_cache = load_float_cache_from_gist()
 
-        now_ts = time.time()
+            now_ts = time.time()
+
             if now_ts - last_universe_build_ts >= UNIVERSE_REBUILD_INTERVAL or not current_universe:
                 current_universe = build_universe()
                 runtime_stats["universe_count"] = len(current_universe)
@@ -778,26 +782,32 @@ while True:
                 state["last_universe_build"] = iso_now()
                 last_universe_build_ts = now_ts
                 save_state(state)
+
             if now_ts - last_scan_ts >= ACCUMULATION_SCAN_INTERVAL:
-                print("[SCAN] Running accumulation scan...")
+                print("[SCAN] Running accumulation scan...", flush=True)
                 scan_accumulation(current_universe, watchlist, state, float_cache)
                 runtime_stats["last_accumulation_scan"] = iso_now()
                 state["last_accumulation_scan"] = iso_now()
                 save_watchlist(watchlist)
                 save_state(state)
                 last_scan_ts = now_ts
+
             if now_ts - last_monitor_ts >= WATCHLIST_MONITOR_INTERVAL:
-                print("[WATCHLIST] Monitoring watchlist...")
+                print("[WATCHLIST] Monitoring watchlist...", flush=True)
                 monitor_watchlist(watchlist, state, float_cache)
                 runtime_stats["last_watchlist_monitor"] = iso_now()
                 state["last_watchlist_monitor"] = iso_now()
                 save_watchlist(watchlist)
                 save_state(state)
                 last_monitor_ts = now_ts
+
             time.sleep(10)
+
         except Exception as e:
-            print(f"[MAIN] Loop error: {e}")
+            print(f"[MAIN] Loop error: {e}", flush=True)
             time.sleep(30)
+
 
 if __name__ == "__main__":
     main_loop()
+    
