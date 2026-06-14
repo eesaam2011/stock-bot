@@ -748,24 +748,29 @@ def main_loop():
     runtime_stats["started_at"] = iso_now()
     state = load_state()
     watchlist = load_watchlist()
-    print(f"[START] {BOT_NAME}")
-    float_cache = load_float_cache_from_gist()
-    last_universe_build_ts = 0.0
-    last_scan_ts = 0.0
-    last_monitor_ts = 0.0
-    while True:
-        try:
-            if not is_weekday_ny():
-                print("[TIME] NY weekend. Sleeping...")
-                time.sleep(300)
-                continue
-            if not is_work_time():
-                print("[TIME] Outside work window. Sleeping...")
-                time.sleep(300)
-                continue
-            now_ts = time.time()
-            if not float_cache:
-                float_cache = load_float_cache_from_gist()
+    print(f"[START] {BOT_NAME}", flush=True)
+
+last_universe_build_ts = 0.0
+last_scan_ts = 0.0
+last_monitor_ts = 0.0
+
+while True:
+    try:
+        if not is_weekday_ny():
+            print("[TIME] NY weekend. Sleeping...", flush=True)
+            time.sleep(300)
+            continue
+
+        if not is_work_time():
+            print("[TIME] Outside work window. Sleeping...", flush=True)
+            time.sleep(300)
+            continue
+
+        if not float_cache:
+            print("[FLOAT] Loading float cache from Gist...", flush=True)
+            float_cache = load_float_cache_from_gist()
+
+        now_ts = time.time()
             if now_ts - last_universe_build_ts >= UNIVERSE_REBUILD_INTERVAL or not current_universe:
                 current_universe = build_universe()
                 runtime_stats["universe_count"] = len(current_universe)
