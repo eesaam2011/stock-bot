@@ -450,7 +450,8 @@ def obv_metrics(df: pd.DataFrame) -> Dict[str, Any]:
 
 def float_score(float_shares: Optional[float]) -> Tuple[int, str]:
     if float_shares is None or float_shares <= 0:
-        return 0, "غير معروف"
+        return 5, "غير معروف"
+
     if float_shares < 5_000_000:
         return 40, "منخفض جدًا"
     if float_shares < 10_000_000:
@@ -461,6 +462,7 @@ def float_score(float_shares: Optional[float]) -> Tuple[int, str]:
         return 20, "جيد"
     if float_shares < 100_000_000:
         return 10, "مقبول"
+
     return 0, "مرتفع"
 
 def obv_score(metrics: Dict[str, Any]) -> int:
