@@ -362,15 +362,26 @@ def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, 
                 continue
 
             if isinstance(bars_df.index, pd.MultiIndex):
-                available_symbols = bars_df.index.get_level_values(0).unique()
-                for sym in available_symbols:
-                    df = bars_df.xs(sym).reset_index()
-                    needed = {"open", "high", "low", "close", "volume"}
-                    if needed.issubset(set(df.columns)):
-                        if "timestamp" not in df.columns and "time" in df.columns:
-                            df.rename(columns={"time": "timestamp"}, inplace=True)
-                        if "timestamp" in df.columns:
-                            results[sym] = df.sort_values("timestamp").reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+                if "symbol" in bars_df.index.names:
+                    available_symbols = bars_df.index.get_level_values("symbol").unique()
+
+                    for sym in available_symbols:
+                        df = bars_df.xs(sym, level="symbol").reset_index()
+                        needed = {"open", "high", "low", "close", "volume"}
+
+                        if needed.issubset(set(df.columns)):
+                            if "timestamp" not in df.columns and "time" in df.columns:
+                                df.rename(columns={"time": "timestamp"}, inplace=True)
+
+                            if "timestamp" in df.columns:
+                                results[sym] = (
+                                    df.sort_values("timestamp")
+                                    .reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]]
+                                    .copy()
+                                )
+                else:
+                    print(f"[BARS] MultiIndex names missing symbol: {bars_df.index.names}", flush=True)
+                
             else:
                 if len(batch) == 1:
                     sym = batch[0]
