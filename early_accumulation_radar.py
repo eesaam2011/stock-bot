@@ -509,6 +509,7 @@ def resistance_score(price: float, resistance: Optional[float]) -> int:
     return 0
 
 def analyze_symbol(symbol: str, snapshot: Any, float_cache: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    price = get_latest_price_from_snapshot(snapshot)
     if not price or price < PRICE_MIN or price > PRICE_MAX:
         return None
     daily_volume = get_daily_volume_from_snapshot(snapshot)
