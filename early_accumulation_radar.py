@@ -489,13 +489,13 @@ def obv_score(metrics: Dict[str, Any]) -> int:
 
 def rvol_score(rvol: float) -> int:
     if rvol >= 4.0:
-        return 15
+        return 10
     if rvol >= 3.0:
-        return 12
-    if rvol >= 2.0:
         return 8
-    if rvol >= 1.5:
+    if rvol >= 2.0:
         return 5
+    if rvol >= 1.5:
+        return 3
     return 0
 
 def volume_score(df: pd.DataFrame, dollar_volume: float) -> int:
