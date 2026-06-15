@@ -1035,6 +1035,8 @@ def check_explosion(api, symbol, asset_name):
             reject_score += 1
             return None
 
+        score = min(score, 100)
+        
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
             reject_score += 1
             return None
