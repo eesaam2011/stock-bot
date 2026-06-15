@@ -114,7 +114,31 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return f
     except Exception:
         return default
+        
+def make_json_safe(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {str(k): make_json_safe(v) for k, v in obj.items()}
 
+    if isinstance(obj, list):
+        return [make_json_safe(v) for v in obj]
+
+    if isinstance(obj, tuple):
+        return [make_json_safe(v) for v in obj]
+
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+
+    if isinstance(obj, np.integer):
+        return int(obj)
+
+    if isinstance(obj, np.floating):
+        return float(obj)
+
+    if pd.isna(obj):
+        return None
+
+    return obj
+    
 def fmt_price(price: float) -> str:
     price = safe_float(price)
     if price < 1:
@@ -155,7 +179,7 @@ def write_json_file(path: str, data: Any) -> None:
     try:
         tmp_path = f"{path}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(make_json_safe(data), f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, path)
     except Exception as e:
         print(f"[JSON] Failed writing {path}: {e}")
@@ -200,7 +224,7 @@ def save_json_to_gist(filename: str, data: Any) -> None:
         payload = {
             "files": {
                 filename: {
-                    "content": json.dumps(data, ensure_ascii=False, indent=2)
+                    "content": json.dumps(make_json_safe(data), ensure_ascii=False, indent=2)
                 }
             }
         }
