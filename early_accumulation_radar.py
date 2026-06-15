@@ -850,12 +850,14 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
     print(f"[SCAN] BarsLoaded={len(batched_bars)}", flush=True)
 
     candidates = []
+    fallback_used = 0
     
     for symbol in candidates_symbols:
         snapshot = snapshots.get(symbol)
         df = batched_bars.get(symbol, pd.DataFrame())
 
         if len(df) < OBV_LOOKBACK:
+            fallback_used += 1
             df = get_1m_bars_single(symbol, BARS_LIMIT)
 
         data = analyze_symbol(symbol, snapshot, df, float_cache_data, early_mode=True)
@@ -864,6 +866,10 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
             candidates.append(data)
 
     print(f"[SCAN] FinalCandidates={len(candidates)}", flush=True)
+    
+    print(f"[SCAN] FallbackUsed={fallback_used}", flush=True)
+
+    candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
 
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
     for data in candidates:
