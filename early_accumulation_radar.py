@@ -758,6 +758,8 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
     if not universe:
         return
     snapshots = get_snapshots(universe)
+
+    print(f"[SCAN] Universe={len(universe)} Snapshots={len(snapshots)}", flush=True)
     
     candidates_symbols = []
     for symbol, snapshot in snapshots.items():
