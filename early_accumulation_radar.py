@@ -351,13 +351,20 @@ def get_day_change_pct(snapshot: Any, price: float) -> float:
 
 def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, pd.DataFrame]:
     results = {}
+
     if not symbols:
         return results
 
     for i in range(0, len(symbols), MAX_SYMBOLS_PER_BATCH):
         batch = symbols[i:i + MAX_SYMBOLS_PER_BATCH]
+
         try:
-            bars_df = api.get_bars(batch, tradeapi.TimeFrame.Minute, limit=limit, adjustment="raw").df
+            bars_df = api.get_bars(
+                batch,
+                tradeapi.TimeFrame.Minute,
+                limit=limit,
+                adjustment="raw"
+            ).df
 
             if bars_df is None or bars_df.empty:
                 continue
@@ -383,30 +390,33 @@ def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, 
                 else:
                     print(f"[BARS] MultiIndex names missing symbol: {bars_df.index.names}", flush=True)
 
-            else:
-                df_all = bars_df.reset_index()
+            elif "symbol" in bars_df.columns:
+                for sym in bars_df["symbol"].unique():
+                    df = bars_df[bars_df["symbol"] == sym].reset_index()
 
-                if "timestamp" not in df_all.columns and "time" in df_all.columns:
-                    df_all.rename(columns={"time": "timestamp"}, inplace=True)
+                    needed = {"open", "high", "low", "close", "volume"}
 
-                if "symbol" in df_all.columns:
-                    for sym, df in df_all.groupby("symbol"):
-                        needed = {"timestamp", "open", "high", "low", "close", "volume"}
+                    if needed.issubset(set(df.columns)):
+                        if "timestamp" not in df.columns and "time" in df.columns:
+                            df.rename(columns={"time": "timestamp"}, inplace=True)
 
-                        if needed.issubset(set(df.columns)):
+                        if "timestamp" in df.columns:
                             results[sym] = (
                                 df.sort_values("timestamp")
                                 .reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]]
                                 .copy()
                             )
 
-                elif len(batch) == 1:
+            else:
+                if len(batch) == 1:
                     sym = batch[0]
+                    df = bars_df.reset_index()
+
                     needed = {"timestamp", "open", "high", "low", "close", "volume"}
 
-                    if needed.issubset(set(df_all.columns)):
+                    if needed.issubset(set(df.columns)):
                         results[sym] = (
-                            df_all.sort_values("timestamp")
+                            df.sort_values("timestamp")
                             .reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]]
                             .copy()
                         )
