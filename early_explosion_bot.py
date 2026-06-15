@@ -1004,10 +1004,14 @@ def check_explosion(api, symbol, asset_name):
         elif current_price >= resistance_20 * 0.99:
             score += 10
 
-        if vol_acceleration >= 2.0:
+        if vol_acceleration >= 3.0:
             score += 20
-        elif vol_acceleration >= 1.2:
+        elif vol_acceleration >= 2.0:
+            score += 15
+        elif vol_acceleration >= 1.5:
             score += 10
+        elif vol_acceleration >= 1.0:
+            score += 5
 
         if dollar_volume >= 1_000_000:
             score += 10
@@ -1024,6 +1028,10 @@ def check_explosion(api, symbol, asset_name):
             score += 5
 
         if gain_trend <= 0:
+            reject_score += 1
+            return None
+
+        if vol_acceleration < 1.0 and obv_bonus == 0:
             reject_score += 1
             return None
 
