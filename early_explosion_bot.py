@@ -610,10 +610,14 @@ def should_build_float_cache():
     if last_float_cache_date == today_key:
         return False
 
-    if now_ksa.hour == FLOAT_CACHE_HOUR and now_ksa.minute >= FLOAT_CACHE_MINUTE:
-        return True
+    scheduled_time = now_ksa.replace(
+        hour=FLOAT_CACHE_HOUR,
+        minute=FLOAT_CACHE_MINUTE,
+        second=0,
+        microsecond=0
+    )
 
-    return False
+    return now_ksa >= scheduled_time
 
 def build_float_cache_for_assets(assets):
     global last_float_cache_date
@@ -628,50 +632,58 @@ def build_float_cache_for_assets(assets):
     float_cache_building = True
 
     print("🧬 Starting Finnhub float cache build...", flush=True)
-    
+
     loaded = 0
     skipped = 0
 
-    for asset in assets:
-        symbol = asset.symbol
+    try:
+        for asset in assets:
+            symbol = asset.symbol
 
-        if symbol in float_cache:
-            skipped += 1
-            continue
+            if symbol in float_cache:
+                skipped += 1
+                continue
 
-        if symbol in SYMBOL_BLACKLIST:
-            skipped += 1
-            continue
+            if symbol in SYMBOL_BLACKLIST:
+                skipped += 1
+                continue
 
-        asset_name = getattr(asset, "name", "") or ""
+            asset_name = getattr(asset, "name", "") or ""
 
-        if any(kw in asset_name.lower() for kw in BAD_NAME_KEYWORDS):
-            skipped += 1
-            continue
+            if any(kw in asset_name.lower() for kw in BAD_NAME_KEYWORDS):
+                skipped += 1
+                continue
 
-        real_float = fetch_finnhub_float(symbol)
+            real_float = fetch_finnhub_float(symbol)
 
-        if real_float is not None:
-            float_cache[symbol] = {
-                "float": real_float,
-                "updated": datetime.now(saudi_tz).strftime("%Y-%m-%d")
-            }
-            loaded += 1
+            if real_float is not None:
+                float_cache[symbol] = {
+                    "float": real_float,
+                    "updated": datetime.now(saudi_tz).strftime("%Y-%m-%d")
+                }
+                loaded += 1
 
-        save_float_cache()
+            save_float_cache()
 
-        time.sleep(FINNHUB_DELAY_SEC)
+            time.sleep(FINNHUB_DELAY_SEC)
 
-    last_float_cache_date = datetime.now(
-        saudi_tz
-    ).strftime("%Y-%m-%d")
+        last_float_cache_date = datetime.now(
+            saudi_tz
+        ).strftime("%Y-%m-%d")
 
-    float_cache_building = False
+        print(
+            f"✅ Float cache build finished | Loaded={loaded} | Skipped={skipped} | Total={len(float_cache)}",
+            flush=True
+        )
 
-    print(
-        f"✅ Float cache build finished | Loaded={loaded} | Skipped={skipped} | Total={len(float_cache)}",
-        flush=True
-    )
+    except Exception as e:
+        print(
+            f"❌ Float cache build error: {e}",
+            flush=True
+        )
+
+    finally:
+        float_cache_building = False
     
 def update_radar_watchlist(symbol, current_price, prev_close, today_vol):
     
@@ -1055,9 +1067,9 @@ def check_explosion(api, symbol, asset_name):
         if price_change_pct >= 20:
             score += 20
         elif price_change_pct >= 10:
-            score += 15
+            score += 12
         elif price_change_pct >= MIN_PRICE_CHANGE:
-            score += 10
+            score += 8
 
         # Breakout / Resistance: max 15
         if current_price >= resistance_20:
