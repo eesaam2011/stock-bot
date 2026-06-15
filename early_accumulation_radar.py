@@ -826,6 +826,14 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
         # 🌟 تم تمكين الفلتر هنا صراحة بتمرير early_mode=True (التعديل الخاص بك)
         data = analyze_symbol(symbol, snapshot, df, float_cache_data, early_mode=True)
 
+        if data:
+            print(
+                f"{symbol} Score={data['score']} Float={data['float_score']} "
+                f"OBV={data['obv_score']} RVOL={data['rvol_score']} "
+                f"VOL={data['volume_score']} RES={data['resistance_score']}",
+                flush=True
+            )
+
         if data and data["score"] >= EARLY_ALERT_MIN_SCORE:
             candidates.append(data)
 
