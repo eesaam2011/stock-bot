@@ -159,6 +159,59 @@ def write_json_file(path: str, data: Any) -> None:
     except Exception as e:
         print(f"[JSON] Failed writing {path}: {e}")
 
+def load_json_from_gist(filename: str, default: Any) -> Any:
+    if not GITHUB_TOKEN or not GIST_ID:
+        return read_json_file(filename, default)
+
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+        r = requests.get(url, headers=headers, timeout=20)
+
+        if r.status_code != 200:
+            print(f"[GIST] Load failed {filename}: {r.status_code}", flush=True)
+            return read_json_file(filename, default)
+
+        files = r.json().get("files", {})
+        if filename not in files:
+            return default
+
+        content = files[filename].get("content")
+        if not content:
+            return default
+
+        return json.loads(content)
+
+    except Exception as e:
+        print(f"[GIST] Load exception {filename}: {e}", flush=True)
+        return read_json_file(filename, default)
+
+
+def save_json_to_gist(filename: str, data: Any) -> None:
+    write_json_file(filename, data)
+
+    if not GITHUB_TOKEN or not GIST_ID:
+        return
+
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+        payload = {
+            "files": {
+                filename: {
+                    "content": json.dumps(data, ensure_ascii=False, indent=2)
+                }
+            }
+        }
+
+        r = requests.patch(url, headers=headers, json=payload, timeout=20)
+
+        if r.status_code not in (200, 201):
+            print(f"[GIST] Save failed {filename}: {r.status_code} {r.text[:200]}", flush=True)
+
+    except Exception as e:
+        print(f"[GIST] Save exception {filename}: {e}", flush=True)
+        
 def default_state() -> Dict[str, Any]:
     return {
         "created_at": iso_now(),
@@ -182,11 +235,11 @@ def save_state(state: Dict[str, Any]) -> None:
     write_json_file(STATE_FILE, state)
 
 def load_watchlist() -> Dict[str, Any]:
-    return read_json_file(WATCHLIST_FILE, {})
-
+    return load_json_from_gist(WATCHLIST_FILE, {})
+    
 def save_watchlist(watchlist: Dict[str, Any]) -> None:
-    write_json_file(WATCHLIST_FILE, watchlist)
-
+    save_json_to_gist(WATCHLIST_FILE, watchlist)
+    
 def send_telegram_message(message: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[TELEGRAM] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
