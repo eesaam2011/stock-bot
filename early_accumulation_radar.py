@@ -1018,7 +1018,13 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
 
         data = analyze_symbol(symbol, snapshot, df, float_cache_data, early_mode=True)
         
-        if data and data["score"] >= EARLY_ALERT_MIN_SCORE:
+        if (
+            data
+            and data["score"] >= EARLY_ALERT_MIN_SCORE
+            and data.get("obv_breakout")
+            and data.get("volume_expansion")
+            and safe_float(data.get("distance_to_resistance_pct"), 999) <= 5
+        ):
             candidates.append(data)
 
     print(f"[SCAN] FallbackUsed={fallback_used}", flush=True)
