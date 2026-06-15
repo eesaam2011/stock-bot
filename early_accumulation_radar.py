@@ -53,6 +53,7 @@ RESISTANCE_BODY_LOOKBACK = 100
 RECENT_LOW_LOOKBACK = 20
 MAX_SYMBOLS_PER_BATCH = 200
 BATCH_SLEEP_SEC = 0.8
+WATCHLIST_GRACE_MINUTES = 10
 
 runtime_stats = {
     "started_at": None,
@@ -797,6 +798,10 @@ def check_entry_conditions(data: Dict[str, Any], df: pd.DataFrame) -> bool:
     return True
 
 def failure_reason(data: Optional[Dict[str, Any]], df: pd.DataFrame, watch: Dict[str, Any]) -> Optional[str]:
+    created_at = parse_iso(watch.get("created_at"))
+    if created_at and now_saudi() - created_at < timedelta(minutes=WATCHLIST_GRACE_MINUTES):
+        return None
+        
     expires_at = parse_iso(watch.get("expires_at"))
     if expires_at and now_saudi() >= expires_at:
         return "انتهت مهلة 24 ساعة بدون تحقق تنبيه دخول."
