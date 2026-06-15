@@ -796,7 +796,72 @@ def quick_radar_check(api, symbol):
 
     except Exception:
         return False
-        
+
+def calculate_volume_acceleration(bars_1m):
+    if bars_1m is None or bars_1m.empty or len(bars_1m) < 13:
+        return {
+            "volume_acceleration_score": 0,
+            "vol_acceleration": 0.0,
+            "last_1m_vs_avg": 0.0,
+            "last_3m_vs_prev_7m": 0.0,
+            "volume_trend_up": False,
+            "volume_peak_recent": False
+        }
+
+    bars_1m = bars_1m.sort_index()
+    volumes = bars_1m["volume"].astype(float)
+
+    last_1m = float(volumes.iloc[-1])
+    avg_prev_10 = float(volumes.iloc[-11:-1].mean())
+    last_1m_vs_avg = last_1m / avg_prev_10 if avg_prev_10 > 0 else 0.0
+
+    last_3m_avg = float(volumes.iloc[-3:].mean())
+    prev_7m_avg = float(volumes.iloc[-10:-3].mean())
+    last_3m_vs_prev_7m = last_3m_avg / prev_7m_avg if prev_7m_avg > 0 else 0.0
+
+    v1 = float(volumes.iloc[-3])
+    v2 = float(volumes.iloc[-2])
+    v3 = float(volumes.iloc[-1])
+    volume_trend_up = v1 <= v2 <= v3
+
+    lookback = volumes.iloc[-13:]
+    peak_idx = lookback.idxmax()
+    recent_peak_indexes = set(volumes.tail(3).index)
+    volume_peak_recent = peak_idx in recent_peak_indexes
+
+    score = 0
+
+    if last_1m_vs_avg >= 3.0:
+        score += 8
+    elif last_1m_vs_avg >= 2.0:
+        score += 5
+    elif last_1m_vs_avg >= 1.5:
+        score += 3
+
+    if last_3m_vs_prev_7m >= 2.5:
+        score += 7
+    elif last_3m_vs_prev_7m >= 1.8:
+        score += 5
+    elif last_3m_vs_prev_7m >= 1.3:
+        score += 3
+
+    if volume_trend_up:
+        score += 2
+
+    if volume_peak_recent:
+        score += 3
+
+    vol_acceleration = max(last_1m_vs_avg, last_3m_vs_prev_7m)
+
+    return {
+        "volume_acceleration_score": min(score, 15),
+        "vol_acceleration": round(vol_acceleration, 2),
+        "last_1m_vs_avg": round(last_1m_vs_avg, 2),
+        "last_3m_vs_prev_7m": round(last_3m_vs_prev_7m, 2),
+        "volume_trend_up": bool(volume_trend_up),
+        "volume_peak_recent": bool(volume_peak_recent)
+    }
+    
 def check_explosion(api, symbol, asset_name):
     global reject_price_change
     global reject_rvol
@@ -958,29 +1023,19 @@ def check_explosion(api, symbol, asset_name):
         bars_1m = api.get_bars(
             symbol,
             tradeapi.rest.TimeFrame.Minute,
-            limit=10,
+            limit=20,
             adjustment="raw"
         ).df
 
-        vol_acceleration = 1.0
+        acceleration_data = calculate_volume_acceleration(bars_1m)
 
-        if (
-            bars_1m is not None
-            and not bars_1m.empty
-            and len(bars_1m) >= 8
-        ):
-            bars_1m = bars_1m.sort_index()
-
-            recent_vol = float(
-                bars_1m["volume"].tail(2).mean()
-            )
-            previous_vol = float(
-                bars_1m["volume"].iloc[-6:-2].mean()
-            )
-
-            if previous_vol > 0:
-                vol_acceleration = recent_vol / previous_vol
-
+        vol_acceleration = acceleration_data["vol_acceleration"]
+        volume_acceleration_score = acceleration_data["volume_acceleration_score"]
+        last_1m_vs_avg = acceleration_data["last_1m_vs_avg"]
+        last_3m_vs_prev_7m = acceleration_data["last_3m_vs_prev_7m"]
+        volume_trend_up = acceleration_data["volume_trend_up"]
+        volume_peak_recent = acceleration_data["volume_peak_recent"]
+        
         obv_bonus_raw, obv_tier = calculate_obv_bonus(
             bars_1m
         )
@@ -1011,14 +1066,7 @@ def check_explosion(api, symbol, asset_name):
             score += 8
 
         # Volume Acceleration: max 15
-        if vol_acceleration >= 3.0:
-            score += 15
-        elif vol_acceleration >= 2.0:
-            score += 12
-        elif vol_acceleration >= 1.5:
-            score += 8
-        elif vol_acceleration >= 1.0:
-            score += 4
+        score += volume_acceleration_score
 
         # Dollar Volume: max 10
         if dollar_volume >= 10_000_000:
@@ -1082,6 +1130,11 @@ def check_explosion(api, symbol, asset_name):
             "atr_14": round(atr_14, digits),
             "resistance_50": round(resistance_50, digits),
             "vol_acceleration": round(vol_acceleration, 2),
+            "volume_acceleration_score": volume_acceleration_score,
+            "last_1m_vs_avg": last_1m_vs_avg,
+            "last_3m_vs_prev_7m": last_3m_vs_prev_7m,
+            "volume_trend_up": volume_trend_up,
+            "volume_peak_recent": volume_peak_recent,
             "dollar_volume": round(dollar_volume, 0),
             "target1": target1,
             "target2": target2,
@@ -1375,6 +1428,10 @@ def send_explosion_alert(res):
         f"🧱 *المقاومة 50 يوم:* `${res['resistance_50']}`\n"
         f"📏 *ATR 14:* `${res['atr_14']}`\n"
         f"⚡ *تسارع الفوليوم:* `{res['vol_acceleration']}x`\n"
+        f"• آخر دقيقة/المتوسط: `{res.get('last_1m_vs_avg')}x`\n"
+        f"• آخر 3 دقائق/السابق: `{res.get('last_3m_vs_prev_7m')}x`\n"
+        f"• الحجم يتصاعد: `{'نعم' if res.get('volume_trend_up') else 'لا'}`\n"
+        f"• قمة الحجم حديثة: `{'نعم' if res.get('volume_peak_recent') else 'لا'}`\n"
         f"💰 *Dollar Volume:* `${res['dollar_volume']}`\n\n"
         f"🎯 *الأهداف الفنية المحسوبة:*\n"
         f" ├─ Target 1 (ATR ×1): `${res['target1']}`\n"
