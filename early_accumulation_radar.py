@@ -358,13 +358,19 @@ def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, 
         batch = symbols[i:i + MAX_SYMBOLS_PER_BATCH]
         try:
             bars_df = api.get_bars(batch, tradeapi.TimeFrame.Minute, limit=limit, adjustment="raw").df
+
             if bars_df is None or bars_df.empty:
+                print("[BARS] Empty bars_df", flush=True)
                 continue
 
+            print(f"[BARS] Retrieved rows={len(bars_df)}", flush=True)
+            print(f"[BARS] Index names={bars_df.index.names}", flush=True)
+
             if isinstance(bars_df.index, pd.MultiIndex):
+                print(f"[BARS] MultiIndex detected", flush=True)
+
                 if "symbol" in bars_df.index.names:
                     available_symbols = bars_df.index.get_level_values("symbol").unique()
-
                     for sym in available_symbols:
                         df = bars_df.xs(sym, level="symbol").reset_index()
                         needed = {"open", "high", "low", "close", "volume"}
