@@ -555,14 +555,79 @@ def calculate_rvol(df: pd.DataFrame) -> float:
         return 0.0
     return safe_float(recent_vol / avg_5bar_vol, 0.0)
 
-def volume_expansion_ok(df: pd.DataFrame) -> bool:
-    if len(df) < 13:
-        return False
-    volumes = df["volume"].astype(float)
-    last3_avg = volumes.tail(3).mean()
-    prev10_avg = volumes.iloc[-13:-3].mean()
-    return prev10_avg > 0 and last3_avg > prev10_avg * 1.5
+def calculate_volume_acceleration(df: pd.DataFrame) -> Dict[str, Any]:
+    if df is None or df.empty or len(df) < 13:
+        return {
+            "volume_acceleration": False,
+            "volume_acceleration_score": 0,
+            "last_1m_vs_avg": 0.0,
+            "last_3m_vs_prev_7m": 0.0,
+            "volume_trend_up": False,
+            "volume_peak_recent": False,
+        }
 
+    volumes = df["volume"].astype(float)
+
+    last_1m = safe_float(volumes.iloc[-1], 0)
+    avg_prev_10 = safe_float(volumes.iloc[-11:-1].mean(), 0)
+    last_1m_vs_avg = last_1m / avg_prev_10 if avg_prev_10 > 0 else 0.0
+
+    last_3m_avg = safe_float(volumes.iloc[-3:].mean(), 0)
+    prev_7m_avg = safe_float(volumes.iloc[-10:-3].mean(), 0)
+    last_3m_vs_prev_7m = last_3m_avg / prev_7m_avg if prev_7m_avg > 0 else 0.0
+
+    v1 = safe_float(volumes.iloc[-3], 0)
+    v2 = safe_float(volumes.iloc[-2], 0)
+    v3 = safe_float(volumes.iloc[-1], 0)
+    volume_trend_up = v1 <= v2 <= v3
+
+    lookback = volumes.iloc[-13:]
+    peak_idx = lookback.idxmax()
+    recent_peak_indexes = set(volumes.tail(3).index)
+    volume_peak_recent = peak_idx in recent_peak_indexes
+
+    score = 0
+
+    if last_1m_vs_avg >= 3.0:
+        score += 8
+    elif last_1m_vs_avg >= 2.0:
+        score += 5
+    elif last_1m_vs_avg >= 1.5:
+        score += 3
+
+    if last_3m_vs_prev_7m >= 2.5:
+        score += 8
+    elif last_3m_vs_prev_7m >= 1.8:
+        score += 5
+    elif last_3m_vs_prev_7m >= 1.3:
+        score += 3
+
+    if volume_trend_up:
+        score += 2
+
+    if volume_peak_recent:
+        score += 3
+
+    volume_acceleration = (
+        score >= 8
+        and last_1m_vs_avg >= 1.5
+        and last_3m_vs_prev_7m >= 1.3
+        and volume_peak_recent
+    )
+
+    return {
+        "volume_acceleration": bool(volume_acceleration),
+        "volume_acceleration_score": int(score),
+        "last_1m_vs_avg": round(last_1m_vs_avg, 2),
+        "last_3m_vs_prev_7m": round(last_3m_vs_prev_7m, 2),
+        "volume_trend_up": bool(volume_trend_up),
+        "volume_peak_recent": bool(volume_peak_recent),
+    }
+
+
+def volume_expansion_ok(df: pd.DataFrame) -> bool:
+    return calculate_volume_acceleration(df).get("volume_acceleration", False)
+    
 def resistance_body_level(df: pd.DataFrame, lookback: int = RESISTANCE_BODY_LOOKBACK) -> Optional[float]:
     if len(df) < lookback + 1:
         return None
@@ -660,13 +725,14 @@ def rvol_score(rvol: float) -> int:
     return 0
 
 def volume_score(df: pd.DataFrame, dollar_volume: float) -> int:
-    score = 0
-    if volume_expansion_ok(df):
-        score += 5
+    accel = calculate_volume_acceleration(df)
+    score = min(int(accel.get("volume_acceleration_score", 0)), 10)
+
     if dollar_volume >= 1_000_000:
         score += 5
     elif dollar_volume >= MIN_DOLLAR_VOLUME:
         score += 3
+
     return score
 
 def resistance_score(price: float, resistance: Optional[float]) -> int:
@@ -700,6 +766,7 @@ def analyze_symbol(symbol: str, snapshot: Any, df: pd.DataFrame, float_cache: Di
         return None
         
     rvol = calculate_rvol(df)
+    accel = calculate_volume_acceleration(df)
     
     if early_mode and rvol < MIN_RVOL_EARLY:
         return None
@@ -725,8 +792,13 @@ def analyze_symbol(symbol: str, snapshot: Any, df: pd.DataFrame, float_cache: Di
         "obv_curve_ok": bool(metrics.get("obv_curve_ok")),
         "rvol": rvol,
         "rvol_score": rv_score,
-        "volume_score": v_score,
-        "volume_expansion": volume_expansion_ok(df),
+        "volume_score": v_score, 
+        "volume_expansion": accel.get("volume_acceleration", False),
+        "volume_acceleration_score": accel.get("volume_acceleration_score", 0),
+        "last_1m_vs_avg": accel.get("last_1m_vs_avg", 0),
+        "last_3m_vs_prev_7m": accel.get("last_3m_vs_prev_7m", 0),
+        "volume_trend_up": accel.get("volume_trend_up", False),
+        "volume_peak_recent": accel.get("volume_peak_recent", False),
         "resistance": resistance,
         "resistance_score": res_score,
         "distance_to_resistance_pct": distance_to_resistance_pct(price, resistance),
