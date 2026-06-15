@@ -365,6 +365,7 @@ def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, 
 
             print(f"[BARS] Retrieved rows={len(bars_df)}", flush=True)
             print(f"[BARS] Index names={bars_df.index.names}", flush=True)
+            print(f"[BARS] Columns={list(bars_df.columns)}", flush=True)
 
             if isinstance(bars_df.index, pd.MultiIndex):
                 print(f"[BARS] MultiIndex detected", flush=True)
