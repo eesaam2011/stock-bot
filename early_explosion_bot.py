@@ -633,7 +633,7 @@ def build_float_cache_for_assets(assets):
     skipped = 0
 
     for asset in assets:
-        symbol = asset.symbol من
+        symbol = asset.symbol
 
         if symbol in float_cache:
             skipped += 1
