@@ -1100,6 +1100,18 @@ def check_explosion(api, symbol, asset_name):
 
         score = min(score, 100)
 
+        if score >= 70:
+            print(
+                f"[ACCEL] {symbol} | "
+                f"Score={score} | "
+                f"1m={last_1m_vs_avg:.2f}x | "
+                f"3m={last_3m_vs_prev_7m:.2f}x | "
+                f"Trend={volume_trend_up} | "
+                f"Peak={volume_peak_recent} | "
+                f"AccelScore={volume_acceleration_score}",
+                flush=True
+            )
+
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
             reject_score += 1
             return None
