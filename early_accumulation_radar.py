@@ -865,10 +865,10 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
         if data and data["score"] >= EARLY_ALERT_MIN_SCORE:
             candidates.append(data)
 
-    print(f"[SCAN] FinalCandidates={len(candidates)}", flush=True)
-    
     print(f"[SCAN] FallbackUsed={fallback_used}", flush=True)
 
+    print(f"[SCAN] FinalCandidates={len(candidates)}", flush=True)
+    
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
 
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
