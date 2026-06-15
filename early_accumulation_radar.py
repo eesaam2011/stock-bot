@@ -1024,8 +1024,6 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
     print(f"[SCAN] FallbackUsed={fallback_used}", flush=True)
 
     print(f"[SCAN] FinalCandidates={len(candidates)}", flush=True)
-    
-    candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
 
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
     for data in candidates:
