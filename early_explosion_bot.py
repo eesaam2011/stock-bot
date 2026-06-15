@@ -1571,10 +1571,6 @@ def main_scanner():
 
                         sent_alerts[sym] = now_ts
                         alerts_sent += 1
-                        
-
-                        sent_alerts[sym] = now_ts
-                        alerts_sent += 1
 
                         if sym not in active_monitors:
                             active_monitors[sym] = True
