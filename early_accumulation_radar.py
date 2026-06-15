@@ -826,9 +826,11 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
         # 🌟 تم تمكين الفلتر هنا صراحة بتمرير early_mode=True (التعديل الخاص بك)
         data = analyze_symbol(symbol, snapshot, df, float_cache_data, early_mode=True)
 
-        if data:
+        if data is None:
+            print(f"[REJECT] {symbol} Bars={len(df)}", flush=True)
+        else:
             print(
-                f"{symbol} Score={data['score']} Float={data['float_score']} "
+                f"[PASS] {symbol} Score={data['score']} Float={data['float_score']} "
                 f"OBV={data['obv_score']} RVOL={data['rvol_score']} "
                 f"VOL={data['volume_score']} RES={data['resistance_score']}",
                 flush=True
