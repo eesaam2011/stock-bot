@@ -830,7 +830,7 @@ def failure_reason(data: Optional[Dict[str, Any]], df: pd.DataFrame, watch: Dict
     if expires_at and now_saudi() >= expires_at:
         return "انتهت مهلة 24 ساعة بدون تحقق تنبيه دخول."
     if data is None:
-        return "لم تعد بيانات السهم كافية لمتابعة التجميع."
+        return None
     price = safe_float(data.get("price"), 0)
     if not data.get("obv_curve_ok"):
         return "كسر اتجاه مؤشر السيولة الموزونة ولم يعد منحنى السيولة صاعدًا."
