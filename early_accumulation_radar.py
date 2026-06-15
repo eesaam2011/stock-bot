@@ -781,21 +781,38 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
             
         candidates_symbols.append(symbol)
 
+    print(f"[SCAN] Prequalified={len(candidates_symbols)}", flush=True)
+
     batched_bars = get_1m_bars_batch(candidates_symbols, BARS_LIMIT)
 
+    print(f"[SCAN] BarsLoaded={len(batched_bars)}", flush=True)
+
     candidates = []
+    
     for symbol in candidates_symbols:
         snapshot = snapshots.get(symbol)
         df = batched_bars.get(symbol, pd.DataFrame())
         
         # 🌟 تم تمكين الفلتر هنا صراحة بتمرير early_mode=True (التعديل الخاص بك)
         data = analyze_symbol(symbol, snapshot, df, float_cache_data, early_mode=True)
+
         if data and data["score"] >= EARLY_ALERT_MIN_SCORE:
             candidates.append(data)
-            
+
+    print(f"[SCAN] FinalCandidates={len(candidates)}", flush=True)
+
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
     for data in candidates:
         symbol = data["symbol"]
+
+        print(
+            f"[ALERT CHECK] {symbol} "
+            f"Score={data.get('score')} "
+            f"RVOL={safe_float(data.get('rvol')):.2f} "
+            f"FloatTier={data.get('float_tier')}",
+            flush=True
+        )
+
         if send_telegram_message(build_early_alert_message(data)):
             state["sent_early_alerts"][symbol] = {"time": iso_now(), "price": data["price"], "score": data["score"]}
             add_to_watchlist(watchlist, data)
