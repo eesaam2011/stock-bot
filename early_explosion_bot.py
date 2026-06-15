@@ -810,7 +810,7 @@ def check_explosion(api, symbol, asset_name):
     global reject_bad_name
     global reject_bars
     global reject_prev_bars
-    
+
     if symbol in SYMBOL_BLACKLIST:
         reject_blacklist += 1
         return None
@@ -900,16 +900,18 @@ def check_explosion(api, symbol, asset_name):
             "gain_trend",
             0
         )
-        
+
         if len(previous_bars) < 20:
             reject_history += 1
             return None
-            
+
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             reject_price += 1
             return None
 
-        avg_vol_20 = float(previous_bars["volume"].tail(20).mean())
+        avg_vol_20 = float(
+            previous_bars["volume"].tail(20).mean()
+        )
 
         float_info = float_cache.get(symbol)
         real_float = None
@@ -917,27 +919,27 @@ def check_explosion(api, symbol, asset_name):
         if float_info:
             real_float = float_info.get("float")
 
-        float_bonus, float_tier = get_float_bonus(real_float)
-        
+        float_bonus_raw, float_tier = get_float_bonus(real_float)
+        float_bonus = min(float_bonus_raw, 5)
 
         if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
             reject_avg_vol += 1
             return None
 
-        resistance_20 = float(previous_bars["high"].tail(20).max())
-        resistance_50 = float(previous_bars["high"].tail(50).max())
+        resistance_20 = float(
+            previous_bars["high"].tail(20).max()
+        )
+        resistance_50 = float(
+            previous_bars["high"].tail(50).max()
+        )
 
         atr_14 = calculate_atr_14(previous_bars)
-
-        global reject_price_change
 
         if price_change_pct < MIN_PRICE_CHANGE:
             reject_price_change += 1
             return None
 
         rvol = today_vol / avg_vol_20 if avg_vol_20 > 0 else 0
-
-        global reject_rvol
 
         if rvol < RVOL_MIN:
             reject_rvol += 1
@@ -948,8 +950,6 @@ def check_explosion(api, symbol, asset_name):
         if dollar_volume < MIN_DOLLAR_VOLUME:
             reject_dollar_volume += 1
             return None
-
-        global reject_resistance
 
         if current_price < resistance_20 * 0.99:
             reject_resistance += 1
@@ -971,61 +971,76 @@ def check_explosion(api, symbol, asset_name):
         ):
             bars_1m = bars_1m.sort_index()
 
-            recent_vol = float(bars_1m["volume"].tail(2).mean())
-            previous_vol = float(bars_1m["volume"].iloc[-6:-2].mean())
+            recent_vol = float(
+                bars_1m["volume"].tail(2).mean()
+            )
+            previous_vol = float(
+                bars_1m["volume"].iloc[-6:-2].mean()
+            )
 
             if previous_vol > 0:
                 vol_acceleration = recent_vol / previous_vol
 
-        obv_bonus, obv_tier = calculate_obv_bonus(
+        obv_bonus_raw, obv_tier = calculate_obv_bonus(
             bars_1m
         )
+        obv_bonus = min(obv_bonus_raw, 10)
 
         score = 0
 
-        score += float_bonus
-        score += obv_bonus
-
-        if rvol >= 3.0:
-            score += 30
+        # RVOL: max 25
+        if rvol >= 10:
+            score += 25
+        elif rvol >= 5:
+            score += 20
         elif rvol >= RVOL_MIN:
-            score += 20
+            score += 15
 
-        if price_change_pct >= 15:
-            score += 30
-        elif price_change_pct >= 8:
+        # Price Change: max 20
+        if price_change_pct >= 20:
             score += 20
+        elif price_change_pct >= 10:
+            score += 15
         elif price_change_pct >= MIN_PRICE_CHANGE:
             score += 10
 
+        # Breakout / Resistance: max 15
         if current_price >= resistance_20:
-            score += 20
-
-        elif current_price >= resistance_20 * 0.99:
-            score += 10
-
-        if vol_acceleration >= 3.0:
-            score += 20
-        elif vol_acceleration >= 2.0:
             score += 15
-        elif vol_acceleration >= 1.5:
-            score += 10
-        elif vol_acceleration >= 1.0:
-            score += 5
+        elif current_price >= resistance_20 * 0.99:
+            score += 8
 
-        if dollar_volume >= 1_000_000:
+        # Volume Acceleration: max 15
+        if vol_acceleration >= 3.0:
+            score += 15
+        elif vol_acceleration >= 2.0:
+            score += 12
+        elif vol_acceleration >= 1.5:
+            score += 8
+        elif vol_acceleration >= 1.0:
+            score += 4
+
+        # Dollar Volume: max 10
+        if dollar_volume >= 10_000_000:
             score += 10
+        elif dollar_volume >= 2_000_000:
+            score += 7
         elif dollar_volume >= MIN_DOLLAR_VOLUME:
             score += 5
 
+        # Gain Trend: max 5
         if gain_trend >= 1.0:
-            score += 15
-
-        elif gain_trend >= 0.5:
-            score += 10
-
-        elif gain_trend > 0:
             score += 5
+        elif gain_trend >= 0.5:
+            score += 3
+        elif gain_trend > 0:
+            score += 1
+
+        # OBV: max 10
+        score += obv_bonus
+
+        # Float: max 5
+        score += float_bonus
 
         if gain_trend <= 0:
             reject_score += 1
@@ -1036,11 +1051,10 @@ def check_explosion(api, symbol, asset_name):
             return None
 
         score = min(score, 100)
-        
+
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
             reject_score += 1
             return None
-
 
         digits = 4 if current_price < 1 else 2
 
@@ -1048,7 +1062,10 @@ def check_explosion(api, symbol, asset_name):
 
         target1 = round(current_price + atr_14, digits)
         target2 = round(current_price + (atr_14 * 2), digits)
-        target3 = round(max(resistance_50, current_price + (atr_14 * 3)), digits)
+        target3 = round(
+            max(resistance_50, current_price + (atr_14 * 3)),
+            digits
+        )
 
         return {
             "symbol": symbol,
