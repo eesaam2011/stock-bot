@@ -428,6 +428,38 @@ def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, 
 
     return results
 
+def get_1m_bars_single(symbol: str, limit: int = BARS_LIMIT) -> pd.DataFrame:
+    try:
+        bars = api.get_bars(
+            symbol,
+            tradeapi.TimeFrame.Minute,
+            limit=limit,
+            adjustment="raw"
+        ).df
+
+        if bars is None or bars.empty:
+            return pd.DataFrame()
+
+        df = bars.reset_index()
+
+        if "timestamp" not in df.columns and "time" in df.columns:
+            df.rename(columns={"time": "timestamp"}, inplace=True)
+
+        needed = {"timestamp", "open", "high", "low", "close", "volume"}
+
+        if not needed.issubset(set(df.columns)):
+            return pd.DataFrame()
+
+        return (
+            df.sort_values("timestamp")
+            .reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]]
+            .copy()
+        )
+
+    except Exception as e:
+        print(f"[BARS SINGLE] {symbol} failed: {e}", flush=True)
+        return pd.DataFrame()
+        
 def calculate_obv(df: pd.DataFrame) -> pd.Series:
     close = df["close"].astype(float)
     volume = df["volume"].astype(float)
@@ -822,20 +854,12 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
     for symbol in candidates_symbols:
         snapshot = snapshots.get(symbol)
         df = batched_bars.get(symbol, pd.DataFrame())
-        
-        # 🌟 تم تمكين الفلتر هنا صراحة بتمرير early_mode=True (التعديل الخاص بك)
+
+        if len(df) < OBV_LOOKBACK:
+            df = get_1m_bars_single(symbol, BARS_LIMIT)
+
         data = analyze_symbol(symbol, snapshot, df, float_cache_data, early_mode=True)
-
-        if data is None:
-            print(f"[REJECT] {symbol} Bars={len(df)}", flush=True)
-        else:
-            print(
-                f"[PASS] {symbol} Score={data['score']} Float={data['float_score']} "
-                f"OBV={data['obv_score']} RVOL={data['rvol_score']} "
-                f"VOL={data['volume_score']} RES={data['resistance_score']}",
-                flush=True
-            )
-
+        
         if data and data["score"] >= EARLY_ALERT_MIN_SCORE:
             candidates.append(data)
 
