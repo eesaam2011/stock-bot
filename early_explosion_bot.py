@@ -99,6 +99,7 @@ FLOAT_CACHE_HOUR = 9
 FLOAT_CACHE_MINUTE = 0
 FINNHUB_DELAY_SEC = 1.05
 last_float_cache_date = None
+float_cache_building = False
 RADAR_TRIGGER_CHANGE_PCT = 4.0
 RADAR_MIN_DOLLAR_VOLUME = 100_000
 RADAR_EXPIRE_MINUTES = 30
@@ -616,17 +617,23 @@ def should_build_float_cache():
 
 def build_float_cache_for_assets(assets):
     global last_float_cache_date
+    global float_cache_building
+
+    if float_cache_building:
+        return
 
     if not should_build_float_cache():
         return
 
-    print("🧬 Starting Finnhub float cache build...", flush=True)
+    float_cache_building = True
 
+    print("🧬 Starting Finnhub float cache build...", flush=True)
+    
     loaded = 0
     skipped = 0
 
     for asset in assets:
-        symbol = asset.symbol
+        symbol = asset.symbol من
 
         if symbol in float_cache:
             skipped += 1
@@ -655,7 +662,11 @@ def build_float_cache_for_assets(assets):
 
         time.sleep(FINNHUB_DELAY_SEC)
 
-    last_float_cache_date = datetime.now(saudi_tz).strftime("%Y-%m-%d")
+    last_float_cache_date = datetime.now(
+        saudi_tz
+    ).strftime("%Y-%m-%d")
+
+    float_cache_building = False
 
     print(
         f"✅ Float cache build finished | Loaded={loaded} | Skipped={skipped} | Total={len(float_cache)}",
