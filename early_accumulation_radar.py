@@ -968,7 +968,7 @@ def main_loop():
                 last_scan_ts = now_ts
 
             if now_ts - last_monitor_ts >= WATCHLIST_MONITOR_INTERVAL:
-                print("[WATCHLIST] Monitoring watchlist...", flush=True)
+                print(f"[WATCHLIST] Monitoring watchlist... Count={len(watchlist)}", flush=True)
                 monitor_watchlist(watchlist, state, float_cache)
                 runtime_stats["last_watchlist_monitor"] = iso_now()
                 state["last_watchlist_monitor"] = iso_now()
