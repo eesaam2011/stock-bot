@@ -932,6 +932,8 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
         watch = watchlist.get(symbol, {})
         snapshot = snapshots.get(symbol)
         df = batched_bars.get(symbol, pd.DataFrame())
+        if len(df) < OBV_LOOKBACK:
+            df = get_1m_bars_single(symbol, BARS_LIMIT)
         
         # 🌟 تم تعطيل الفلتر هنا بتمرير early_mode=False (التعديل الخاص بك)
         current_data = analyze_symbol(symbol, snapshot, df, float_cache, early_mode=False) if snapshot is not None else None
