@@ -96,7 +96,7 @@ NEWS_CACHE_MINUTES = 10
 NEWS_LOOKBACK_HOURS = 12
 
 FLOAT_CACHE_HOUR = 10
-FLOAT_CACHE_MINUTE = 0
+FLOAT_CACHE_MINUTE = 10
 FINNHUB_DELAY_SEC = 1.05
 last_float_cache_date = None
 float_cache_building = False
@@ -430,6 +430,7 @@ def load_float_cache():
             if isinstance(data, dict)
         ):
             # last_float_cache_date = today_key
+            pass
 
         print(
             f"🧬 Float cache loaded locally | Total={len(float_cache)}",
