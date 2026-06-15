@@ -96,7 +96,7 @@ NEWS_CACHE_MINUTES = 10
 NEWS_LOOKBACK_HOURS = 12
 
 FLOAT_CACHE_HOUR = 8
-FLOAT_CACHE_MINUTE = 20
+FLOAT_CACHE_MINUTE = 15
 FINNHUB_DELAY_SEC = 1.05
 last_float_cache_date = None
 float_cache_building = False
