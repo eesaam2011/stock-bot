@@ -360,18 +360,12 @@ def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, 
             bars_df = api.get_bars(batch, tradeapi.TimeFrame.Minute, limit=limit, adjustment="raw").df
 
             if bars_df is None or bars_df.empty:
-                print("[BARS] Empty bars_df", flush=True)
                 continue
 
-            print(f"[BARS] Retrieved rows={len(bars_df)}", flush=True)
-            print(f"[BARS] Index names={bars_df.index.names}", flush=True)
-            print(f"[BARS] Columns={list(bars_df.columns)}", flush=True)
-
             if isinstance(bars_df.index, pd.MultiIndex):
-                print(f"[BARS] MultiIndex detected", flush=True)
-
                 if "symbol" in bars_df.index.names:
                     available_symbols = bars_df.index.get_level_values("symbol").unique()
+
                     for sym in available_symbols:
                         df = bars_df.xs(sym, level="symbol").reset_index()
                         needed = {"open", "high", "low", "close", "volume"}
@@ -388,19 +382,38 @@ def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, 
                                 )
                 else:
                     print(f"[BARS] MultiIndex names missing symbol: {bars_df.index.names}", flush=True)
-                
+
             else:
-                if len(batch) == 1:
+                df_all = bars_df.reset_index()
+
+                if "timestamp" not in df_all.columns and "time" in df_all.columns:
+                    df_all.rename(columns={"time": "timestamp"}, inplace=True)
+
+                if "symbol" in df_all.columns:
+                    for sym, df in df_all.groupby("symbol"):
+                        needed = {"timestamp", "open", "high", "low", "close", "volume"}
+
+                        if needed.issubset(set(df.columns)):
+                            results[sym] = (
+                                df.sort_values("timestamp")
+                                .reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]]
+                                .copy()
+                            )
+
+                elif len(batch) == 1:
                     sym = batch[0]
-                    df = bars_df.reset_index()
-                    needed = {"open", "high", "low", "close", "volume"}
-                    if needed.issubset(set(df.columns)):
-                        if "timestamp" not in df.columns and "time" in df.columns:
-                            df.rename(columns={"time": "timestamp"}, inplace=True)
-                        if "timestamp" in df.columns:
-                            results[sym] = df.sort_values("timestamp").reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+                    needed = {"timestamp", "open", "high", "low", "close", "volume"}
+
+                    if needed.issubset(set(df_all.columns)):
+                        results[sym] = (
+                            df_all.sort_values("timestamp")
+                            .reset_index(drop=True)[["timestamp", "open", "high", "low", "close", "volume"]]
+                            .copy()
+                        )
+
         except Exception as e:
             print(f"[BARS] Batch failed for {len(batch)} symbols: {e}", flush=True)
+
         time.sleep(BATCH_SLEEP_SEC)
 
     return results
