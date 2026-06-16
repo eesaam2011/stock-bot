@@ -704,7 +704,7 @@ def get_minute_bars_for_symbols(symbols):
             chunk,
             tradeapi.TimeFrame.Minute,
             days_back=2,
-            limit_tail=160
+            limit_tail=1000
         )
 
         all_bars.update(bars_map)
@@ -967,6 +967,40 @@ def maybe_build_or_refresh_universe():
 # INDICATORS
 # ==========================================================
 
+def calculate_session_vwap(df):
+    try:
+        if df is None or df.empty:
+            return None
+
+        idx = df.index
+
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")
+
+        idx_ny = idx.tz_convert(ny_tz)
+
+        session_start = datetime.now(ny_tz).replace(
+            hour=4,
+            minute=0,
+            second=0,
+            microsecond=0
+        )
+
+        session_df = df[idx_ny >= session_start]
+
+        if session_df.empty:
+            session_df = df.tail(160)
+
+        vol_sum = session_df["Volume"].sum()
+
+        if vol_sum <= 0:
+            return None
+
+        return float((session_df["Close"] * session_df["Volume"]).sum() / vol_sum)
+
+    except Exception:
+        return None
+        
 def calculate_obv(df):
     obv = [0]
 
@@ -1150,8 +1184,14 @@ def analyze_symbol_for_alert(symbol, df):
         if not (PRICE_MIN <= cp <= PRICE_MAX):
             return None
 
-        vwap = float((df["Close"] * df["Volume"]).sum() / max(df["Volume"].sum(), 1))
+        vwap = calculate_session_vwap(df)
 
+        if vwap is None:
+            vwap = float(
+                (df["Close"] * df["Volume"]).sum()
+                / max(df["Volume"].sum(), 1)
+            )
+    
         df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
         df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
 
