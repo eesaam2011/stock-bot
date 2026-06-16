@@ -509,7 +509,7 @@ def refresh_news_cache():
     if next_index >= len(symbols):
         next_index = 0
 
-    today = datetime.utcnow().date()
+    today = datetime.now(pytz.UTC).date()
     from_date = (today - timedelta(days=3)).isoformat()
     to_date = today.isoformat()
 
