@@ -956,12 +956,15 @@ def maybe_build_or_refresh_universe():
         return
 
     # 3) لا يوجد بناء عشوائي خارج السبت/الأحد أو بداية التداول الممتد
+
     if not weekly_universe:
         print(
-            "⚠️ weekly_universe فارغ، لكن لن يتم بناؤه الآن لأن البناء محصور في السبت/الأحد أو بداية التداول الممتد.",
+            "⚠️ القائمة الأسبوعية فارغة - سيتم إنشاء أول قائمة الآن",
             flush=True
         )
 
+        build_weekly_universe("first_initialization")
+        return
 
 # ==========================================================
 # INDICATORS
