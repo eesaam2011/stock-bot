@@ -972,6 +972,10 @@ def calculate_session_vwap(df):
         if df is None or df.empty:
             return None
 
+        if not isinstance(df.index, pd.DatetimeIndex):
+            print("⚠️ Session VWAP fallback: index is not DatetimeIndex", flush=True)
+            return None
+
         idx = df.index
 
         if idx.tz is None:
@@ -989,16 +993,22 @@ def calculate_session_vwap(df):
         session_df = df[idx_ny >= session_start]
 
         if session_df.empty:
-            session_df = df.tail(160)
+            print("⚠️ Session VWAP fallback: no bars after 4AM NY", flush=True)
+            return None
 
         vol_sum = session_df["Volume"].sum()
 
         if vol_sum <= 0:
+            print("⚠️ Session VWAP fallback: zero volume", flush=True)
             return None
 
-        return float((session_df["Close"] * session_df["Volume"]).sum() / vol_sum)
+        return float(
+            (session_df["Close"] * session_df["Volume"]).sum()
+            / vol_sum
+        )
 
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ Session VWAP fallback: {e}", flush=True)
         return None
         
 def calculate_obv(df):
