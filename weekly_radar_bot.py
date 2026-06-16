@@ -599,6 +599,18 @@ def refresh_news_cache():
 # ALPACA BARS
 # ==========================================================
 
+def get_session_start_utc():
+    n = now_ny()
+
+    session_start_ny = n.replace(
+        hour=4,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    return session_start_ny.astimezone(pytz.UTC)
+    
 def prepare_ohlcv(df):
     if df is None or df.empty:
         return pd.DataFrame()
@@ -665,14 +677,18 @@ def normalize_bars_df(bars_df, symbols):
     return result
 
 
-def get_bars_batch(symbols, timeframe, days_back=2, limit_tail=None):
+def get_bars_batch(symbols, timeframe, days_back=2, limit_tail=None, start_time=None):
     if not symbols:
         return {}
 
     try:
         end = datetime.now(pytz.UTC)
-        start = end - timedelta(days=days_back)
 
+        if start_time is not None:
+            start = start_time
+        else:
+            start = end - timedelta(days=days_back)
+            
         bars = api.get_bars(
             symbols,
             timeframe,
@@ -703,7 +719,7 @@ def get_minute_bars_for_symbols(symbols):
         bars_map = get_bars_batch(
             chunk,
             tradeapi.TimeFrame.Minute,
-            days_back=2,
+            start_time=get_session_start_utc(),
             limit_tail=1000
         )
 
