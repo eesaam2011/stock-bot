@@ -78,6 +78,7 @@ historical_winners = {}
 manual_blacklist = []
 master_state = {}
 float_cache = {}
+last_internal_watchlist_hash = ""
 
 # ==========================================================
 # HELPERS
@@ -267,6 +268,25 @@ def save_runtime_state():
     save_gist_file(MASTER_STATE_FILE, master_state)
 
 
+def save_internal_watchlist_if_changed():
+    global last_internal_watchlist_hash
+
+    try:
+        current_hash = json.dumps(
+            internal_watchlist,
+            sort_keys=True,
+            ensure_ascii=False
+        )
+
+        if current_hash == last_internal_watchlist_hash:
+            return
+
+        save_gist_file(INTERNAL_WATCHLIST_FILE, internal_watchlist)
+        last_internal_watchlist_hash = current_hash
+
+    except Exception as e:
+        print(f"❌ internal_watchlist save check error: {e}", flush=True)
+        
 # ==========================================================
 # TIME RULES
 # ==========================================================
@@ -1543,8 +1563,8 @@ def scan_weekly_universe():
             found += 1
             send_entry_alert(signal)
 
-    save_gist_file(INTERNAL_WATCHLIST_FILE, internal_watchlist)
-
+    save_internal_watchlist_if_changed()
+    
     print(f"🔎 Scan done | symbols={len(symbols)} | alerts={found}", flush=True)
 
 
