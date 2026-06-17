@@ -44,6 +44,7 @@ MIN_DOLLAR_VOLUME = float(os.getenv("MIN_DOLLAR_VOLUME", "500000"))
 MIN_RVOL_EARLY = float(os.getenv("MIN_RVOL_EARLY", "1.5"))
 MAX_DAY_GAIN_FOR_EARLY = float(os.getenv("MAX_DAY_GAIN_FOR_EARLY", "15.0"))
 ENTRY_RVOL_MIN = float(os.getenv("ENTRY_RVOL_MIN", "2.5"))
+ENTRY_MIN_BREAKOUT_PCT = float(os.getenv("ENTRY_MIN_BREAKOUT_PCT", "0.3"))
 FAIL_RVOL_MIN = float(os.getenv("FAIL_RVOL_MIN", "1.2"))
 EARLY_ALERT_MIN_SCORE = int(os.getenv("EARLY_ALERT_MIN_SCORE", "80"))
 
@@ -881,16 +882,28 @@ def add_to_watchlist(watchlist: Dict[str, Any], data: Dict[str, Any]) -> None:
 
 def check_entry_conditions(data: Dict[str, Any], df: pd.DataFrame) -> bool:
     resistance = data.get("resistance")
+    price = safe_float(data.get("price"), 0)
+
     if not resistance or resistance <= 0:
         return False
-    if safe_float(data.get("price"), 0) <= resistance:
+
+    if price <= resistance:
         return False
+
+    breakout_pct = ((price - resistance) / resistance) * 100.0
+
+    if breakout_pct < ENTRY_MIN_BREAKOUT_PCT:
+        return False
+
     if not close_above_resistance(df, resistance):
         return False
+
     if safe_float(data.get("rvol"), 0) <= ENTRY_RVOL_MIN:
         return False
+
     if not data.get("obv_curve_ok"):
         return False
+
     return True
 
 def failure_reason(data: Optional[Dict[str, Any]], df: pd.DataFrame, watch: Dict[str, Any]) -> Optional[str]:
