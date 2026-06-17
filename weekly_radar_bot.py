@@ -286,7 +286,7 @@ def save_internal_watchlist_if_changed():
 
     except Exception as e:
         print(f"❌ internal_watchlist save check error: {e}", flush=True)
-        
+
 # ==========================================================
 # TIME RULES
 # ==========================================================
@@ -313,8 +313,6 @@ def is_session_start_refresh_time():
 
 def is_weekend_build_day_saudi():
     n = now_saudi()
-
-    # Saturday=5, Sunday=6
     return n.weekday() in [5, 6]
 
 
@@ -630,7 +628,22 @@ def get_session_start_utc():
     )
 
     return session_start_ny.astimezone(pytz.UTC)
-    
+
+
+def get_regular_session_start_utc():
+    # ── تعديل ١: بداية السوق العادي 9:30 فقط لحساب المقاومة ──
+    n = now_ny()
+
+    session_start_ny = n.replace(
+        hour=9,
+        minute=30,
+        second=0,
+        microsecond=0
+    )
+
+    return session_start_ny.astimezone(pytz.UTC)
+
+
 def prepare_ohlcv(df):
     if df is None or df.empty:
         return pd.DataFrame()
@@ -708,7 +721,7 @@ def get_bars_batch(symbols, timeframe, days_back=2, limit_tail=None, start_time=
             start = start_time
         else:
             start = end - timedelta(days=days_back)
-            
+
         bars = api.get_bars(
             symbols,
             timeframe,
@@ -971,7 +984,6 @@ def extract_symbols_from_universe():
 def maybe_build_or_refresh_universe():
     global master_state
 
-    # 1) البناء الأسبوعي فقط السبت والأحد بتوقيت السعودية
     if is_weekend_build_day_saudi():
         key = f"weekend_build_{today_key_sa()}"
 
@@ -981,7 +993,6 @@ def maybe_build_or_refresh_universe():
             save_gist_file(MASTER_STATE_FILE, master_state)
         return
 
-    # 2) Refresh فقط مع بداية التداول الممتد بتوقيت نيويورك
     if is_session_start_refresh_time():
         key = f"session_start_refresh_{today_key_ny()}"
 
@@ -990,8 +1001,6 @@ def maybe_build_or_refresh_universe():
             master_state[key] = True
             save_gist_file(MASTER_STATE_FILE, master_state)
         return
-
-    # 3) لا يوجد بناء عشوائي خارج السبت/الأحد أو بداية التداول الممتد
 
     if not weekly_universe:
         print(
@@ -1012,7 +1021,6 @@ def calculate_session_vwap(df):
             return None
 
         if not isinstance(df.index, pd.DatetimeIndex):
-            print("⚠️ Session VWAP fallback: index is not DatetimeIndex", flush=True)
             return None
 
         idx = df.index
@@ -1032,13 +1040,11 @@ def calculate_session_vwap(df):
         session_df = df[idx_ny >= session_start]
 
         if session_df.empty:
-            print("⚠️ Session VWAP fallback: no bars after 4AM NY", flush=True)
             return None
 
         vol_sum = session_df["Volume"].sum()
 
         if vol_sum <= 0:
-            print("⚠️ Session VWAP fallback: zero volume", flush=True)
             return None
 
         return float(
@@ -1049,7 +1055,8 @@ def calculate_session_vwap(df):
     except Exception as e:
         print(f"⚠️ Session VWAP fallback: {e}", flush=True)
         return None
-        
+
+
 def calculate_obv(df):
     obv = [0]
 
@@ -1103,6 +1110,133 @@ def candle_stats(df):
     body_ratio = abs(last_close - last_open) / candle_range
 
     return close_position, upper_wick_pct, body_ratio
+
+
+# ==========================================================
+# ── تعديل ١: حساب المقاومة من السوق العادي فقط ──
+# ==========================================================
+
+def get_regular_session_df(df):
+    """
+    يرجع فقط الشمعات من 9:30 صباحاً بتوقيت نيويورك.
+    يستخدم لحساب المقاومة بدون تأثير البري ماركت.
+    """
+    try:
+        if df is None or df.empty:
+            return df
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            return df
+
+        idx = df.index
+
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")
+
+        idx_ny = idx.tz_convert(ny_tz)
+
+        regular_start = datetime.now(ny_tz).replace(
+            hour=9,
+            minute=30,
+            second=0,
+            microsecond=0
+        )
+
+        regular_df = df[idx_ny >= regular_start]
+
+        if regular_df.empty:
+            return df
+
+        return regular_df
+
+    except Exception:
+        return df
+
+
+# ==========================================================
+# ── تعديل ٢: كشف نمط البري ماركت ثم التصحيح ──
+# ==========================================================
+
+def detect_premarket_pullback_setup(df):
+    """
+    يكشف النمط:
+    ١. ارتفاع في البري ماركت +15% أو أكثر
+    ٢. تصحيح -10% أو أكثر من القمة
+    ٣. السعر الحالي يرتفع مجدداً فوق VWAP
+
+    يرجع: (True, bonus_score) أو (False, 0)
+    """
+    try:
+        if df is None or df.empty or len(df) < 10:
+            return False, 0
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            return False, 0
+
+        idx = df.index
+
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")
+
+        idx_ny = idx.tz_convert(ny_tz)
+
+        today_ny = datetime.now(ny_tz)
+
+        premarket_start = today_ny.replace(hour=4, minute=0, second=0, microsecond=0)
+        regular_start   = today_ny.replace(hour=9, minute=30, second=0, microsecond=0)
+
+        premarket_mask = (idx_ny >= premarket_start) & (idx_ny < regular_start)
+        premarket_df = df[premarket_mask]
+
+        if premarket_df.empty or len(premarket_df) < 3:
+            return False, 0
+
+        # أول سعر في البري ماركت
+        pm_open = float(premarket_df["Open"].iloc[0])
+
+        if pm_open <= 0:
+            return False, 0
+
+        # أعلى سعر في البري ماركت
+        pm_high = float(premarket_df["High"].max())
+
+        pm_gain_pct = ((pm_high - pm_open) / pm_open) * 100
+
+        # شرط ١: ارتفع +15% على الأقل في البري ماركت
+        if pm_gain_pct < 15:
+            return False, 0
+
+        # آخر سعر في البري ماركت أو أول دقيقة من السوق
+        pm_last_close = float(premarket_df["Close"].iloc[-1])
+
+        pullback_pct = ((pm_high - pm_last_close) / pm_high) * 100
+
+        # شرط ٢: تصحح -10% على الأقل من القمة
+        if pullback_pct < 10:
+            return False, 0
+
+        # شرط ٣: السعر الحالي أعلى من آخر إغلاق في البري ماركت
+        cp = float(df["Close"].iloc[-1])
+
+        if cp <= pm_last_close:
+            return False, 0
+
+        # النمط مكتمل = نعطي نقاط إضافية
+        bonus = 10
+
+        print(
+            f"✅ نمط البري ماركت مكتمل | "
+            f"ارتفاع={pm_gain_pct:.1f}% | "
+            f"تصحيح={pullback_pct:.1f}% | "
+            f"bonus={bonus}",
+            flush=True
+        )
+
+        return True, bonus
+
+    except Exception as e:
+        print(f"detect_premarket_pullback_setup error: {e}", flush=True)
+        return False, 0
 
 
 # ==========================================================
@@ -1240,7 +1374,7 @@ def analyze_symbol_for_alert(symbol, df):
                 (df["Close"] * df["Volume"]).sum()
                 / max(df["Volume"].sum(), 1)
             )
-    
+
         df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
         df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
 
@@ -1272,7 +1406,13 @@ def analyze_symbol_for_alert(symbol, df):
 
         close_position, upper_wick_pct, body_ratio = candle_stats(df)
 
-        recent_resistance = float(df["High"].iloc[:-1].tail(80).max())
+        # ── تعديل ١: المقاومة من السوق العادي فقط ──
+        regular_df = get_regular_session_df(df)
+        if len(regular_df) >= 10:
+            recent_resistance = float(regular_df["High"].iloc[:-1].tail(80).max())
+        else:
+            # fallback للكود الأصلي إذا ما في بيانات كافية من السوق العادي
+            recent_resistance = float(df["High"].iloc[:-1].tail(80).max())
 
         real_breakout = (
             float(df["Close"].iloc[-1]) > recent_resistance * 1.002
@@ -1301,7 +1441,7 @@ def analyze_symbol_for_alert(symbol, df):
             and upper_wick_pct >= 0.35
         )
 
-        # Hard Rejects - لا تشمل الفلوت ولا الأخبار
+        # Hard Rejects
         if not above_vwap:
             return None
 
@@ -1359,6 +1499,10 @@ def analyze_symbol_for_alert(symbol, df):
         vwap_ema_score = 5 if above_vwap and above_ema else 3 if above_vwap else 0
         close_score = 5 if close_position >= 0.75 else 3 if close_position >= 0.65 else 0
 
+        # ── تعديل ٢: نقاط إضافية لنمط البري ماركت ثم التصحيح ──
+        pm_setup, pm_bonus = detect_premarket_pullback_setup(df)
+        premarket_bonus_score = pm_bonus
+
         total_score = (
             float_points
             + news_score
@@ -1368,6 +1512,7 @@ def analyze_symbol_for_alert(symbol, df):
             + breakout_score
             + vwap_ema_score
             + close_score
+            + premarket_bonus_score
         )
 
         total_score = max(0, min(100, total_score))
@@ -1412,6 +1557,8 @@ def analyze_symbol_for_alert(symbol, df):
             "breakout_score": breakout_score,
             "vwap_ema_score": vwap_ema_score,
             "close_score": close_score,
+            "premarket_bonus": premarket_bonus_score,
+            "premarket_setup": pm_setup,
             "instant_rvol": round(instant_rvol, 2),
             "acceleration": round(accel_value, 2),
             "recent_move": round(recent_move, 2),
@@ -1486,6 +1633,16 @@ def send_entry_alert(signal):
     else:
         news_line = signal.get("news_type", "لا يوجد")
 
+    # ── نص نمط البري ماركت في التنبيه ──
+    pm_text = ""
+
+    if signal.get("premarket_setup"):
+        pm_text = (
+            f"📈 فرصة الموجة الثانية ✅\n"
+            f"السهم ارتفع في البري ماركت ثم صحح وعاد للانطلاق.\n"
+            f"(+{signal.get('premarket_bonus')} نقطة)\n"
+        )
+    
     msg = (
         f"🚀 {BOT_NAME_AR} - دخول مؤكد\n\n"
         f"🎫 السهم: {symbol}\n"
@@ -1503,6 +1660,7 @@ def send_entry_alert(signal):
         f"RVOL: {signal.get('instant_rvol')}x\n"
         f"تسارع الفوليوم: {signal.get('acceleration')}x\n"
         f"اختراق حقيقي: {signal.get('real_breakout')}\n"
+        f"{pm_text}"
         f"Close Position: {signal.get('close_position')}\n"
         f"Distribution Score: {signal.get('distribution_score')}\n\n"
         f"🔗 https://www.tradingview.com/chart/?symbol={symbol}"
@@ -1564,7 +1722,7 @@ def scan_weekly_universe():
             send_entry_alert(signal)
 
     save_internal_watchlist_if_changed()
-    
+
     print(f"🔎 Scan done | symbols={len(symbols)} | alerts={found}", flush=True)
 
 
