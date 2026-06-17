@@ -1080,6 +1080,10 @@ def check_explosion(api, symbol, asset_name):
         # Volume Acceleration: max 15
         score += volume_acceleration_score
 
+        # Volume Cooling Penalty
+        if not volume_trend_up and volume_peak_recent:
+            score -= 8
+
         # Dollar Volume: max 10
         if dollar_volume >= 10_000_000:
             score += 10
