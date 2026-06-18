@@ -86,7 +86,19 @@ def pop_paper_trade_request():
         if not result:
             return None
 
-        return json.loads(result)
+        parsed = json.loads(result)
+
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+
+        if not isinstance(parsed, dict):
+            print(
+                f"❌ Paper queue invalid payload type: {type(parsed)}",
+                flush=True,
+            )
+            return None
+
+        return parsed
 
     except Exception as e:
         print(
