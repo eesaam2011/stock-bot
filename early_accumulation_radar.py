@@ -24,6 +24,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_BOT3_CHAT_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GIST_ID = os.getenv("GIST_ID")
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+
+REDIS_STATE_KEY = "accumulation:state"
+REDIS_WATCHLIST_KEY = "accumulation:watchlist"
 
 STATE_FILE = "accumulation_state.json"
 WATCHLIST_FILE = "accumulation_watchlist.json"
@@ -185,6 +190,53 @@ def write_json_file(path: str, data: Any) -> None:
     except Exception as e:
         print(f"[JSON] Failed writing {path}: {e}")
 
+def redis_get_json(key: str, default: Any) -> Any:
+    if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+        return default
+
+    try:
+        url = f"{UPSTASH_REDIS_REST_URL}/get/{key}"
+        headers = {"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"}
+
+        r = requests.get(url, headers=headers, timeout=15)
+
+        if r.status_code != 200:
+            print(f"[REDIS] GET failed {key}: {r.status_code} {r.text[:200]}", flush=True)
+            return default
+
+        value = r.json().get("result")
+
+        if not value:
+            return default
+
+        return json.loads(value)
+
+    except Exception as e:
+        print(f"[REDIS] GET exception {key}: {e}", flush=True)
+        return default
+
+
+def redis_set_json(key: str, data: Any) -> bool:
+    if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+        return False
+
+    try:
+        url = f"{UPSTASH_REDIS_REST_URL}/set/{key}"
+        headers = {"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"}
+        payload = json.dumps(make_json_safe(data), ensure_ascii=False)
+
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+
+        if r.status_code != 200:
+            print(f"[REDIS] SET failed {key}: {r.status_code} {r.text[:200]}", flush=True)
+            return False
+
+        return True
+
+    except Exception as e:
+        print(f"[REDIS] SET exception {key}: {e}", flush=True)
+        return False
+        
 def load_json_from_gist(filename: str, default: Any) -> Any:
     if not GITHUB_TOKEN or not GIST_ID:
         return read_json_file(filename, default)
@@ -251,21 +303,25 @@ def default_state() -> Dict[str, Any]:
     }
 
 def load_state() -> Dict[str, Any]:
-    state = read_json_file(STATE_FILE, default_state())
+    state = redis_get_json(REDIS_STATE_KEY, None)
+    if state is None:
+        state = read_json_file(STATE_FILE, default_state())
     for key, value in default_state().items():
         state.setdefault(key, value)
     return state
 
 def save_state(state: Dict[str, Any]) -> None:
     state["updated_at"] = iso_now()
-    write_json_file(STATE_FILE, state)
-
+    if not redis_set_json(REDIS_STATE_KEY, state):
+        write_json_file(STATE_FILE, state)
+        
 def load_watchlist() -> Dict[str, Any]:
-    return load_json_from_gist(WATCHLIST_FILE, {})
+    return redis_get_json(REDIS_WATCHLIST_KEY, {})
     
 def save_watchlist(watchlist: Dict[str, Any]) -> None:
-    save_json_to_gist(WATCHLIST_FILE, watchlist)
-    
+    if not redis_set_json(REDIS_WATCHLIST_KEY, watchlist):
+        write_json_file(WATCHLIST_FILE, watchlist)
+        
 def send_telegram_message(message: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[TELEGRAM] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
