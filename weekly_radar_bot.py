@@ -337,7 +337,49 @@ BAD_NAME_KEYWORDS = [
     "ACQUISITION", "BLANK CHECK", "SPAC",
     "ACQUISITION CORP"
 ]
+SHARIA_BLACKLIST_SYMBOLS = {
+    "DKNG",
+    "MGM",
+    "LVS",
+    "PENN",
+    "BALY",
+    "EVRI"
+    "CCHH"
+    "AMC"
+}
 
+
+def is_sharia_blacklisted(symbol, name):
+    symbol = str(symbol).upper().strip()
+    name = str(name).upper().strip()
+
+    if symbol in SHARIA_BLACKLIST_SYMBOLS:
+        return True
+
+    keywords = [
+        "CASINO",
+        "BET",
+        "BETTING",
+        "SPORTSBOOK",
+        "CASINOS",
+        "WAGER",
+        "GAMBLING",
+        "LOTTERY",
+        "ALCOHOL",
+        "BEER",
+        "BREW",
+        "BREWING",
+        "WINERY",
+        "TOBACCO",
+        "CIGARETTE",
+        "VAPE",
+        "CANNABIS",
+        "MARIJUANA",
+        "ADULT",
+        "PORN"
+    ]
+
+    return any(k in name for k in keywords)
 
 def is_clean_symbol(symbol):
     if not symbol:
@@ -818,6 +860,9 @@ def get_all_clean_assets():
                 continue
 
             if is_bad_asset_name(name):
+                continue
+
+            if is_sharia_blacklisted(symbol, name):
                 continue
 
             rows.append({
