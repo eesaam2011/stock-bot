@@ -1638,6 +1638,11 @@ def analyze_symbol_for_alert(symbol, df):
 
 def is_symbol_blocked(symbol):
     if symbol in active_trades:
+        trade = active_trades.get(symbol, {})
+
+        if trade.get("status") == "STOPPED_BUT_MONITORING":
+            return False
+
         return True
 
     item = sent_alerts.get(symbol)
@@ -1655,6 +1660,16 @@ def is_symbol_blocked(symbol):
 
 def send_entry_alert(signal):
     symbol = signal["symbol"]
+
+    previous_trade = active_trades.get(symbol, {})
+    is_reentry = previous_trade.get("status") == "STOPPED_BUT_MONITORING"
+
+    reentry_text = ""
+    if is_reentry:
+        reentry_text = (
+            "♻️ دخول جديد بعد كسر الوقف السابق\n"
+            "السهم عاد وحقق شروط الدخول من جديد.\n\n"
+        )
 
     if is_symbol_blocked(symbol):
         return
@@ -1690,6 +1705,7 @@ def send_entry_alert(signal):
     
     msg = (
         f"🚀 {BOT_NAME_AR} - دخول مؤكد\n\n"
+        f"{reentry_text}"
         f"🎫 السهم: {symbol}\n"
         f"💰 الدخول: {fmt_price(signal.get('entry'))}\n"
         f"📊 السكور: {signal.get('score'):.1f}/100\n\n"
@@ -1846,6 +1862,17 @@ def monitor_active_trades():
             obv_positive = bool(obv.iloc[-1] > obv_ema.iloc[-1])
 
             instant_rvol = float(df["Volume"].tail(3).mean() / max(df["Volume"].mean(), 1))
+
+            if trade.get("status") == "STOPPED_BUT_MONITORING":
+                trade["last_price"] = round(cp, 4)
+                trade["last_rvol"] = round(instant_rvol, 2)
+                trade["above_vwap"] = bool(cp > vwap)
+                trade["above_ema9"] = bool(cp > ema9)
+                trade["obv_positive"] = obv_positive
+                trade["updated_at"] = now_saudi().strftime("%Y-%m-%d %H:%M:%S")
+
+                active_trades[symbol] = trade
+                continue
 
             new_stop = current_stop
             stop_reason = ""
