@@ -3,17 +3,6 @@
 # =========================
 
 
-def calculate_confirmed_quality_bonus(row):
-    float_bonus = float(
-        row.get("float_bonus", 0) or 0
-    )
-    news_bonus = float(
-        row.get("news_bonus", 0) or 0
-    )
-
-    return float_bonus + news_bonus
-
-
 def analyze_confirmed_breakout(row):
     bars = row.get("bars")
     resistance = float(
@@ -24,6 +13,9 @@ def analyze_confirmed_breakout(row):
     )
     volume_acceleration = bool(
         row.get("volume_acceleration", False)
+    )
+    quality_bonus = float(
+        row.get("quality_bonus", 0) or 0
     )
 
     if bars is None or len(bars) < 3:
@@ -54,13 +46,8 @@ def analyze_confirmed_breakout(row):
         and close_3 > resistance
     )
 
-    closes_are_rising = (
-        close_1 < close_2
-        and close_2 < close_3
-    )
-
-    quality_bonus = calculate_confirmed_quality_bonus(
-        row
+    closes_hold_breakout = (
+        close_3 >= close_1
     )
 
     strict_volume_confirmed = (
@@ -86,7 +73,7 @@ def analyze_confirmed_breakout(row):
     if not closes_above_resistance:
         return None
 
-    if not closes_are_rising:
+    if not closes_hold_breakout:
         return None
 
     if not volume_is_strong:
@@ -98,7 +85,7 @@ def analyze_confirmed_breakout(row):
     return {
         "ready_to_alert": True,
         "grade": "CONFIRMED_BREAKOUT",
-        "reason": "Confirmed breakout with 3 closes above resistance",
+        "reason": "Confirmed breakout with 3 closes holding above resistance",
         "price": entry_price,
         "stop_loss": stop_loss,
         "confirmed_resistance": resistance,
