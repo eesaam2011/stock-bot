@@ -336,6 +336,13 @@ def get_dynamic_alert_min_score():
         return min(100, base_score + 8)
 
     return base_score
+
+def get_news_refresh_interval():
+
+    if is_extended_market_time():
+        return NEWS_REFRESH_INTERVAL
+
+    return 7200
     
 # ==========================================================
 # SYMBOL FILTERS
@@ -2148,7 +2155,7 @@ def main():
         try:
             maybe_build_or_refresh_universe()
 
-            if time.time() - last_news_refresh >= NEWS_REFRESH_INTERVAL:
+            if time.time() - last_news_refresh >= get_news_refresh_interval():
                 refresh_news_cache()
                 last_news_refresh = time.time()
 
