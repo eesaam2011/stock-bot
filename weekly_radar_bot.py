@@ -325,7 +325,18 @@ def is_friday_after_extended_close():
     minutes = n.hour * 60 + n.minute
     return minutes >= WEEKLY_REPORT_HOUR_ET * 60 + 5
 
+def get_dynamic_alert_min_score():
+    n = now_ny()
+    minutes = n.hour * 60 + n.minute
 
+    base_score = ALERT_MIN_SCORE
+
+    # آخر ساعة من السوق العادي: 3:00 PM - 4:00 PM New York
+    if 15 * 60 <= minutes <= 16 * 60:
+        return min(100, base_score + 8)
+
+    return base_score
+    
 # ==========================================================
 # SYMBOL FILTERS
 # ==========================================================
@@ -1562,10 +1573,13 @@ def analyze_symbol_for_alert(symbol, df):
 
         total_score = max(0, min(100, total_score))
 
-        if total_score < ALERT_MIN_SCORE:
+        dynamic_min_score = get_dynamic_alert_min_score()
+
+        if total_score < dynamic_min_score:
             internal_watchlist[symbol] = {
                 "symbol": symbol,
                 "score": round(total_score, 2),
+                "required_score": dynamic_min_score,
                 "price": round(cp, 4),
                 "reason": "مرشح داخلي فقط",
                 "updated_at": now_saudi().strftime("%Y-%m-%d %H:%M:%S")
