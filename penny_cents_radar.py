@@ -909,6 +909,8 @@ def send_entry_alert(data):
     return send_telegram(msg)
     
 def save_active_trade(data):
+    global active_monitoring_count
+
     trades = redis_get(REDIS_ACTIVE_TRADES, {})
 
     if not isinstance(trades, dict):
@@ -917,6 +919,7 @@ def save_active_trade(data):
     trades[data["symbol"]] = data
     redis_set(REDIS_ACTIVE_TRADES, trades)
 
+    active_monitoring_count = len(trades)
 
 # =========================================================
 # MONITORING
@@ -984,7 +987,7 @@ def monitor_trades_loop():
                         f"🚀 <b>تحقق الهدف الثاني</b>\n\n"
                         f"السهم: <b>{symbol}</b>\n"
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
-                        f"T2: <b>{trade['t2']}</b>"
+                        f"الهدف الثاني: <b>{trade['t2']}</b>"
                     )
 
                     trades.pop(symbol, None)
@@ -996,7 +999,7 @@ def monitor_trades_loop():
                         f"🎯 <b>تحقق الهدف الأول</b>\n\n"
                         f"السهم: <b>{symbol}</b>\n"
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
-                        f"T1: <b>{trade['t1']}</b>"
+                        f"الهدف الأول: <b>{trade['t1']}</b>"
                     )
 
                     trade["t1_sent"] = True
@@ -1012,7 +1015,7 @@ def monitor_trades_loop():
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         f"السبب: <b>{reason}</b>"
                     )
-
+                    
                     trades.pop(symbol, None)
                     changed = True
                     continue
@@ -1022,7 +1025,7 @@ def monitor_trades_loop():
                         f"⏱️ <b>انتهاء فترة المراقبة</b>\n\n"
                         f"السهم: <b>{symbol}</b>\n"
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
-                        "انتهت نافذة المراقبة."
+                        "انتهت نافذة المتابعة المحددة."
                     )
 
                     trades.pop(symbol, None)
@@ -1100,9 +1103,6 @@ def scanner_loop():
                 signal = analyze_symbol(item)
 
                 if not signal:
-                    continue
-
-                if has_bad_news(symbol):
                     continue
 
                 if send_entry_alert(signal):
