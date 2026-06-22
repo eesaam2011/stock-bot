@@ -1041,6 +1041,9 @@ def monitor_trades_loop():
 # =========================================================
 
 def scanner_loop():
+    
+    print("🚀 Scanner Loop Started")
+    
     global total_scans, last_scan_time, final_universe_count
 
     startup_universe_check()
