@@ -878,7 +878,7 @@ def send_entry_alert(data):
         f"Float: {format_float(data['float'])}\n"
         f"Spread: {data['spread_pct']}%\n"
         f"Breakout Level: {round(data['breakout_level'], 4) if data['breakout_level'] else 'N/A'}\n\n"
-        "⚠️ تنبيه مضاربي سريع لربح سنتات، وليس توصية شراء."
+        f"⏱️ مدة المتابعة: {MAX_MONITOR_MINUTES} دقيقة"
     )
 
     return send_telegram(msg)
