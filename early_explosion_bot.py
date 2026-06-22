@@ -1092,6 +1092,15 @@ def check_explosion(api, symbol, asset_name):
         elif dollar_volume >= MIN_DOLLAR_VOLUME:
             score += 5
 
+        # Reject cooled-off moves
+        if (
+            last_1m_vs_avg < 0.8
+            and not volume_trend_up
+            and not volume_peak_recent
+        ):
+            reject_score += 1
+            return None
+
         # Gain Trend: max 5
         if gain_trend >= 1.0:
             score += 5
