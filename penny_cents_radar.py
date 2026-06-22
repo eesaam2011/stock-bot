@@ -551,6 +551,9 @@ def build_preliminary_universe():
         for asset in assets:
             symbol = asset.symbol.upper()
             name = getattr(asset, "name", "") or ""
+            exchange = getattr(asset, "exchange", "") or ""
+            if exchange not in ["NASDAQ", "NYSE", "AMEX"]:
+                continue
 
             if not getattr(asset, "tradable", False):
                 continue
