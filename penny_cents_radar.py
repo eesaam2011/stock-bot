@@ -130,6 +130,11 @@ SYMBOL_BLACKLIST = {
     "NCLH", "CCL", "RCL", "AMC", "CNK", "IMAX"
 }
 
+# Cache for bad news to avoid duplicate API calls in same scan cycle
+_bad_news_cache = {}
+_bad_news_cache_time = {}
+BAD_NEWS_CACHE_TTL_SEC = 3600  # 1 hour
+
 
 # =========================================================
 # REDIS
@@ -358,12 +363,18 @@ def is_blacklisted(symbol):
 
 
 # =========================================================
-# NEWS EXCLUSION ONLY
+# NEWS EXCLUSION — WITH LOCAL CACHE
 # =========================================================
 
 def has_bad_news(symbol):
     if not FINNHUB_API_KEY:
         return False
+
+    # Return cached result if still fresh
+    now_ts = time.time()
+    if symbol in _bad_news_cache:
+        if now_ts - _bad_news_cache_time.get(symbol, 0) < BAD_NEWS_CACHE_TTL_SEC:
+            return _bad_news_cache[symbol]
 
     try:
         to_date = datetime.now(timezone.utc).date()
@@ -398,12 +409,16 @@ def has_bad_news(symbol):
             "going concern"
         ]
 
+        result = False
         for item in news:
             text = f"{item.get('headline', '')} {item.get('summary', '')}".lower()
             if any(w in text for w in bad_words):
-                return True
+                result = True
+                break
 
-        return False
+        _bad_news_cache[symbol] = result
+        _bad_news_cache_time[symbol] = now_ts
+        return result
 
     except Exception as e:
         print(f"News check error {symbol}: {e}")
@@ -671,7 +686,7 @@ def build_preliminary_universe():
                 }
             )
 
-            time.sleep(0.03)
+            time.sleep(0.05)
 
         redis_set(REDIS_UNIVERSE_PRELIM, universe)
         redis_set(REDIS_LAST_PRELIM_DATE, today_ksa_str())
@@ -873,27 +888,25 @@ def format_float(float_shares):
 
     return f"{float_shares:,.0f}"
 
-
 def send_entry_alert(data):
     msg = (
-        "💵 <b>Penny Cents Entry | دخول ربح سنتات</b>\n\n"
-        f"السهم: <b>{data['symbol']}</b>\n"
-        f"الدخول: <b>{data['entry']}</b>\n"
-        f"🎯 T1: <b>{data['t1']}</b>\n"
-        f"🚀 T2: <b>{data['t2']}</b>\n"
-        f"🛑 الوقف: <b>{data['stop']}</b>\n\n"
-        f"الدرجة: <b>{data['score']}/100</b>\n"
-        f"📊 القوة النسبية للحجم: {data['rvol']}\n"
-        f"⚡ تسارع الحجم: {data['volume_acceleration']}x\n"
-        f"🪶 الفلوت: {format_float(data['float'])}\n"
-        f"↔️ السبريد: {data['spread_pct']}%\n"
-        f"📈 مستوى الاختراق: {round(data['breakout_level'], 4) if data['breakout_level'] else 'غير متوفر'}\n\n"
-        f"⏱️ مدة المتابعة: {MAX_MONITOR_MINUTES} دقيقة"
+        "💵 <b>دخول ربح سنتات</b>\n\n"
+        f"📌 السهم: <b>{data['symbol']}</b>\n"
+        f"💰 الدخول: <b>{data['entry']}</b>\n"
+        f"🎯 الهدف الأول: <b>{data['t1']}</b>\n"
+        f"🚀 الهدف الثاني: <b>{data['t2']}</b>\n"
+        f"🛑 وقف الخسارة: <b>{data['stop']}</b>\n\n"
+        f"🏆 الدرجة: <b>{data['score']}/100</b>\n"
+        f"📊 القوة النسبية للحجم: <b>{data['rvol']}</b>\n"
+        f"⚡ تسارع الحجم: <b>{data['volume_acceleration']}x</b>\n"
+        f"🪶 الفلوت: <b>{format_float(data['float'])}</b>\n"
+        f"↔️ السبريد: <b>{data['spread_pct']}%</b>\n"
+        f"📈 مستوى الاختراق: <b>{round(data['breakout_level'], 4) if data['breakout_level'] else 'غير متوفر'}</b>\n\n"
+        f"⏱️ مدة المتابعة: <b>{MAX_MONITOR_MINUTES} دقيقة</b>"
     )
 
     return send_telegram(msg)
-
-
+    
 def save_active_trade(data):
     trades = redis_get(REDIS_ACTIVE_TRADES, {})
 
@@ -1061,11 +1074,11 @@ def scanner_loop():
 
             total_scans += 1
             last_scan_time = now_ksa().strftime("%Y-%m-%d %H:%M:%S KSA")
-            
+
             print(
                 f"🔍 Scan #{total_scans} | "
                 f"Universe={len(universe)} | "
-                f"Time={now_ksa().strftime('%H:%M:%S')}"
+                f"Time={now_ksa().strftime('%H:%M:%S')} KSA"
             )
 
             for item in universe:
