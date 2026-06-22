@@ -820,6 +820,16 @@ def analyze_symbol(item):
 
     total_score = rvol_score + vol_score + float_score + obv_score + breakout_score
 
+    if total_score >= 70:
+        print(
+            f"📊 {symbol} Score={total_score} | "
+            f"RVOL={rvol_score} | "
+            f"Accel={vol_score} | "
+            f"Float={float_score} | "
+            f"OBV={obv_score} | "
+            f"Breakout={breakout_score}"
+        )
+
     if total_score < MIN_SCORE:
         return None
 
