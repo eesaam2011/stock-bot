@@ -1044,7 +1044,6 @@ def scanner_loop():
     global total_scans, last_scan_time, final_universe_count
 
     print("🚀 Scanner Loop Started")
-    send_telegram("🧪 دخل scanner_loop")
     
     startup_universe_check()
 
@@ -1127,7 +1126,6 @@ if __name__ == "__main__":
     threading.Thread(target=send_startup_message, daemon=True).start()
     threading.Thread(target=monitor_trades_loop, daemon=True).start()
 
-    send_telegram("🧪 وصلت قبل scanner_loop")
     print("➡️ About to start scanner_loop")
 
     scanner_loop()
