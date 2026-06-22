@@ -873,11 +873,11 @@ def send_entry_alert(data):
         f"🚀 T2: <b>{data['t2']}</b>\n"
         f"🛑 الوقف: <b>{data['stop']}</b>\n\n"
         f"الدرجة: <b>{data['score']}/100</b>\n"
-        f"RVOL: {data['rvol']}\n"
-        f"Volume Accel: {data['volume_acceleration']}x\n"
-        f"Float: {format_float(data['float'])}\n"
-        f"Spread: {data['spread_pct']}%\n"
-        f"Breakout Level: {round(data['breakout_level'], 4) if data['breakout_level'] else 'N/A'}\n\n"
+        f"📊 القوة النسبية للحجم: {data['rvol']}\n"
+        f"⚡ تسارع الحجم: {data['volume_acceleration']}x\n"
+        f"🪶 الفلوت: {format_float(data['float'])}\n"
+        f"↔️ السبريد: {data['spread_pct']}%\n"
+        f"📈 مستوى الاختراق: {round(data['breakout_level'], 4) if data['breakout_level'] else 'غير متوفر'}\n\n"
         f"⏱️ مدة المتابعة: {MAX_MONITOR_MINUTES} دقيقة"
     )
 
