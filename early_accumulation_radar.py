@@ -209,7 +209,12 @@ def redis_get_json(key: str, default: Any) -> Any:
         if not value:
             return default
 
-        return json.loads(value)
+        parsed = json.loads(value)
+
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+
+        return parsed
 
     except Exception as e:
         print(f"[REDIS] GET exception {key}: {e}", flush=True)
@@ -303,11 +308,15 @@ def default_state() -> Dict[str, Any]:
     }
 
 def load_state() -> Dict[str, Any]:
-    state = redis_get_json(REDIS_STATE_KEY, None)
-    if state is None:
-        state = read_json_file(STATE_FILE, default_state())
+    state = redis_get_json(REDIS_STATE_KEY, {})
+
+    if not isinstance(state, dict):
+        print(f"[STATE] Invalid state type: {type(state)}", flush=True)
+        state = default_state()
+
     for key, value in default_state().items():
         state.setdefault(key, value)
+
     return state
 
 def save_state(state: Dict[str, Any]) -> None:
