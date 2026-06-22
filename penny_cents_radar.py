@@ -1043,7 +1043,7 @@ def monitor_trades_loop():
 def scanner_loop():
     global total_scans, last_scan_time, final_universe_count
 
-    print("🚀 Scanner Loop Started")
+    print("🚀 Scanner Loop Started", flush=True)
     
     startup_universe_check()
 
@@ -1080,7 +1080,8 @@ def scanner_loop():
             print(
                 f"🔍 Scan #{total_scans} | "
                 f"Universe={len(universe)} | "
-                f"Time={now_ksa().strftime('%H:%M:%S')} KSA"
+                f"Time={now_ksa().strftime('%H:%M:%S')} KSA",
+                flush=True
             )
 
             for item in universe:
