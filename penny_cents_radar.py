@@ -278,7 +278,7 @@ def is_clean_symbol(symbol):
     if not symbol.isalpha():
         return False
     if symbol.endswith(("W", "U", "R", "Q", "Y", "F")):
-    return False
+        return False
 
 def has_bad_name(name):
     if not name:
