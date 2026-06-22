@@ -21,7 +21,7 @@ NY_TZ = ZoneInfo("America/New_York")
 
 
 # =========================================================
-# FLASK - WEB SERVICE
+# FLASK
 # =========================================================
 
 app = Flask(__name__)
@@ -72,7 +72,7 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-FLOAT_CACHE_FILENAME = os.getenv("FLOAT_CACHE_FILENAME", "float_cache.json")
+FLOAT_CACHE_FILENAME = "float_cache.json"
 
 
 # =========================================================
@@ -101,7 +101,6 @@ MIN_SCORE = 90
 
 SCAN_INTERVAL_SEC = 60
 MONITOR_INTERVAL_SEC = 30
-UNIVERSE_CHECK_INTERVAL_SEC = 60
 
 RE_ALERT_BLOCK_HOURS = 2
 MAX_MONITOR_MINUTES = 120
@@ -109,12 +108,12 @@ MAX_MONITOR_MINUTES = 120
 BARS_LIMIT = 120
 ATR_PERIOD = 14
 
-REDIS_UNIVERSE_PRELIM = "penny:universe:preliminary"
-REDIS_UNIVERSE_FINAL = "penny:universe:final"
-REDIS_ACTIVE_TRADES = "penny:active_trades"
-REDIS_SENT_ALERTS = "penny:sent_alerts"
-REDIS_LAST_PRELIM_DATE = "penny:last_prelim_date"
-REDIS_LAST_FINAL_DATE = "penny:last_final_date"
+REDIS_UNIVERSE_PRELIM = "penny:v2:universe:preliminary"
+REDIS_UNIVERSE_FINAL = "penny:v2:universe:final"
+REDIS_ACTIVE_TRADES = "penny:v2:active_trades"
+REDIS_SENT_ALERTS = "penny:v2:sent_alerts"
+REDIS_LAST_PRELIM_DATE = "penny:v2:last_prelim_date"
+REDIS_LAST_FINAL_DATE = "penny:v2:last_final_date"
 
 BAD_NAME_KEYWORDS = [
     "ETF", "ETN", "FUND", "TRUST", "INDEX",
@@ -133,23 +132,39 @@ SYMBOL_BLACKLIST = {
 
 
 # =========================================================
-# REDIS - UPSTASH REST
+# REDIS
 # =========================================================
 
-def redis_get(key, default=None):
+def redis_headers():
+    return {
+        "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+
+def redis_command(command):
     try:
-        url = f"{UPSTASH_REDIS_REST_URL}/get/{key}"
-        r = requests.get(url, headers=redis_headers(), timeout=10)
-        data = r.json()
-        val = data.get("result")
+        r = requests.post(
+            UPSTASH_REDIS_REST_URL,
+            headers=redis_headers(),
+            json=command,
+            timeout=15
+        )
+        r.raise_for_status()
+        return r.json().get("result")
+    except Exception as e:
+        print(f"Redis command error {command}: {e}")
+        return None
 
-        if val is None:
-            return default
 
-        if isinstance(val, (dict, list)):
-            return val
+def redis_get(key, default=None):
+    result = redis_command(["GET", key])
 
-        parsed = json.loads(val)
+    if result is None:
+        return default
+
+    try:
+        parsed = json.loads(result)
 
         if isinstance(parsed, str):
             try:
@@ -159,20 +174,14 @@ def redis_get(key, default=None):
 
         return parsed
 
-    except Exception as e:
-        print(f"Redis GET error {key}: {e}")
-        return default
+    except Exception:
+        return result
 
 
 def redis_set(key, value):
-    try:
-        url = f"{UPSTASH_REDIS_REST_URL}/set/{key}"
-        payload = json.dumps(value)
-        r = requests.post(url, headers=redis_headers(), json=[payload], timeout=10)
-        return r.status_code == 200
-    except Exception as e:
-        print(f"Redis SET error {key}: {e}")
-        return False
+    payload = json.dumps(value)
+    result = redis_command(["SET", key, payload])
+    return result == "OK"
 
 
 # =========================================================
@@ -181,6 +190,11 @@ def redis_set(key, value):
 
 def send_telegram(message):
     global alerts_sent
+
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram env missing")
+        return False
+
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
@@ -189,15 +203,48 @@ def send_telegram(message):
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
+
         r = requests.post(url, json=payload, timeout=10)
+
         if r.status_code == 200:
             alerts_sent += 1
             return True
+
         print("Telegram error:", r.text)
         return False
+
     except Exception as e:
         print("Telegram exception:", e)
         return False
+
+
+def send_startup_message():
+    try:
+        msg = (
+            "✅ <b>Penny Cents Radar Started Successfully</b>\n\n"
+            f"🕒 Time KSA: {now_ksa().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            "💵 Mode: Penny Cents Alerts\n"
+            "📡 Status: Running"
+        )
+        send_telegram(msg)
+    except Exception as e:
+        print(f"Startup message error: {e}")
+
+
+def send_universe_ready_message():
+    try:
+        prelim = redis_get(REDIS_UNIVERSE_PRELIM, [])
+        final = redis_get(REDIS_UNIVERSE_FINAL, [])
+
+        msg = (
+            "✅ <b>Penny Universe Ready</b>\n\n"
+            f"📋 Preliminary Universe: {len(prelim)}\n"
+            f"✅ Final Universe: {len(final)}\n"
+            f"🕒 Time KSA: {now_ksa().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        send_telegram(msg)
+    except Exception as e:
+        print(f"Universe ready message error: {e}")
 
 
 # =========================================================
@@ -210,9 +257,12 @@ def load_float_cache():
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
         r = requests.get(url, headers=headers, timeout=20)
         r.raise_for_status()
+
         gist = r.json()
         content = gist["files"][FLOAT_CACHE_FILENAME]["content"]
+
         return json.loads(content)
+
     except Exception as e:
         print(f"Float cache load error: {e}")
         return {}
@@ -220,8 +270,15 @@ def load_float_cache():
 
 def get_float_value(float_cache, symbol):
     val = float_cache.get(symbol)
+
     if isinstance(val, dict):
-        val = val.get("float") or val.get("floatShares") or val.get("shares_float")
+        val = (
+            val.get("float")
+            or val.get("floatShares")
+            or val.get("shares_float")
+            or val.get("freeFloat")
+        )
+
     try:
         return float(val)
     except Exception:
@@ -246,11 +303,13 @@ def today_ksa_str():
 
 def is_scan_time_allowed():
     n = now_ny()
+
     if n.weekday() >= 5:
         return False
 
     start = n.replace(hour=4, minute=0, second=0, microsecond=0)
     end = n.replace(hour=16, minute=0, second=0, microsecond=0)
+
     return start <= n <= end
 
 
@@ -273,16 +332,23 @@ def should_build_final():
 def is_clean_symbol(symbol):
     if not symbol:
         return False
+
     if len(symbol) > 5:
         return False
+
     if not symbol.isalpha():
         return False
+
     if symbol.endswith(("W", "U", "R", "Q", "Y", "F")):
         return False
+
+    return True
+
 
 def has_bad_name(name):
     if not name:
         return False
+
     upper_name = name.upper()
     return any(k in upper_name for k in BAD_NAME_KEYWORDS)
 
@@ -312,12 +378,15 @@ def has_bad_news(symbol):
         }
 
         r = requests.get(url, params=params, timeout=10)
+
         if r.status_code != 200:
             return False
 
         news = r.json()[:20]
+
         bad_words = [
             "reverse split",
+            "reverse stock split",
             "delisting",
             "delist",
             "bankruptcy",
@@ -325,7 +394,8 @@ def has_bad_news(symbol):
             "non-compliance",
             "nasdaq notice",
             "nyse notice",
-            "liquidation"
+            "liquidation",
+            "going concern"
         ]
 
         for item in news:
@@ -334,6 +404,7 @@ def has_bad_news(symbol):
                 return True
 
         return False
+
     except Exception as e:
         print(f"News check error {symbol}: {e}")
         return False
@@ -351,32 +422,35 @@ def get_snapshot_price_and_spread(symbol):
         bid = None
         ask = None
 
-        if snap.latest_trade:
+        if getattr(snap, "latest_trade", None):
             price = float(snap.latest_trade.price)
 
-        if snap.latest_quote:
+        if getattr(snap, "latest_quote", None):
             bid = float(snap.latest_quote.bid_price or 0)
             ask = float(snap.latest_quote.ask_price or 0)
 
         if not price or price <= 0:
             return None, None
 
-        if bid > 0 and ask > 0:
+        spread_pct = None
+
+        if bid and ask and bid > 0 and ask > 0 and ask >= bid:
             mid = (bid + ask) / 2
             spread_pct = ((ask - bid) / mid) * 100 if mid > 0 else None
-        else:
-            spread_pct = None
 
         return price, spread_pct
 
     except Exception as e:
-        print(f"Snapshot error {symbol}: {e}")
+        msg = str(e).lower()
+        if "no snapshot" not in msg:
+            print(f"Snapshot error {symbol}: {e}")
         return None, None
 
 
 def get_1m_bars(symbol, limit=BARS_LIMIT):
     try:
         bars = api.get_bars(symbol, tradeapi.TimeFrame.Minute, limit=limit).df
+
         if bars.empty:
             return None
 
@@ -384,6 +458,7 @@ def get_1m_bars(symbol, limit=BARS_LIMIT):
             bars = bars[bars["symbol"] == symbol]
 
         return bars.tail(limit)
+
     except Exception as e:
         print(f"Bars error {symbol}: {e}")
         return None
@@ -394,18 +469,25 @@ def get_1m_bars(symbol, limit=BARS_LIMIT):
 # =========================================================
 
 def calc_atr(df, period=ATR_PERIOD):
+    if len(df) < period + 2:
+        return None
+
     high = df["high"]
     low = df["low"]
     close = df["close"]
-
     prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs()
-    ], axis=1).max(axis=1)
+
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ],
+        axis=1
+    ).max(axis=1)
 
     atr = tr.rolling(period).mean().iloc[-1]
+
     return float(atr) if not np.isnan(atr) else None
 
 
@@ -423,6 +505,19 @@ def calc_obv(df):
             obv.append(obv[-1])
 
     return pd.Series(obv, index=df.index)
+
+
+def calc_rvol(df):
+    if len(df) < 30:
+        return 0
+
+    current_vol = df["volume"].tail(5).mean()
+    avg_vol = df["volume"].iloc[:-5].mean()
+
+    if avg_vol <= 0:
+        return 0
+
+    return float(current_vol / avg_vol)
 
 
 def score_rvol(rvol):
@@ -500,6 +595,7 @@ def score_breakout(df):
     hod = float(df["high"].max())
 
     nearest_level = recent_high
+
     if abs(hod - current) < abs(recent_high - current):
         nearest_level = hod
 
@@ -516,22 +612,8 @@ def score_breakout(df):
     return 0, nearest_level
 
 
-def calc_rvol(df):
-    if len(df) < 30:
-        return 0
-
-    current_vol = df["volume"].tail(5).mean()
-    avg_vol = df["volume"].iloc[:-5].mean()
-
-    if avg_vol <= 0:
-        return 0
-
-    return float(current_vol / avg_vol)
-
-
 def find_recent_swing_low(df, lookback=20):
-    low = float(df["low"].tail(lookback).min())
-    return low
+    return float(df["low"].tail(lookback).min())
 
 
 # =========================================================
@@ -551,16 +633,20 @@ def build_preliminary_universe():
         for asset in assets:
             symbol = asset.symbol.upper()
             name = getattr(asset, "name", "") or ""
-            exchange = getattr(asset, "exchange", "") or ""
-            if exchange not in ["NASDAQ", "NYSE", "AMEX"]:
+
+            exchange = str(getattr(asset, "exchange", "") or "").upper()
+            if not any(x in exchange for x in ["NASDAQ", "NYSE", "AMEX"]):
                 continue
 
             if not getattr(asset, "tradable", False):
                 continue
+
             if not is_clean_symbol(symbol):
                 continue
+
             if is_blacklisted(symbol):
                 continue
+
             if has_bad_name(name):
                 continue
 
@@ -568,18 +654,24 @@ def build_preliminary_universe():
 
             if price is None:
                 continue
+
             if not (PRICE_MIN <= price <= PRICE_MAX):
                 continue
+
             if spread_pct is not None and spread_pct > MAX_SPREAD_PCT:
                 continue
 
-            universe.append({
-                "symbol": symbol,
-                "name": name,
-                "price": price,
-                "spread_pct": spread_pct,
-                "built_at": datetime.now(timezone.utc).isoformat()
-            })
+            universe.append(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "price": price,
+                    "spread_pct": spread_pct,
+                    "built_at": datetime.now(timezone.utc).isoformat()
+                }
+            )
+
+            time.sleep(0.03)
 
         redis_set(REDIS_UNIVERSE_PRELIM, universe)
         redis_set(REDIS_LAST_PRELIM_DATE, today_ksa_str())
@@ -601,26 +693,35 @@ def build_final_universe(force=False):
     float_cache = load_float_cache()
     preliminary = redis_get(REDIS_UNIVERSE_PRELIM, [])
 
+    if not isinstance(preliminary, list):
+        preliminary = []
+
     if not preliminary or force:
         build_preliminary_universe()
         preliminary = redis_get(REDIS_UNIVERSE_PRELIM, [])
 
+    if not isinstance(preliminary, list):
+        preliminary = []
+
     final = []
 
     for item in preliminary:
-    if not isinstance(item, dict):
-        continue
+        if not isinstance(item, dict):
+            continue
 
-    symbol = item.get("symbol")
-    if not symbol:
-        continue
+        symbol = item.get("symbol")
+
+        if not symbol:
+            continue
 
         float_shares = get_float_value(float_cache, symbol)
 
         if float_shares is None:
             continue
+
         if float_shares > MAX_FLOAT:
             continue
+
         if has_bad_news(symbol):
             continue
 
@@ -641,10 +742,14 @@ def startup_universe_check():
     final = redis_get(REDIS_UNIVERSE_FINAL, [])
     last_final_date = redis_get(REDIS_LAST_FINAL_DATE)
 
+    if not isinstance(final, list):
+        final = []
+
     if not final or last_final_date != today_ksa_str():
         print("No valid final universe for today. Building immediately...")
         build_preliminary_universe()
         build_final_universe(force=False)
+        send_universe_ready_message()
 
 
 # =========================================================
@@ -653,6 +758,10 @@ def startup_universe_check():
 
 def already_alerted_recently(symbol):
     sent = redis_get(REDIS_SENT_ALERTS, {})
+
+    if not isinstance(sent, dict):
+        sent = {}
+
     last = sent.get(symbol)
 
     if not last:
@@ -667,27 +776,37 @@ def already_alerted_recently(symbol):
 
 def mark_alerted(symbol):
     sent = redis_get(REDIS_SENT_ALERTS, {})
+
+    if not isinstance(sent, dict):
+        sent = {}
+
     sent[symbol] = datetime.now(timezone.utc).isoformat()
     redis_set(REDIS_SENT_ALERTS, sent)
 
 
 def analyze_symbol(item):
-    symbol = item["symbol"]
+    if not isinstance(item, dict):
+        return None
+
+    symbol = item.get("symbol")
     float_shares = item.get("float")
 
-    if not float_shares:
+    if not symbol or not float_shares:
         return None
 
     price, spread_pct = get_snapshot_price_and_spread(symbol)
 
     if price is None:
         return None
+
     if not (PRICE_MIN <= price <= PRICE_MAX):
         return None
+
     if spread_pct is not None and spread_pct > MAX_SPREAD_PCT:
         return None
 
     df = get_1m_bars(symbol)
+
     if df is None or len(df) < 40:
         return None
 
@@ -705,10 +824,11 @@ def analyze_symbol(item):
         return None
 
     atr = calc_atr(df)
+
     if not atr or atr <= 0:
         return None
 
-    entry = round(price, 4)
+    entry = round(float(price), 4)
     t1 = round(entry + (1.5 * atr), 4)
     t2 = round(entry + (3.0 * atr), 4)
 
@@ -740,6 +860,7 @@ def analyze_symbol(item):
 def format_float(float_shares):
     if float_shares >= 1_000_000:
         return f"{float_shares / 1_000_000:.1f}M"
+
     return f"{float_shares:,.0f}"
 
 
@@ -765,6 +886,10 @@ def send_entry_alert(data):
 
 def save_active_trade(data):
     trades = redis_get(REDIS_ACTIVE_TRADES, {})
+
+    if not isinstance(trades, dict):
+        trades = {}
+
     trades[data["symbol"]] = data
     redis_set(REDIS_ACTIVE_TRADES, trades)
 
@@ -775,6 +900,7 @@ def save_active_trade(data):
 
 def check_trade_weakness(symbol, trade):
     df = get_1m_bars(symbol, limit=60)
+
     if df is None or len(df) < 20:
         return False, "لا توجد بيانات كافية"
 
@@ -789,11 +915,13 @@ def check_trade_weakness(symbol, trade):
     if price < float(vwap.iloc[-1]):
         return True, "فقدان VWAP"
 
-    obv_score, obv_ok = score_obv(df)
+    _, obv_ok = score_obv(df)
+
     if not obv_ok:
         return True, "تحول OBV إلى سلبي"
 
-    vol_score, ratio = score_volume_acceleration(df)
+    _, ratio = score_volume_acceleration(df)
+
     if ratio < 0.8:
         return True, "انهيار واضح في تسارع الحجم"
 
@@ -806,12 +934,21 @@ def monitor_trades_loop():
     while True:
         try:
             trades = redis_get(REDIS_ACTIVE_TRADES, {})
-            active_monitoring_count = len(trades)
 
+            if not isinstance(trades, dict):
+                trades = {}
+
+            active_monitoring_count = len(trades)
             changed = False
 
             for symbol, trade in list(trades.items()):
+                if not isinstance(trade, dict):
+                    trades.pop(symbol, None)
+                    changed = True
+                    continue
+
                 price, _ = get_snapshot_price_and_spread(symbol)
+
                 if price is None:
                     continue
 
@@ -825,6 +962,7 @@ def monitor_trades_loop():
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         f"T2: <b>{trade['t2']}</b>"
                     )
+
                     trades.pop(symbol, None)
                     changed = True
                     continue
@@ -836,11 +974,13 @@ def monitor_trades_loop():
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         f"T1: <b>{trade['t1']}</b>"
                     )
+
                     trade["t1_sent"] = True
                     trades[symbol] = trade
                     changed = True
 
                 weak, reason = check_trade_weakness(symbol, trade)
+
                 if weak:
                     send_telegram(
                         f"⚠️ <b>خروج / ضعف | Penny Cents</b>\n\n"
@@ -848,6 +988,7 @@ def monitor_trades_loop():
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         f"السبب: <b>{reason}</b>"
                     )
+
                     trades.pop(symbol, None)
                     changed = True
                     continue
@@ -859,6 +1000,7 @@ def monitor_trades_loop():
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         "انتهت نافذة المراقبة."
                     )
+
                     trades.pop(symbol, None)
                     changed = True
 
@@ -887,23 +1029,37 @@ def scanner_loop():
 
             if should_build_final():
                 build_final_universe()
+                send_universe_ready_message()
 
             if not is_scan_time_allowed():
                 time.sleep(SCAN_INTERVAL_SEC)
                 continue
 
             universe = redis_get(REDIS_UNIVERSE_FINAL, [])
+
+            if not isinstance(universe, list):
+                universe = []
+
             final_universe_count = len(universe)
 
             if not universe:
                 startup_universe_check()
                 universe = redis_get(REDIS_UNIVERSE_FINAL, [])
 
+                if not isinstance(universe, list):
+                    universe = []
+
             total_scans += 1
             last_scan_time = now_ksa().strftime("%Y-%m-%d %H:%M:%S KSA")
 
             for item in universe:
-                symbol = item["symbol"]
+                if not isinstance(item, dict):
+                    continue
+
+                symbol = item.get("symbol")
+
+                if not symbol:
+                    continue
 
                 if already_alerted_recently(symbol):
                     continue
@@ -934,5 +1090,10 @@ def scanner_loop():
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
+    time.sleep(2)
+
+    send_startup_message()
+
     threading.Thread(target=monitor_trades_loop, daemon=True).start()
+
     scanner_loop()
