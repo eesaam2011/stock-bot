@@ -980,7 +980,7 @@ def monitor_trades_loop():
 
                 if price >= trade["t2"]:
                     send_telegram(
-                        f"🚀 <b>تحقق T2 | Penny Cents</b>\n\n"
+                        f"🚀 <b>تحقق الهدف الثاني</b>\n\n"
                         f"السهم: <b>{symbol}</b>\n"
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         f"T2: <b>{trade['t2']}</b>"
@@ -992,7 +992,7 @@ def monitor_trades_loop():
 
                 if price >= trade["t1"] and not trade.get("t1_sent"):
                     send_telegram(
-                        f"🎯 <b>تحقق T1 | Penny Cents</b>\n\n"
+                        f"🎯 <b>تحقق الهدف الأول</b>\n\n"
                         f"السهم: <b>{symbol}</b>\n"
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         f"T1: <b>{trade['t1']}</b>"
@@ -1006,7 +1006,7 @@ def monitor_trades_loop():
 
                 if weak:
                     send_telegram(
-                        f"⚠️ <b>خروج / ضعف | Penny Cents</b>\n\n"
+                        f"⚠️ <b>إشارة خروج / ضعف</b>\n\n"
                         f"السهم: <b>{symbol}</b>\n"
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         f"السبب: <b>{reason}</b>"
@@ -1018,7 +1018,7 @@ def monitor_trades_loop():
 
                 if age >= timedelta(minutes=MAX_MONITOR_MINUTES):
                     send_telegram(
-                        f"⏱️ <b>انتهاء مراقبة ساعتين | Penny Cents</b>\n\n"
+                        f"⏱️ <b>انتهاء فترة المراقبة</b>\n\n"
                         f"السهم: <b>{symbol}</b>\n"
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
                         "انتهت نافذة المراقبة."
