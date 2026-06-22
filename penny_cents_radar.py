@@ -638,7 +638,7 @@ def find_recent_swing_low(df, lookback=20):
 def build_preliminary_universe():
     global preliminary_universe_count, last_universe_build_time
 
-    print("Building preliminary penny universe...")
+    print("Building preliminary penny universe...", flush=True)
 
     universe = []
 
@@ -694,7 +694,7 @@ def build_preliminary_universe():
         preliminary_universe_count = len(universe)
         last_universe_build_time = now_ksa().strftime("%Y-%m-%d %H:%M:%S KSA")
 
-        print(f"Preliminary universe built: {len(universe)} symbols")
+        print(f"Preliminary universe built: {len(universe)} symbols", flush=True)
 
     except Exception as e:
         print(f"Preliminary universe build error: {e}")
@@ -703,7 +703,7 @@ def build_preliminary_universe():
 def build_final_universe(force=False):
     global final_universe_count, last_universe_build_time
 
-    print("Building final penny universe...")
+    print("Building final penny universe...", flush=True)
 
     float_cache = load_float_cache()
     preliminary = redis_get(REDIS_UNIVERSE_PRELIM, [])
@@ -750,7 +750,7 @@ def build_final_universe(force=False):
     final_universe_count = len(final)
     last_universe_build_time = now_ksa().strftime("%Y-%m-%d %H:%M:%S KSA")
 
-    print(f"Final universe built: {len(final)} symbols")
+    print(f"Final universe built: {len(final)} symbols", flush=True)
 
 
 def startup_universe_check():
@@ -842,7 +842,8 @@ def analyze_symbol(item):
             f"Accel={vol_score} | "
             f"Float={float_score} | "
             f"OBV={obv_score} | "
-            f"Breakout={breakout_score}"
+            f"Breakout={breakout_score}",
+            flush=True
         )
 
     if total_score < MIN_SCORE:
