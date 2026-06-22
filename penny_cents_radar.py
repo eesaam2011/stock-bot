@@ -1124,8 +1124,8 @@ if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     time.sleep(2)
 
-    send_startup_message()
-
+    threading.Thread(target=send_startup_message, daemon=True).start()
     threading.Thread(target=monitor_trades_loop, daemon=True).start()
 
+    print("➡️ About to start scanner_loop")
     scanner_loop()
