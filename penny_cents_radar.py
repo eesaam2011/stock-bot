@@ -136,19 +136,29 @@ SYMBOL_BLACKLIST = {
 # REDIS - UPSTASH REST
 # =========================================================
 
-def redis_headers():
-    return {"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"}
-
-
 def redis_get(key, default=None):
     try:
         url = f"{UPSTASH_REDIS_REST_URL}/get/{key}"
         r = requests.get(url, headers=redis_headers(), timeout=10)
         data = r.json()
         val = data.get("result")
+
         if val is None:
             return default
-        return json.loads(val)
+
+        if isinstance(val, (dict, list)):
+            return val
+
+        parsed = json.loads(val)
+
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except Exception:
+                pass
+
+        return parsed
+
     except Exception as e:
         print(f"Redis GET error {key}: {e}")
         return default
@@ -158,7 +168,7 @@ def redis_set(key, value):
     try:
         url = f"{UPSTASH_REDIS_REST_URL}/set/{key}"
         payload = json.dumps(value)
-        r = requests.post(url, headers=redis_headers(), json=[key, payload], timeout=10)
+        r = requests.post(url, headers=redis_headers(), json=[payload], timeout=10)
         return r.status_code == 200
     except Exception as e:
         print(f"Redis SET error {key}: {e}")
@@ -267,10 +277,8 @@ def is_clean_symbol(symbol):
         return False
     if not symbol.isalpha():
         return False
-    if symbol.endswith(("W", "U", "R", "Q")):
-        return False
-    return True
-
+    if symbol.endswith(("W", "U", "R", "Q", "Y", "F")):
+    return False
 
 def has_bad_name(name):
     if not name:
@@ -597,7 +605,12 @@ def build_final_universe(force=False):
     final = []
 
     for item in preliminary:
-        symbol = item["symbol"]
+    if not isinstance(item, dict):
+        continue
+
+    symbol = item.get("symbol")
+    if not symbol:
+        continue
 
         float_shares = get_float_value(float_cache, symbol)
 
