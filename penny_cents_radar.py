@@ -1063,9 +1063,9 @@ def scanner_loop():
             last_scan_time = now_ksa().strftime("%Y-%m-%d %H:%M:%S KSA")
             
             print(
-                f"🔍 Scan #{total_scans_performed} | "
+                f"🔍 Scan #{total_scans} | "
                 f"Universe={len(universe)} | "
-                f"Time={datetime.now(saudi_tz).strftime('%H:%M:%S')}"
+                f"Time={now_ksa().strftime('%H:%M:%S')}"
             )
 
             for item in universe:
