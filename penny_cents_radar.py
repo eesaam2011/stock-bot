@@ -1061,6 +1061,12 @@ def scanner_loop():
 
             total_scans += 1
             last_scan_time = now_ksa().strftime("%Y-%m-%d %H:%M:%S KSA")
+            
+            print(
+                f"🔍 Scan #{total_scans_performed} | "
+                f"Universe={len(universe)} | "
+                f"Time={datetime.now(saudi_tz).strftime('%H:%M:%S')}"
+            )
 
             for item in universe:
                 if not isinstance(item, dict):
