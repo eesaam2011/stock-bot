@@ -92,7 +92,7 @@ api = tradeapi.REST(
 # =========================================================
 
 PRICE_MIN = 0.20
-PRICE_MAX = 0.99
+PRICE_MAX = 1.50
 
 MAX_FLOAT = 50_000_000
 MAX_SPREAD_PCT = 2.0
