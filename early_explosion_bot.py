@@ -672,11 +672,22 @@ def build_float_cache_for_assets(assets):
             real_float = fetch_finnhub_float(symbol)
 
             if real_float is not None:
+                old_float = None
+
+                if symbol in float_cache and isinstance(float_cache.get(symbol), dict):
+                    old_float = float_cache[symbol].get("float")
+
                 float_cache[symbol] = {
                     "float": real_float,
                     "updated": datetime.now(saudi_tz).strftime("%Y-%m-%d")
                 }
-                loaded += 1
+
+                if old_float is None:
+                    loaded += 1
+                elif float(old_float) != float(real_float):
+                    updated += 1
+                else:
+                    skipped += 1
 
             save_float_cache()
 
@@ -687,7 +698,7 @@ def build_float_cache_for_assets(assets):
         ).strftime("%Y-%m-%d")
 
         print(
-            f"✅ Float cache build finished | Loaded={loaded} | Skipped={skipped} | Total={len(float_cache)}",
+            f"✅ Float cache build finished | Loaded={loaded} | Updated={updated} | Skipped={skipped} | Total={len(float_cache)}",
             flush=True
         )
 
