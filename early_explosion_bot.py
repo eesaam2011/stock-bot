@@ -619,6 +619,10 @@ def should_build_float_cache():
 
     return now_ksa >= scheduled_time
 
+def is_weekly_float_refresh_day():
+    now_ksa = datetime.now(saudi_tz)
+    return now_ksa.weekday() == 0
+    
 def build_float_cache_for_assets(assets):
     global last_float_cache_date
     global float_cache_building
@@ -629,16 +633,27 @@ def build_float_cache_for_assets(assets):
     if not should_build_float_cache():
         return
 
+    weekly_refresh = is_weekly_float_refresh_day()
+
     float_cache_building = True
 
-    print("🧬 Starting Finnhub float cache build...", flush=True)
+    if weekly_refresh:
+        print("🧬 Starting WEEKLY full Finnhub float refresh...", flush=True)
+    else:
+        print("🧬 Starting daily Finnhub float cache build...", flush=True)
 
     loaded = 0
+    updated = 0
     skipped = 0
 
     try:
         for asset in assets:
             symbol = asset.symbol
+
+            if symbol in float_cache and not weekly_refresh:
+                skipped += 1
+                continue
+                
 
             if symbol in float_cache:
                 skipped += 1
