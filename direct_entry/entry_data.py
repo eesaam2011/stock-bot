@@ -217,7 +217,6 @@ def calculate_overextended(bars):
         or rsi > 82
     )
 
-
 def calculate_resistance_levels(
     bars,
     current_price=None,
@@ -235,19 +234,19 @@ def calculate_resistance_levels(
             bars["close"].iloc[-1]
         )
 
-        historical_bars = bars.iloc[:-3]
+    historical_bars = bars.iloc[:-3]
 
-        if len(historical_bars) < 60:
-            historical_bars = bars.iloc[:-1]
+    if len(historical_bars) < 60:
+        historical_bars = bars.iloc[:-1]
 
-        resistance_30m = float(
-            historical_bars["high"].tail(30).max()
-        )
+    resistance_30m = float(
+        historical_bars["high"].tail(30).max()
+    )
 
-        resistance_60m = float(
-            historical_bars["high"].tail(60).max()
-        )
-    
+    resistance_60m = float(
+        historical_bars["high"].tail(60).max()
+    )
+
     resistances = [
         resistance_30m,
         resistance_60m,
