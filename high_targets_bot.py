@@ -69,12 +69,13 @@ STRONG_SCORE = 88
 WATCHLIST_SCORE = 70
 MAX_DAILY_PICKS = 3
 
-# Finnhub protection
+# Finnhub News Queue protection
 NEWS_LOOKBACK_HOURS = 24
-NEWS_CACHE_TTL_SEC = 60 * 60
-NEWS_SCAN_LIMIT = int(os.getenv("NEWS_SCAN_LIMIT", "250"))
-FINNHUB_DELAY_SEC = float(os.getenv("FINNHUB_DELAY_SEC", "1.05"))
+NEWS_REFRESH_TTL_SEC = int(os.getenv("NEWS_REFRESH_TTL_SEC", str(2 * 60 * 60)))
+FINNHUB_REQUESTS_PER_MINUTE = int(os.getenv("FINNHUB_REQUESTS_PER_MINUTE", "40"))
+FINNHUB_DELAY_SEC = float(os.getenv("FINNHUB_DELAY_SEC", "1.5"))
 FINNHUB_BACKOFF_SEC = int(os.getenv("FINNHUB_BACKOFF_SEC", "900"))
+NEWS_QUEUE_BATCH_PER_CYCLE = int(os.getenv("NEWS_QUEUE_BATCH_PER_CYCLE", "40"))
 
 # -----------------------------
 # REDIS KEYS
@@ -89,6 +90,7 @@ KEY_SCORE_HISTORY = "high_targets:score_history"
 KEY_ALERTS_SENT = "high_targets:alerts_sent"
 KEY_DAILY_RANKINGS = "high_targets:daily_rankings"
 KEY_NEWS_CACHE = "high_targets:news_cache"
+KEY_NEWS_CURSOR = "high_targets:news_cursor"
 
 
 # ============================================================
@@ -137,7 +139,7 @@ def home():
         <p>📊 Float Count: {runtime_stats.get("float_count")}</p>
         <p>🌎 Universe Count: {runtime_stats.get("universe_count")}</p>
         <p>⚡ Quick Stage Count: {runtime_stats.get("quick_stage_count")}</p>
-        <p>📰 News Stage Count: {runtime_stats.get("news_stage_count")}</p>
+        <p>📰 News Queue Updated: {runtime_stats.get("news_stage_count")}</p>
         <p>👀 Watchlist Count: {runtime_stats.get("watchlist_count")}</p>
         <p>🥇 Strong Count: {runtime_stats.get("strong_count")}</p>
         <p>📈 Active Monitoring: {runtime_stats.get("active_count")}</p>
@@ -443,6 +445,7 @@ def normalize_float_cache(raw):
 
     return cleaned
 
+
 def load_float_cache_from_source():
     global float_cache
 
@@ -450,31 +453,20 @@ def load_float_cache_from_source():
 
     raw = None
 
-    # =========================
-    # تحميل من Gist
-    # =========================
     if FLOAT_CACHE_URL:
         try:
             response = requests.get(FLOAT_CACHE_URL, timeout=30)
-
             if response.status_code == 200:
                 raw = response.json()
-                log_info("✅ Float cache loaded from Gist")
             else:
                 log_warn(f"Float cache URL error {response.status_code}")
-
         except Exception as e:
             log_warn(f"Float cache URL load failed: {e}")
 
-    # =========================
-    # نسخة احتياطية من Redis
-    # =========================
     if raw is None:
         stored = redis_get_json(KEY_FLOAT_CACHE, default={})
-
         if stored:
             raw = stored
-            log_warn("⚠️ Using Redis backup float cache")
 
     if raw is None:
         raw = {}
@@ -482,45 +474,20 @@ def load_float_cache_from_source():
     cleaned = normalize_float_cache(raw)
     float_cache = cleaned
 
-    # =========================
-    # لا تحفظ حالة التحديث إذا الفلوت فاضي
-    # =========================
-    if len(cleaned) == 0:
-        runtime_stats["float_count"] = 0
-
-        log_error("❌ Float cache is empty. Refresh date NOT updated.")
-        return {}
-
-    # =========================
-    # حفظ الفلوت في Redis
-    # =========================
     redis_set_json(KEY_FLOAT_CACHE, cleaned)
 
     runtime_stats["last_float_refresh"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
     runtime_stats["float_count"] = len(cleaned)
 
     state = load_state()
-
     state["last_float_refresh_date"] = today_ksa_str()
     state["last_float_refresh_at"] = runtime_stats["last_float_refresh"]
-
     save_state(state)
 
     log_info(f"✅ Float records loaded: {len(cleaned)}")
-
-    send_telegram(
-        f"""🚀 بوت الأهداف العالية
-
-✅ تم تحميل الفلوت بنجاح
-
-📥 عدد السجلات: {len(cleaned)}
-
-🕒 الوقت: {runtime_stats['last_float_refresh']}
-"""
-    )
-
     return cleaned
-    
+
+
 def get_float(symbol):
     symbol = (symbol or "").upper().strip()
     return safe_float(float_cache.get(symbol, 0), 0)
@@ -533,7 +500,7 @@ def get_float(symbol):
 def default_state():
     return {
         "bot_name": BOT_NAME,
-        "version": "1.1-rate-limited-news",
+        "version": "1.2-news-queue-40rpm",
         "created_at": now_ksa().strftime("%Y-%m-%d %H:%M:%S"),
         "last_float_refresh_date": None,
         "last_universe_build_date": None,
@@ -832,17 +799,17 @@ def get_company_news(symbol, allow_request=True):
     now_ts = time.time()
 
     cached = cache.get(symbol)
-    if cached and now_ts - cached.get("ts", 0) < NEWS_CACHE_TTL_SEC:
+    if cached and now_ts - cached.get("ts", 0) < NEWS_REFRESH_TTL_SEC:
         return cached.get("news", [])
 
     if not allow_request:
-        return []
+        return cached.get("news", []) if cached else []
 
     if not FINNHUB_API_KEY:
-        return []
+        return cached.get("news", []) if cached else []
 
     if now_ts < finnhub_backoff_until_ts:
-        return []
+        return cached.get("news", []) if cached else []
 
     elapsed = now_ts - finnhub_last_request_ts
     if elapsed < FINNHUB_DELAY_SEC:
@@ -868,11 +835,11 @@ def get_company_news(symbol, allow_request=True):
             backoff_until = datetime.fromtimestamp(finnhub_backoff_until_ts, SAUDI_TZ).strftime("%Y-%m-%d %H:%M:%S")
             runtime_stats["finnhub_backoff_until"] = backoff_until
             log_warn(f"Finnhub 429 rate limit. News paused until {backoff_until}")
-            return []
+            return cached.get("news", []) if cached else []
 
         if response.status_code != 200:
             log_warn(f"Finnhub news error for {symbol}: {response.status_code}")
-            return []
+            return cached.get("news", []) if cached else []
 
         news = response.json()
         if not isinstance(news, list):
@@ -885,8 +852,7 @@ def get_company_news(symbol, allow_request=True):
 
     except Exception as e:
         log_warn(f"News fetch failed for {symbol}: {e}")
-        return []
-
+        return cached.get("news", []) if cached else []
 
 def score_news_catalyst(symbol, allow_request=True):
     news = get_company_news(symbol, allow_request=allow_request)
@@ -933,6 +899,87 @@ def score_news_catalyst(symbol, allow_request=True):
         reason = "لا يوجد محفز قوي"
 
     return best_score, reason, best_title
+
+
+def cached_news_is_fresh(symbol):
+    cache = get_news_cache()
+    cached = cache.get(symbol.upper().strip())
+    if not cached:
+        return False
+    return time.time() - cached.get("ts", 0) < NEWS_REFRESH_TTL_SEC
+
+
+def get_prioritized_news_symbols():
+    universe = load_universe()
+    symbols = [item.get("symbol", "").upper().strip() for item in universe if item.get("symbol")]
+
+    watchlist = redis_get_json(KEY_WATCHLIST, default={})
+    strong = redis_get_json(KEY_STRONG, default={})
+
+    if not isinstance(watchlist, dict):
+        watchlist = {}
+    if not isinstance(strong, dict):
+        strong = {}
+
+    priority = []
+
+    for container in (strong, watchlist):
+        for sym in container.keys():
+            sym = str(sym).upper().strip()
+            if sym and sym not in priority:
+                priority.append(sym)
+
+    for sym in symbols:
+        if sym and sym not in priority:
+            priority.append(sym)
+
+    return priority
+
+
+def process_news_queue_once(limit=NEWS_QUEUE_BATCH_PER_CYCLE):
+    global finnhub_backoff_until_ts
+
+    if not FINNHUB_API_KEY:
+        return
+
+    if time.time() < finnhub_backoff_until_ts:
+        return
+
+    symbols = get_prioritized_news_symbols()
+    if not symbols:
+        return
+
+    cursor = safe_int(redis_get_json(KEY_NEWS_CURSOR, default=0), 0)
+    processed = 0
+    attempts = 0
+    total = len(symbols)
+
+    log_info(f"📰 News Queue Cycle | Symbols={total} | Cursor={cursor} | Limit={limit}")
+
+    while processed < limit and attempts < total:
+        idx = cursor % total
+        symbol = symbols[idx]
+        cursor = (cursor + 1) % total
+        attempts += 1
+
+        if not symbol:
+            continue
+
+        if cached_news_is_fresh(symbol):
+            continue
+
+        log_info(f"📰 Finnhub News {processed + 1}/{limit} | {symbol}")
+        get_company_news(symbol, allow_request=True)
+        processed += 1
+
+        if time.time() < finnhub_backoff_until_ts:
+            break
+
+    redis_set_json(KEY_NEWS_CURSOR, cursor)
+    runtime_stats["news_stage_count"] += processed
+
+    if processed > 0:
+        log_info(f"✅ News Queue Updated: {processed} symbols | Next Cursor={cursor}")
 
 
 # ============================================================
@@ -1170,7 +1217,7 @@ def evaluate_symbol(symbol, include_news=False):
     premarket_score, premarket_reason = score_premarket_validation(symbol)
 
     if include_news:
-        news_score, news_reason, news_title = score_news_catalyst(symbol, allow_request=True)
+        news_score, news_reason, news_title = score_news_catalyst(symbol, allow_request=False)
     else:
         news_score, news_reason, news_title = 0, "لم يتم فحص الأخبار في المرحلة السريعة", None
 
@@ -1299,45 +1346,8 @@ def evaluate_universe_cycle():
         return
 
     log_info("==================================================")
-    log_info("🔍 Starting Two-Stage Universe Evaluation")
+    log_info("🔍 Starting Universe Evaluation")
     log_info(f"🌎 Total Universe: {len(universe)}")
-    log_info("==================================================")
-
-    quick_rankings = []
-    total_batches = math.ceil(len(universe) / BATCH_SIZE)
-
-    # Stage 1: quick score without Finnhub
-    for batch_num, batch in enumerate(chunk_list(universe, BATCH_SIZE), start=1):
-        log_info(f"📦 Quick Score Batch {batch_num}/{total_batches} | Symbols: {len(batch)}")
-
-        for item in batch:
-            symbol = item.get("symbol", "").upper().strip()
-            if not symbol:
-                continue
-
-            try:
-                evaluation = evaluate_symbol(symbol, include_news=False)
-
-                # المرحلة السريعة لا تعتمد على خبر، لذلك نحفظها للترتيب فقط
-                quick_rankings.append(evaluation)
-
-            except Exception as e:
-                log_error(f"Quick evaluation failed for {symbol}: {e}")
-                log_error(traceback.format_exc())
-
-        time.sleep(BATCH_SLEEP_SEC)
-
-    quick_rankings = sorted(quick_rankings, key=lambda x: x.get("score", 0), reverse=True)
-
-    # لا نرسل Finnhub لكل الأسهم. فقط أفضل المرشحين سريعاً.
-    news_stage = quick_rankings[:NEWS_SCAN_LIMIT]
-    runtime_stats["quick_stage_count"] = len(quick_rankings)
-    runtime_stats["news_stage_count"] = len(news_stage)
-
-    log_info("==================================================")
-    log_info(f"🌎 Total Universe: {len(universe)}")
-    log_info(f"⚡ Quick Score Completed: {len(quick_rankings)}")
-    log_info(f"📰 News Stage Limit: {len(news_stage)}")
     log_info("==================================================")
 
     watchlist = redis_get_json(KEY_WATCHLIST, default={})
@@ -1348,57 +1358,71 @@ def evaluate_universe_cycle():
     if not isinstance(strong, dict):
         strong = {}
 
-    final_rankings = []
+    rankings = []
+    total_batches = math.ceil(len(universe) / BATCH_SIZE)
 
-    # Stage 2: final score with Finnhub only for limited top candidates
-    for idx, row in enumerate(news_stage, start=1):
-        symbol = row.get("symbol", "")
-        try:
-            log_info(f"📰 Processing News Stage {idx}/{len(news_stage)} | {symbol}")
-            evaluation = evaluate_symbol(symbol, include_news=True)
-            status = evaluation.get("status")
-            score = evaluation.get("score", 0)
+    for batch_num, batch in enumerate(chunk_list(universe, BATCH_SIZE), start=1):
+        log_info(f"📦 Evaluation Batch {batch_num}/{total_batches} | Symbols: {len(batch)}")
 
-            save_score_history_record(symbol, evaluation)
+        for item in batch:
+            symbol = item.get("symbol", "").upper().strip()
+            if not symbol:
+                continue
 
-            final_row = {
-                "symbol": symbol,
-                "score": score,
-                "status": status,
-                "price": evaluation.get("price", 0),
-                "change_pct": evaluation.get("change_pct", 0),
-                "evaluated_at": evaluation.get("evaluated_at"),
-                "news_title": evaluation.get("news_title"),
-                "factor_scores": evaluation.get("factor_scores"),
-                "factor_reasons": evaluation.get("factor_reasons"),
-            }
+            try:
+                # يقرأ الأخبار من Redis Cache فقط. السحب الفعلي يتم عبر News Queue.
+                evaluation = evaluate_symbol(symbol, include_news=True)
+                status = evaluation.get("status")
+                score = evaluation.get("score", 0)
 
-            final_rankings.append(final_row)
+                save_score_history_record(symbol, evaluation)
 
-            if status == "strong":
-                strong[symbol] = evaluation
-                watchlist.pop(symbol, None)
-            elif status == "watchlist":
-                if symbol not in strong:
-                    watchlist[symbol] = evaluation
-            else:
-                watchlist.pop(symbol, None)
-                strong.pop(symbol, None)
+                rankings.append({
+                    "symbol": symbol,
+                    "score": score,
+                    "status": status,
+                    "price": evaluation.get("price", 0),
+                    "change_pct": evaluation.get("change_pct", 0),
+                    "evaluated_at": evaluation.get("evaluated_at"),
+                    "news_title": evaluation.get("news_title"),
+                    "factor_scores": evaluation.get("factor_scores"),
+                    "factor_reasons": evaluation.get("factor_reasons"),
+                })
 
-        except Exception as e:
-            log_error(f"Final evaluation failed for {symbol}: {e}")
-            log_error(traceback.format_exc())
+                if status == "strong":
+                    strong[symbol] = evaluation
+                    watchlist.pop(symbol, None)
+                elif status == "watchlist":
+                    if symbol not in strong:
+                        watchlist[symbol] = evaluation
+                else:
+                    watchlist.pop(symbol, None)
+                    strong.pop(symbol, None)
 
-    final_rankings = sorted(final_rankings, key=lambda x: x.get("score", 0), reverse=True)
-    save_candidates(watchlist, strong, final_rankings)
+            except Exception as e:
+                log_error(f"Evaluation failed for {symbol}: {e}")
+                log_error(traceback.format_exc())
+
+        save_candidates(
+            watchlist,
+            strong,
+            sorted(rankings, key=lambda x: x.get("score", 0), reverse=True)
+        )
+
+        time.sleep(BATCH_SLEEP_SEC)
+
+    rankings = sorted(rankings, key=lambda x: x.get("score", 0), reverse=True)
+    save_candidates(watchlist, strong, rankings)
 
     runtime_stats["last_scan"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
     runtime_stats["total_scans"] += 1
+    runtime_stats["quick_stage_count"] = len(rankings)
 
     log_info("==================================================")
-    log_info("🏆 Final Top Candidates After News Stage")
-    for i, row in enumerate(final_rankings[:10], start=1):
+    log_info("🏆 Top Candidates")
+    for i, row in enumerate(rankings[:10], start=1):
         log_info(f"{i}. {row.get('symbol')} = {row.get('score')} | {classify_arabic(row.get('status'))}")
+    log_info(f"🌎 Evaluated Symbols: {len(rankings)}")
     log_info(f"👀 Watchlist: {len(watchlist)}")
     log_info(f"🥇 Strong Candidates: {len(strong)}")
     log_info("==================================================")
@@ -1827,7 +1851,7 @@ def should_send_daily_candidates_now():
 def should_run_float_refresh():
     state = load_state()
     today = today_ksa_str()
-    if state.get("last_float_refresh_date") == today:
+    if state.get("last_float_refresh_date") == today and runtime_stats.get("float_count", 0) > 0:
         return False
     sa = now_ksa()
     return sa.hour >= FLOAT_REFRESH_HOUR_KSA
@@ -1864,7 +1888,7 @@ def startup_catchup():
         state.get("last_float_refresh_date") != today_ksa_str()
         or runtime_stats.get("float_count", 0) == 0
     ):
-        log_info("📥 Loading float cache...")
+        log_info("Float missing or not refreshed today. Loading now...")
         load_float_cache_from_source()
 
     if state.get("last_universe_build_date") != today_ksa_str():
