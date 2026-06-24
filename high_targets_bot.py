@@ -4,7 +4,7 @@ import time
 import math
 import traceback
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -19,7 +19,7 @@ except Exception:
 
 # ============================================================
 # 🚀 بوت الأهداف العالية - High Targets Bot
-# Single File Version - Part 1/2
+# Single File Version
 # ============================================================
 
 BOT_NAME = "🚀 بوت الأهداف العالية"
@@ -30,9 +30,10 @@ NY_TZ = ZoneInfo("America/New_York")
 # -----------------------------
 # ENV
 # -----------------------------
+# يعتمد على مفاتيح Alpaca الموجودة عندك
 ALPACA_API_KEY = os.getenv("APCA_API_KEY_ID", "")
 ALPACA_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "")
-ALPACA_BASE_URL = os.getenv("APCA_API_BASE_URL", "")
+ALPACA_BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
@@ -58,7 +59,6 @@ MIN_DOLLAR_VOLUME = 300_000
 BATCH_SIZE = 200
 BATCH_SLEEP_SEC = 0.8
 
-SCAN_INTERVAL_SEC = 10 * 60
 CANDIDATE_REFRESH_SEC = 10 * 60
 ACTIVE_MONITOR_INTERVAL_SEC = 60
 
@@ -67,11 +67,14 @@ UNIVERSE_BUILD_HOUR_KSA = 12
 
 STRONG_SCORE = 88
 WATCHLIST_SCORE = 70
-
 MAX_DAILY_PICKS = 3
 
+# Finnhub protection
 NEWS_LOOKBACK_HOURS = 24
 NEWS_CACHE_TTL_SEC = 60 * 60
+NEWS_SCAN_LIMIT = int(os.getenv("NEWS_SCAN_LIMIT", "250"))
+FINNHUB_DELAY_SEC = float(os.getenv("FINNHUB_DELAY_SEC", "1.05"))
+FINNHUB_BACKOFF_SEC = int(os.getenv("FINNHUB_BACKOFF_SEC", "900"))
 
 # -----------------------------
 # REDIS KEYS
@@ -104,9 +107,12 @@ runtime_stats = {
     "total_scans": 0,
     "float_count": 0,
     "universe_count": 0,
+    "quick_stage_count": 0,
+    "news_stage_count": 0,
     "watchlist_count": 0,
     "strong_count": 0,
     "active_count": 0,
+    "finnhub_backoff_until": None,
 }
 
 
@@ -130,10 +136,13 @@ def home():
         <hr>
         <p>📊 Float Count: {runtime_stats.get("float_count")}</p>
         <p>🌎 Universe Count: {runtime_stats.get("universe_count")}</p>
+        <p>⚡ Quick Stage Count: {runtime_stats.get("quick_stage_count")}</p>
+        <p>📰 News Stage Count: {runtime_stats.get("news_stage_count")}</p>
         <p>👀 Watchlist Count: {runtime_stats.get("watchlist_count")}</p>
         <p>🥇 Strong Count: {runtime_stats.get("strong_count")}</p>
         <p>📈 Active Monitoring: {runtime_stats.get("active_count")}</p>
         <p>🔁 Total Scans: {runtime_stats.get("total_scans")}</p>
+        <p>🛑 Finnhub Backoff Until: {runtime_stats.get("finnhub_backoff_until")}</p>
     </body>
     </html>
     """
@@ -258,10 +267,6 @@ def redis_get_json(key, default=None):
         return default
 
 
-def redis_delete(key):
-    return redis_request(["DEL", key])
-
-
 # ============================================================
 # Telegram
 # ============================================================
@@ -368,7 +373,7 @@ SYMBOL_BLACKLIST = {
 BAD_NAME_KEYWORDS = [
     "ETF", "ETN", "FUND", "TRUST", "INDEX", "WARRANT", "UNIT", "RIGHT",
     "PREFERRED", "PREF", "NOTE", "BOND", "SPAC", "BLANK CHECK",
-    "ACQUISITION", "ACQUISITION CORP", "CORPORATION",
+    "ACQUISITION", "ACQUISITION CORP",
 ]
 
 BAD_SUFFIXES = ("W", "U", "R", "P", "Q", "Z")
@@ -377,22 +382,16 @@ BAD_SUFFIXES = ("W", "U", "R", "P", "Q", "Z")
 def is_clean_symbol(symbol):
     if not symbol:
         return False
-
     symbol = symbol.strip().upper()
-
     if len(symbol) > 5:
         return False
-
     if not symbol.isalpha():
         return False
-
     for bad in [".", "-", "/", "^"]:
         if bad in symbol:
             return False
-
     if len(symbol) >= 2 and symbol.endswith(BAD_SUFFIXES):
         return False
-
     return True
 
 
@@ -499,7 +498,7 @@ def get_float(symbol):
 def default_state():
     return {
         "bot_name": BOT_NAME,
-        "version": "1.0-single-file",
+        "version": "1.1-rate-limited-news",
         "created_at": now_ksa().strftime("%Y-%m-%d %H:%M:%S"),
         "last_float_refresh_date": None,
         "last_universe_build_date": None,
@@ -526,7 +525,6 @@ def load_runtime_collections():
     watchlist = redis_get_json(KEY_WATCHLIST, default={})
     strong = redis_get_json(KEY_STRONG, default={})
     active = redis_get_json(KEY_ACTIVE, default={})
-    alerts = redis_get_json(KEY_ALERTS_SENT, default={})
     rankings = redis_get_json(KEY_DAILY_RANKINGS, default=[])
 
     if not isinstance(universe, list):
@@ -537,8 +535,6 @@ def load_runtime_collections():
         strong = {}
     if not isinstance(active, dict):
         active = {}
-    if not isinstance(alerts, dict):
-        alerts = {}
     if not isinstance(rankings, list):
         rankings = []
 
@@ -552,7 +548,6 @@ def load_runtime_collections():
         "watchlist": watchlist,
         "strong": strong,
         "active": active,
-        "alerts": alerts,
         "rankings": rankings,
     }
 
@@ -687,8 +682,84 @@ def build_daily_universe(force=False):
     return filtered
 
 
+def load_universe():
+    universe = redis_get_json(KEY_UNIVERSE, default=[])
+    if not isinstance(universe, list):
+        universe = []
+    return universe
+
+
 # ============================================================
-# News
+# Market Data Helpers
+# ============================================================
+
+def get_daily_bars(symbol, limit=60):
+    client = get_alpaca_api()
+    if client is None:
+        return pd.DataFrame()
+
+    try:
+        bars = client.get_bars(symbol, "1Day", limit=limit).df
+        if bars is None or bars.empty:
+            return pd.DataFrame()
+        if isinstance(bars.index, pd.MultiIndex):
+            bars = bars.xs(symbol)
+        return bars.copy()
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_minute_bars(symbol, limit=120):
+    client = get_alpaca_api()
+    if client is None:
+        return pd.DataFrame()
+
+    try:
+        bars = client.get_bars(symbol, "1Min", limit=limit).df
+        if bars is None or bars.empty:
+            return pd.DataFrame()
+        if isinstance(bars.index, pd.MultiIndex):
+            bars = bars.xs(symbol)
+        return bars.copy()
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_snapshot_data(symbol):
+    client = get_alpaca_api()
+    if client is None:
+        return {}
+
+    try:
+        snapshot = client.get_snapshot(symbol)
+
+        data = {
+            "price": 0.0,
+            "prev_close": 0.0,
+            "daily_volume": 0,
+        }
+
+        if snapshot is None:
+            return data
+
+        if getattr(snapshot, "latest_trade", None):
+            data["price"] = safe_float(snapshot.latest_trade.p, 0)
+
+        if getattr(snapshot, "daily_bar", None):
+            data["daily_volume"] = safe_int(snapshot.daily_bar.v, 0)
+            if data["price"] <= 0:
+                data["price"] = safe_float(snapshot.daily_bar.c, 0)
+
+        if getattr(snapshot, "prev_daily_bar", None):
+            data["prev_close"] = safe_float(snapshot.prev_daily_bar.c, 0)
+
+        return data
+    except Exception:
+        return {}
+
+
+# ============================================================
+# News - Finnhub with Rate Limit
 # ============================================================
 
 POSITIVE_NEWS_KEYWORDS = [
@@ -703,18 +774,44 @@ NEGATIVE_NEWS_KEYWORDS = [
     "investigation", "lawsuit", "sec", "nasdaq notice", "withdrawal",
 ]
 
+finnhub_last_request_ts = 0.0
+finnhub_backoff_until_ts = 0.0
 
-def get_company_news(symbol):
-    symbol = symbol.upper().strip()
+
+def get_news_cache():
     cache = redis_get_json(KEY_NEWS_CACHE, default={})
+    if not isinstance(cache, dict):
+        cache = {}
+    return cache
+
+
+def save_news_cache(cache):
+    redis_set_json(KEY_NEWS_CACHE, cache)
+
+
+def get_company_news(symbol, allow_request=True):
+    global finnhub_last_request_ts, finnhub_backoff_until_ts
+
+    symbol = symbol.upper().strip()
+    cache = get_news_cache()
     now_ts = time.time()
 
     cached = cache.get(symbol)
     if cached and now_ts - cached.get("ts", 0) < NEWS_CACHE_TTL_SEC:
         return cached.get("news", [])
 
+    if not allow_request:
+        return []
+
     if not FINNHUB_API_KEY:
         return []
+
+    if now_ts < finnhub_backoff_until_ts:
+        return []
+
+    elapsed = now_ts - finnhub_last_request_ts
+    if elapsed < FINNHUB_DELAY_SEC:
+        time.sleep(FINNHUB_DELAY_SEC - elapsed)
 
     try:
         end_date = datetime.utcnow().date()
@@ -728,7 +825,16 @@ def get_company_news(symbol):
             "token": FINNHUB_API_KEY,
         }
 
+        finnhub_last_request_ts = time.time()
         response = requests.get(url, params=params, timeout=20)
+
+        if response.status_code == 429:
+            finnhub_backoff_until_ts = time.time() + FINNHUB_BACKOFF_SEC
+            backoff_until = datetime.fromtimestamp(finnhub_backoff_until_ts, SAUDI_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            runtime_stats["finnhub_backoff_until"] = backoff_until
+            log_warn(f"Finnhub 429 rate limit. News paused until {backoff_until}")
+            return []
+
         if response.status_code != 200:
             log_warn(f"Finnhub news error for {symbol}: {response.status_code}")
             return []
@@ -737,17 +843,18 @@ def get_company_news(symbol):
         if not isinstance(news, list):
             news = []
 
-        cache[symbol] = {"ts": now_ts, "news": news[:10]}
-        redis_set_json(KEY_NEWS_CACHE, cache)
+        cache[symbol] = {"ts": time.time(), "news": news[:10]}
+        save_news_cache(cache)
 
         return news[:10]
+
     except Exception as e:
         log_warn(f"News fetch failed for {symbol}: {e}")
         return []
 
 
-def score_news_catalyst(symbol):
-    news = get_company_news(symbol)
+def score_news_catalyst(symbol, allow_request=True):
+    news = get_company_news(symbol, allow_request=allow_request)
     if not news:
         return 0, "لا يوجد خبر حديث واضح", None
 
@@ -791,79 +898,6 @@ def score_news_catalyst(symbol):
         reason = "لا يوجد محفز قوي"
 
     return best_score, reason, best_title
-
-
-# ============================================================
-# Market Data Helpers
-# ============================================================
-
-def get_daily_bars(symbol, limit=60):
-    client = get_alpaca_api()
-    if client is None:
-        return pd.DataFrame()
-
-    try:
-        bars = client.get_bars(symbol, "1Day", limit=limit).df
-        if bars is None or bars.empty:
-            return pd.DataFrame()
-
-        if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.xs(symbol)
-
-        return bars.copy()
-    except Exception:
-        return pd.DataFrame()
-
-
-def get_minute_bars(symbol, limit=120):
-    client = get_alpaca_api()
-    if client is None:
-        return pd.DataFrame()
-
-    try:
-        bars = client.get_bars(symbol, "1Min", limit=limit).df
-        if bars is None or bars.empty:
-            return pd.DataFrame()
-
-        if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.xs(symbol)
-
-        return bars.copy()
-    except Exception:
-        return pd.DataFrame()
-
-
-def get_snapshot_data(symbol):
-    client = get_alpaca_api()
-    if client is None:
-        return {}
-
-    try:
-        snapshot = client.get_snapshot(symbol)
-
-        data = {
-            "price": 0.0,
-            "prev_close": 0.0,
-            "daily_volume": 0,
-        }
-
-        if snapshot is None:
-            return data
-
-        if getattr(snapshot, "latest_trade", None):
-            data["price"] = safe_float(snapshot.latest_trade.p, 0)
-
-        if getattr(snapshot, "daily_bar", None):
-            data["daily_volume"] = safe_int(snapshot.daily_bar.v, 0)
-            if data["price"] <= 0:
-                data["price"] = safe_float(snapshot.daily_bar.c, 0)
-
-        if getattr(snapshot, "prev_daily_bar", None):
-            data["prev_close"] = safe_float(snapshot.prev_daily_bar.c, 0)
-
-        return data
-    except Exception:
-        return {}
 
 
 # ============================================================
@@ -991,7 +1025,7 @@ def score_after_hours(symbol):
     elif change_pct >= 5 and volume >= 100_000:
         score = 4
 
-    reason = f"After Hours/Extended: {change_pct:.1f}% | Vol={volume:,}"
+    reason = f"Extended: {change_pct:.1f}% | Vol={volume:,}"
     return score, reason
 
 
@@ -1091,15 +1125,19 @@ def classify_arabic(status):
     return "❌ تجاهل"
 
 
-def evaluate_symbol(symbol):
+def evaluate_symbol(symbol, include_news=False):
     symbol = symbol.upper().strip()
 
     float_score, float_reason = score_float(symbol)
-    news_score, news_reason, news_title = score_news_catalyst(symbol)
     volume_score, volume_reason = score_volume_creep(symbol)
     compression_score, compression_reason = score_compression(symbol)
     after_hours_score, after_hours_reason = score_after_hours(symbol)
     premarket_score, premarket_reason = score_premarket_validation(symbol)
+
+    if include_news:
+        news_score, news_reason, news_title = score_news_catalyst(symbol, allow_request=True)
+    else:
+        news_score, news_reason, news_title = 0, "لم يتم فحص الأخبار في المرحلة السريعة", None
 
     partial_snapshot = {
         "float_score": float_score,
@@ -1138,6 +1176,7 @@ def evaluate_symbol(symbol):
         "prev_close": prev_close,
         "change_pct": round(pct_change(prev_close, price), 2) if prev_close > 0 else 0,
         "evaluated_at": now_ksa().strftime("%Y-%m-%d %H:%M:%S"),
+        "include_news": include_news,
         "factor_scores": {
             "float": float_score,
             "news": news_score,
@@ -1159,24 +1198,19 @@ def evaluate_symbol(symbol):
         "news_title": news_title,
     }
 
+    mode = "FINAL" if include_news else "QUICK"
     log_info(
-        f"🔍 {symbol} | Score={total}/100 | {result['status_ar']} | "
+        f"🔍 {mode} {symbol} | Score={total}/100 | {result['status_ar']} | "
         f"F={float_score} N={news_score} V={volume_score} C={compression_score} "
         f"AH={after_hours_score} PM={premarket_score} S={similarity_score}"
     )
 
     return result
 
-# ============================================================
-# Candidate Engine
-# ============================================================
 
-def load_universe():
-    universe = redis_get_json(KEY_UNIVERSE, default=[])
-    if not isinstance(universe, list):
-        universe = []
-    return universe
-
+# ============================================================
+# Candidate Engine - Two Stage Evaluation
+# ============================================================
 
 def save_candidates(watchlist, strong, rankings):
     redis_set_json(KEY_WATCHLIST, watchlist)
@@ -1229,6 +1263,48 @@ def evaluate_universe_cycle():
         log_warn("No universe available for evaluation.")
         return
 
+    log_info("==================================================")
+    log_info("🔍 Starting Two-Stage Universe Evaluation")
+    log_info(f"🌎 Total Universe: {len(universe)}")
+    log_info("==================================================")
+
+    quick_rankings = []
+    total_batches = math.ceil(len(universe) / BATCH_SIZE)
+
+    # Stage 1: quick score without Finnhub
+    for batch_num, batch in enumerate(chunk_list(universe, BATCH_SIZE), start=1):
+        log_info(f"📦 Quick Score Batch {batch_num}/{total_batches} | Symbols: {len(batch)}")
+
+        for item in batch:
+            symbol = item.get("symbol", "").upper().strip()
+            if not symbol:
+                continue
+
+            try:
+                evaluation = evaluate_symbol(symbol, include_news=False)
+
+                # المرحلة السريعة لا تعتمد على خبر، لذلك نحفظها للترتيب فقط
+                quick_rankings.append(evaluation)
+
+            except Exception as e:
+                log_error(f"Quick evaluation failed for {symbol}: {e}")
+                log_error(traceback.format_exc())
+
+        time.sleep(BATCH_SLEEP_SEC)
+
+    quick_rankings = sorted(quick_rankings, key=lambda x: x.get("score", 0), reverse=True)
+
+    # لا نرسل Finnhub لكل الأسهم. فقط أفضل المرشحين سريعاً.
+    news_stage = quick_rankings[:NEWS_SCAN_LIMIT]
+    runtime_stats["quick_stage_count"] = len(quick_rankings)
+    runtime_stats["news_stage_count"] = len(news_stage)
+
+    log_info("==================================================")
+    log_info(f"🌎 Total Universe: {len(universe)}")
+    log_info(f"⚡ Quick Score Completed: {len(quick_rankings)}")
+    log_info(f"📰 News Stage Limit: {len(news_stage)}")
+    log_info("==================================================")
+
     watchlist = redis_get_json(KEY_WATCHLIST, default={})
     strong = redis_get_json(KEY_STRONG, default={})
 
@@ -1237,75 +1313,59 @@ def evaluate_universe_cycle():
     if not isinstance(strong, dict):
         strong = {}
 
-    rankings = []
+    final_rankings = []
 
-    log_info("==================================================")
-    log_info("🔍 Starting Universe Evaluation")
-    log_info(f"🌎 Universe Count: {len(universe)}")
-    log_info("==================================================")
+    # Stage 2: final score with Finnhub only for limited top candidates
+    for idx, row in enumerate(news_stage, start=1):
+        symbol = row.get("symbol", "")
+        try:
+            log_info(f"📰 Processing News Stage {idx}/{len(news_stage)} | {symbol}")
+            evaluation = evaluate_symbol(symbol, include_news=True)
+            status = evaluation.get("status")
+            score = evaluation.get("score", 0)
 
-    total_batches = math.ceil(len(universe) / BATCH_SIZE)
+            save_score_history_record(symbol, evaluation)
 
-    for batch_num, batch in enumerate(chunk_list(universe, BATCH_SIZE), start=1):
-        log_info(f"📦 Evaluation Batch {batch_num}/{total_batches} | Symbols: {len(batch)}")
+            final_row = {
+                "symbol": symbol,
+                "score": score,
+                "status": status,
+                "price": evaluation.get("price", 0),
+                "change_pct": evaluation.get("change_pct", 0),
+                "evaluated_at": evaluation.get("evaluated_at"),
+                "news_title": evaluation.get("news_title"),
+                "factor_scores": evaluation.get("factor_scores"),
+                "factor_reasons": evaluation.get("factor_reasons"),
+            }
 
-        for item in batch:
-            symbol = item.get("symbol", "").upper().strip()
-            if not symbol:
-                continue
+            final_rankings.append(final_row)
 
-            try:
-                evaluation = evaluate_symbol(symbol)
-                status = evaluation.get("status")
-                score = evaluation.get("score", 0)
+            if status == "strong":
+                strong[symbol] = evaluation
+                watchlist.pop(symbol, None)
+            elif status == "watchlist":
+                if symbol not in strong:
+                    watchlist[symbol] = evaluation
+            else:
+                watchlist.pop(symbol, None)
+                strong.pop(symbol, None)
 
-                save_score_history_record(symbol, evaluation)
+        except Exception as e:
+            log_error(f"Final evaluation failed for {symbol}: {e}")
+            log_error(traceback.format_exc())
 
-                rankings.append({
-                    "symbol": symbol,
-                    "score": score,
-                    "status": status,
-                    "price": evaluation.get("price", 0),
-                    "change_pct": evaluation.get("change_pct", 0),
-                    "evaluated_at": evaluation.get("evaluated_at"),
-                    "news_title": evaluation.get("news_title"),
-                    "factor_scores": evaluation.get("factor_scores"),
-                    "factor_reasons": evaluation.get("factor_reasons"),
-                })
-
-                if status == "strong":
-                    strong[symbol] = evaluation
-                    watchlist.pop(symbol, None)
-                elif status == "watchlist":
-                    if symbol not in strong:
-                        watchlist[symbol] = evaluation
-                else:
-                    watchlist.pop(symbol, None)
-                    strong.pop(symbol, None)
-
-            except Exception as e:
-                log_error(f"Evaluation failed for {symbol}: {e}")
-                log_error(traceback.format_exc())
-
-        save_candidates(
-            watchlist,
-            strong,
-            sorted(rankings, key=lambda x: x.get("score", 0), reverse=True)
-        )
-
-        time.sleep(BATCH_SLEEP_SEC)
-
-    rankings = sorted(rankings, key=lambda x: x.get("score", 0), reverse=True)
-
-    save_candidates(watchlist, strong, rankings)
+    final_rankings = sorted(final_rankings, key=lambda x: x.get("score", 0), reverse=True)
+    save_candidates(watchlist, strong, final_rankings)
 
     runtime_stats["last_scan"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
     runtime_stats["total_scans"] += 1
 
     log_info("==================================================")
-    log_info("🏆 Top Candidates")
-    for i, row in enumerate(rankings[:10], start=1):
+    log_info("🏆 Final Top Candidates After News Stage")
+    for i, row in enumerate(final_rankings[:10], start=1):
         log_info(f"{i}. {row.get('symbol')} = {row.get('score')} | {classify_arabic(row.get('status'))}")
+    log_info(f"👀 Watchlist: {len(watchlist)}")
+    log_info(f"🥇 Strong Candidates: {len(strong)}")
     log_info("==================================================")
 
 
@@ -1355,7 +1415,6 @@ def calculate_targets(symbol, entry_price):
     t1 = entry_price + (atr * 0.80)
     t2 = entry_price + (atr * 1.50)
     t3 = entry_price + (atr * 2.50)
-
     extended = entry_price + (atr * 4.00)
 
     return {
@@ -1460,7 +1519,6 @@ def send_daily_candidates_alert():
             continue
 
         targets = calculate_targets(symbol, entry)
-
         msg = make_candidate_alert(row, targets)
 
         if send_telegram(msg):
@@ -1530,7 +1588,6 @@ def send_premarket_confirmation_if_due():
     if state.get("last_premarket_confirmation_date") == today:
         return
 
-    # Premarket starts 04:00 NY. Confirmation after 15 minutes.
     if not (ny.hour == 4 and ny.minute >= 15):
         return
 
@@ -1540,17 +1597,12 @@ def send_premarket_confirmation_if_due():
         return
 
     sent = 0
-
-    sorted_strong = sorted(
-        strong.values(),
-        key=lambda x: x.get("score", 0),
-        reverse=True
-    )[:MAX_DAILY_PICKS]
+    sorted_strong = sorted(strong.values(), key=lambda x: x.get("score", 0), reverse=True)[:MAX_DAILY_PICKS]
 
     for row in sorted_strong:
         symbol = row.get("symbol")
         try:
-            evaluation = evaluate_symbol(symbol)
+            evaluation = evaluate_symbol(symbol, include_news=True)
             if evaluation.get("score", 0) >= STRONG_SCORE:
                 msg = make_premarket_confirmation_alert(evaluation)
                 if send_telegram(msg):
@@ -1577,9 +1629,7 @@ def send_premarket_confirmation_if_due():
     state["last_premarket_confirmation_date"] = today
     state["last_premarket_confirmation_at"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
     save_state(state)
-
     runtime_stats["last_premarket_confirmation"] = state["last_premarket_confirmation_at"]
-
     log_info(f"Premarket confirmations sent: {sent}")
 
 
@@ -1622,7 +1672,6 @@ def monitor_active_positions():
             extended = safe_float(pos.get("extended", 0), 0)
             entry = safe_float(pos.get("entry", 0), 0)
 
-            # Stop break
             if current_stop > 0 and price <= current_stop:
                 alert_key = f"stop_break:{symbol}:{today_ksa_str()}"
                 if not already_alerted(alert_key):
@@ -1642,7 +1691,6 @@ def monitor_active_positions():
                 changed = True
                 continue
 
-            # T1
             if not pos.get("t1_hit") and t1 > 0 and price >= t1:
                 pos["t1_hit"] = True
                 new_stop = max(current_stop, entry)
@@ -1663,7 +1711,6 @@ T1: {format_price(t1)}
                 send_management_alert(symbol, "✅ تحقق الهدف الأول + رفع الوقف", body)
                 changed = True
 
-            # T2
             if not pos.get("t2_hit") and t2 > 0 and price >= t2:
                 pos["t2_hit"] = True
                 new_stop = max(safe_float(pos.get("current_stop", 0), 0), t1)
@@ -1684,7 +1731,6 @@ T2: {format_price(t2)}
                 send_management_alert(symbol, "✅ تحقق الهدف الثاني + رفع الوقف", body)
                 changed = True
 
-            # T3
             if not pos.get("t3_hit") and t3 > 0 and price >= t3:
                 pos["t3_hit"] = True
                 new_stop = max(safe_float(pos.get("current_stop", 0), 0), t2)
@@ -1707,7 +1753,6 @@ T3: {format_price(t3)}
                 send_management_alert(symbol, "✅ تحقق الهدف الثالث + متابعة الهدف الممتد", body)
                 changed = True
 
-            # Extended
             if pos.get("extended_active", True) and extended > 0 and price >= extended:
                 body = f"""🚀 تم الوصول إلى الهدف الممتد المتوقع
 
@@ -1739,37 +1784,7 @@ T3: {format_price(t3)}
 # Time Logic
 # ============================================================
 
-def is_weekend_ksa():
-    # Saturday=5, Sunday=6
-    return now_ksa().weekday() in (5, 6)
-
-
-def is_regular_market_open_ny():
-    ny = now_ny()
-
-    if ny.weekday() >= 5:
-        return False
-
-    start = ny.replace(hour=9, minute=30, second=0, microsecond=0)
-    end = ny.replace(hour=16, minute=0, second=0, microsecond=0)
-
-    return start <= ny <= end
-
-
-def is_extended_or_premarket_ny():
-    ny = now_ny()
-
-    if ny.weekday() >= 5:
-        return False
-
-    start = ny.replace(hour=4, minute=0, second=0, microsecond=0)
-    end = ny.replace(hour=20, minute=0, second=0, microsecond=0)
-
-    return start <= ny <= end
-
-
 def should_send_daily_candidates_now():
-    # Around midnight KSA. One alert per KSA date.
     sa = now_ksa()
     return sa.hour == 0 and sa.minute <= 20
 
@@ -1777,10 +1792,8 @@ def should_send_daily_candidates_now():
 def should_run_float_refresh():
     state = load_state()
     today = today_ksa_str()
-
     if state.get("last_float_refresh_date") == today:
         return False
-
     sa = now_ksa()
     return sa.hour >= FLOAT_REFRESH_HOUR_KSA
 
@@ -1788,10 +1801,8 @@ def should_run_float_refresh():
 def should_build_universe():
     state = load_state()
     today = today_ksa_str()
-
     if state.get("last_universe_build_date") == today:
         return False
-
     sa = now_ksa()
     return sa.hour >= UNIVERSE_BUILD_HOUR_KSA
 
@@ -1826,14 +1837,13 @@ def startup_catchup():
 
     summary = {
         "float_count": runtime_stats.get("float_count", 0),
-        "universe_count": collections["universe"] and len(collections["universe"]) or 0,
+        "universe_count": len(collections["universe"]),
         "watchlist_count": len(collections["watchlist"]),
         "strong_count": len(collections["strong"]),
         "active_count": len(collections["active"]),
     }
 
     send_startup_alert(summary)
-
     log_info("✅ Startup catch-up completed.")
 
 
@@ -1905,7 +1915,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# ============================================================
-# END OF PART 1/2
-# بعد لصق هذا الجزء، اكتب لي: كمل الجزء الثاني
-# ============================================================
