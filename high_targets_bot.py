@@ -474,6 +474,11 @@ def load_float_cache_from_source():
     cleaned = normalize_float_cache(raw)
     float_cache = cleaned
 
+    if len(cleaned) == 0:
+        runtime_stats["float_count"] = 0
+        log_error("❌ Float cache is empty. Refresh date NOT updated.")
+        return {}
+
     redis_set_json(KEY_FLOAT_CACHE, cleaned)
 
     runtime_stats["last_float_refresh"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
@@ -2080,6 +2085,8 @@ def scheduler_loop():
 
             if should_build_universe():
                 build_daily_universe(force=True)
+
+            process_news_queue_once(limit=NEWS_QUEUE_BATCH_PER_CYCLE)
 
             if now_ts - last_eval_ts >= CANDIDATE_REFRESH_SEC:
                 evaluate_universe_cycle()
