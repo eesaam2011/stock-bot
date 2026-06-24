@@ -500,7 +500,7 @@ def get_float(symbol):
 def default_state():
     return {
         "bot_name": BOT_NAME,
-        "version": "1.2-news-queue-40rpm",
+        "version": "1.3-intraday-vc-pm",
         "created_at": now_ksa().strftime("%Y-%m-%d %H:%M:%S"),
         "last_float_refresh_date": None,
         "last_universe_build_date": None,
@@ -726,6 +726,43 @@ def get_minute_bars(symbol, limit=120):
     except Exception:
         return pd.DataFrame()
 
+
+def get_intraday_bars_today(symbol, timeframe="5Min", start_hour_ny=4, end_hour_ny=None, end_minute_ny=0, limit=1000):
+    client = get_alpaca_api()
+    if client is None:
+        return pd.DataFrame()
+
+    try:
+        ny = now_ny()
+        start_ny = ny.replace(hour=start_hour_ny, minute=0, second=0, microsecond=0)
+
+        if end_hour_ny is not None:
+            end_ny = ny.replace(hour=end_hour_ny, minute=end_minute_ny, second=0, microsecond=0)
+            if ny < end_ny:
+                end_ny = ny
+        else:
+            end_ny = ny
+
+        start_utc = start_ny.astimezone(ZoneInfo("UTC")).isoformat()
+        end_utc = end_ny.astimezone(ZoneInfo("UTC")).isoformat()
+
+        bars = client.get_bars(
+            symbol,
+            timeframe,
+            start=start_utc,
+            end=end_utc,
+            limit=limit
+        ).df
+
+        if bars is None or bars.empty:
+            return pd.DataFrame()
+
+        if isinstance(bars.index, pd.MultiIndex):
+            bars = bars.xs(symbol)
+
+        return bars.copy()
+    except Exception:
+        return pd.DataFrame()
 
 def get_snapshot_data(symbol):
     client = get_alpaca_api()
@@ -1007,145 +1044,260 @@ def score_float(symbol):
 
 
 def score_volume_creep(symbol):
-    bars = get_daily_bars(symbol, limit=40)
-    if bars.empty or len(bars) < 15:
-        return 0, "بيانات الحجم غير كافية"
+    # V = Volume Creep
+    # يعتمد الآن على مزيج من حجم اليوم اللحظي + آخر 5/15 دقيقة + Daily Volume Creep.
+    score = 0
+    reasons = []
 
     try:
-        vols = bars["volume"].astype(float)
-        avg_30 = vols.tail(30).mean()
-        recent_7 = vols.tail(7).mean()
-        recent_3 = vols.tail(3).mean()
+        snap = get_snapshot_data(symbol)
+        day_volume = safe_float(snap.get("daily_volume", 0), 0)
 
-        if avg_30 <= 0:
-            return 0, "متوسط الحجم غير صالح"
+        daily = get_daily_bars(symbol, limit=40)
+        avg_30 = 0.0
 
-        ratio_7 = recent_7 / avg_30
-        ratio_3 = recent_3 / avg_30
-        trend_up = recent_3 >= recent_7
+        if not daily.empty and len(daily) >= 20:
+            vols = daily["volume"].astype(float)
+            avg_30 = safe_float(vols.tail(30).mean(), 0)
 
-        score = 0
+            if avg_30 > 0 and day_volume > 0:
+                day_ratio = day_volume / avg_30
 
-        if ratio_7 >= 2.5 and ratio_3 >= 3.0 and trend_up:
-            score = 15
-        elif ratio_7 >= 2.0 and ratio_3 >= 2.5:
-            score = 13
-        elif ratio_7 >= 1.5 and ratio_3 >= 2.0:
-            score = 10
-        elif ratio_7 >= 1.3:
-            score = 7
-        elif ratio_7 >= 1.1:
-            score = 4
+                if day_ratio >= 2.50:
+                    score += 7
+                elif day_ratio >= 2.00:
+                    score += 6
+                elif day_ratio >= 1.50:
+                    score += 5
+                elif day_ratio >= 1.25:
+                    score += 3
+                elif day_ratio >= 1.10:
+                    score += 2
 
-        reason = f"Volume Creep: 7D={ratio_7:.2f}x / 3D={ratio_3:.2f}x"
-        return score, reason
-    except Exception:
-        return 0, "خطأ في حساب Volume Creep"
+                reasons.append(f"DayVol={day_ratio:.2f}x")
 
+            recent_7 = safe_float(vols.tail(7).mean(), 0)
+            recent_3 = safe_float(vols.tail(3).mean(), 0)
+
+            if avg_30 > 0:
+                ratio_7 = recent_7 / avg_30
+                ratio_3 = recent_3 / avg_30
+
+                if ratio_7 >= 1.50 and ratio_3 >= ratio_7:
+                    score += 4
+                elif ratio_7 >= 1.25:
+                    score += 2
+                elif ratio_7 >= 1.10:
+                    score += 1
+
+                reasons.append(f"7D={ratio_7:.2f}x/3D={ratio_3:.2f}x")
+
+        bars_5m = get_intraday_bars_today(symbol, timeframe="5Min", start_hour_ny=4, limit=300)
+        if not bars_5m.empty and len(bars_5m) >= 8:
+            vols5 = bars_5m["volume"].astype(float)
+
+            recent_3 = safe_float(vols5.tail(3).mean(), 0)
+            prev_12 = safe_float(vols5.iloc[:-3].tail(12).mean(), 0)
+
+            if prev_12 > 0:
+                intraday_ratio = recent_3 / prev_12
+
+                if intraday_ratio >= 3.0:
+                    score += 4
+                elif intraday_ratio >= 2.0:
+                    score += 3
+                elif intraday_ratio >= 1.5:
+                    score += 2
+                elif intraday_ratio >= 1.2:
+                    score += 1
+
+                reasons.append(f"5mAccel={intraday_ratio:.2f}x")
+
+        score = int(max(0, min(15, score)))
+
+        if not reasons:
+            return 0, "Volume: بيانات غير كافية"
+
+        return score, " | ".join(reasons)
+
+    except Exception as e:
+        return 0, f"خطأ في حساب Volume Creep: {e}"
 
 def score_compression(symbol):
-    bars = get_daily_bars(symbol, limit=30)
-    if bars.empty or len(bars) < 12:
-        return 0, "بيانات الضغط غير كافية"
+    # C = Compression Pattern
+    # يعتمد الآن على 5m intraday + daily structure بدلاً من Daily فقط.
+    score = 0
+    reasons = []
 
     try:
-        recent = bars.tail(10).copy()
+        bars_5m = get_intraday_bars_today(symbol, timeframe="5Min", start_hour_ny=4, limit=300)
 
-        high = recent["high"].astype(float)
-        low = recent["low"].astype(float)
-        close = recent["close"].astype(float)
+        if not bars_5m.empty and len(bars_5m) >= 20:
+            recent = bars_5m.tail(36).copy()
 
-        ranges = (high - low) / close.replace(0, pd.NA)
-        avg_range_recent = ranges.tail(5).mean()
-        avg_range_prev = ranges.head(5).mean()
+            high = recent["high"].astype(float)
+            low = recent["low"].astype(float)
+            close = recent["close"].astype(float)
 
-        higher_lows = low.tail(5).iloc[-1] >= low.tail(5).iloc[0]
-        near_high = close.iloc[-1] >= high.max() * 0.92
+            price = safe_float(close.iloc[-1], 0)
+            if price > 0:
+                ranges = (high - low) / close.replace(0, pd.NA)
+                avg_recent = safe_float(ranges.tail(12).mean(), 0)
+                avg_prev = safe_float(ranges.head(max(1, len(ranges) - 12)).mean(), 0)
 
-        score = 0
+                if avg_prev > 0:
+                    compression_ratio = avg_recent / avg_prev
 
-        if avg_range_recent < avg_range_prev * 0.75:
-            score += 4
-        elif avg_range_recent < avg_range_prev * 0.90:
-            score += 2
+                    if compression_ratio <= 0.60:
+                        score += 4
+                    elif compression_ratio <= 0.75:
+                        score += 3
+                    elif compression_ratio <= 0.90:
+                        score += 2
+                    elif compression_ratio <= 1.05:
+                        score += 1
 
-        if higher_lows:
-            score += 3
+                    reasons.append(f"RangeCompress={compression_ratio:.2f}")
 
-        if near_high:
-            score += 3
+                recent_lows = low.tail(12)
+                if len(recent_lows) >= 6 and recent_lows.iloc[-1] >= recent_lows.iloc[0]:
+                    score += 2
+                    reasons.append("HigherLows")
 
-        score = min(10, score)
+                recent_high = safe_float(high.tail(36).max(), 0)
+                if recent_high > 0:
+                    near_high_pct = (price / recent_high) * 100
+                    if near_high_pct >= 97:
+                        score += 3
+                    elif near_high_pct >= 94:
+                        score += 2
+                    elif near_high_pct >= 91:
+                        score += 1
 
-        reason = "ضغط سعري جيد" if score >= 7 else "ضغط سعري متوسط" if score >= 4 else "ضغط ضعيف"
-        return score, reason
-    except Exception:
-        return 0, "خطأ في حساب الضغط السعري"
+                    reasons.append(f"NearHigh={near_high_pct:.1f}%")
 
+        # دعم Daily Structure كعامل إضافي بسيط
+        daily = get_daily_bars(symbol, limit=30)
+        if not daily.empty and len(daily) >= 12:
+            d_high = daily["high"].astype(float)
+            d_low = daily["low"].astype(float)
+            d_close = daily["close"].astype(float)
+
+            daily_near_high = safe_float(d_close.iloc[-1], 0) >= safe_float(d_high.tail(10).max(), 0) * 0.92
+            daily_higher_lows = safe_float(d_low.tail(5).iloc[-1], 0) >= safe_float(d_low.tail(5).iloc[0], 0)
+
+            if daily_near_high:
+                score += 1
+                reasons.append("DailyNearHigh")
+
+            if daily_higher_lows:
+                score += 1
+                reasons.append("DailyHigherLows")
+
+        score = int(max(0, min(10, score)))
+
+        if not reasons:
+            return 0, "Compression: بيانات غير كافية"
+
+        return score, " | ".join(reasons)
+
+    except Exception as e:
+        return 0, f"خطأ في حساب Compression: {e}"
 
 def score_after_hours(symbol):
+    # AH = Current/Extended Strength
+    # حالياً ليس After Hours حقيقي فقط؛ هو قوة الحركة مقابل إغلاق أمس + الحجم.
     snap = get_snapshot_data(symbol)
     price = safe_float(snap.get("price", 0), 0)
     prev_close = safe_float(snap.get("prev_close", 0), 0)
     volume = safe_int(snap.get("daily_volume", 0), 0)
 
     if price <= 0 or prev_close <= 0:
-        return 0, "بيانات After Hours غير كافية"
+        return 0, "Strength: بيانات غير كافية"
 
     change_pct = pct_change(prev_close, price)
 
     score = 0
 
-    if change_pct >= 30 and volume >= 2_000_000:
+    if change_pct >= 25 and volume >= 1_000_000:
         score = 15
-    elif change_pct >= 20 and volume >= 1_000_000:
+    elif change_pct >= 18 and volume >= 750_000:
         score = 13
-    elif change_pct >= 15 and volume >= 500_000:
+    elif change_pct >= 12 and volume >= 500_000:
         score = 10
-    elif change_pct >= 10 and volume >= 250_000:
+    elif change_pct >= 8 and volume >= 250_000:
         score = 7
     elif change_pct >= 5 and volume >= 100_000:
         score = 4
+    elif change_pct >= 3 and volume >= 75_000:
+        score = 2
 
-    reason = f"Extended: {change_pct:.1f}% | Vol={volume:,}"
+    reason = f"CurrentStrength={change_pct:.1f}% | Vol={volume:,}"
     return score, reason
 
-
 def score_premarket_validation(symbol):
+    # PM = Premarket Validation
+    # إذا كنا بعد افتتاح السوق، يسترجع بيانات بري ماركت نفس اليوم 4:00-9:30 نيويورك.
     ny = now_ny()
-    if not (ny.hour >= 4 and (ny.hour < 9 or (ny.hour == 9 and ny.minute < 30))):
-        return 0, "ليست فترة Premarket"
 
-    bars = get_minute_bars(symbol, limit=30)
-    if bars.empty or len(bars) < 10:
-        return 0, "بيانات Premarket غير كافية"
+    # لا يوجد بري ماركت في الويكند
+    if ny.weekday() >= 5:
+        return 0, "ليست جلسة تداول"
 
     try:
+        # داخل البري ماركت: من 4:00 حتى الآن
+        if ny.hour >= 4 and (ny.hour < 9 or (ny.hour == 9 and ny.minute < 30)):
+            bars = get_intraday_bars_today(symbol, timeframe="1Min", start_hour_ny=4, end_hour_ny=None, limit=600)
+        else:
+            # بعد الافتتاح: استرجاع بري ماركت نفس اليوم من 4:00 إلى 9:30
+            bars = get_intraday_bars_today(symbol, timeframe="1Min", start_hour_ny=4, end_hour_ny=9, end_minute_ny=30, limit=600)
+
+        if bars.empty or len(bars) < 10:
+            return 0, "بيانات Premarket غير كافية"
+
+        # لو end_hour_ny=9 يجلب إلى 9:00 فقط بسبب بساطة الدالة، نستخدم المتاح حتى لا نعطل السكور.
         vols = bars["volume"].astype(float)
         closes = bars["close"].astype(float)
 
-        recent_vol = vols.tail(5).mean()
-        prev_vol = vols.head(max(1, len(vols) - 5)).mean()
+        total_vol = safe_float(vols.sum(), 0)
+        first_price = safe_float(closes.iloc[0], 0)
+        last_price = safe_float(closes.iloc[-1], 0)
+        price_change = pct_change(first_price, last_price)
 
-        price_change = pct_change(closes.iloc[0], closes.iloc[-1])
-        vol_ratio = recent_vol / prev_vol if prev_vol > 0 else 0
+        recent_vol = safe_float(vols.tail(15).mean(), 0)
+        base_vol = safe_float(vols.head(max(1, len(vols) - 15)).mean(), 0)
+        vol_ratio = recent_vol / base_vol if base_vol > 0 else 0
 
         score = 0
 
-        if price_change >= 10 and vol_ratio >= 3:
-            score = 10
-        elif price_change >= 7 and vol_ratio >= 2:
-            score = 8
-        elif price_change >= 4 and vol_ratio >= 1.5:
-            score = 6
-        elif price_change >= 2:
-            score = 3
+        if price_change >= 12 and total_vol >= 500_000:
+            score += 5
+        elif price_change >= 8 and total_vol >= 250_000:
+            score += 4
+        elif price_change >= 5 and total_vol >= 100_000:
+            score += 3
+        elif price_change >= 3 and total_vol >= 50_000:
+            score += 2
+        elif price_change >= 1.5:
+            score += 1
 
-        reason = f"Premarket: {price_change:.1f}% | VolRatio={vol_ratio:.2f}x"
+        if vol_ratio >= 3:
+            score += 3
+        elif vol_ratio >= 2:
+            score += 2
+        elif vol_ratio >= 1.3:
+            score += 1
+
+        if last_price >= first_price:
+            score += 2
+
+        score = int(max(0, min(10, score)))
+
+        reason = f"PM={price_change:.1f}% | PMVol={int(total_vol):,} | VolRatio={vol_ratio:.2f}x"
         return score, reason
-    except Exception:
-        return 0, "خطأ في حساب Premarket"
 
+    except Exception as e:
+        return 0, f"خطأ في حساب Premarket: {e}"
 
 def score_historical_similarity(symbol, factor_snapshot):
     history = redis_get_json(KEY_SCORE_HISTORY, default={})
