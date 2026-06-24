@@ -443,7 +443,6 @@ def normalize_float_cache(raw):
 
     return cleaned
 
-
 def load_float_cache_from_source():
     global float_cache
 
@@ -451,20 +450,31 @@ def load_float_cache_from_source():
 
     raw = None
 
+    # =========================
+    # تحميل من Gist
+    # =========================
     if FLOAT_CACHE_URL:
         try:
             response = requests.get(FLOAT_CACHE_URL, timeout=30)
+
             if response.status_code == 200:
                 raw = response.json()
+                log_info("✅ Float cache loaded from Gist")
             else:
                 log_warn(f"Float cache URL error {response.status_code}")
+
         except Exception as e:
             log_warn(f"Float cache URL load failed: {e}")
 
+    # =========================
+    # نسخة احتياطية من Redis
+    # =========================
     if raw is None:
         stored = redis_get_json(KEY_FLOAT_CACHE, default={})
+
         if stored:
             raw = stored
+            log_warn("⚠️ Using Redis backup float cache")
 
     if raw is None:
         raw = {}
@@ -472,20 +482,45 @@ def load_float_cache_from_source():
     cleaned = normalize_float_cache(raw)
     float_cache = cleaned
 
+    # =========================
+    # لا تحفظ حالة التحديث إذا الفلوت فاضي
+    # =========================
+    if len(cleaned) == 0:
+        runtime_stats["float_count"] = 0
+
+        log_error("❌ Float cache is empty. Refresh date NOT updated.")
+        return {}
+
+    # =========================
+    # حفظ الفلوت في Redis
+    # =========================
     redis_set_json(KEY_FLOAT_CACHE, cleaned)
 
     runtime_stats["last_float_refresh"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
     runtime_stats["float_count"] = len(cleaned)
 
     state = load_state()
+
     state["last_float_refresh_date"] = today_ksa_str()
     state["last_float_refresh_at"] = runtime_stats["last_float_refresh"]
+
     save_state(state)
 
     log_info(f"✅ Float records loaded: {len(cleaned)}")
+
+    send_telegram(
+        f"""🚀 بوت الأهداف العالية
+
+✅ تم تحميل الفلوت بنجاح
+
+📥 عدد السجلات: {len(cleaned)}
+
+🕒 الوقت: {runtime_stats['last_float_refresh']}
+"""
+    )
+
     return cleaned
-
-
+    
 def get_float(symbol):
     symbol = (symbol or "").upper().strip()
     return safe_float(float_cache.get(symbol, 0), 0)
@@ -1825,8 +1860,11 @@ def startup_catchup():
 
     state = load_state()
 
-    if state.get("last_float_refresh_date") != today_ksa_str():
-        log_info("Float not refreshed today. Loading now...")
+    if (
+        state.get("last_float_refresh_date") != today_ksa_str()
+        or runtime_stats.get("float_count", 0) == 0
+    ):
+        log_info("📥 Loading float cache...")
         load_float_cache_from_source()
 
     if state.get("last_universe_build_date") != today_ksa_str():
