@@ -30,9 +30,9 @@ NY_TZ = ZoneInfo("America/New_York")
 # -----------------------------
 # ENV
 # -----------------------------
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
-ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+ALPACA_API_KEY = os.getenv("APCA_API_KEY_ID", "")
+ALPACA_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "")
+ALPACA_BASE_URL = os.getenv("APCA_API_BASE_URL", "")
 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
