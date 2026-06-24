@@ -1167,7 +1167,744 @@ def evaluate_symbol(symbol):
 
     return result
 
+# ============================================================
+# Candidate Engine
+# ============================================================
 
+def load_universe():
+    universe = redis_get_json(KEY_UNIVERSE, default=[])
+    if not isinstance(universe, list):
+        universe = []
+    return universe
+
+
+def save_candidates(watchlist, strong, rankings):
+    redis_set_json(KEY_WATCHLIST, watchlist)
+    redis_set_json(KEY_STRONG, strong)
+    redis_set_json(KEY_DAILY_RANKINGS, rankings)
+
+    runtime_stats["watchlist_count"] = len(watchlist)
+    runtime_stats["strong_count"] = len(strong)
+
+
+def save_score_history_record(symbol, evaluation):
+    history = redis_get_json(KEY_SCORE_HISTORY, default={})
+    if not isinstance(history, dict):
+        history = {}
+
+    key = f"{today_ksa_str()}:{symbol}:{int(time.time())}"
+
+    history[key] = {
+        "symbol": symbol,
+        "score": evaluation.get("score", 0),
+        "status": evaluation.get("status", ""),
+        "price": evaluation.get("price", 0),
+        "evaluated_at": evaluation.get("evaluated_at"),
+        "factor_snapshot": {
+            "float_score": evaluation.get("factor_scores", {}).get("float", 0),
+            "news_score": evaluation.get("factor_scores", {}).get("news", 0),
+            "volume_score": evaluation.get("factor_scores", {}).get("volume_creep", 0),
+            "compression_score": evaluation.get("factor_scores", {}).get("compression", 0),
+            "after_hours_score": evaluation.get("factor_scores", {}).get("after_hours", 0),
+            "premarket_score": evaluation.get("factor_scores", {}).get("premarket", 0),
+            "similarity_score": evaluation.get("factor_scores", {}).get("similarity", 0),
+        },
+    }
+
+    if len(history) > 3000:
+        keys = list(history.keys())[-2500:]
+        history = {k: history[k] for k in keys}
+
+    redis_set_json(KEY_SCORE_HISTORY, history)
+
+
+def evaluate_universe_cycle():
+    universe = load_universe()
+
+    if not universe:
+        log_warn("Universe is empty. Building now...")
+        universe = build_daily_universe(force=True)
+
+    if not universe:
+        log_warn("No universe available for evaluation.")
+        return
+
+    watchlist = redis_get_json(KEY_WATCHLIST, default={})
+    strong = redis_get_json(KEY_STRONG, default={})
+
+    if not isinstance(watchlist, dict):
+        watchlist = {}
+    if not isinstance(strong, dict):
+        strong = {}
+
+    rankings = []
+
+    log_info("==================================================")
+    log_info("🔍 Starting Universe Evaluation")
+    log_info(f"🌎 Universe Count: {len(universe)}")
+    log_info("==================================================")
+
+    total_batches = math.ceil(len(universe) / BATCH_SIZE)
+
+    for batch_num, batch in enumerate(chunk_list(universe, BATCH_SIZE), start=1):
+        log_info(f"📦 Evaluation Batch {batch_num}/{total_batches} | Symbols: {len(batch)}")
+
+        for item in batch:
+            symbol = item.get("symbol", "").upper().strip()
+            if not symbol:
+                continue
+
+            try:
+                evaluation = evaluate_symbol(symbol)
+                status = evaluation.get("status")
+                score = evaluation.get("score", 0)
+
+                save_score_history_record(symbol, evaluation)
+
+                rankings.append({
+                    "symbol": symbol,
+                    "score": score,
+                    "status": status,
+                    "price": evaluation.get("price", 0),
+                    "change_pct": evaluation.get("change_pct", 0),
+                    "evaluated_at": evaluation.get("evaluated_at"),
+                    "news_title": evaluation.get("news_title"),
+                    "factor_scores": evaluation.get("factor_scores"),
+                    "factor_reasons": evaluation.get("factor_reasons"),
+                })
+
+                if status == "strong":
+                    strong[symbol] = evaluation
+                    watchlist.pop(symbol, None)
+                elif status == "watchlist":
+                    if symbol not in strong:
+                        watchlist[symbol] = evaluation
+                else:
+                    watchlist.pop(symbol, None)
+                    strong.pop(symbol, None)
+
+            except Exception as e:
+                log_error(f"Evaluation failed for {symbol}: {e}")
+                log_error(traceback.format_exc())
+
+        save_candidates(
+            watchlist,
+            strong,
+            sorted(rankings, key=lambda x: x.get("score", 0), reverse=True)
+        )
+
+        time.sleep(BATCH_SLEEP_SEC)
+
+    rankings = sorted(rankings, key=lambda x: x.get("score", 0), reverse=True)
+
+    save_candidates(watchlist, strong, rankings)
+
+    runtime_stats["last_scan"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
+    runtime_stats["total_scans"] += 1
+
+    log_info("==================================================")
+    log_info("🏆 Top Candidates")
+    for i, row in enumerate(rankings[:10], start=1):
+        log_info(f"{i}. {row.get('symbol')} = {row.get('score')} | {classify_arabic(row.get('status'))}")
+    log_info("==================================================")
+
+
+def already_alerted(alert_key):
+    alerts = redis_get_json(KEY_ALERTS_SENT, default={})
+    if not isinstance(alerts, dict):
+        alerts = {}
+    return bool(alerts.get(alert_key))
+
+
+def mark_alert_sent(alert_key):
+    alerts = redis_get_json(KEY_ALERTS_SENT, default={})
+    if not isinstance(alerts, dict):
+        alerts = {}
+    alerts[alert_key] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
+    redis_set_json(KEY_ALERTS_SENT, alerts)
+
+
+# ============================================================
+# Targets / Risk
+# ============================================================
+
+def calculate_targets(symbol, entry_price):
+    bars = get_daily_bars(symbol, limit=20)
+
+    atr = 0.0
+
+    try:
+        if not bars.empty and len(bars) >= 10:
+            high = bars["high"].astype(float)
+            low = bars["low"].astype(float)
+            close = bars["close"].astype(float)
+            prev_close = close.shift(1)
+
+            tr1 = high - low
+            tr2 = (high - prev_close).abs()
+            tr3 = (low - prev_close).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = safe_float(tr.tail(14).mean(), 0)
+    except Exception:
+        atr = 0.0
+
+    if atr <= 0:
+        atr = entry_price * 0.08
+
+    stop = max(0.01, entry_price - (atr * 0.70))
+    t1 = entry_price + (atr * 0.80)
+    t2 = entry_price + (atr * 1.50)
+    t3 = entry_price + (atr * 2.50)
+
+    extended = entry_price + (atr * 4.00)
+
+    return {
+        "entry": round(entry_price, 4),
+        "stop": round(stop, 4),
+        "t1": round(t1, 4),
+        "t2": round(t2, 4),
+        "t3": round(t3, 4),
+        "extended": round(extended, 4),
+        "atr": round(atr, 4),
+    }
+
+
+def format_price(value):
+    value = safe_float(value, 0)
+    if value < 1:
+        return f"{value:.4f}"
+    if value < 10:
+        return f"{value:.3f}"
+    return f"{value:.2f}"
+
+
+# ============================================================
+# Alerts
+# ============================================================
+
+def make_candidate_alert(row, targets):
+    reasons = row.get("factor_reasons", {}) or {}
+    scores = row.get("factor_scores", {}) or {}
+
+    news_title = row.get("news_title") or "لا يوجد عنوان خبر واضح"
+
+    message = f"""{bot_header()}
+
+🔥 أفضل مرشح للأهداف العالية
+
+السهم: {row.get("symbol")}
+الدرجة: {row.get("score")}/100
+التصنيف: {classify_arabic(row.get("status"))}
+
+📍 منطقة الدخول: {format_price(targets.get("entry"))}
+🛑 وقف الخسارة: {format_price(targets.get("stop"))}
+
+🎯 الهدف الأول: {format_price(targets.get("t1"))}
+🎯 الهدف الثاني: {format_price(targets.get("t2"))}
+🎯 الهدف الثالث: {format_price(targets.get("t3"))}
+
+🚀 الهدف الممتد المتوقع: {format_price(targets.get("extended"))}
+
+📊 تفاصيل الدرجة:
+• Float: {scores.get("float", 0)}/20 — {reasons.get("float", "")}
+• News: {scores.get("news", 0)}/25 — {reasons.get("news", "")}
+• Volume Creep: {scores.get("volume_creep", 0)}/15 — {reasons.get("volume_creep", "")}
+• Compression: {scores.get("compression", 0)}/10 — {reasons.get("compression", "")}
+• After Hours: {scores.get("after_hours", 0)}/15 — {reasons.get("after_hours", "")}
+• Premarket: {scores.get("premarket", 0)}/10 — {reasons.get("premarket", "")}
+• Similarity: {scores.get("similarity", 0)}/5 — {reasons.get("similarity", "")}
+
+📰 الخبر:
+{news_title}
+
+📌 ملاحظة:
+هذا مرشح عالي الحركة، وسيتم مراقبته ورفع الوقف أو الخروج عند ضعف الزخم.
+"""
+    return message
+
+
+def send_daily_candidates_alert():
+    state = load_state()
+    today = today_ksa_str()
+
+    if state.get("last_candidate_alert_date") == today:
+        log_info("Daily candidate alert already sent today.")
+        return
+
+    rankings = redis_get_json(KEY_DAILY_RANKINGS, default=[])
+    if not isinstance(rankings, list) or not rankings:
+        log_warn("No rankings available for daily alert.")
+        return
+
+    top = [r for r in rankings if r.get("score", 0) >= STRONG_SCORE][:MAX_DAILY_PICKS]
+
+    if not top:
+        log_warn("No strong candidates >= 88 for daily alert.")
+        return
+
+    active = redis_get_json(KEY_ACTIVE, default={})
+    if not isinstance(active, dict):
+        active = {}
+
+    sent_count = 0
+
+    for row in top:
+        symbol = row.get("symbol")
+        alert_key = f"daily_candidate:{today}:{symbol}"
+
+        if already_alerted(alert_key):
+            continue
+
+        entry = safe_float(row.get("price", 0), 0)
+        if entry <= 0:
+            continue
+
+        targets = calculate_targets(symbol, entry)
+
+        msg = make_candidate_alert(row, targets)
+
+        if send_telegram(msg):
+            mark_alert_sent(alert_key)
+            sent_count += 1
+
+            active[symbol] = {
+                "symbol": symbol,
+                "opened_from": "daily_candidate",
+                "score": row.get("score"),
+                "status": "active",
+                "entry": targets.get("entry"),
+                "stop": targets.get("stop"),
+                "current_stop": targets.get("stop"),
+                "t1": targets.get("t1"),
+                "t2": targets.get("t2"),
+                "t3": targets.get("t3"),
+                "extended": targets.get("extended"),
+                "t1_hit": False,
+                "t2_hit": False,
+                "t3_hit": False,
+                "extended_active": True,
+                "created_at": now_ksa().strftime("%Y-%m-%d %H:%M:%S"),
+                "last_update": now_ksa().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+    redis_set_json(KEY_ACTIVE, active)
+    runtime_stats["active_count"] = len(active)
+
+    if sent_count > 0:
+        state["last_candidate_alert_date"] = today
+        state["last_candidate_alert_at"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
+        save_state(state)
+        runtime_stats["last_candidate_alert"] = state["last_candidate_alert_at"]
+
+    log_info(f"Daily candidate alerts sent: {sent_count}")
+
+
+def make_premarket_confirmation_alert(row):
+    reasons = row.get("factor_reasons", {}) or {}
+    scores = row.get("factor_scores", {}) or {}
+
+    message = f"""{bot_header()}
+
+🌅 تأكيد البري ماركت
+
+السهم: {row.get("symbol")}
+الدرجة الحالية: {row.get("score")}/100
+التصنيف: {classify_arabic(row.get("status"))}
+
+📌 تقييم البري ماركت:
+• Premarket: {scores.get("premarket", 0)}/10 — {reasons.get("premarket", "")}
+• After Hours: {scores.get("after_hours", 0)}/15 — {reasons.get("after_hours", "")}
+• Volume Creep: {scores.get("volume_creep", 0)}/15 — {reasons.get("volume_creep", "")}
+
+✅ الخلاصة:
+المرشح ما زال صالحاً للمراقبة طالما لم يكسر الوقف والزخم مستمر.
+"""
+    return message
+
+
+def send_premarket_confirmation_if_due():
+    ny = now_ny()
+    state = load_state()
+    today = today_ksa_str()
+
+    if state.get("last_premarket_confirmation_date") == today:
+        return
+
+    # Premarket starts 04:00 NY. Confirmation after 15 minutes.
+    if not (ny.hour == 4 and ny.minute >= 15):
+        return
+
+    strong = redis_get_json(KEY_STRONG, default={})
+    if not isinstance(strong, dict) or not strong:
+        log_warn("No strong candidates for premarket confirmation.")
+        return
+
+    sent = 0
+
+    sorted_strong = sorted(
+        strong.values(),
+        key=lambda x: x.get("score", 0),
+        reverse=True
+    )[:MAX_DAILY_PICKS]
+
+    for row in sorted_strong:
+        symbol = row.get("symbol")
+        try:
+            evaluation = evaluate_symbol(symbol)
+            if evaluation.get("score", 0) >= STRONG_SCORE:
+                msg = make_premarket_confirmation_alert(evaluation)
+                if send_telegram(msg):
+                    sent += 1
+            else:
+                cancel_msg = f"""{bot_header()}
+
+❌ إلغاء مرشح البري ماركت
+
+السهم: {symbol}
+الدرجة الحالية: {evaluation.get("score", 0)}/100
+
+الأسباب:
+• تراجع التصنيف عن مستوى المرشح القوي
+• لم تظهر سيولة كافية بعد بداية البري ماركت
+• الزخم الحالي لا يدعم فرضية الأهداف العالية
+"""
+                send_telegram(cancel_msg)
+                sent += 1
+
+        except Exception as e:
+            log_error(f"Premarket confirmation failed for {symbol}: {e}")
+
+    state["last_premarket_confirmation_date"] = today
+    state["last_premarket_confirmation_at"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
+    save_state(state)
+
+    runtime_stats["last_premarket_confirmation"] = state["last_premarket_confirmation_at"]
+
+    log_info(f"Premarket confirmations sent: {sent}")
+
+
+# ============================================================
+# Active Monitoring
+# ============================================================
+
+def send_management_alert(symbol, title, body):
+    message = f"""{bot_header()}
+
+{title}
+
+السهم: {symbol}
+
+{body}
+"""
+    return send_telegram(message)
+
+
+def monitor_active_positions():
+    active = redis_get_json(KEY_ACTIVE, default={})
+    if not isinstance(active, dict) or not active:
+        return
+
+    changed = False
+    to_remove = []
+
+    for symbol, pos in list(active.items()):
+        try:
+            snap = get_snapshot_data(symbol)
+            price = safe_float(snap.get("price", 0), 0)
+
+            if price <= 0:
+                continue
+
+            current_stop = safe_float(pos.get("current_stop", pos.get("stop", 0)), 0)
+            t1 = safe_float(pos.get("t1", 0), 0)
+            t2 = safe_float(pos.get("t2", 0), 0)
+            t3 = safe_float(pos.get("t3", 0), 0)
+            extended = safe_float(pos.get("extended", 0), 0)
+            entry = safe_float(pos.get("entry", 0), 0)
+
+            # Stop break
+            if current_stop > 0 and price <= current_stop:
+                alert_key = f"stop_break:{symbol}:{today_ksa_str()}"
+                if not already_alerted(alert_key):
+                    body = f"""❌ تم كسر وقف الخسارة
+
+السعر الحالي: {format_price(price)}
+الوقف: {format_price(current_stop)}
+
+📌 السبب:
+• السعر كسر مستوى الحماية
+• تم إنهاء المتابعة النشطة لهذا المرشح
+"""
+                    send_management_alert(symbol, "❌ كسر وقف الخسارة", body)
+                    mark_alert_sent(alert_key)
+
+                to_remove.append(symbol)
+                changed = True
+                continue
+
+            # T1
+            if not pos.get("t1_hit") and t1 > 0 and price >= t1:
+                pos["t1_hit"] = True
+                new_stop = max(current_stop, entry)
+                pos["current_stop"] = round(new_stop, 4)
+
+                body = f"""✅ تم تحقيق الهدف الأول
+
+السعر الحالي: {format_price(price)}
+T1: {format_price(t1)}
+
+🔼 رفع الوقف إلى: {format_price(new_stop)}
+
+📌 الأسباب:
+• تم تحقيق الهدف الأول
+• حماية رأس المال
+• الزخم ما زال قائماً طالما السعر أعلى الوقف الجديد
+"""
+                send_management_alert(symbol, "✅ تحقق الهدف الأول + رفع الوقف", body)
+                changed = True
+
+            # T2
+            if not pos.get("t2_hit") and t2 > 0 and price >= t2:
+                pos["t2_hit"] = True
+                new_stop = max(safe_float(pos.get("current_stop", 0), 0), t1)
+                pos["current_stop"] = round(new_stop, 4)
+
+                body = f"""✅ تم تحقيق الهدف الثاني
+
+السعر الحالي: {format_price(price)}
+T2: {format_price(t2)}
+
+🔼 رفع الوقف إلى: {format_price(new_stop)}
+
+📌 الأسباب:
+• استمرار الزخم
+• تحقيق الهدف الثاني
+• حماية جزء أكبر من الربح
+"""
+                send_management_alert(symbol, "✅ تحقق الهدف الثاني + رفع الوقف", body)
+                changed = True
+
+            # T3
+            if not pos.get("t3_hit") and t3 > 0 and price >= t3:
+                pos["t3_hit"] = True
+                new_stop = max(safe_float(pos.get("current_stop", 0), 0), t2)
+                pos["current_stop"] = round(new_stop, 4)
+
+                body = f"""✅ تم تحقيق الهدف الثالث
+
+السعر الحالي: {format_price(price)}
+T3: {format_price(t3)}
+
+🔼 رفع الوقف إلى: {format_price(new_stop)}
+
+🚀 الهدف الممتد ما زال قائماً إذا استمرت السيولة والزخم.
+
+📌 الأسباب:
+• السهم تحول إلى Runner قوي
+• السعر تجاوز الهدف الثالث
+• حماية الربح مع ترك مجال للامتداد
+"""
+                send_management_alert(symbol, "✅ تحقق الهدف الثالث + متابعة الهدف الممتد", body)
+                changed = True
+
+            # Extended
+            if pos.get("extended_active", True) and extended > 0 and price >= extended:
+                body = f"""🚀 تم الوصول إلى الهدف الممتد المتوقع
+
+السعر الحالي: {format_price(price)}
+الهدف الممتد: {format_price(extended)}
+
+📌 التوصية:
+مراقبة لصيقة جداً، ويفضل حماية الربح لأن السهم وصل إلى منطقة امتداد عالية.
+"""
+                send_management_alert(symbol, "🚀 تحقق الهدف الممتد", body)
+                pos["extended_active"] = False
+                changed = True
+
+            pos["last_price"] = price
+            pos["last_update"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
+
+        except Exception as e:
+            log_error(f"Active monitoring failed for {symbol}: {e}")
+
+    for symbol in to_remove:
+        active.pop(symbol, None)
+
+    if changed:
+        redis_set_json(KEY_ACTIVE, active)
+        runtime_stats["active_count"] = len(active)
+
+
+# ============================================================
+# Time Logic
+# ============================================================
+
+def is_weekend_ksa():
+    # Saturday=5, Sunday=6
+    return now_ksa().weekday() in (5, 6)
+
+
+def is_regular_market_open_ny():
+    ny = now_ny()
+
+    if ny.weekday() >= 5:
+        return False
+
+    start = ny.replace(hour=9, minute=30, second=0, microsecond=0)
+    end = ny.replace(hour=16, minute=0, second=0, microsecond=0)
+
+    return start <= ny <= end
+
+
+def is_extended_or_premarket_ny():
+    ny = now_ny()
+
+    if ny.weekday() >= 5:
+        return False
+
+    start = ny.replace(hour=4, minute=0, second=0, microsecond=0)
+    end = ny.replace(hour=20, minute=0, second=0, microsecond=0)
+
+    return start <= ny <= end
+
+
+def should_send_daily_candidates_now():
+    # Around midnight KSA. One alert per KSA date.
+    sa = now_ksa()
+    return sa.hour == 0 and sa.minute <= 20
+
+
+def should_run_float_refresh():
+    state = load_state()
+    today = today_ksa_str()
+
+    if state.get("last_float_refresh_date") == today:
+        return False
+
+    sa = now_ksa()
+    return sa.hour >= FLOAT_REFRESH_HOUR_KSA
+
+
+def should_build_universe():
+    state = load_state()
+    today = today_ksa_str()
+
+    if state.get("last_universe_build_date") == today:
+        return False
+
+    sa = now_ksa()
+    return sa.hour >= UNIVERSE_BUILD_HOUR_KSA
+
+
+# ============================================================
+# Startup Catch-up
+# ============================================================
+
+def startup_catchup():
+    log_info("🚀 Startup catch-up started...")
+
+    collections = load_runtime_collections()
+
+    stored_float = redis_get_json(KEY_FLOAT_CACHE, default={})
+    if isinstance(stored_float, dict) and stored_float:
+        global float_cache
+        float_cache = normalize_float_cache(stored_float)
+        runtime_stats["float_count"] = len(float_cache)
+        log_info(f"📥 Float restored from Redis: {len(float_cache)}")
+
+    state = load_state()
+
+    if state.get("last_float_refresh_date") != today_ksa_str():
+        log_info("Float not refreshed today. Loading now...")
+        load_float_cache_from_source()
+
+    if state.get("last_universe_build_date") != today_ksa_str():
+        log_info("Universe not built today. Building now...")
+        build_daily_universe(force=True)
+
+    collections = load_runtime_collections()
+
+    summary = {
+        "float_count": runtime_stats.get("float_count", 0),
+        "universe_count": collections["universe"] and len(collections["universe"]) or 0,
+        "watchlist_count": len(collections["watchlist"]),
+        "strong_count": len(collections["strong"]),
+        "active_count": len(collections["active"]),
+    }
+
+    send_startup_alert(summary)
+
+    log_info("✅ Startup catch-up completed.")
+
+
+# ============================================================
+# Main Loops
+# ============================================================
+
+def scheduler_loop():
+    log_info("Scheduler loop started.")
+
+    last_eval_ts = 0
+    last_monitor_ts = 0
+
+    while True:
+        try:
+            now_ts = time.time()
+
+            if should_run_float_refresh():
+                load_float_cache_from_source()
+
+            if should_build_universe():
+                build_daily_universe(force=True)
+
+            if now_ts - last_eval_ts >= CANDIDATE_REFRESH_SEC:
+                evaluate_universe_cycle()
+                last_eval_ts = now_ts
+
+            if should_send_daily_candidates_now():
+                send_daily_candidates_alert()
+
+            send_premarket_confirmation_if_due()
+
+            if now_ts - last_monitor_ts >= ACTIVE_MONITOR_INTERVAL_SEC:
+                monitor_active_positions()
+                last_monitor_ts = now_ts
+
+            time.sleep(10)
+
+        except Exception as e:
+            log_error(f"Scheduler loop error: {e}")
+            log_error(traceback.format_exc())
+            time.sleep(30)
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+    runtime_stats["started_at"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
+
+    log_info("==================================================")
+    log_info("🚀 بوت الأهداف العالية Starting...")
+    log_info("==================================================")
+
+    if not redis_enabled():
+        log_warn("Upstash Redis is not configured. Persistence will not work.")
+
+    init_alpaca()
+
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    startup_catchup()
+
+    scheduler_thread = threading.Thread(target=scheduler_loop, daemon=False)
+    scheduler_thread.start()
+
+
+if __name__ == "__main__":
+    main()
 # ============================================================
 # END OF PART 1/2
 # بعد لصق هذا الجزء، اكتب لي: كمل الجزء الثاني
