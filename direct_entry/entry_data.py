@@ -235,9 +235,19 @@ def calculate_resistance_levels(
             bars["close"].iloc[-1]
         )
 
-    resistance_30m = float(bars["high"].tail(30).max())
-    resistance_60m = float(bars["high"].tail(60).max())
+        historical_bars = bars.iloc[:-3]
 
+        if len(historical_bars) < 60:
+            historical_bars = bars.iloc[:-1]
+
+        resistance_30m = float(
+            historical_bars["high"].tail(30).max()
+        )
+
+        resistance_60m = float(
+            historical_bars["high"].tail(60).max()
+        )
+    
     resistances = [
         resistance_30m,
         resistance_60m,
