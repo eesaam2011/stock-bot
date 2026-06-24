@@ -71,12 +71,28 @@ def analyze_confirmed_breakout(row):
     )
 
     if not closes_above_resistance:
+        print(
+            f"🧱 REJECT {row.get('symbol')} | "
+            f"3 closes above resistance failed",
+            flush=True,
+        )
         return None
 
     if not closes_hold_breakout:
+        print(
+            f"🧱 REJECT {row.get('symbol')} | "
+            f"breakout hold failed",
+            flush=True,
+        )
         return None
 
     if not volume_is_strong:
+        print(
+            f"🧱 REJECT {row.get('symbol')} | "
+            f"volume confirmation failed | "
+            f"RVOL={instant_rvol}",
+            flush=True,
+        )
         return None
 
     entry_price = close_3
