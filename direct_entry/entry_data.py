@@ -292,7 +292,9 @@ def build_entry_data(symbol, daily_bar=None):
 
     if bars is None or bars.empty:
         return None
-
+        
+    bars = bars.sort_index()
+    
     if len(bars) < 60:
         return None
 
