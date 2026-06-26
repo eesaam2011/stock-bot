@@ -420,7 +420,7 @@ def today_ny():
     return now_ny().strftime("%Y-%m-%d")
 
 
-def is_weekend_ksa():
+def is_weekend():
     return now_ny().weekday() >= 5
 
 def is_market_weekday():
