@@ -439,10 +439,12 @@ def is_scan_window():
     current = now_ksa().time()
 
     start = datetime.strptime("11:00", "%H:%M").time()
-    end = datetime.strptime("23:00", "%H:%M").time()
 
-    return start <= current <= end
-
+    # من 11:00 صباحًا حتى 01:00 بعد منتصف الليل
+    return (
+        current >= start
+        or current <= datetime.strptime("01:00", "%H:%M").time()
+    )
 
 def is_last_market_hour():
     ny = now_ny()
