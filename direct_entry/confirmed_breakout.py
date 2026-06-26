@@ -95,7 +95,26 @@ def analyze_confirmed_breakout(row):
         )
         return None
 
-    entry_price = close_3
+    current_price = float(
+        row.get("price", close_3) or close_3
+    )
+
+    extension_pct = (
+        (current_price - close_3)
+        / close_3
+    ) * 100
+
+    if extension_pct > 1.0:
+        print(
+            f"🧱 REJECT {row.get('symbol')} | "
+            f"price extended from confirmation | "
+            f"close_3={close_3} current={current_price} "
+            f"ext={extension_pct:.2f}%",
+            flush=True,
+        )
+        return None
+
+    entry_price = current_price
     stop_loss = resistance * 0.99
 
     return {
