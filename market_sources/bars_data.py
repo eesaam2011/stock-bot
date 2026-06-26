@@ -65,8 +65,10 @@ def get_1m_bars(
             if symbol_bars.empty:
                 continue
 
-            bars_by_symbol[symbol] = symbol_bars
+            symbol_bars = symbol_bars.sort_index()
 
+            bars_by_symbol[symbol] = symbol_bars
+            
     return bars_by_symbol
     
 def get_5m_bars(
