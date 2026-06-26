@@ -421,8 +421,7 @@ def today_ny():
 
 
 def is_weekend_ksa():
-    return now_ksa().weekday() in [4, 5]
-
+    return now_ny().weekday() >= 5
 
 def is_market_weekday():
     return now_ny().weekday() < 5
@@ -3304,7 +3303,7 @@ def main_loop():
             # Weekend mode
             # ------------------------------------------------------------------
 
-            if current.weekday() in [4, 5]:
+            if is_weekend():
                 if (
                     current.hour == 12
                     and today_ksa() != last_weekend_analysis_date
