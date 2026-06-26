@@ -1444,22 +1444,35 @@ def build_priority_universe():
             log(f"Priority universe checked {checked}/{len(UNIVERSE)}")
             time.sleep(1)
 
-    priority_scored.sort(reverse=True)
+    priority_symbols = [
+        symbol
+        for score, symbol in priority_scored
+    ]
 
-    PRIORITY_UNIVERSE = [symbol for score, symbol in priority_scored[:700]]
+    priority_set = set(priority_symbols)
 
-    remaining = [symbol for score, symbol in priority_scored[700:]]
+    PRIORITY_UNIVERSE = sorted(priority_set)
 
-    NORMAL_UNIVERSE = sorted(list(set(normal + remaining)))
+    NORMAL_UNIVERSE = sorted([
+        symbol
+        for symbol in UNIVERSE
+        if symbol not in priority_set
+    ])
 
     redis_set_json(KEY_PRIORITY, PRIORITY_UNIVERSE)
 
-    redis_set_json(f"{REDIS_PREFIX}:normal", NORMAL_UNIVERSE)
+    redis_set_json(
+        f"{REDIS_PREFIX}:normal",
+        NORMAL_UNIVERSE
+    )
 
-    log(f"Priority universe: {len(PRIORITY_UNIVERSE)} | Normal universe: {len(NORMAL_UNIVERSE)}")
+    log(
+        f"Priority universe: {len(PRIORITY_UNIVERSE)} | "
+        f"Normal universe: {len(NORMAL_UNIVERSE)} | "
+        f"Total covered: {len(PRIORITY_UNIVERSE) + len(NORMAL_UNIVERSE)}"
+    )
 
     return PRIORITY_UNIVERSE, NORMAL_UNIVERSE
-
 
 def load_universe_from_redis():
     global UNIVERSE
