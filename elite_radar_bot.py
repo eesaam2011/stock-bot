@@ -79,7 +79,12 @@ MONITOR_INTERVAL = 30
 
 FULL_UNIVERSE_REFRESH = 60 * 60 * 4
 
-LIGHT_UNIVERSE_REFRESH = 60 * 60
+LIGHT_UNIVERSE_REFRESH = None
+
+FULL_SNAPSHOT_REBUILD_TIMES_KSA = [
+    "10:45",
+    "16:20"
+]
 
 NEWS_CACHE_TTL = 60 * 60
 
@@ -2977,17 +2982,13 @@ last_full_universe_refresh = 0
 
 last_light_universe_refresh = 0
 
-
 def maybe_refresh_universe():
     global last_full_universe_refresh
     global last_light_universe_refresh
 
     now_time = time.time()
 
-    if (
-        not UNIVERSE
-        or now_time - last_full_universe_refresh >= FULL_UNIVERSE_REFRESH
-    ):
+    if not UNIVERSE:
         rebuild_universe(full=True)
 
         last_full_universe_refresh = now_time
@@ -2996,12 +2997,16 @@ def maybe_refresh_universe():
 
         return
 
-    if now_time - last_light_universe_refresh >= LIGHT_UNIVERSE_REFRESH:
-        log("Light universe refresh...")
+    if should_run_full_snapshot_rebuild():
+        log("Scheduled full snapshot rebuild...")
 
-        build_priority_universe()
+        rebuild_universe(full=True)
+
+        last_full_universe_refresh = now_time
 
         last_light_universe_refresh = now_time
+
+        return
 
 # ==============================================================================
 # Daily Summary
@@ -3264,7 +3269,7 @@ def maybe_reload_float_cache():
     # Temporary mode:
     # Early Explosion is still responsible for updating float_cache.json.
     # Elite Radar reloads the Gist copy at 11:00 KSA.
-    if current.hour == 11 and current.minute == 0:
+    if current.hour == 10 and current.minute == 45:
         key = current.strftime("%Y-%m-%d %H:%M")
 
         if key != last_float_reload_key:
@@ -3274,7 +3279,28 @@ def maybe_reload_float_cache():
 
             last_float_reload_key = key
 
+last_full_snapshot_rebuild_key = ""
 
+
+def should_run_full_snapshot_rebuild():
+    global last_full_snapshot_rebuild_key
+
+    current = now_ksa()
+
+    current_time = current.strftime("%H:%M")
+
+    if current_time not in FULL_SNAPSHOT_REBUILD_TIMES_KSA:
+        return False
+
+    key = current.strftime("%Y-%m-%d %H:%M")
+
+    if key == last_full_snapshot_rebuild_key:
+        return False
+
+    last_full_snapshot_rebuild_key = key
+
+    return True
+    
 # ==============================================================================
 # Main Loop
 # ==============================================================================
