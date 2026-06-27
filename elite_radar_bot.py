@@ -1328,12 +1328,12 @@ def calculate_resistance(df, lookback=80):
             "touches": 0
         }
 
-    tolerance = current_price * 0.003
-
     best_level = body_levels[0]
     best_touches = 1
 
     for level in body_levels:
+        tolerance = level * 0.003
+
         touches = sum(
             abs(x - level) <= tolerance
             for x in body_levels
