@@ -13,6 +13,10 @@
 
 import os
 import json
+try:
+    import orjson
+except Exception:
+    orjson = None
 import math
 import time
 import pytz
@@ -199,6 +203,19 @@ def log(message):
 
     print(f"[{now}] {message}", flush=True)
 
+def json_dumps(data):
+    if orjson:
+        return orjson.dumps(data).decode("utf-8")
+
+    return json.dumps(data, ensure_ascii=False, default=str)
+
+
+def json_loads(data):
+    if orjson:
+        return orjson.loads(data)
+
+    return json.loads(data)
+    
 # ==============================================================================
 # Telegram
 # ==============================================================================
@@ -294,15 +311,15 @@ def redis_get_json(key, default=None):
         return default
 
     try:
-        return json.loads(result)
+        return json_loads(result)
     except Exception:
         return default
 
 
 def redis_set_json(key, value, expire_seconds=None):
     try:
-        payload = json.dumps(value, ensure_ascii=False, default=str)
-
+        payload = json_dumps(value)
+        
         if expire_seconds:
             return redis_command(["SET", key, payload, "EX", expire_seconds])
 
@@ -315,7 +332,7 @@ def redis_set_json(key, value, expire_seconds=None):
 
 def redis_hset_json(key, field, value):
     try:
-        payload = json.dumps(value, ensure_ascii=False, default=str)
+        payload = json_dumps(value)
         return redis_command(["HSET", key, field, payload])
     except Exception as e:
         log(f"Redis HSET Error: {e}")
@@ -336,7 +353,7 @@ def redis_hgetall_json(key):
             value = result[i + 1]
 
             try:
-                output[field] = json.loads(value)
+                output[field] = json_loads(value)
             except Exception:
                 output[field] = value
 
