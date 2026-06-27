@@ -24,6 +24,7 @@ import requests
 import threading
 import traceback
 import statistics
+import random
 import zoneinfo
 import numpy as np
 import pandas as pd
@@ -1621,12 +1622,6 @@ def get_next_batch():
         normal_cursor = cursor
 
     return list(dict.fromkeys(batch))
-
-# ==============================================================================
-# Late Import Safeguard
-# ==============================================================================
-
-import random
 
 
 # ==============================================================================
