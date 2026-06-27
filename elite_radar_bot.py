@@ -821,8 +821,7 @@ def classify_news_text(text):
         "bonus": bonus
     }
 
-
-def get_symbol_news(symbol):
+ def get_symbol_news(symbol):
     if not FINNHUB_API_KEY:
         return {
             "status": "no_key",
@@ -830,7 +829,9 @@ def get_symbol_news(symbol):
             "minor_negative": False,
             "serious_negative": False,
             "bonus": 0,
-            "headline": ""
+            "headline": "",
+            "category": "none",
+            "cached": False
         }
 
     symbol = symbol.upper()
@@ -839,9 +840,12 @@ def get_symbol_news(symbol):
 
     if cached:
         cached_at = cached.get("cached_at", 0)
+        ttl = cached.get("ttl", NEWS_CACHE_TTL)
 
-        if time.time() - cached_at <= NEWS_CACHE_TTL:
-            return cached.get("data", {})
+        if time.time() - cached_at <= ttl:
+            data = cached.get("data", {})
+            data["cached"] = True
+            return data
 
     try:
         finnhub_wait_slot()
@@ -867,8 +871,12 @@ def get_symbol_news(symbol):
                 "minor_negative": False,
                 "serious_negative": False,
                 "bonus": 0,
-                "headline": ""
+                "headline": "",
+                "category": "error",
+                "cached": False
             }
+
+            ttl = NEWS_CACHE_TTL
 
         else:
             items = response.json()
@@ -887,17 +895,54 @@ def get_symbol_news(symbol):
 
             result = classify_news_text(combined_text)
 
+            headline = items[0].get("headline", "") if items else ""
+
+            text_lower = combined_text.lower()
+
+            category = "neutral"
+            ttl = NEWS_CACHE_TTL
+
+            if result["serious_negative"]:
+                category = "serious_negative"
+                ttl = SERIOUS_NEGATIVE_NEWS_TTL
+
+            elif result["positive"]:
+                category = "positive"
+                ttl = POSITIVE_NEWS_TTL
+
+                major_words = [
+                    "fda",
+                    "approval",
+                    "contract",
+                    "purchase order",
+                    "merger",
+                    "acquisition",
+                    "breakthrough",
+                    "positive data"
+                ]
+
+                if any(word in text_lower for word in major_words):
+                    category = "major_catalyst"
+                    ttl = MAJOR_CATALYST_NEWS_TTL
+
+            elif result["minor_negative"]:
+                category = "minor_negative"
+                ttl = 24 * 60 * 60
+
             data = {
                 "status": "ok",
                 "positive": result["positive"],
                 "minor_negative": result["minor_negative"],
                 "serious_negative": result["serious_negative"],
                 "bonus": result["bonus"],
-                "headline": items[0].get("headline", "") if items else ""
+                "headline": headline,
+                "category": category,
+                "cached": False
             }
 
         NEWS_CACHE[symbol] = {
             "cached_at": time.time(),
+            "ttl": ttl,
             "data": data
         }
 
@@ -914,9 +959,11 @@ def get_symbol_news(symbol):
             "minor_negative": False,
             "serious_negative": False,
             "bonus": 0,
-            "headline": ""
+            "headline": "",
+            "category": "exception",
+            "cached": False
         }
-
+        
 # ==============================================================================
 # Alpaca Data Helpers
 # ==============================================================================
