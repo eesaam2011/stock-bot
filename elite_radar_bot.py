@@ -3760,6 +3760,14 @@ last_daily_summary_date = ""
 
 last_weekend_analysis_date = ""
 
+def trade_monitor_loop():
+    while True:
+        try:
+            monitor_active_trades()
+        except Exception as e:
+            log(f"Trade monitor loop error: {e}")
+
+        time.sleep(MONITOR_INTERVAL)
 
 def main_loop():
     global last_monitor_time
@@ -3768,6 +3776,11 @@ def main_loop():
 
     startup()
 
+    threading.Thread(
+        target=trade_monitor_loop,
+        daemon=True
+    ).start()
+    
     while True:
         try:
             current = now_ksa()
@@ -3792,15 +3805,6 @@ def main_loop():
                 time.sleep(60)
 
                 continue
-
-            # ------------------------------------------------------------------
-            # Active trade monitoring runs even outside scan window
-            # ------------------------------------------------------------------
-
-            if time.time() - last_monitor_time >= MONITOR_INTERVAL:
-                monitor_active_trades()
-
-                last_monitor_time = time.time()
 
             # ------------------------------------------------------------------
             # Daily Summary
