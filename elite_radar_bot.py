@@ -840,7 +840,7 @@ def classify_news_text(text):
         "bonus": bonus
     }
 
- def get_symbol_news(symbol):
+def get_symbol_news(symbol):
     if not FINNHUB_API_KEY:
         return {
             "status": "no_key",
