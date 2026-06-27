@@ -5,3 +5,4 @@ pytz
 flask
 yfinance
 alpaca-py
+orjson
