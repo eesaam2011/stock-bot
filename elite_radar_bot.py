@@ -142,6 +142,8 @@ KEY_RUNTIME = f"{REDIS_PREFIX}:runtime"
 
 KEY_ALERTS = f"{REDIS_PREFIX}:alerts"
 
+KEY_PATTERNS = f"{REDIS_PREFIX}:patterns"
+
 # ==============================================================================
 # Runtime Stats
 # ==============================================================================
@@ -1800,7 +1802,280 @@ def save_alert_history(symbol, metrics, trade_plan):
 
     redis_hset_json(KEY_HISTORY, key, item)
 
+# ==============================================================================
+# Pattern Engine
+# ==============================================================================
 
+PATTERN_TTL_SECONDS = 60 * 60 * 3
+
+
+def load_pattern_cache():
+    return redis_hgetall_json(KEY_PATTERNS)
+
+
+def save_pattern(symbol, pattern_data):
+    redis_hset_json(KEY_PATTERNS, symbol, pattern_data)
+
+
+def remove_pattern(symbol):
+    redis_hdel(KEY_PATTERNS, symbol)
+
+
+def cleanup_expired_patterns():
+    patterns = load_pattern_cache()
+
+    if not patterns:
+        return
+
+    now_ts = time.time()
+
+    for symbol, pattern_data in list(patterns.items()):
+        try:
+            detected_ts = safe_float(pattern_data.get("detected_ts"))
+
+            if detected_ts <= 0:
+                remove_pattern(symbol)
+                continue
+
+            if now_ts - detected_ts > PATTERN_TTL_SECONDS:
+                remove_pattern(symbol)
+
+        except Exception:
+            remove_pattern(symbol)
+
+
+def detect_compression_setup(symbol):
+    df = get_bars(symbol, TimeFrame.Minute, limit=100, cache_ttl=60)
+
+    if df.empty or len(df) < 45:
+        return None
+
+    price = safe_float(df["close"].iloc[-1])
+
+    if price <= 0:
+        return None
+
+    recent = df.tail(30)
+
+    recent_high = safe_float(recent["high"].max())
+    recent_low = safe_float(recent["low"].min())
+
+    if recent_high <= 0 or recent_low <= 0:
+        return None
+
+    compression_range_pct = ((recent_high - recent_low) / price) * 100
+
+    if compression_range_pct > 6:
+        return None
+
+    atr = calculate_atr(df)
+
+    atr_pct = (atr / price) * 100 if price > 0 else 0
+
+    if atr_pct > 5:
+        return None
+
+    vwap = calculate_vwap(df)
+
+    if vwap > 0 and price < vwap * 0.985:
+        return None
+
+    obv_data = calculate_obv(df)
+
+    rvol = calculate_rvol(df)
+
+    volume_accel = calculate_volume_acceleration(df)
+
+    resistance_data = calculate_resistance(df)
+
+    resistance_distance_pct = safe_float(
+        resistance_data.get("distance_pct"),
+        999
+    )
+
+    if resistance_distance_pct > 3:
+        return None
+
+    if not obv_data.get("obv_rising") and rvol < 1.2:
+        return None
+
+    higher_lows = False
+
+    try:
+        lows = recent["low"].tail(10).values
+
+        if len(lows) >= 6:
+            higher_lows = lows[-1] >= lows[0] * 0.985
+    except Exception:
+        higher_lows = False
+
+    compression_score = 0
+
+    reasons = []
+
+    if compression_range_pct <= 3:
+        compression_score += 30
+        reasons.append("نطاق ضيق جدًا")
+
+    elif compression_range_pct <= 5:
+        compression_score += 20
+        reasons.append("نطاق ضغط مقبول")
+
+    if atr_pct <= 3:
+        compression_score += 20
+        reasons.append("ATR منخفض مناسب للضغط")
+
+    if vwap > 0 and price >= vwap:
+        compression_score += 15
+        reasons.append("السعر فوق VWAP أثناء الضغط")
+
+    if obv_data.get("obv_rising"):
+        compression_score += 15
+        reasons.append("OBV لا ينهار أثناء الضغط")
+
+    if resistance_distance_pct <= 2:
+        compression_score += 10
+        reasons.append("قريب من مقاومة قابلة للاختراق")
+
+    if higher_lows:
+        compression_score += 10
+        reasons.append("قيعان متماسكة/مرتفعة")
+
+    if compression_score < 55:
+        return None
+
+    pattern_data = {
+        "symbol": symbol,
+        "pattern": "compression",
+        "score": compression_score,
+        "price": price,
+        "range_pct": compression_range_pct,
+        "atr_pct": atr_pct,
+        "vwap": vwap,
+        "rvol": rvol,
+        "volume_accel_ratio": safe_float(volume_accel.get("ratio")),
+        "obv_rising": obv_data.get("obv_rising"),
+        "resistance": resistance_data.get("resistance"),
+        "resistance_distance_pct": resistance_distance_pct,
+        "higher_lows": higher_lows,
+        "reasons": reasons,
+        "detected_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "detected_ts": time.time(),
+        "date": today_ksa()
+    }
+
+    return pattern_data
+
+
+def scan_pattern_engine(batch):
+    if not batch:
+        return
+
+    cleanup_expired_patterns()
+
+    for symbol in batch:
+        try:
+            pattern_data = detect_compression_setup(symbol)
+
+            if pattern_data:
+                save_pattern(symbol, pattern_data)
+
+        except Exception as e:
+            log(f"Pattern engine error {symbol}: {e}")
+
+
+def get_pattern_data(symbol):
+    patterns = load_pattern_cache()
+
+    return patterns.get(symbol)
+
+
+def is_compression_breakout(symbol, metrics):
+    pattern_data = get_pattern_data(symbol)
+
+    if not pattern_data:
+        return False, None
+
+    if pattern_data.get("pattern") != "compression":
+        return False, None
+
+    if pattern_data.get("date") != today_ksa():
+        remove_pattern(symbol)
+        return False, None
+
+    breakout = bool(metrics.get("breakout"))
+    rvol = safe_float(metrics.get("rvol"))
+    volume_accel_ratio = safe_float(metrics.get("volume_accel_ratio"))
+    price = safe_float(metrics.get("price"))
+    resistance = safe_float(pattern_data.get("resistance"))
+
+    if not breakout:
+        return False, pattern_data
+
+    if rvol < 3:
+        return False, pattern_data
+
+    if volume_accel_ratio < 1.5:
+        return False, pattern_data
+
+    if resistance > 0 and price < resistance:
+        return False, pattern_data
+
+    return True, pattern_data
+
+
+def apply_pattern_boost(metrics):
+    symbol = metrics.get("symbol")
+
+    if not symbol:
+        return metrics
+
+    compression_breakout, pattern_data = is_compression_breakout(
+        symbol,
+        metrics
+    )
+
+    metrics["pattern_data"] = pattern_data
+    metrics["pattern_breakout"] = compression_breakout
+    metrics["pattern_name"] = pattern_data.get("pattern") if pattern_data else None
+
+    if not compression_breakout:
+        return metrics
+
+    current_multiplier = safe_float(metrics.get("synergy_multiplier"), 1.0)
+
+    new_multiplier = min(
+        1.35,
+        current_multiplier + 0.10
+    )
+
+    metrics["synergy_multiplier"] = new_multiplier
+
+    core_score = safe_float(metrics.get("core_score"))
+    penalty_points = safe_float(metrics.get("penalty_points"))
+
+    metrics["final_score"] = min(
+        100,
+        max(
+            0,
+            (core_score * new_multiplier) - penalty_points
+        )
+    )
+
+    metrics["confidence"] = min(
+        99,
+        safe_float(metrics.get("confidence")) + 5
+    )
+
+    synergy_reasons = metrics.get("synergy_reasons", [])
+
+    if "اختراق بعد مرحلة ضغط مراقبة مسبقًا" not in synergy_reasons:
+        synergy_reasons.append("اختراق بعد مرحلة ضغط مراقبة مسبقًا")
+
+    metrics["synergy_reasons"] = synergy_reasons
+
+    return metrics
+    
 # ==============================================================================
 # High Target Analysis
 # ==============================================================================
@@ -2539,6 +2814,9 @@ def build_alert_message(metrics, trade_plan):
             + " | ".join(metrics.get("synergy_reasons")[:3])
         )
 
+    if metrics.get("pattern_breakout"):
+        reasons.append("🔥 اختراق بعد مرحلة ضغط كان البوت يراقبها مسبقًا")
+
     warnings_text = ""
 
     if metrics.get("warnings"):
@@ -3077,6 +3355,8 @@ def scan_once():
 
         return
 
+    scan_pattern_engine(batch)
+
     runtime_stats["total_scans"] += 1
 
     runtime_stats["last_scan"] = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -3110,6 +3390,8 @@ def scan_once():
 
                 if deep_metrics:
                     metrics = deep_metrics
+
+            metrics = apply_pattern_boost(metrics)
 
             if safe_float(metrics.get("final_score")) >= required_score:
                 finalists.append(metrics)
