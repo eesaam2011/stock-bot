@@ -1237,24 +1237,33 @@ def calculate_atr(df, period=14):
 
     return safe_float(atr)
 
-
 def calculate_rvol(df):
-    if df.empty or len(df) < 25:
+    if df.empty or len(df) < 30:
         return 0
 
-    recent_volume = df["volume"].tail(5).mean()
+    volumes = df["volume"].astype(float)
 
-    base_volume = df["volume"].iloc[-60:-5].mean()
+    recent_volume = volumes.tail(5).mean()
+
+    # نستبعد آخر 5 دقائق من المقارنة لأنها هي حركة الزخم الحالية
+    historical_volume = volumes.iloc[:-5]
+
+    if historical_volume.empty:
+        return 0
+
+    # نستخدم Median بدل Mean حتى لا تبالغ شمعة حجم شاذة في الحساب
+    base_volume = historical_volume.tail(120).median()
 
     if not base_volume or base_volume <= 0:
-        base_volume = df["volume"].iloc[:-5].mean()
+        base_volume = historical_volume.mean()
 
     if not base_volume or base_volume <= 0:
         return 0
 
-    return float(recent_volume / base_volume)
+    instant_rvol = recent_volume / base_volume
 
-
+    return float(instant_rvol)
+    
 def calculate_volume_acceleration(df):
     if df.empty or len(df) < 12:
         return {
@@ -1292,41 +1301,71 @@ def calculate_volume_acceleration(df):
 
 
 def calculate_resistance(df, lookback=80):
-    if df.empty or len(df) < 20:
+    if df.empty or len(df) < 30:
         return {
             "resistance": 0,
             "distance_pct": 999,
-            "breakout": False
+            "breakout": False,
+            "touches": 0
         }
 
     current_price = safe_float(df["close"].iloc[-1])
 
-    recent = df.tail(lookback)
+    recent = df.tail(lookback).copy()
 
-    body_high = recent[["open", "close"]].max(axis=1)
+    recent["body_high"] = recent[["open", "close"]].max(axis=1)
 
-    if len(body_high) > 2:
-        resistance = safe_float(body_high.iloc[:-1].max())
-    else:
-        resistance = safe_float(body_high.max())
+    body_levels = sorted(
+        recent["body_high"].iloc[:-1].tolist(),
+        reverse=True
+    )
 
-    distance_pct = 999
+    if not body_levels:
+        return {
+            "resistance": 0,
+            "distance_pct": 999,
+            "breakout": False,
+            "touches": 0
+        }
+
+    tolerance = current_price * 0.003
+
+    best_level = body_levels[0]
+    best_touches = 1
+
+    for level in body_levels:
+        touches = sum(
+            abs(x - level) <= tolerance
+            for x in body_levels
+        )
+
+        if touches > best_touches:
+            best_touches = touches
+            best_level = level
+
+    resistance = safe_float(best_level)
 
     if current_price > 0 and resistance > 0:
-        distance_pct = ((resistance - current_price) / current_price) * 100
+        distance_pct = (
+            (resistance - current_price)
+            / current_price
+        ) * 100
+    else:
+        distance_pct = 999
 
     breakout = (
         current_price > resistance
         and df["close"].iloc[-1] > df["open"].iloc[-1]
+        and best_touches >= 2
     )
 
     return {
         "resistance": resistance,
         "distance_pct": distance_pct,
-        "breakout": bool(breakout)
+        "breakout": bool(breakout),
+        "touches": best_touches
     }
-
-
+    
 def get_15m_trend(symbol):
     cached = TREND_15M_CACHE.get(symbol)
 
