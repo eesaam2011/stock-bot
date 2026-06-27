@@ -92,6 +92,10 @@ FULL_SNAPSHOT_REBUILD_TIMES_KSA = [
 
 NEWS_CACHE_TTL = 60 * 60
 
+POSITIVE_NEWS_TTL = 2 * 60 * 60
+SERIOUS_NEGATIVE_NEWS_TTL = 72 * 60 * 60
+MAJOR_CATALYST_NEWS_TTL = 6 * 60 * 60
+
 NEWS_LOOKBACK_HOURS = 12
 
 FINNHUB_MAX_REQUESTS_PER_MINUTE = 40
@@ -2579,9 +2583,6 @@ def evaluate_candidate(symbol, deep_news=False):
         "phase": phase,
         "high_target": high_target,
         "evaluated_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
-        "compression_breakout": compression_breakout,
-        "compression_data": compression_data,
-    }
 
     return metrics
 
