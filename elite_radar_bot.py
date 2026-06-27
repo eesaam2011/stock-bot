@@ -1299,7 +1299,6 @@ def calculate_volume_acceleration(df):
         "peak_recent": bool(peak_recent)
     }
 
-
 def calculate_resistance(df, lookback=80):
     if df.empty or len(df) < 30:
         return {
@@ -1329,14 +1328,15 @@ def calculate_resistance(df, lookback=80):
         }
 
     best_level = body_levels[0]
-    best_touches = 1
+    best_touches = 0
 
-    for level in body_levels:
+    for i, level in enumerate(body_levels):
         tolerance = level * 0.003
 
         touches = sum(
-            abs(x - level) <= tolerance
-            for x in body_levels
+            1
+            for j, x in enumerate(body_levels)
+            if j != i and abs(x - level) <= tolerance
         )
 
         if touches > best_touches:
@@ -1356,7 +1356,7 @@ def calculate_resistance(df, lookback=80):
     breakout = (
         current_price > resistance
         and df["close"].iloc[-1] > df["open"].iloc[-1]
-        and best_touches >= 2
+        and best_touches >= 1
     )
 
     return {
