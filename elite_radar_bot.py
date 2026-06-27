@@ -126,6 +126,8 @@ KEY_PRIORITY = f"{REDIS_PREFIX}:priority"
 
 KEY_WATCHLIST = f"{REDIS_PREFIX}:watchlist"
 
+KEY_COMPRESSION = f"{REDIS_PREFIX}:compression"
+
 KEY_ACTIVE = f"{REDIS_PREFIX}:active"
 
 KEY_HISTORY = f"{REDIS_PREFIX}:history"
@@ -1672,6 +1674,93 @@ def remove_from_watchlist(symbol):
 
     redis_hdel(KEY_WATCHLIST, symbol)
 
+def get_compression_candidates():
+    return redis_hgetall_json(KEY_COMPRESSION)
+
+
+def save_compression_candidate(symbol, data):
+    redis_hset_json(KEY_COMPRESSION, symbol, data)
+
+
+def remove_compression_candidate(symbol):
+    redis_hdel(KEY_COMPRESSION, symbol)
+
+
+def detect_compression_pattern(symbol):
+    df = get_bars(symbol, TimeFrame.Minute, limit=80, cache_ttl=60)
+
+    if df.empty or len(df) < 35:
+        return None
+
+    price = safe_float(df["close"].iloc[-1])
+
+    if price <= 0:
+        return None
+
+    recent = df.tail(25)
+
+    high = safe_float(recent["high"].max())
+    low = safe_float(recent["low"].min())
+
+    range_pct = ((high - low) / price) * 100 if price > 0 else 999
+
+    vwap = calculate_vwap(df)
+
+    obv_data = calculate_obv(df)
+
+    atr = calculate_atr(df)
+
+    atr_pct = (atr / price) * 100 if price > 0 else 0
+
+    resistance_data = calculate_resistance(df)
+
+    rvol = calculate_rvol(df)
+
+    volume_accel = calculate_volume_acceleration(df)
+
+    if range_pct > 6:
+        return None
+
+    if atr_pct > 5:
+        return None
+
+    if vwap > 0 and price < vwap * 0.985:
+        return None
+
+    if not obv_data.get("obv_rising") and rvol < 1.2:
+        return None
+
+    if resistance_data.get("distance_pct", 999) > 3:
+        return None
+
+    data = {
+        "symbol": symbol,
+        "price": price,
+        "range_pct": range_pct,
+        "atr_pct": atr_pct,
+        "rvol": rvol,
+        "volume_accel_ratio": safe_float(volume_accel.get("ratio")),
+        "resistance": resistance_data.get("resistance"),
+        "resistance_distance_pct": resistance_data.get("distance_pct"),
+        "vwap": vwap,
+        "obv_rising": obv_data.get("obv_rising"),
+        "detected_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "date": today_ksa()
+    }
+
+    return data
+
+
+def scan_compression_candidates(batch):
+    for symbol in batch:
+        try:
+            data = detect_compression_pattern(symbol)
+
+            if data:
+                save_compression_candidate(symbol, data)
+
+        except Exception as e:
+            log(f"Compression scan error {symbol}: {e}")
 
 def load_watchlist():
     global WATCHLIST
@@ -2172,7 +2261,7 @@ def evaluate_candidate(symbol, deep_news=False):
         volume_accel_ratio=volume_accel_ratio,
         trend_15m_ok=trend_15m.get("ok")
     )
-
+    
     metrics = {
         "symbol": symbol,
         "price": price,
@@ -2215,6 +2304,8 @@ def evaluate_candidate(symbol, deep_news=False):
         "phase": phase,
         "high_target": high_target,
         "evaluated_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+        "compression_breakout": compression_breakout,
+        "compression_data": compression_data,
     }
 
     return metrics
