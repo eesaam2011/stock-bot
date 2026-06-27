@@ -2303,7 +2303,7 @@ def evaluate_candidate(symbol, deep_news=False):
         "confidence": confidence,
         "phase": phase,
         "high_target": high_target,
-        "evaluated_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+        "evaluated_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
         "compression_breakout": compression_breakout,
         "compression_data": compression_data,
     }
