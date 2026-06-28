@@ -1430,11 +1430,12 @@ def get_15m_trend(symbol):
         if time.time() - cached_at <= 300:
             return data
 
-    try:
-        df = get_bars(symbol, TimeFrame(15, TimeFrame.Unit.Minute), limit=50, cache_ttl=300)
-
-    except Exception:
-        df = get_bars(symbol, TimeFrame.Minute, limit=200, cache_ttl=300)
+    df = get_bars(
+        symbol,
+        "15Min",
+        limit=50,
+        cache_ttl=300
+    )
 
     if df.empty or len(df) < 25:
         data = {
@@ -1469,7 +1470,6 @@ def get_15m_trend(symbol):
     TREND_15M_CACHE[symbol] = (time.time(), data)
 
     return data
-
 
 # ==============================================================================
 # Universe Builder
