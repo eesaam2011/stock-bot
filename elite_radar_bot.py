@@ -1802,7 +1802,20 @@ def already_alerted_today(symbol):
 
     return item.get("date") == today_ksa()
 
+def get_already_alerted_today_batch(symbols):
+    alerts = get_sent_alerts()
+    today = today_ksa()
 
+    already_alerted = set()
+
+    for symbol in symbols:
+        item = alerts.get(symbol)
+
+        if item and item.get("date") == today:
+            already_alerted.add(symbol)
+
+    return already_alerted
+    
 def add_to_watchlist(symbol, reason, data=None):
     if data is None:
         data = {}
