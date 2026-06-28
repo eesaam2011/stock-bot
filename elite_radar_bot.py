@@ -2926,10 +2926,18 @@ Penalty: -{safe_float(metrics.get('penalty_points')):.1f}
 # ==============================================================================
 
 def activate_trade(symbol, metrics, trade_plan):
+    
+    entry_price = safe_float(trade_plan.get("entry"))
+
     item = {
         "symbol": symbol,
         "metrics": metrics,
         "trade_plan": trade_plan,
+        "highest_price": entry_price,
+        "lowest_price": entry_price,
+        "max_profit_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "opened_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
         "last_update": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
         "date": today_ksa()
     }
@@ -3068,6 +3076,23 @@ def monitor_single_trade(symbol, item):
         return
 
     entry = safe_float(trade_plan.get("entry"))
+    highest_price = max(
+        safe_float(item.get("highest_price"), entry),
+        price
+    )
+
+    lowest_price = min(
+        safe_float(item.get("lowest_price"), entry),
+        price
+    )
+
+    item["highest_price"] = highest_price
+    item["lowest_price"] = lowest_price
+
+    if entry > 0:
+        item["max_profit_pct"] = ((highest_price - entry) / entry) * 100
+        item["max_drawdown_pct"] = ((lowest_price - entry) / entry) * 100
+        
     stop = safe_float(trade_plan.get("stop"))
     t1 = safe_float(trade_plan.get("t1"))
     t2 = safe_float(trade_plan.get("t2"))
