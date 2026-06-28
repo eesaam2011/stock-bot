@@ -337,60 +337,6 @@ def redis_set_json(key, value, expire_seconds=None):
     except Exception as e:
         log(f"Redis Set JSON Error: {e}")
         return None
-
-def redis_mget_json(keys, default=None):
-    """
-    قراءة عدة مفاتيح من Redis دفعة واحدة.
-    تقلل عدد طلبات Upstash بدل قراءة كل مفتاح لوحده.
-    """
-    if not keys:
-        return {}
-
-    try:
-        values = redis_client.mget(keys)
-        result = {}
-
-        for key, raw_value in zip(keys, values):
-            if raw_value is None:
-                result[key] = default
-                continue
-
-            if isinstance(raw_value, bytes):
-                raw_value = raw_value.decode("utf-8")
-
-            result[key] = json.loads(raw_value)
-
-        return result
-
-    except Exception as e:
-        print(f"⚠️ Redis MGET error: {e}")
-        return {key: default for key in keys}
-
-
-def redis_mset_json(data_dict, ttl=None):
-    """
-    حفظ عدة مفاتيح في Redis دفعة واحدة.
-    """
-    if not data_dict:
-        return False
-
-    try:
-        pipe = redis_client.pipeline()
-
-        for key, value in data_dict.items():
-            payload = json.dumps(value, ensure_ascii=False)
-
-            if ttl:
-                pipe.setex(key, ttl, payload)
-            else:
-                pipe.set(key, payload)
-
-        pipe.execute()
-        return True
-
-    except Exception as e:
-        print(f"⚠️ Redis MSET error: {e}")
-        return False
         
 def redis_hset_json(key, field, value):
     try:
@@ -2209,7 +2155,7 @@ def apply_pattern_boost(metrics):
     current_multiplier = safe_float(metrics.get("synergy_multiplier"), 1.0)
 
     new_multiplier = min(
-        1.35,
+        1.25,
         current_multiplier + 0.10
     )
 
