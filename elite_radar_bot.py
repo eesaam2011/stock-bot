@@ -746,7 +746,23 @@ def get_float_label(symbol):
 
     return f"مرتفع ({fmt_big_number(float_value)})"
 
+def get_min_dollar_volume(float_shares):
+    float_shares = safe_float(float_shares)
 
+    if float_shares <= 0:
+        return 500_000
+
+    if float_shares <= 10_000_000:
+        return 250_000
+
+    if float_shares <= 30_000_000:
+        return 500_000
+
+    if float_shares <= 60_000_000:
+        return 750_000
+
+    return 1_000_000
+    
 # ==============================================================================
 # Finnhub News Manager - Max 40 Requests / Minute
 # ==============================================================================
@@ -1483,9 +1499,13 @@ def fast_priority_check(symbol):
     if spread > MAX_SPREAD:
         return False, snapshot
 
-    if dollar_volume < MIN_DOLLAR_VOLUME:
-        return False, snapshot
+    float_value = get_float(symbol)
 
+    min_dollar_volume = get_min_dollar_volume(float_value)
+
+    if dollar_volume < min_dollar_volume:
+        return False, snapshot
+        
     near_high = False
 
     if day_high > 0 and price >= day_high * 0.96:
@@ -2376,7 +2396,10 @@ def pass_hard_rules(symbol, snapshot):
     spread_pct = safe_float(snapshot.get("spread_pct"), 999)
 
     dollar_volume = safe_float(snapshot.get("dollar_volume"))
+    float_value = get_float(symbol)
 
+    min_dollar_volume = get_min_dollar_volume(float_value)
+    
     if price < PRICE_MIN or price > PRICE_MAX:
         save_rejection(symbol, "السعر خارج النطاق", snapshot)
         return False
@@ -2385,11 +2408,17 @@ def pass_hard_rules(symbol, snapshot):
         save_rejection(symbol, "السبريد مرتفع", snapshot)
         return False
 
-    if dollar_volume < MIN_DOLLAR_VOLUME:
-        save_rejection(symbol, "السيولة الدولارية ضعيفة", snapshot)
+    if dollar_volume < min_dollar_volume:
+        save_rejection(
+            symbol,
+            "السيولة الدولارية ضعيفة",
+            {
+                "dollar_volume": dollar_volume,
+                "required_dollar_volume": min_dollar_volume,
+                "float_value": float_value
+            }
+        )
         return False
-
-    return True
 
 
 # ==============================================================================
