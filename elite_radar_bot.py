@@ -3027,6 +3027,30 @@ def close_active_trade(symbol, item, reason):
 
     item["close_reason"] = reason
 
+    opened_at = item.get("opened_at")
+
+    if opened_at:
+        try:
+            opened_dt = datetime.strptime(
+                opened_at,
+                "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=saudi_tz)
+
+            item["holding_minutes"] = int(
+                (datetime.now(saudi_tz) - opened_dt).total_seconds() / 60
+            )
+
+        except Exception:
+            item["holding_minutes"] = None
+    else:
+        item["holding_minutes"] = None
+
+    trade_plan = item.get("trade_plan", {})
+
+    item["t1_hit"] = bool(trade_plan.get("hit_t1"))
+    item["t2_hit"] = bool(trade_plan.get("hit_t2"))
+    item["t3_hit"] = bool(trade_plan.get("hit_t3"))
+
     redis_hset_json(
         KEY_HISTORY,
         f"{symbol}:closed:{int(time.time())}",
