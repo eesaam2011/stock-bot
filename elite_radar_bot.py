@@ -3575,9 +3575,11 @@ def scan_once():
 
     required_score = LAST_HOUR_SCORE if is_last_market_hour() else MIN_SCORE
 
+    already_alerted_symbols = get_already_alerted_today_batch(batch)
+
     for symbol in batch:
         try:
-            if already_alerted_today(symbol):
+            if symbol in already_alerted_symbols:
                 continue
 
             hot, snapshot = fast_priority_check(symbol)
