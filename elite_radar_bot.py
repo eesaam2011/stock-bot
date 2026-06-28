@@ -843,18 +843,18 @@ POSITIVE_NEWS = [
 
 
 LAST_FINNHUB_REQUEST_TIME = 0
-
+FINNHUB_LOCK = threading.Lock()
 
 def finnhub_wait_slot():
     global LAST_FINNHUB_REQUEST_TIME
 
-    elapsed = time.time() - LAST_FINNHUB_REQUEST_TIME
+    with FINNHUB_LOCK:
+        elapsed = time.time() - LAST_FINNHUB_REQUEST_TIME
 
-    if elapsed < FINNHUB_DELAY:
-        time.sleep(FINNHUB_DELAY - elapsed)
+        if elapsed < FINNHUB_DELAY:
+            time.sleep(FINNHUB_DELAY - elapsed)
 
-    LAST_FINNHUB_REQUEST_TIME = time.time()
-
+        LAST_FINNHUB_REQUEST_TIME = time.time()
 
 def load_news_cache():
     global NEWS_CACHE
@@ -2460,7 +2460,8 @@ def pass_hard_rules(symbol, snapshot):
         )
         return False
 
-
+    return True
+    
 # ==============================================================================
 # Candidate Evaluation
 # ==============================================================================
