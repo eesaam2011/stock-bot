@@ -2376,7 +2376,7 @@ def calculate_synergy_multiplier(
         multiplier += 0.05
         reasons.append("خبر إيجابي داعم مع زخم قوي")
 
-    multiplier = min(multiplier, 1.35)
+    multiplier = min(multiplier, 1.25)
 
     return multiplier, reasons
 
