@@ -454,6 +454,33 @@ def today_ny():
 def is_weekend():
     return now_ny().weekday() >= 5
 
+def seconds_until_next_market_preopen():
+    ny = now_ny()
+
+    if ny.weekday() == 5:
+        target = ny + timedelta(days=2)
+
+    elif ny.weekday() == 6:
+        target = ny + timedelta(days=1)
+
+    elif ny.weekday() == 0 and ny.hour < 4:
+        target = ny
+
+    else:
+        return 0
+
+    target = target.replace(
+        hour=4,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    return max(
+        0,
+        int((target - ny).total_seconds())
+    )
+    
 def is_market_weekday():
     return now_ny().weekday() < 5
 
@@ -944,9 +971,14 @@ def get_symbol_news(symbol):
             category = "neutral"
             ttl = NEWS_CACHE_TTL
 
+            preopen_ttl = seconds_until_next_market_preopen()
+
             if result["serious_negative"]:
                 category = "serious_negative"
-                ttl = SERIOUS_NEGATIVE_NEWS_TTL
+                ttl = max(
+                    SERIOUS_NEGATIVE_NEWS_TTL,
+                    preopen_ttl
+                )
 
             elif result["positive"]:
                 category = "positive"
@@ -959,13 +991,21 @@ def get_symbol_news(symbol):
                     "purchase order",
                     "merger",
                     "acquisition",
+                    "buyout",
+                    "partnership",
+                    "phase 3",
                     "breakthrough",
-                    "positive data"
+                    "positive data",
+                    "earnings beat"
                 ]
 
                 if any(word in text_lower for word in major_words):
                     category = "major_catalyst"
-                    ttl = MAJOR_CATALYST_NEWS_TTL
+
+                    ttl = max(
+                        MAJOR_CATALYST_NEWS_TTL,
+                        preopen_ttl
+                    )
 
             elif result["minor_negative"]:
                 category = "minor_negative"
