@@ -1615,6 +1615,12 @@ def build_priority_universe():
             log(f"Priority universe checked {checked}/{len(UNIVERSE)}")
             time.sleep(1)
 
+    priority_scored = sorted(
+        priority_scored,
+        key=lambda item: item[0],
+        reverse=True
+    )
+
     priority_symbols = [
         symbol
         for score, symbol in priority_scored
