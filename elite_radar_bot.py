@@ -3022,11 +3022,11 @@ def activate_trade(symbol, metrics, trade_plan):
         "date": today_ksa()
     }
 
-    ACTIVE_TRADES[symbol] = item
+    with ACTIVE_TRADES_LOCK:
+        ACTIVE_TRADES[symbol] = item
 
     redis_hset_json(KEY_ACTIVE, symbol, item)
-
-
+    
 def send_elite_alert(metrics):
     symbol = metrics["symbol"]
 
@@ -3083,19 +3083,21 @@ def send_elite_alert(metrics):
 def load_active_trades():
     global ACTIVE_TRADES
 
-    ACTIVE_TRADES = redis_hgetall_json(KEY_ACTIVE)
+    trades = redis_hgetall_json(KEY_ACTIVE)
 
-    runtime_stats["active_trades"] = len(ACTIVE_TRADES)
+    with ACTIVE_TRADES_LOCK:
+        ACTIVE_TRADES = trades
+        runtime_stats["active_trades"] = len(ACTIVE_TRADES)
 
-    return ACTIVE_TRADES
+    return trades
 
 
 def update_active_trade(symbol, item):
-    ACTIVE_TRADES[symbol] = item
+    with ACTIVE_TRADES_LOCK:
+        ACTIVE_TRADES[symbol] = item
 
     redis_hset_json(KEY_ACTIVE, symbol, item)
-
-
+    
 def close_active_trade(symbol, item, reason):
     trade_plan = item.get("trade_plan", {})
 
@@ -3139,11 +3141,11 @@ def close_active_trade(symbol, item, reason):
 
     redis_hdel(KEY_ACTIVE, symbol)
 
+with ACTIVE_TRADES_LOCK:
     if symbol in ACTIVE_TRADES:
         del ACTIVE_TRADES[symbol]
 
     runtime_stats["active_trades"] = len(ACTIVE_TRADES)
-
 
 def send_trade_update(symbol, text):
     message = f"""🟢 <b>Elite Radar - تحديث صفقة</b>
