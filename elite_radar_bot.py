@@ -3141,11 +3141,11 @@ def close_active_trade(symbol, item, reason):
 
     redis_hdel(KEY_ACTIVE, symbol)
 
-with ACTIVE_TRADES_LOCK:
-    if symbol in ACTIVE_TRADES:
-        del ACTIVE_TRADES[symbol]
+    with ACTIVE_TRADES_LOCK:
+        if symbol in ACTIVE_TRADES:
+            del ACTIVE_TRADES[symbol]
 
-    runtime_stats["active_trades"] = len(ACTIVE_TRADES)
+        runtime_stats["active_trades"] = len(ACTIVE_TRADES)
 
 def send_trade_update(symbol, text):
     message = f"""🟢 <b>Elite Radar - تحديث صفقة</b>
