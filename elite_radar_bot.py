@@ -2023,6 +2023,10 @@ def detect_compression_setup(symbol):
     except Exception:
         higher_lows = False
 
+    higher_lows = bool(higher_lows)
+
+    obv_rising = bool(obv_data.get("obv_rising"))
+
     compression_score = 0
 
     reasons = []
@@ -2068,7 +2072,7 @@ def detect_compression_setup(symbol):
         "vwap": vwap,
         "rvol": rvol,
         "volume_accel_ratio": safe_float(volume_accel.get("ratio")),
-        "obv_rising": obv_data.get("obv_rising"),
+        "obv_rising": obv_rising,
         "resistance": resistance_data.get("resistance"),
         "resistance_distance_pct": resistance_distance_pct,
         "higher_lows": higher_lows,
