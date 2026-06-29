@@ -3804,6 +3804,7 @@ def scan_once():
                     symbol,
                     deep_news=True,
                     snapshot=snapshot
+                    df=df
                 )
 
                 if deep_metrics:
