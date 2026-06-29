@@ -1127,7 +1127,95 @@ def get_bars(symbol, timeframe, limit=120, cache_ttl=60):
         log(f"get_bars error {symbol}: {e}")
         return pd.DataFrame()
 
+def get_bars_batch(symbols, timeframe, limit=120, cache_ttl=60):
+    result = {}
+    missing_symbols = []
 
+    for symbol in symbols:
+        key = f"{symbol}:{timeframe}:{limit}"
+
+        cached = BAR_CACHE.get(key)
+
+        if cached:
+            cached_at, df = cached
+
+            if time.time() - cached_at <= cache_ttl:
+                result[symbol] = df.copy()
+                continue
+
+        missing_symbols.append(symbol)
+
+    if not missing_symbols:
+        return result
+
+    try:
+        bars = api.get_bars(
+            missing_symbols,
+            timeframe,
+            limit=limit
+        )
+
+        df_all = bars.df
+
+        if df_all.empty:
+            return result
+
+        df_all = df_all.copy()
+        df_all.columns = [str(col).lower() for col in df_all.columns]
+
+        if isinstance(df_all.index, pd.MultiIndex):
+            for symbol in missing_symbols:
+                try:
+                    df = df_all.xs(symbol, level=0).copy()
+
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                    df = df.dropna(
+                        subset=["open", "high", "low", "close", "volume"]
+                    )
+
+                    key = f"{symbol}:{timeframe}:{limit}"
+                    BAR_CACHE[key] = (time.time(), df.copy())
+                    result[symbol] = df.copy()
+
+                except Exception:
+                    continue
+
+        else:
+            df_all = df_all.reset_index()
+
+            if "symbol" not in df_all.columns:
+                return result
+
+            for symbol in missing_symbols:
+                df = df_all[df_all["symbol"] == symbol].copy()
+
+                if df.empty:
+                    continue
+
+                if "timestamp" in df.columns:
+                    df = df.set_index("timestamp")
+
+                for col in ["open", "high", "low", "close", "volume"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                df = df.dropna(
+                    subset=["open", "high", "low", "close", "volume"]
+                )
+
+                key = f"{symbol}:{timeframe}:{limit}"
+                BAR_CACHE[key] = (time.time(), df.copy())
+                result[symbol] = df.copy()
+
+        return result
+
+    except Exception as e:
+        log(f"Bulk bars error: {e}")
+        return result
+        
 def get_snapshot(symbol):
     try:
         snapshot = api.get_snapshot(symbol)
