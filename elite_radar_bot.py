@@ -2910,27 +2910,29 @@ def build_trade_plan(metrics):
     symbol = metrics["symbol"]
 
     price = safe_float(metrics.get("price"))
-
     atr = safe_float(metrics.get("atr"))
-
     vwap = safe_float(metrics.get("vwap"))
-
     resistance = safe_float(metrics.get("resistance"))
 
-    if price <= 0 or atr <= 0:
+    if price <= 0:
         save_rejection(
             symbol,
-            "تعذر بناء خطة الصفقة بسبب سعر أو ATR غير صالح",
+            "تعذر بناء خطة الصفقة: السعر غير صالح",
             metrics
         )
-        return None
+        return None, "price invalid"
+
+    if atr <= 0:
+        save_rejection(
+            symbol,
+            "تعذر بناء خطة الصفقة: ATR غير صالح",
+            metrics
+        )
+        return None, "ATR invalid"
 
     swing_stop = price - max(atr * 1.2, price * 0.025)
-
     vwap_stop = vwap * 0.992 if vwap > 0 else swing_stop
-
     breakout_stop = resistance * 0.992 if metrics.get("breakout") and resistance > 0 else swing_stop
-
     max_loss_stop = price * (1 - (MAX_STOP / 100))
 
     stop = max(
@@ -2949,7 +2951,7 @@ def build_trade_plan(metrics):
                 "stop": stop
             }
         )
-        return None
+        return None, f"invalid stop | price={fmt_price(price)} stop={fmt_price(stop)}"
 
     if stop_distance_pct > MAX_STOP:
         save_rejection(
@@ -2961,7 +2963,7 @@ def build_trade_plan(metrics):
                 "stop_distance_pct": stop_distance_pct
             }
         )
-        return None
+        return None, f"stop too far {stop_distance_pct:.2f}% > {MAX_STOP}%"
 
     t1 = price + (atr * 1.2)
     t2 = price + (atr * 2.2)
@@ -2974,14 +2976,12 @@ def build_trade_plan(metrics):
         t3 = t3_atr
 
     high_target = None
-
     high_target_data = metrics.get("high_target", {})
 
     if high_target_data.get("has_high_target"):
         high_target = safe_float(high_target_data.get("extended_target"))
 
     reward = t1 - price
-
     risk = price - stop
 
     reward_risk = reward / risk if risk > 0 else 0
@@ -2997,7 +2997,7 @@ def build_trade_plan(metrics):
                 "t1": t1
             }
         )
-        return None
+        return None, f"weak reward/risk {reward_risk:.2f} < 1.20"
 
     plan = {
         "symbol": symbol,
@@ -3019,8 +3019,7 @@ def build_trade_plan(metrics):
         "date": today_ksa()
     }
 
-    return plan
-
+    return plan, "OK"
 
 # ==============================================================================
 # Final Safety Check
@@ -3235,10 +3234,10 @@ def send_elite_alert(metrics):
         log(f"Finalist rejected {symbol}: already alerted today")
         return False
 
-    trade_plan = build_trade_plan(metrics)
+    trade_plan, plan_reason = build_trade_plan(metrics)
 
     if not trade_plan:
-        log(f"Finalist rejected {symbol}: trade plan failed")
+        log(f"Finalist rejected {symbol}: trade plan failed - {plan_reason}")
         return False
 
     ok, reason = final_safety_check(metrics, trade_plan)
@@ -3279,7 +3278,7 @@ def send_elite_alert(metrics):
 
     log(f"Elite alert sent: {symbol} score={safe_float(metrics.get('final_score')):.1f}")
 
-    return True    
+    return True
 
 # ==============================================================================
 # Active Trade Manager
