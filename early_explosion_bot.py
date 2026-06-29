@@ -653,11 +653,6 @@ def build_float_cache_for_assets(assets):
             if symbol in float_cache and not weekly_refresh:
                 skipped += 1
                 continue
-                
-
-            if symbol in float_cache:
-                skipped += 1
-                continue
 
             if symbol in SYMBOL_BLACKLIST:
                 skipped += 1
