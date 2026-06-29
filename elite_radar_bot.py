@@ -1200,7 +1200,81 @@ def get_snapshot(symbol):
             "day_low": 0
         }
 
+def get_snapshots_batch(symbols):
+    snapshots_data = {}
 
+    if not symbols:
+        return snapshots_data
+
+    try:
+        raw_snapshots = api.get_snapshots(symbols)
+
+        for symbol in symbols:
+            snapshot = raw_snapshots.get(symbol)
+
+            if not snapshot:
+                continue
+
+            latest_trade = getattr(snapshot, "latest_trade", None)
+            latest_quote = getattr(snapshot, "latest_quote", None)
+            daily_bar = getattr(snapshot, "daily_bar", None)
+            prev_daily_bar = getattr(snapshot, "prev_daily_bar", None)
+            minute_bar = getattr(snapshot, "minute_bar", None)
+
+            price = safe_float(getattr(latest_trade, "p", None))
+
+            bid = safe_float(getattr(latest_quote, "bp", None))
+            ask = safe_float(getattr(latest_quote, "ap", None))
+
+            day_volume = safe_float(getattr(daily_bar, "v", None))
+            day_high = safe_float(getattr(daily_bar, "h", None))
+            day_low = safe_float(getattr(daily_bar, "l", None))
+            day_close = safe_float(getattr(daily_bar, "c", None))
+
+            prev_close = safe_float(getattr(prev_daily_bar, "c", None))
+
+            minute_volume = safe_float(getattr(minute_bar, "v", None))
+
+            if price <= 0:
+                price = day_close
+
+            spread_pct = 999
+
+            if price > 0 and ask > 0 and bid > 0:
+                spread_pct = ((ask - bid) / price) * 100
+
+            gap_pct = 0
+
+            if price > 0 and prev_close > 0:
+                gap_pct = ((price - prev_close) / prev_close) * 100
+
+            dollar_volume = price * day_volume
+
+            snapshots_data[symbol] = {
+                "symbol": symbol,
+                "price": price,
+                "bid": bid,
+                "ask": ask,
+                "spread_pct": spread_pct,
+                "day_volume": day_volume,
+                "minute_volume": minute_volume,
+                "dollar_volume": dollar_volume,
+                "prev_close": prev_close,
+                "gap_pct": gap_pct,
+                "day_high": day_high,
+                "day_low": day_low
+            }
+
+        return snapshots_data
+
+    except Exception as e:
+        log(f"Bulk snapshot error: {e}")
+        return snapshots_data
+
+def chunk_list(items, size):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+        
 # ==============================================================================
 # Indicator Engine
 # ==============================================================================
@@ -1519,9 +1593,10 @@ def build_clean_universe():
     return UNIVERSE
 
 
-def fast_priority_check(symbol):
-    snapshot = get_snapshot(symbol)
-
+def fast_priority_check(symbol, snapshot=None):
+    if snapshot is None:
+        snapshot = get_snapshot(symbol)
+        
     price = safe_float(snapshot.get("price"))
     spread = safe_float(snapshot.get("spread_pct"), 999)
     dollar_volume = safe_float(snapshot.get("dollar_volume"))
@@ -1565,7 +1640,6 @@ def fast_priority_check(symbol):
 
     return hot, snapshot
 
-
 def build_priority_universe():
     global PRIORITY_UNIVERSE
     global NORMAL_UNIVERSE
@@ -1576,44 +1650,52 @@ def build_priority_universe():
     normal = []
 
     checked = 0
+    chunk_size = 200
 
-    for symbol in UNIVERSE:
-        checked += 1
+    for chunk in chunk_list(UNIVERSE, chunk_size):
+        snapshots_map = get_snapshots_batch(chunk)
 
-        try:
-            hot, snapshot = fast_priority_check(symbol)
+        for symbol in chunk:
+            checked += 1
 
-            price = safe_float(snapshot.get("price"))
+            try:
+                snapshot = snapshots_map.get(symbol)
 
-            if price < PRICE_MIN or price > PRICE_MAX:
+                if not snapshot:
+                    normal.append(symbol)
+                    continue
+
+                hot, snapshot = fast_priority_check(symbol, snapshot=snapshot)
+
+                price = safe_float(snapshot.get("price"))
+
+                if price < PRICE_MIN or price > PRICE_MAX:
+                    continue
+
+                score = 0
+
+                score += min(max(safe_float(snapshot.get("gap_pct")), 0), 30)
+                score += min(safe_float(snapshot.get("day_volume")) / 100_000, 25)
+                score += min(safe_float(snapshot.get("dollar_volume")) / 250_000, 25)
+
+                day_high = safe_float(snapshot.get("day_high"))
+
+                if day_high > 0 and price >= day_high * 0.96:
+                    score += 15
+
+                score += get_float_score(symbol) * 2
+
+                if hot:
+                    priority_scored.append((score, symbol))
+                else:
+                    normal.append(symbol)
+
+            except Exception as e:
+                log(f"Priority build error {symbol}: {e}")
                 continue
 
-            score = 0
-
-            score += min(max(safe_float(snapshot.get("gap_pct")), 0), 30)
-
-            score += min(safe_float(snapshot.get("day_volume")) / 100_000, 25)
-
-            score += min(safe_float(snapshot.get("dollar_volume")) / 250_000, 25)
-
-            day_high = safe_float(snapshot.get("day_high"))
-
-            if day_high > 0 and price >= day_high * 0.96:
-                score += 15
-
-            score += get_float_score(symbol) * 2
-
-            if hot:
-                priority_scored.append((score, symbol))
-            else:
-                normal.append(symbol)
-
-        except Exception:
-            continue
-
-        if checked % 200 == 0:
-            log(f"Priority universe checked {checked}/{len(UNIVERSE)}")
-            time.sleep(1)
+        log(f"Priority universe checked {checked}/{len(UNIVERSE)}")
+        time.sleep(0.5)
 
     priority_scored = sorted(
         priority_scored,
@@ -1650,7 +1732,8 @@ def build_priority_universe():
     )
 
     return PRIORITY_UNIVERSE, NORMAL_UNIVERSE
-
+    
+    
 def load_universe_from_redis():
     global UNIVERSE
     global PRIORITY_UNIVERSE
