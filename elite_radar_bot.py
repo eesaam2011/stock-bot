@@ -3628,8 +3628,6 @@ def scan_once():
 
         return
 
-    scan_pattern_engine(batch)
-
     runtime_stats["total_scans"] += 1
 
     runtime_stats["last_scan"] = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -3644,19 +3642,31 @@ def scan_once():
 
     snapshots_map = get_snapshots_batch(batch)
 
-    for symbol in batch:
-        try:
-            if symbol in already_alerted_symbols:
-                continue
+    hot_symbols = []
+    hot_snapshots = {}
 
-            snapshot = snapshots_map.get(symbol)
+    for symbol in batch:
+        if symbol in already_alerted_symbols:
+            continue
+
+        snapshot = snapshots_map.get(symbol)
+
+        if not snapshot:
+            continue
+
+        hot, snapshot = fast_priority_check(symbol, snapshot=snapshot)
+
+        if hot:
+            hot_symbols.append(symbol)
+            hot_snapshots[symbol] = snapshot
+
+    scan_pattern_engine(hot_symbols)
+
+    for symbol in hot_symbols:
+        try:
+            snapshot = hot_snapshots.get(symbol)
 
             if not snapshot:
-                continue
-
-            hot, snapshot = fast_priority_check(symbol, snapshot=snapshot)
-
-            if not hot:
                 continue
 
             metrics = evaluate_candidate(
@@ -3664,7 +3674,7 @@ def scan_once():
                 deep_news=False,
                 snapshot=snapshot
             )
-            
+
             evaluated += 1
 
             if not metrics:
