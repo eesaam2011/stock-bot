@@ -1794,13 +1794,15 @@ def get_next_batch():
     if cursor >= len(source):
         cursor = 0
 
-    batch = source[cursor:cursor + 180]
+    batch_size = 200
 
-    if len(batch) < 180:
-        batch += source[:180 - len(batch)]
+    batch = source[cursor:cursor + batch_size]
 
-    cursor = (cursor + 180) % max(len(source), 1)
+    if len(batch) < batch_size:
+        batch += source[:batch_size - len(batch)]
 
+    cursor = (cursor + batch_size) % max(len(source), 1)
+    
     if source is PRIORITY_UNIVERSE:
         priority_cursor = cursor
     else:
