@@ -2131,8 +2131,9 @@ def cleanup_expired_patterns():
             remove_pattern(symbol)
 
 
-def detect_compression_setup(symbol):
-    df = get_bars(symbol, TimeFrame.Minute, limit=100, cache_ttl=60)
+def detect_compression_setup(symbol, df=None):
+    if df is None:
+        df = get_bars(symbol, TimeFrame.Minute, limit=100, cache_ttl=60)
 
     if df.empty or len(df) < 45:
         return None
@@ -2193,6 +2194,7 @@ def detect_compression_setup(symbol):
 
         if len(lows) >= 6:
             higher_lows = lows[-1] >= lows[0] * 0.985
+
     except Exception:
         higher_lows = False
 
@@ -2220,7 +2222,7 @@ def detect_compression_setup(symbol):
         compression_score += 15
         reasons.append("السعر فوق VWAP أثناء الضغط")
 
-    if obv_data.get("obv_rising"):
+    if obv_rising:
         compression_score += 15
         reasons.append("OBV لا ينهار أثناء الضغط")
 
@@ -2255,8 +2257,7 @@ def detect_compression_setup(symbol):
         "date": today_ksa()
     }
 
-    return pattern_data
-
+    return pattern_data 
 
 def scan_pattern_engine(batch):
     if not batch:
@@ -2264,17 +2265,31 @@ def scan_pattern_engine(batch):
 
     cleanup_expired_patterns()
 
+    bars_map = get_bars_batch(
+        batch,
+        TimeFrame.Minute,
+        limit=100,
+        cache_ttl=60
+    )
+
     for symbol in batch:
         try:
-            pattern_data = detect_compression_setup(symbol)
+            df = bars_map.get(symbol)
+
+            if df is None or df.empty:
+                continue
+
+            pattern_data = detect_compression_setup(
+                symbol,
+                df=df
+            )
 
             if pattern_data:
                 save_pattern(symbol, pattern_data)
 
         except Exception as e:
             log(f"Pattern engine error {symbol}: {e}")
-
-
+            
 def get_pattern_data(symbol):
     patterns = load_pattern_cache()
 
