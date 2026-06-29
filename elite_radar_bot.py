@@ -1852,52 +1852,91 @@ def rebuild_universe(full=True):
 
 priority_cursor = 0
 normal_cursor = 0
-
+DISCOVERY_INTERVAL = 300
+DISCOVERY_CHUNK_SIZE = 250
+last_discovery_scan = 0
 
 def get_next_batch():
     global priority_cursor
-    global normal_cursor
-
-    if not PRIORITY_UNIVERSE and not NORMAL_UNIVERSE:
-        return []
-
-    use_priority = (
-        bool(PRIORITY_UNIVERSE)
-        and (
-            random.random() < 0.70
-            or not NORMAL_UNIVERSE
-        )
-    )
-
-    source = PRIORITY_UNIVERSE if use_priority else NORMAL_UNIVERSE
-
-    if not source:
-        source = PRIORITY_UNIVERSE or NORMAL_UNIVERSE
-
-    if source is PRIORITY_UNIVERSE:
-        cursor = priority_cursor
-    else:
-        cursor = normal_cursor
-
-    if cursor >= len(source):
-        cursor = 0
 
     batch_size = 200
 
-    batch = source[cursor:cursor + batch_size]
+    if not PRIORITY_UNIVERSE:
+        return []
+
+    source = PRIORITY_UNIVERSE
+
+    if priority_cursor >= len(source):
+        priority_cursor = 0
+
+    batch = source[priority_cursor:priority_cursor + batch_size]
 
     if len(batch) < batch_size:
         batch += source[:batch_size - len(batch)]
 
-    cursor = (cursor + batch_size) % max(len(source), 1)
-    
-    if source is PRIORITY_UNIVERSE:
-        priority_cursor = cursor
-    else:
-        normal_cursor = cursor
+    priority_cursor = (priority_cursor + batch_size) % max(len(source), 1)
 
     return list(dict.fromkeys(batch))
 
+def run_discovery_scan():
+    global PRIORITY_UNIVERSE
+    global NORMAL_UNIVERSE
+
+    if not NORMAL_UNIVERSE:
+        return
+
+    promoted = []
+
+    for chunk in chunk_list(NORMAL_UNIVERSE, DISCOVERY_CHUNK_SIZE):
+        snapshots_map = get_snapshots_batch(chunk)
+
+        for symbol in chunk:
+            try:
+                snapshot = snapshots_map.get(symbol)
+
+                if not snapshot:
+                    continue
+
+                hot, snapshot = fast_priority_check(symbol, snapshot=snapshot)
+
+                if hot:
+                    promoted.append(symbol)
+
+            except Exception as e:
+                log(f"Discovery scan error {symbol}: {e}")
+
+    if not promoted:
+        log(
+            f"Discovery scan completed | "
+            f"Promoted=0 | "
+            f"Priority={len(PRIORITY_UNIVERSE)} | "
+            f"Normal={len(NORMAL_UNIVERSE)}"
+        )
+        return
+
+    priority_set = set(PRIORITY_UNIVERSE)
+    normal_set = set(NORMAL_UNIVERSE)
+
+    for symbol in promoted:
+        priority_set.add(symbol)
+        normal_set.discard(symbol)
+
+    PRIORITY_UNIVERSE = sorted(priority_set)
+    NORMAL_UNIVERSE = sorted(normal_set)
+
+    redis_set_json(KEY_PRIORITY, PRIORITY_UNIVERSE)
+
+    redis_set_json(
+        f"{REDIS_PREFIX}:normal",
+        NORMAL_UNIVERSE
+    )
+
+    log(
+        f"Discovery scan completed | "
+        f"Promoted={len(promoted)} | "
+        f"Priority={len(PRIORITY_UNIVERSE)} | "
+        f"Normal={len(NORMAL_UNIVERSE)}"
+    )
 
 # ==============================================================================
 # Watchlist / Memory
@@ -4195,7 +4234,8 @@ def main_loop():
     global last_monitor_time
     global last_daily_summary_date
     global last_weekend_analysis_date
-
+    global last_discovery_scan
+    
     startup()
 
     threading.Thread(
@@ -4248,10 +4288,14 @@ def main_loop():
             if is_scan_window():
                 maybe_refresh_universe()
 
+                if time.time() - last_discovery_scan >= DISCOVERY_INTERVAL:
+                    run_discovery_scan()
+                    last_discovery_scan = time.time()
+
                 scan_watchlist()
 
                 scan_once()
-
+                
                 time.sleep(SCAN_INTERVAL)
 
             else:
