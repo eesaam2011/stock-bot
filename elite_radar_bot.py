@@ -3579,13 +3579,26 @@ def scan_watchlist():
     if not WATCHLIST:
         return
 
+    symbols = list(WATCHLIST.keys())[:80]
+
+    snapshots_map = get_snapshots_batch(symbols)
+
     checked = 0
 
-    for symbol in list(WATCHLIST.keys()):
+    for symbol in symbols:
         checked += 1
 
         try:
-            metrics = evaluate_candidate(symbol, deep_news=True)
+            snapshot = snapshots_map.get(symbol)
+
+            if not snapshot:
+                continue
+
+            metrics = evaluate_candidate(
+                symbol,
+                deep_news=True,
+                snapshot=snapshot
+            )
 
             if not metrics:
                 continue
@@ -3597,9 +3610,6 @@ def scan_watchlist():
 
         except Exception as e:
             log(f"Watchlist scan error {symbol}: {e}")
-
-        if checked >= 80:
-            break
 
 
 # ==============================================================================
