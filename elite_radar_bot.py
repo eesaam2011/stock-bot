@@ -3986,18 +3986,6 @@ def startup_message():
 def startup():
     log("Elite Radar startup sequence...")
 
-    try:
-        bars = api.get_bars(
-            ["INUV", "CURI"],
-            TimeFrame.Minute,
-            limit=5
-        )
-
-        log("✅ Multi-symbol get_bars supported")
-
-    except Exception as e:
-        log(f"❌ Multi-symbol get_bars not supported: {e}")
-
     load_runtime_state()
 
     load_news_cache()
