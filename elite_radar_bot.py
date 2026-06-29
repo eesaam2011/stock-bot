@@ -2674,18 +2674,19 @@ def pass_hard_rules(symbol, snapshot):
 # Candidate Evaluation
 # ==============================================================================
 
-def evaluate_candidate(symbol, deep_news=False, snapshot=None):
+def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
     symbol = symbol.upper()
 
     if snapshot is None:
         snapshot = get_snapshot(symbol)
-        
+
     if not pass_hard_rules(symbol, snapshot):
         return None
 
     price = safe_float(snapshot.get("price"))
 
-    df = get_bars(symbol, TimeFrame.Minute, limit=160, cache_ttl=60)
+    if df is None:
+        df = get_bars(symbol, TimeFrame.Minute, limit=160, cache_ttl=60)
 
     if df.empty or len(df) < 40:
         save_rejection(symbol, "بيانات الشموع غير كافية", snapshot)
@@ -2853,7 +2854,7 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None):
         volume_accel_ratio=volume_accel_ratio,
         trend_15m_ok=trend_15m.get("ok")
     )
-    
+
     metrics = {
         "symbol": symbol,
         "price": price,
@@ -2899,7 +2900,8 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None):
     }
 
     return metrics
-    
+
+
 # ==============================================================================
 # Trade Plan Engine
 # ==============================================================================
@@ -3765,6 +3767,13 @@ def scan_once():
 
     scan_pattern_engine(hot_symbols)
 
+    bars_map_160 = get_bars_batch(
+        hot_symbols,
+        TimeFrame.Minute,
+        limit=160,
+        cache_ttl=60
+    )
+
     for symbol in hot_symbols:
         try:
             snapshot = hot_snapshots.get(symbol)
@@ -3772,10 +3781,16 @@ def scan_once():
             if not snapshot:
                 continue
 
+            df = bars_map_160.get(symbol)
+
+            if df is None or df.empty:
+                continue
+
             metrics = evaluate_candidate(
                 symbol,
                 deep_news=False,
-                snapshot=snapshot
+                snapshot=snapshot,
+                df=df
             )
 
             evaluated += 1
