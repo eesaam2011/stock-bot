@@ -340,10 +340,10 @@ def redis_hset_json(key, field, value):
     try:
         payload = json_dumps(value)
         return redis_command(["HSET", key, field, payload])
-    except Exception as e:
-        log(f"Redis HSET Error: {e}")
-        return None
 
+    except Exception as e:
+        log(f"Redis HSET Error [{key}] [{field}]: {e}")
+        return None
 
 def redis_hgetall_json(key):
     result = redis_command(["HGETALL", key])
