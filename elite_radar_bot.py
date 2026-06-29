@@ -3232,16 +3232,20 @@ def send_elite_alert(metrics):
     symbol = metrics["symbol"]
 
     if already_alerted_today(symbol):
+        log(f"Finalist rejected {symbol}: already alerted today")
         return False
 
     trade_plan = build_trade_plan(metrics)
 
     if not trade_plan:
+        log(f"Finalist rejected {symbol}: trade plan failed")
         return False
 
     ok, reason = final_safety_check(metrics, trade_plan)
 
     if not ok:
+        log(f"Finalist rejected {symbol}: final safety failed - {reason}")
+
         save_rejection(
             symbol,
             f"فشل الفحص النهائي: {reason}",
@@ -3275,7 +3279,7 @@ def send_elite_alert(metrics):
 
     log(f"Elite alert sent: {symbol} score={safe_float(metrics.get('final_score')):.1f}")
 
-    return True
+    return True    
 
 # ==============================================================================
 # Active Trade Manager
