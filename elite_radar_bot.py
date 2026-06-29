@@ -196,11 +196,9 @@ WATCHLIST = {}
 
 ACTIVE_TRADES = {}
 
+ACTIVE_TRADES_LOCK = threading.Lock()
+
 UNIVERSE = []
-
-PRIORITY_UNIVERSE = []
-
-NORMAL_UNIVERSE = []
 
 # ==============================================================================
 # Logging
