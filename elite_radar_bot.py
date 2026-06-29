@@ -2569,11 +2569,12 @@ def pass_hard_rules(symbol, snapshot):
 # Candidate Evaluation
 # ==============================================================================
 
-def evaluate_candidate(symbol, deep_news=False):
+def evaluate_candidate(symbol, deep_news=False, snapshot=None):
     symbol = symbol.upper()
 
-    snapshot = get_snapshot(symbol)
-
+    if snapshot is None:
+        snapshot = get_snapshot(symbol)
+        
     if not pass_hard_rules(symbol, snapshot):
         return None
 
@@ -3629,18 +3630,29 @@ def scan_once():
 
     already_alerted_symbols = get_already_alerted_today_batch(batch)
 
+    snapshots_map = get_snapshots_batch(batch)
+
     for symbol in batch:
         try:
             if symbol in already_alerted_symbols:
                 continue
 
-            hot, snapshot = fast_priority_check(symbol)
+            snapshot = snapshots_map.get(symbol)
+
+            if not snapshot:
+                continue
+
+            hot, snapshot = fast_priority_check(symbol, snapshot=snapshot)
 
             if not hot:
                 continue
 
-            metrics = evaluate_candidate(symbol, deep_news=False)
-
+            metrics = evaluate_candidate(
+                symbol,
+                deep_news=False,
+                snapshot=snapshot
+            )
+            
             evaluated += 1
 
             if not metrics:
@@ -3648,7 +3660,11 @@ def scan_once():
 
             # If near-final, do deep news check
             if safe_float(metrics.get("final_score")) >= required_score - 8:
-                deep_metrics = evaluate_candidate(symbol, deep_news=True)
+                deep_metrics = evaluate_candidate(
+                    symbol,
+                    deep_news=True,
+                    snapshot=snapshot
+                )
 
                 if deep_metrics:
                     metrics = deep_metrics
