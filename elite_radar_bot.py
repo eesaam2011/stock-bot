@@ -3803,7 +3803,7 @@ def scan_once():
                 deep_metrics = evaluate_candidate(
                     symbol,
                     deep_news=True,
-                    snapshot=snapshot
+                    snapshot=snapshot,
                     df=df
                 )
 
