@@ -916,7 +916,7 @@ def get_symbol_news(symbol):
     try:
         finnhub_wait_slot()
 
-        to_date = datetime.utcnow().date()
+        to_date = datetime.now(timezone.utc).date()
         from_date = to_date - timedelta(hours=NEWS_LOOKBACK_HOURS)
 
         response = requests.get(
