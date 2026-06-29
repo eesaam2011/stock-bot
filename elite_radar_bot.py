@@ -2685,9 +2685,9 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
 
     price = safe_float(snapshot.get("price"))
 
-    if df is None:
+    if df is None or df.empty:
         df = get_bars(symbol, TimeFrame.Minute, limit=160, cache_ttl=60)
-
+        
     if df.empty or len(df) < 40:
         save_rejection(symbol, "بيانات الشموع غير كافية", snapshot)
         return None
@@ -3782,9 +3782,6 @@ def scan_once():
                 continue
 
             df = bars_map_160.get(symbol)
-
-            if df is None or df.empty:
-                continue
 
             metrics = evaluate_candidate(
                 symbol,
