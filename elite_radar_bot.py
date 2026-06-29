@@ -1720,10 +1720,17 @@ def fast_priority_check(symbol, snapshot=None):
 
     hot = (
         gap_pct >= 4
-        or day_volume >= 500_000
         or minute_volume >= 20_000
         or near_high
-        or low_float
+        or (day_volume >= 500_000 and gap_pct >= 2)
+        or (
+            low_float
+            and (
+                day_volume >= 250_000
+                or minute_volume >= 10_000
+                or gap_pct >= 2
+            )
+        )
     )
 
     return hot, snapshot
