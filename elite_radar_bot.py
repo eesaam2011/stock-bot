@@ -1892,7 +1892,7 @@ def run_discovery_scan():
     if not NORMAL_UNIVERSE:
         return
 
-    promoted = []
+    promoted = set()
 
     for chunk in chunk_list(NORMAL_UNIVERSE, DISCOVERY_CHUNK_SIZE):
         snapshots_map = get_snapshots_batch(chunk)
@@ -1905,9 +1905,9 @@ def run_discovery_scan():
                     continue
 
                 hot, snapshot = fast_priority_check(symbol, snapshot=snapshot)
-
+                
                 if hot:
-                    promoted.append(symbol)
+                    promoted.add(symbol)
 
             except Exception as e:
                 log(f"Discovery scan error {symbol}: {e}")
@@ -1921,16 +1921,14 @@ def run_discovery_scan():
         )
         return
 
-    priority_set = set(PRIORITY_UNIVERSE)
-    normal_set = set(NORMAL_UNIVERSE)
+    priority_set = set(promoted)
 
-    for symbol in promoted:
-        priority_set.add(symbol)
-        normal_set.discard(symbol)
+    normal_set = set(UNIVERSE) - priority_set
 
     PRIORITY_UNIVERSE = sorted(priority_set)
-    NORMAL_UNIVERSE = sorted(normal_set)
 
+    NORMAL_UNIVERSE = sorted(normal_set)
+    
     redis_set_json(KEY_PRIORITY, PRIORITY_UNIVERSE)
 
     redis_set_json(
