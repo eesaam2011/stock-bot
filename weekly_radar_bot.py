@@ -1477,8 +1477,12 @@ def analyze_symbol_for_alert(symbol, df):
             # fallback للكود الأصلي إذا ما في بيانات كافية من السوق العادي
             recent_resistance = float(df["High"].iloc[:-1].tail(80).max())
 
+        last_close = float(df["Close"].iloc[-1])
+        prev_close = float(df["Close"].iloc[-2])
+
         real_breakout = (
-            float(df["Close"].iloc[-1]) > recent_resistance * 1.002
+            last_close > recent_resistance * 1.002
+            and prev_close > recent_resistance * 1.002
             and instant_rvol >= 2.2
         )
 
