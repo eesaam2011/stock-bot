@@ -632,15 +632,29 @@ def reset_universe_counters():
 def build_universe():
     global priority_universe
 
-    print("🔎 Building universe with bulk snapshots...")
+    start_ts = time.time()
+
+    print_cycle_header("📦 Universe Builder")
+
     reset_universe_counters()
 
     prefiltered_symbols = []
     final_symbols = []
 
+    price_passed = 0
+    dollar_volume_passed = 0
+    spread_passed = 0
+    snapshot_batches = 0
+    snapshot_received = 0
+
     try:
+        assets_start = time.time()
         assets = api.list_assets(status="active")
         runtime_stats["assets_loaded"] = len(assets)
+
+        print(f"📥 Assets Loaded: {len(assets)} | Time: {fmt_sec(assets_start)}")
+
+        basic_start = time.time()
 
         for asset in assets:
             ok, reason = basic_asset_filter(asset)
@@ -650,10 +664,30 @@ def build_universe():
             symbol = asset.symbol.upper()
             prefiltered_symbols.append(symbol)
 
-        print(f"📌 Prefiltered Symbols: {len(prefiltered_symbols)}")
+        print(f"✅ After Basic Filter: {len(prefiltered_symbols)} | Time: {fmt_sec(basic_start)}")
+        print(f"🚫 Rejected Blacklist: {runtime_stats.get('rejected_blacklist', 0)}")
+        print(f"🚫 Rejected Bad Symbol: {runtime_stats.get('rejected_bad_symbol', 0)}")
+        print(f"🚫 Rejected Bad Name: {runtime_stats.get('rejected_bad_name', 0)}")
+        print(f"🚫 Rejected Missing Float: {runtime_stats.get('rejected_missing_float', 0)}")
 
-        for batch in chunk_list(prefiltered_symbols, BULK_SNAPSHOT_BATCH_SIZE):
+        bulk_start = time.time()
+
+        batches = list(chunk_list(prefiltered_symbols, BULK_SNAPSHOT_BATCH_SIZE))
+        total_batches = len(batches)
+
+        for idx, batch in enumerate(batches, start=1):
+            batch_start = time.time()
             snapshots = get_bulk_snapshots(batch)
+
+            snapshot_batches += 1
+            snapshot_received += len(snapshots)
+
+            print(
+                f"📡 Bulk Snapshot Batch {idx}/{total_batches} | "
+                f"Requested: {len(batch)} | "
+                f"Received: {len(snapshots)} | "
+                f"Time: {fmt_sec(batch_start)}"
+            )
 
             for symbol, snap_data in snapshots.items():
                 price = snap_data.get("price")
@@ -664,11 +698,17 @@ def build_universe():
                     runtime_stats["rejected_price"] += 1
                     continue
 
+                price_passed += 1
+
                 if dollar_volume < MIN_DOLLAR_VOLUME:
                     continue
 
+                dollar_volume_passed += 1
+
                 if spread_pct > MAX_SPREAD_PCT:
                     continue
+
+                spread_passed += 1
 
                 final_symbols.append(symbol)
                 runtime_stats["passed_basic_filter"] += 1
@@ -686,14 +726,27 @@ def build_universe():
         redis_set_json(REDIS_KEYS["priority_universe"], priority_universe)
         redis_set_json(REDIS_KEYS["state"], state)
 
-        print_universe_summary()
+        print("")
+        print("📊 Universe Diagnostic")
+        print(f"   Prefiltered Symbols: {len(prefiltered_symbols)}")
+        print(f"   Snapshot Batches: {snapshot_batches}")
+        print(f"   Snapshot Received: {snapshot_received}")
+        print(f"   Price Passed: {price_passed}")
+        print(f"   Dollar Volume Passed: {dollar_volume_passed}")
+        print(f"   Spread Passed: {spread_passed}")
+        print(f"   Universe Final: {len(priority_universe)}")
+        print(f"   Bulk Time: {fmt_sec(bulk_start)}")
+        print(f"   Total Build Time: {fmt_sec(start_ts)}")
+        print("══════════════════════════════════════════")
+
         return priority_universe
 
     except Exception as e:
         print(f"🔥 Universe build error: {e}")
         traceback.print_exc()
+        print(f"⏱ Failed After: {fmt_sec(start_ts)}")
         return priority_universe
-
+        
 def should_rebuild_universe():
     if not priority_universe:
         return True
@@ -2045,37 +2098,184 @@ def recover_active_monitoring_after_restart():
 
     redis_set_json(REDIS_KEYS["active_monitoring"], active_monitoring)
 
+# =========================================================
+# DIAGNOSTIC LOGGING
+# =========================================================
+def fmt_sec(start_ts):
+    try:
+        return f"{time.time() - start_ts:.2f}s"
+    except Exception:
+        return "0.00s"
 
+
+def print_cycle_header(title):
+    print("")
+    print("══════════════════════════════════════════")
+    print(f"{title}")
+    print(f"🕒 KSA: {now_ksa().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🧭 Session: {get_session_profile_name()}")
+    print("══════════════════════════════════════════")
+
+
+def print_top_scores(scored_candidates, limit=5):
+    if not scored_candidates:
+        print("⭐ Top Scores: لا يوجد")
+        return
+
+    ranked = sorted(
+        scored_candidates,
+        key=lambda x: x.get("final_score", 0),
+        reverse=True,
+    )[:limit]
+
+    print("⭐ Top Scores:")
+    for item in ranked:
+        print(
+            f"   {item.get('symbol')} | "
+            f"Score: {item.get('final_score', 0):.1f} | "
+            f"RVOL: {item.get('rvol', 0):.2f} | "
+            f"Accel: {item.get('volume_acceleration', {}).get('ratio', 0):.2f}x | "
+            f"Change: {item.get('price_change_pct', 0):.2f}%"
+        )
+        
 # =========================================================
 # MAIN CYCLE
 # =========================================================
 def run_scan_cycle():
+    start_ts = time.time()
+
+    print_cycle_header("🔍 Scan Cycle")
+
     if should_rebuild_universe():
         build_universe()
 
+    scan_start = time.time()
     scored_candidates, active_candidates = scan_market_batch()
+    scan_time = fmt_sec(scan_start)
 
-    # تنبيه الدخول لا ينتظر الأخبار الجديدة أو الحفظ
-    execute_entry_if_any(scored_candidates)
+    alert_start = time.time()
+    alert_sent = execute_entry_if_any(scored_candidates)
+    alert_time = fmt_sec(alert_start)
 
     runtime_stats["last_scan"] = now_ksa().isoformat()
 
-    print_scan_summary()
+    print("")
+    print("📊 Scan Diagnostic")
+    print(f"   Universe: {runtime_stats.get('universe_count', 0)}")
+    print(f"   Batch Scanned: {runtime_stats.get('batch_scanned', 0)}")
+    print(f"   Passed Activity: {runtime_stats.get('passed_activity_filter', 0)}")
+    print(f"   Active Candidates: {len(active_candidates)}")
+    print(f"   Scored Candidates: {len(scored_candidates)}")
+    print(f"   Reached Score Engine: {runtime_stats.get('reached_score_engine', 0)}")
+    print(f"   Reached Decision Engine: {runtime_stats.get('reached_decision_engine', 0)}")
+    print(f"   Alert Sent This Cycle: {alert_sent}")
+    print(f"   Total Alerts Sent: {runtime_stats.get('alerts_sent', 0)}")
+    print(f"   News Queue Count: {runtime_stats.get('news_queue_count', 0)}")
+    print(f"   Active Monitoring: {len(active_monitoring)}")
+    print(f"   Scan Time: {scan_time}")
+    print(f"   Decision/Alert Time: {alert_time}")
 
+    print_top_scores(scored_candidates)
+
+    print(f"⏱ Total Scan Cycle Time: {fmt_sec(start_ts)}")
+    print("══════════════════════════════════════════")
 
 def run_news_cycle():
-    process_news_queue()
-    print_news_summary()
+    start_ts = time.time()
 
+    print_cycle_header("📰 News Cycle")
+
+    before_cache = len(news_cache)
+    before_cursor = news_cursor
+
+    process_news_queue()
+
+    positive = 0
+    negative = 0
+    serious = 0
+    neutral = 0
+
+    for item in news_cache.values():
+        sentiment = item.get("sentiment")
+        risk = item.get("risk_level")
+
+        if risk == "serious":
+            serious += 1
+        elif sentiment == "positive":
+            positive += 1
+        elif sentiment == "negative":
+            negative += 1
+        else:
+            neutral += 1
+
+    print("")
+    print("📰 News Diagnostic")
+    print(f"   Queue Size: {len(news_queue)}")
+    print(f"   Cursor Before: {before_cursor}")
+    print(f"   Cursor After: {news_cursor}")
+    print(f"   Processed This Cycle: {runtime_stats.get('news_processed_this_cycle', 0)}")
+    print(f"   Cache Before: {before_cache}")
+    print(f"   Cache After: {len(news_cache)}")
+    print(f"   Positive Cached: {positive}")
+    print(f"   Negative Cached: {negative}")
+    print(f"   Serious Reject Cached: {serious}")
+    print(f"   Neutral Cached: {neutral}")
+    print(f"⏱ News Cycle Time: {fmt_sec(start_ts)}")
+    print("══════════════════════════════════════════")
 
 def run_monitor_cycle():
-    monitor_active_trades()
-    print_monitoring_summary()
+    start_ts = time.time()
 
+    print_cycle_header("🎯 Monitoring Cycle")
+
+    before_count = len(active_monitoring)
+
+    monitor_active_trades()
+
+    after_count = len(active_monitoring)
+
+    print("")
+    print("🎯 Monitoring Diagnostic")
+    print(f"   Active Before: {before_count}")
+    print(f"   Active After: {after_count}")
+    print(f"   T1 Hits Total: {runtime_stats.get('t1_hits', 0)}")
+    print(f"   T2 Hits Total: {runtime_stats.get('t2_hits', 0)}")
+    print(f"   T3 Hits Total: {runtime_stats.get('t3_hits', 0)}")
+    print(f"   Momentum Continues Total: {runtime_stats.get('momentum_continues', 0)}")
+    print(f"   Exits Total: {runtime_stats.get('exits', 0)}")
+
+    if active_monitoring:
+        print("📌 Active Symbols:")
+        for symbol, trade in active_monitoring.items():
+            print(
+                f"   {symbol} | "
+                f"Entry: {trade.get('entry')} | "
+                f"Stop: {trade.get('stop')} | "
+                f"T1: {trade.get('t1')} | "
+                f"T2: {trade.get('t2')} | "
+                f"T3: {trade.get('t3')}"
+            )
+    else:
+        print("📌 Active Symbols: لا يوجد")
+
+    print(f"⏱ Monitor Cycle Time: {fmt_sec(start_ts)}")
+    print("══════════════════════════════════════════")
 
 def save_cycle():
+    start_ts = time.time()
+
     save_runtime_state()
 
+    print("")
+    print("💾 Redis Save")
+    print(f"   State Saved: ✅")
+    print(f"   Active Monitoring: {len(active_monitoring)}")
+    print(f"   Sent Alerts: {len(sent_alerts)}")
+    print(f"   Priority Universe: {len(priority_universe)}")
+    print(f"   News Cache: {len(news_cache)}")
+    print(f"   Runtime Stats Saved: ✅")
+    print(f"⏱ Save Time: {fmt_sec(start_ts)}")
+    print("")
 
 # =========================================================
 # MAIN LOOP
