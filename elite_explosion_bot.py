@@ -29,6 +29,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+GIST_ID = os.getenv("GIST_ID")
+GIST_TOKEN = os.getenv("GIST_TOKEN")
 
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
@@ -311,11 +313,11 @@ def send_startup_message():
 # =========================================================
 # FLOAT CACHE
 # =========================================================
-def load_float_cache():
+ def load_float_cache():
     global float_cache
 
-    if not FLOAT_CACHE_URL:
-        print("⚠️ FLOAT_CACHE_URL is empty")
+    if not GIST_ID:
+        print("⚠️ GIST_ID is missing")
         float_cache = {}
         runtime_stats["float_count"] = 0
         return
@@ -323,23 +325,39 @@ def load_float_cache():
     print("📥 Loading float cache from Gist...")
 
     try:
-        r = requests.get(FLOAT_CACHE_URL, timeout=30)
+        headers = {}
+
+        if GIST_TOKEN:
+            headers["Authorization"] = f"token {GIST_TOKEN}"
+
+        url = f"https://api.github.com/gists/{GIST_ID}"
+
+        r = requests.get(
+            url,
+            headers=headers,
+            timeout=30,
+        )
 
         if r.status_code != 200:
-            print(f"⚠️ Float cache failed: {r.status_code}")
+            print(f"⚠️ Gist request failed: {r.status_code}")
             float_cache = {}
             runtime_stats["float_count"] = 0
             return
 
-        data = r.json()
+        gist = r.json()
 
-        if not isinstance(data, dict):
-            print("⚠️ Float cache invalid format")
+        files = gist.get("files", {})
+
+        if "float_cache.json" not in files:
+            print("⚠️ float_cache.json not found in Gist")
             float_cache = {}
             runtime_stats["float_count"] = 0
             return
 
-        float_cache = data
+        content = files["float_cache.json"]["content"]
+
+        float_cache = json.loads(content)
+
         runtime_stats["float_count"] = len(float_cache)
         runtime_stats["last_float_load"] = now_ksa().isoformat()
 
