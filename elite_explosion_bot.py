@@ -313,7 +313,7 @@ def send_startup_message():
 # =========================================================
 # FLOAT CACHE
 # =========================================================
- def load_float_cache():
+def load_float_cache():
     global float_cache
 
     if not GIST_ID:
