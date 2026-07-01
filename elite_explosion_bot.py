@@ -527,7 +527,78 @@ def get_snapshot_price_data(symbol):
         print(f"⚠️ Snapshot failed for {symbol}: {e}")
         return None
 
+# =========================================================
+# BULK SNAPSHOT HELPERS
+# =========================================================
+def chunk_list(items, size):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
 
+
+def normalize_snapshot_item(symbol, snap):
+    try:
+        latest_trade = getattr(snap, "latest_trade", None)
+        latest_quote = getattr(snap, "latest_quote", None)
+        daily_bar = getattr(snap, "daily_bar", None)
+        prev_daily_bar = getattr(snap, "prev_daily_bar", None)
+
+        price = None
+
+        if latest_trade and getattr(latest_trade, "p", None):
+            price = float(latest_trade.p)
+        elif daily_bar and getattr(daily_bar, "c", None):
+            price = float(daily_bar.c)
+
+        bid = safe_float(getattr(latest_quote, "bp", 0)) if latest_quote else 0
+        ask = safe_float(getattr(latest_quote, "ap", 0)) if latest_quote else 0
+
+        spread_pct = 999
+        if bid > 0 and ask > 0 and price and price > 0:
+            spread_pct = ((ask - bid) / price) * 100
+
+        day_volume = safe_float(getattr(daily_bar, "v", 0)) if daily_bar else 0
+        prev_close = safe_float(getattr(prev_daily_bar, "c", 0)) if prev_daily_bar else 0
+
+        price_change_pct = 0
+        if prev_close > 0 and price:
+            price_change_pct = ((price - prev_close) / prev_close) * 100
+
+        dollar_volume = day_volume * price if price else 0
+
+        return {
+            "symbol": symbol,
+            "price": price,
+            "bid": bid,
+            "ask": ask,
+            "spread_pct": spread_pct,
+            "day_volume": day_volume,
+            "prev_close": prev_close,
+            "price_change_pct": price_change_pct,
+            "dollar_volume": dollar_volume,
+        }
+
+    except Exception:
+        return None
+
+
+def get_bulk_snapshots(symbols):
+    snapshots = {}
+
+    try:
+        raw = api.get_snapshots(symbols)
+
+        if isinstance(raw, dict):
+            for symbol, snap in raw.items():
+                item = normalize_snapshot_item(symbol, snap)
+                if item:
+                    snapshots[symbol] = item
+
+        return snapshots
+
+    except Exception as e:
+        print(f"⚠️ Bulk snapshots failed for batch size {len(symbols)}: {e}")
+        return snapshots
+        
 # =========================================================
 # UNIVERSE BUILDER
 # =========================================================
