@@ -1116,9 +1116,11 @@ def fetch_symbol_news(symbol):
         }
 
     cached = get_cached_news(symbol)
-    if cached:
-        return cached
 
+    if cached:
+        runtime_stats["news_cache_hits"] = runtime_stats.get("news_cache_hits", 0) + 1
+        return cached
+        
     try:
         to_date = now_ksa().date()
         from_date = to_date - timedelta(hours=NEWS_LOOKBACK_HOURS)
@@ -1131,8 +1133,14 @@ def fetch_symbol_news(symbol):
             "token": FINNHUB_API_KEY,
         }
 
-        r = requests.get(url, params=params, timeout=10)
+        runtime_stats["news_api_requests"] = runtime_stats.get("news_api_requests", 0) + 1
 
+        r = requests.get(
+            url,
+            params=params,
+            timeout=10,
+        )
+        
         if r.status_code != 200:
             print(f"⚠️ Finnhub news failed {symbol}: {r.status_code}")
             return {
