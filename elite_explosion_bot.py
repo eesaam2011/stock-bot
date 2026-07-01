@@ -611,14 +611,14 @@ def reset_universe_counters():
     runtime_stats["rejected_price"] = 0
     runtime_stats["rejected_missing_float"] = 0
 
-
 def build_universe():
     global priority_universe
 
-    print("🔎 Building universe...")
+    print("🔎 Building universe with bulk snapshots...")
     reset_universe_counters()
 
-    symbols = []
+    prefiltered_symbols = []
+    final_symbols = []
 
     try:
         assets = api.list_assets(status="active")
@@ -630,25 +630,35 @@ def build_universe():
                 continue
 
             symbol = asset.symbol.upper()
+            prefiltered_symbols.append(symbol)
 
-            snap_data = get_snapshot_price_data(symbol)
-            if not snap_data:
-                continue
+        print(f"📌 Prefiltered Symbols: {len(prefiltered_symbols)}")
 
-            price = snap_data.get("price")
-            dollar_volume = snap_data.get("dollar_volume", 0)
+        for batch in chunk_list(prefiltered_symbols, BULK_SNAPSHOT_BATCH_SIZE):
+            snapshots = get_bulk_snapshots(batch)
 
-            if not price or price < PRICE_MIN or price > PRICE_MAX:
-                runtime_stats["rejected_price"] += 1
-                continue
+            for symbol, snap_data in snapshots.items():
+                price = snap_data.get("price")
+                dollar_volume = snap_data.get("dollar_volume", 0)
+                spread_pct = snap_data.get("spread_pct", 999)
 
-            if dollar_volume < MIN_DOLLAR_VOLUME:
-                continue
+                if not price or price < PRICE_MIN or price > PRICE_MAX:
+                    runtime_stats["rejected_price"] += 1
+                    continue
 
-            symbols.append(symbol)
-            runtime_stats["passed_basic_filter"] += 1
+                if dollar_volume < MIN_DOLLAR_VOLUME:
+                    continue
 
-        priority_universe = sorted(list(set(symbols)))
+                if spread_pct > MAX_SPREAD_PCT:
+                    continue
+
+                final_symbols.append(symbol)
+                runtime_stats["passed_basic_filter"] += 1
+
+            time.sleep(0.2)
+
+        priority_universe = sorted(list(set(final_symbols)))
+
         runtime_stats["universe_count"] = len(priority_universe)
         runtime_stats["last_universe_build"] = now_ksa().isoformat()
 
@@ -665,7 +675,6 @@ def build_universe():
         print(f"🔥 Universe build error: {e}")
         traceback.print_exc()
         return priority_universe
-
 
 def should_rebuild_universe():
     if not priority_universe:
