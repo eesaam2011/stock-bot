@@ -2308,37 +2308,92 @@ def save_cycle():
 # =========================================================
 # MAIN LOOP
 # =========================================================
+
+def run_phase(name, func):
+    start_ts = time.time()
+
+    print("")
+    print(f"▶️ START {name} | {now_ksa().strftime('%H:%M:%S')}")
+
+    try:
+        result = func()
+        print(f"✅ END {name} | Time: {fmt_sec(start_ts)}")
+        return result
+
+    except Exception as e:
+        print(f"🔥 ERROR in {name}: {e}")
+        traceback.print_exc()
+        return None
+
+
 def main_loop():
     last_scan_ts = 0
     last_monitor_ts = 0
     last_news_ts = 0
     last_save_ts = 0
+    last_heartbeat_ts = 0
 
     while True:
         try:
+            now_ts = time.time()
+
+            # =====================================================
+            # HEARTBEAT
+            # =====================================================
+            if now_ts - last_heartbeat_ts >= 15:
+                print(
+                    f"💓 Heartbeat | "
+                    f"KSA {now_ksa().strftime('%H:%M:%S')} | "
+                    f"Session={get_session_profile_name()} | "
+                    f"Universe={len(priority_universe)} | "
+                    f"Monitoring={len(active_monitoring)} | "
+                    f"NewsQueue={len(news_queue)}"
+                )
+
+                last_heartbeat_ts = now_ts
+
+            # =====================================================
+            # WORK TIME
+            # =====================================================
             if not is_work_time():
                 wait_seconds = min(300, seconds_until_next_work_start())
-                print(f"⏸ خارج وقت العمل - KSA {now_ksa().strftime('%H:%M:%S')} | next check in {wait_seconds}s")
+
+                print(
+                    f"⏸ خارج وقت العمل | "
+                    f"KSA {now_ksa().strftime('%H:%M:%S')} | "
+                    f"Next Check={wait_seconds}s"
+                )
+
                 time.sleep(wait_seconds)
                 continue
 
-            now_ts = time.time()
-
+            # =====================================================
+            # MAIN SCAN
+            # =====================================================
             if now_ts - last_scan_ts >= MAIN_SCAN_INTERVAL:
-                run_scan_cycle()
                 last_scan_ts = now_ts
+                run_phase("SCAN", run_scan_cycle)
 
+            # =====================================================
+            # MONITOR
+            # =====================================================
             if now_ts - last_monitor_ts >= MONITOR_INTERVAL:
-                run_monitor_cycle()
                 last_monitor_ts = now_ts
+                run_phase("MONITOR", run_monitor_cycle)
 
+            # =====================================================
+            # NEWS
+            # =====================================================
             if now_ts - last_news_ts >= NEWS_QUEUE_INTERVAL:
-                run_news_cycle()
                 last_news_ts = now_ts
+                run_phase("NEWS", run_news_cycle)
 
+            # =====================================================
+            # SAVE
+            # =====================================================
             if now_ts - last_save_ts >= 60:
-                save_cycle()
                 last_save_ts = now_ts
+                run_phase("SAVE", save_cycle)
 
             time.sleep(1)
 
@@ -2348,10 +2403,9 @@ def main_loop():
             break
 
         except Exception as e:
-            print("🔥 Main loop error:", e)
+            print(f"🔥 Main Loop Error: {e}")
             traceback.print_exc()
             time.sleep(10)
-
 
 # =========================================================
 # ENTRY POINT
