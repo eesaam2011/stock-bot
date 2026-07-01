@@ -281,7 +281,7 @@ ALLOW_ONLY_ALPHA_SYMBOLS = True
 BAD_SYMBOL_CHARS = [".", "-", "^", "/"]
 
 BAD_SYMBOL_SUFFIXES = [
-    "W", "U", "R", "P", "Q", "Z"
+    "Q"
 ]
 
 
