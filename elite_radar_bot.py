@@ -3787,6 +3787,7 @@ def scan_once():
     finalists = []
 
     evaluated = 0
+    deep_news_count = 0
 
     required_score = LAST_HOUR_SCORE if is_last_market_hour() else MIN_SCORE
 
@@ -3844,6 +3845,7 @@ def scan_once():
 
             # If near-final, do deep news check
             if safe_float(metrics.get("final_score")) >= required_score - 8:
+                deep_news_count += 1
                 deep_metrics = evaluate_candidate(
                     symbol,
                     deep_news=True,
