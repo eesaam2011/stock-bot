@@ -2117,8 +2117,7 @@ def save_rejection(symbol, reason, details=None):
 
     key = f"{symbol}:{int(time.time())}"
 
-    redis_hset_json(KEY_REJECTED, key, item)
-
+    # redis_set_json(KEY_REJECTED, rejected)
 
 def save_alert_history(symbol, metrics, trade_plan):
     item = {
