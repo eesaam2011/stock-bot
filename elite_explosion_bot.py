@@ -7,6 +7,17 @@ import time
 import math
 import requests
 import traceback
+import sys
+import builtins
+import functools
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+print = functools.partial(builtins.print, flush=True)
+
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
