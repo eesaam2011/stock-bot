@@ -2206,8 +2206,14 @@ def run_news_cycle():
 
     before_cache = len(news_cache)
     before_cursor = news_cursor
+    before_queue = len(news_queue)
+
+    runtime_stats["news_api_requests"] = 0
+    runtime_stats["news_cache_hits"] = 0
 
     process_news_queue()
+
+    after_queue = len(news_queue)
 
     positive = 0
     negative = 0
@@ -2229,10 +2235,13 @@ def run_news_cycle():
 
     print("")
     print("📰 News Diagnostic")
-    print(f"   Queue Size: {len(news_queue)}")
+    print(f"   Queue Before: {before_queue}")
+    print(f"   Queue After: {after_queue}")
     print(f"   Cursor Before: {before_cursor}")
     print(f"   Cursor After: {news_cursor}")
     print(f"   Processed This Cycle: {runtime_stats.get('news_processed_this_cycle', 0)}")
+    print(f"   API Requests: {runtime_stats.get('news_api_requests', 0)}")
+    print(f"   Cache Hits: {runtime_stats.get('news_cache_hits', 0)}")
     print(f"   Cache Before: {before_cache}")
     print(f"   Cache After: {len(news_cache)}")
     print(f"   Positive Cached: {positive}")
@@ -2241,7 +2250,7 @@ def run_news_cycle():
     print(f"   Neutral Cached: {neutral}")
     print(f"⏱ News Cycle Time: {fmt_sec(start_ts)}")
     print("══════════════════════════════════════════")
-
+    
 def run_monitor_cycle():
     start_ts = time.time()
 
