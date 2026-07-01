@@ -3886,6 +3886,7 @@ def scan_once():
         f"Scan #{runtime_stats['total_scans']} | "
         f"Batch={len(batch)} | "
         f"Evaluated={evaluated} | "
+        f"DeepNews={deep_news_count} | "
         f"Finalists={len(finalists)} | "
         f"Sent={sent}"
     )
