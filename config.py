@@ -31,6 +31,10 @@ MONITOR_INTERVAL = 30
 NEWS_QUEUE_INTERVAL = 60
 FULL_UNIVERSE_REFRESH_MIN = 30
 
+# =========================================================
+# PERFORMANCE / API
+# =========================================================
+BULK_SNAPSHOT_BATCH_SIZE = 700
 
 # =========================================================
 # PRICE / LIQUIDITY
