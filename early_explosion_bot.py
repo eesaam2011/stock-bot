@@ -56,7 +56,7 @@ MOMENTUM_RVOL_MIN             = 1.2
 MOMENTUM_PRICE_CHANGE_MIN     = 3.0
 EXPLOSION_CANDIDATE_MIN_SCORE = 90
 
-BATCH_SIZE         = 250
+BATCH_SIZE         = 500
 BATCH_DELAY_SEC    = 1.0
 
 SYMBOL_BLACKLIST = {
@@ -830,6 +830,56 @@ def quick_radar_check(api, symbol):
     except Exception:
         return False
 
+def quick_radar_check_from_snapshot(symbol, snapshot):
+    try:
+        if not snapshot:
+            return False
+
+        if snapshot.latest_trade:
+            current_price = float(snapshot.latest_trade.price)
+        else:
+            return False
+
+        prev_daily_bar = getattr(
+            snapshot,
+            "previous_daily_bar",
+            None
+        )
+
+        if prev_daily_bar is None:
+            prev_daily_bar = getattr(
+                snapshot,
+                "prev_daily_bar",
+                None
+            )
+
+        if prev_daily_bar is None:
+            return False
+
+        prev_close = float(
+            prev_daily_bar.close
+        )
+
+        if snapshot.daily_bar:
+            today_vol = float(
+                snapshot.daily_bar.volume
+            )
+        else:
+            return False
+
+        if not (PRICE_MIN <= current_price <= PRICE_MAX):
+            return False
+
+        return update_radar_watchlist(
+            symbol,
+            current_price,
+            prev_close,
+            today_vol
+        )
+
+    except Exception:
+        return False
+        
 def calculate_volume_acceleration(bars_1m):
     if bars_1m is None or bars_1m.empty or len(bars_1m) < 13:
         return {
@@ -1593,9 +1643,20 @@ def main_scanner():
             alerts_sent = 0
             stock_count = 0
             clean_radar_watchlist()
-            
+
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
+                batch_symbols = [
+                    asset.symbol
+                    for asset in batch
+                    if "/" not in asset.symbol
+                ]
+
+                try:
+                    batch_snapshots = api.get_snapshots(batch_symbols)
+                except Exception as e:
+                    print(f"⚠️ Batch snapshots error: {e}", flush=True)
+                    batch_snapshots = {}
 
                 for asset in batch:
                     sym = asset.symbol
@@ -1611,7 +1672,10 @@ def main_scanner():
                     if sym in sent_alerts and (now_ts - sent_alerts[sym] < ALERT_COOLDOWN_SEC):
                         continue
 
-                    quick_radar_check(api, sym)
+                    snapshot = batch_snapshots.get(sym)
+
+                    if not quick_radar_check_from_snapshot(sym, snapshot):
+                        continue
 
                     if sym not in radar_watchlist:
                         continue
