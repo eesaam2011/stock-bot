@@ -1914,10 +1914,20 @@ def register_entry(metrics, plan):
     redis_set_json(REDIS_KEYS["active_monitoring"], active_monitoring)
     redis_set_json(REDIS_KEYS["sent_alerts"], sent_alerts)
 
-
 def execute_entry_if_any(scored_candidates):
     candidate = select_best_entry_candidate(scored_candidates)
 
+    if not candidate:
+        return False
+
+    # إعادة بناء Metrics باستخدام Snapshot جديد قبل الإرسال
+    fresh_candidate = build_symbol_metrics(candidate["symbol"])
+    if not fresh_candidate:
+        return False
+
+    candidate = fresh_candidate
+
+    candidate = score_candidate(candidate)
     if not candidate:
         return False
 
@@ -1927,12 +1937,11 @@ def execute_entry_if_any(scored_candidates):
 
     ok = send_entry_alert(candidate, plan)
 
-    # الإرسال أولًا، ثم الحفظ والتسجيل
+    # الإرسال أولاً، ثم الحفظ والتسجيل
     if ok:
         register_entry(candidate, plan)
 
     return ok
-
 
 # =========================================================
 # MONITORING HELPERS
