@@ -48,7 +48,8 @@ RADAR_EXPIRE_MINUTES = 30
 
 ALERT_COOLDOWN_SEC = 3600
 SCAN_INTERVAL_MINUTES = 3
-BULK_BATCH_SIZE = 700
+DAILY_BATCH_SIZE = 700
+MINUTE_BATCH_SIZE = 150
 BULK_SLEEP_SEC = 0.5
 
 MARKET_START_NY = "04:00"
@@ -356,14 +357,27 @@ def normalize_bars_df(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         out[sym] = g
     return out
 
-
-def fetch_bars_bulk(api: tradeapi.REST, symbols: List[str], timeframe: Any, start_dt: datetime, end_dt: datetime, label: str) -> Dict[str, pd.DataFrame]:
+def fetch_bars_bulk(
+    api: tradeapi.REST,
+    symbols: List[str],
+    timeframe: Any,
+    start_dt: datetime,
+    end_dt: datetime,
+    label: str,
+    batch_size: int,
+) -> Dict[str, pd.DataFrame]:
     all_data: Dict[str, pd.DataFrame] = {}
-    total_batches = (len(symbols) + BULK_BATCH_SIZE - 1) // BULK_BATCH_SIZE
-    for i in range(0, len(symbols), BULK_BATCH_SIZE):
-        batch = symbols[i:i + BULK_BATCH_SIZE]
-        batch_no = i // BULK_BATCH_SIZE + 1
-        print(f"📥 Loading {label} batch {batch_no}/{total_batches} | symbols={len(batch)}", flush=True)
+    total_batches = (len(symbols) + batch_size - 1) // batch_size
+
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i:i + batch_size]
+        batch_no = i // batch_size + 1
+
+        print(
+            f"📥 Loading {label} batch {batch_no}/{total_batches} | symbols={len(batch)}",
+            flush=True,
+        )
+
         try:
             bars = api.get_bars(
                 batch,
@@ -373,13 +387,95 @@ def fetch_bars_bulk(api: tradeapi.REST, symbols: List[str], timeframe: Any, star
                 adjustment="raw",
                 feed="iex",
             ).df
+
             all_data.update(normalize_bars_df(bars))
+
         except Exception as exc:
             print(f"⚠️ {label} batch error: {exc}", flush=True)
+
         time.sleep(BULK_SLEEP_SEC)
+
     print(f"✅ {label} loaded for {len(all_data)} symbols", flush=True)
     return all_data
 
+def fetch_minute_bars_by_day(
+    api: tradeapi.REST,
+    symbols: List[str],
+    start_date: str,
+    end_date: str,
+    tz_ny,
+) -> Dict[str, pd.DataFrame]:
+    all_data: Dict[str, pd.DataFrame] = {}
+
+    current_day = datetime.strptime(start_date, "%Y-%m-%d").date()
+    final_day = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    while current_day <= final_day:
+        if current_day.weekday() >= 5:
+            print(f"⏸️ Skipping weekend minute data: {current_day}", flush=True)
+            current_day += timedelta(days=1)
+            continue
+
+        day_start = tz_ny.localize(
+            datetime.combine(
+                current_day,
+                datetime.strptime(MARKET_START_NY, "%H:%M").time(),
+            )
+        )
+
+        day_end = tz_ny.localize(
+            datetime.combine(
+                current_day,
+                datetime.strptime(MARKET_END_NY, "%H:%M").time(),
+            )
+        )
+
+        total_batches = (len(symbols) + MINUTE_BATCH_SIZE - 1) // MINUTE_BATCH_SIZE
+
+        print(f"📅 Loading MINUTE data for {current_day}", flush=True)
+
+        for i in range(0, len(symbols), MINUTE_BATCH_SIZE):
+            batch = symbols[i:i + MINUTE_BATCH_SIZE]
+            batch_no = i // MINUTE_BATCH_SIZE + 1
+
+            print(
+                f"📥 MINUTE {current_day} batch {batch_no}/{total_batches} | symbols={len(batch)}",
+                flush=True,
+            )
+
+            try:
+                bars = api.get_bars(
+                    batch,
+                    tradeapi.rest.TimeFrame.Minute,
+                    start=day_start.isoformat(),
+                    end=day_end.isoformat(),
+                    adjustment="raw",
+                    feed="iex",
+                ).df
+
+                day_data = normalize_bars_df(bars)
+
+                for symbol, df in day_data.items():
+                    if symbol not in all_data:
+                        all_data[symbol] = df
+                    else:
+                        all_data[symbol] = pd.concat(
+                            [all_data[symbol], df]
+                        ).sort_index()
+
+            except Exception as exc:
+                print(
+                    f"⚠️ MINUTE {current_day} batch {batch_no} error: {exc}",
+                    flush=True,
+                )
+
+            time.sleep(BULK_SLEEP_SEC)
+
+        current_day += timedelta(days=1)
+
+    print(f"✅ MINUTE loaded for {len(all_data)} symbols", flush=True)
+    return all_data
+    
 # =========================================================
 # BACKTEST ENGINE
 # =========================================================
@@ -405,15 +501,44 @@ class EarlyExplosionBacktester:
     def load_data(self) -> None:
         assets = clean_assets(self.api)
         self.assets_by_symbol = {a["symbol"]: a for a in assets}
+
         symbols = list(self.assets_by_symbol.keys())
-        start_daily = self.tz_ny.localize(datetime.strptime(START_DATE, "%Y-%m-%d")) - timedelta(days=150)
-        end_all = self.tz_ny.localize(datetime.strptime(END_DATE, "%Y-%m-%d")) + timedelta(days=1)
-        start_minute = self.tz_ny.localize(datetime.strptime(START_DATE, "%Y-%m-%d"))
-        self.daily_data = fetch_bars_bulk(self.api, symbols, tradeapi.rest.TimeFrame.Day, start_daily, end_all, "DAILY")
-        self.minute_data = fetch_bars_bulk(self.api, symbols, tradeapi.rest.TimeFrame.Minute, start_minute, end_all, "MINUTE")
+
+        start_daily = (
+            self.tz_ny.localize(
+                datetime.strptime(START_DATE, "%Y-%m-%d")
+            )
+            - timedelta(days=150)
+        )
+
+        end_all = (
+            self.tz_ny.localize(
+                datetime.strptime(END_DATE, "%Y-%m-%d")
+            )
+            + timedelta(days=1)
+        )
+
+        self.daily_data = fetch_bars_bulk(
+            self.api,
+            symbols,
+            tradeapi.rest.TimeFrame.Day,
+            start_daily,
+            end_all,
+            "DAILY",
+            DAILY_BATCH_SIZE,
+        )
+
+        self.minute_data = fetch_minute_bars_by_day(
+            self.api,
+            symbols,
+            START_DATE,
+            END_DATE,
+            self.tz_ny,
+        )
+
         runtime["daily_symbols_loaded"] = len(self.daily_data)
         runtime["minute_symbols_loaded"] = len(self.minute_data)
-
+        
     def get_previous_daily_context(self, symbol: str, current_day) -> Optional[pd.DataFrame]:
         df = self.daily_data.get(symbol)
         if df is None or df.empty:
