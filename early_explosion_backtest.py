@@ -752,10 +752,19 @@ class EarlyExplosionBacktester:
         msg = self.build_telegram_summary()
         print(msg, flush=True)
         send_telegram_message(msg)
-        print("✅ Backtest completed. Process will exit now.", flush=True)
+
+        self.send_report_files_to_telegram()
+
+        send_telegram_message(
+            "✅ تم إرسال ملفات CSV الخاصة بباك تيست Early Explosion.\n"
+            "سيتم الآن إيقاف السكربت."
+        )
+
+        print("✅ Backtest completed. Reports sent. Process will exit now.", flush=True)
+        
         time.sleep(5)
         os._exit(0)
-
+        
     def alerts_df(self) -> pd.DataFrame:
         df = pd.DataFrame(self.alerts)
         if df.empty:
@@ -764,28 +773,117 @@ class EarlyExplosionBacktester:
             if "time" in col:
                 df[col] = df[col].astype(str)
         return df
-
+        
     def save_results(self) -> None:
         alerts_df = self.alerts_df()
+
+        # 1) Full alerts file
         alerts_path = os.path.join(OUTPUT_DIR, "backtest_alerts.csv")
         alerts_df.to_csv(alerts_path, index=False)
+
+        # 2) Alert timeline file
+        timeline_cols = [
+            "alert_time_ny",
+            "alert_time_ksa",
+            "symbol",
+            "price",
+            "score",
+            "rvol",
+            "change_pct",
+            "target1",
+            "target2",
+            "target3",
+            "stop_loss",
+            "t1_hit",
+            "t1_time_ny",
+            "t1_minutes",
+            "t2_hit",
+            "t2_time_ny",
+            "t2_minutes",
+            "t3_hit",
+            "t3_time_ny",
+            "t3_minutes",
+            "stop_hit",
+            "stop_time_ny",
+            "stop_minutes",
+            "max_gain_pct",
+            "close_gain_pct",
+            "exit_status",
+        ]
+
+        if not alerts_df.empty:
+            existing_cols = [c for c in timeline_cols if c in alerts_df.columns]
+            timeline_df = alerts_df[existing_cols].copy()
+            timeline_df = timeline_df.sort_values("alert_time_ny")
+        else:
+            timeline_df = pd.DataFrame(columns=timeline_cols)
+
+        timeline_df.to_csv(
+            os.path.join(OUTPUT_DIR, "backtest_alert_timeline.csv"),
+            index=False
+        )
+
+        # 3) Reject stats
         reject_df = pd.DataFrame([
             {"reason": reason, "count": count}
-            for reason, count in sorted(self.reject_stats.items(), key=lambda x: x[1], reverse=True)
+            for reason, count in sorted(
+                self.reject_stats.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )
         ])
-        reject_df.to_csv(os.path.join(OUTPUT_DIR, "backtest_reject_stats.csv"), index=False)
+        reject_df.to_csv(
+            os.path.join(OUTPUT_DIR, "backtest_reject_stats.csv"),
+            index=False
+        )
+
+        # 4) Missed opportunities
         missed_df = pd.DataFrame(self.missed)
         if not missed_df.empty:
             for col in ["time_ny", "time_ksa"]:
                 if col in missed_df.columns:
                     missed_df[col] = missed_df[col].astype(str)
-            missed_df = missed_df.sort_values("future_max_gain_pct", ascending=False).head(50)
-        missed_df.to_csv(os.path.join(OUTPUT_DIR, "backtest_missed_opportunities.csv"), index=False)
+
+            missed_df = missed_df.sort_values(
+                "future_max_gain_pct",
+                ascending=False
+            ).head(50)
+
+        missed_df.to_csv(
+            os.path.join(OUTPUT_DIR, "backtest_missed_opportunities.csv"),
+            index=False
+        )
+
+        # 5) Summary
         summary_df = pd.DataFrame(self.summary_rows(alerts_df))
-        summary_df.to_csv(os.path.join(OUTPUT_DIR, "backtest_summary.csv"), index=False)
+        summary_df.to_csv(
+            os.path.join(OUTPUT_DIR, "backtest_summary.csv"),
+            index=False
+        )
+
+        # 6) Breakdowns + charts
         self.breakdown_csvs(alerts_df)
         self.generate_charts(alerts_df, reject_df)
+
         print(f"✅ Reports saved in {OUTPUT_DIR}/", flush=True)
+        
+    def send_report_files_to_telegram(self) -> None:
+        files = [
+            "backtest_summary.csv",
+            "backtest_alerts.csv",
+            "backtest_reject_stats.csv",
+            "backtest_missed_opportunities.csv",
+            "backtest_alert_timeline.csv",
+            "breakdown_by_score_bucket.csv",
+            "breakdown_by_time_window.csv",
+            "breakdown_by_float_tier.csv",
+            "breakdown_by_price_bucket.csv",
+        ]
+
+        for filename in files:
+            path = os.path.join(OUTPUT_DIR, filename)
+            send_telegram_document(path, f"📎 {filename}")
+            time.sleep(1)
 
     def summary_rows(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         if df.empty:
