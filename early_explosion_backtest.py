@@ -398,82 +398,61 @@ def fetch_bars_bulk(
     print(f"✅ {label} loaded for {len(all_data)} symbols", flush=True)
     return all_data
 
-def fetch_minute_bars_by_day(
+def fetch_minute_bars_for_day(
     api: tradeapi.REST,
     symbols: List[str],
-    start_date: str,
-    end_date: str,
+    current_day,
     tz_ny,
 ) -> Dict[str, pd.DataFrame]:
+    day_start = tz_ny.localize(
+        datetime.combine(
+            current_day,
+            datetime.strptime(MARKET_START_NY, "%H:%M").time(),
+        )
+    )
+
+    day_end = tz_ny.localize(
+        datetime.combine(
+            current_day,
+            datetime.strptime(MARKET_END_NY, "%H:%M").time(),
+        )
+    )
+
     all_data: Dict[str, pd.DataFrame] = {}
+    total_batches = (len(symbols) + MINUTE_BATCH_SIZE - 1) // MINUTE_BATCH_SIZE
 
-    current_day = datetime.strptime(start_date, "%Y-%m-%d").date()
-    final_day = datetime.strptime(end_date, "%Y-%m-%d").date()
+    print(f"📅 Loading MINUTE data for {current_day}", flush=True)
 
-    while current_day <= final_day:
-        if current_day.weekday() >= 5:
-            print(f"⏸️ Skipping weekend minute data: {current_day}", flush=True)
-            current_day += timedelta(days=1)
-            continue
+    for i in range(0, len(symbols), MINUTE_BATCH_SIZE):
+        batch = symbols[i:i + MINUTE_BATCH_SIZE]
+        batch_no = i // MINUTE_BATCH_SIZE + 1
 
-        day_start = tz_ny.localize(
-            datetime.combine(
-                current_day,
-                datetime.strptime(MARKET_START_NY, "%H:%M").time(),
-            )
+        print(
+            f"📥 MINUTE {current_day} batch {batch_no}/{total_batches} | symbols={len(batch)}",
+            flush=True,
         )
 
-        day_end = tz_ny.localize(
-            datetime.combine(
-                current_day,
-                datetime.strptime(MARKET_END_NY, "%H:%M").time(),
-            )
-        )
+        try:
+            bars = api.get_bars(
+                batch,
+                tradeapi.rest.TimeFrame.Minute,
+                start=day_start.isoformat(),
+                end=day_end.isoformat(),
+                adjustment="raw",
+                feed="iex",
+            ).df
 
-        total_batches = (len(symbols) + MINUTE_BATCH_SIZE - 1) // MINUTE_BATCH_SIZE
+            all_data.update(normalize_bars_df(bars))
 
-        print(f"📅 Loading MINUTE data for {current_day}", flush=True)
-
-        for i in range(0, len(symbols), MINUTE_BATCH_SIZE):
-            batch = symbols[i:i + MINUTE_BATCH_SIZE]
-            batch_no = i // MINUTE_BATCH_SIZE + 1
-
+        except Exception as exc:
             print(
-                f"📥 MINUTE {current_day} batch {batch_no}/{total_batches} | symbols={len(batch)}",
+                f"⚠️ MINUTE {current_day} batch {batch_no} error: {exc}",
                 flush=True,
             )
 
-            try:
-                bars = api.get_bars(
-                    batch,
-                    tradeapi.rest.TimeFrame.Minute,
-                    start=day_start.isoformat(),
-                    end=day_end.isoformat(),
-                    adjustment="raw",
-                    feed="iex",
-                ).df
+        time.sleep(BULK_SLEEP_SEC)
 
-                day_data = normalize_bars_df(bars)
-
-                for symbol, df in day_data.items():
-                    if symbol not in all_data:
-                        all_data[symbol] = df
-                    else:
-                        all_data[symbol] = pd.concat(
-                            [all_data[symbol], df]
-                        ).sort_index()
-
-            except Exception as exc:
-                print(
-                    f"⚠️ MINUTE {current_day} batch {batch_no} error: {exc}",
-                    flush=True,
-                )
-
-            time.sleep(BULK_SLEEP_SEC)
-
-        current_day += timedelta(days=1)
-
-    print(f"✅ MINUTE loaded for {len(all_data)} symbols", flush=True)
+    print(f"✅ MINUTE {current_day} loaded for {len(all_data)} symbols", flush=True)
     return all_data
     
 # =========================================================
@@ -528,17 +507,8 @@ class EarlyExplosionBacktester:
             DAILY_BATCH_SIZE,
         )
 
-        self.minute_data = fetch_minute_bars_by_day(
-            self.api,
-            symbols,
-            START_DATE,
-            END_DATE,
-            self.tz_ny,
-        )
-
         runtime["daily_symbols_loaded"] = len(self.daily_data)
-        runtime["minute_symbols_loaded"] = len(self.minute_data)
-        
+                
     def get_previous_daily_context(self, symbol: str, current_day) -> Optional[pd.DataFrame]:
         df = self.daily_data.get(symbol)
         if df is None or df.empty:
@@ -821,41 +791,86 @@ class EarlyExplosionBacktester:
     def run_day(self, current_day) -> None:
         runtime["current_day"] = str(current_day)
         print(f"📅 Backtesting {current_day}", flush=True)
-        day_start = self.tz_ny.localize(datetime.combine(current_day, datetime.strptime(MARKET_START_NY, "%H:%M").time()))
-        day_end = self.tz_ny.localize(datetime.combine(current_day, datetime.strptime(MARKET_END_NY, "%H:%M").time()))
-        for symbol, full_df in self.minute_data.items():
+
+        symbols = list(self.assets_by_symbol.keys())
+
+        minute_data_for_day = fetch_minute_bars_for_day(
+            self.api,
+            symbols,
+            current_day,
+            self.tz_ny,
+        )
+
+        runtime["minute_symbols_loaded"] = len(minute_data_for_day)
+
+        day_start = self.tz_ny.localize(
+            datetime.combine(
+                current_day,
+                datetime.strptime(MARKET_START_NY, "%H:%M").time(),
+            )
+        )
+
+        day_end = self.tz_ny.localize(
+            datetime.combine(
+                current_day,
+                datetime.strptime(MARKET_END_NY, "%H:%M").time(),
+            )
+        )
+
+        for symbol, full_df in minute_data_for_day.items():
             if symbol not in self.assets_by_symbol:
                 continue
+
             idx_ny = full_df.index.tz_convert(self.tz_ny)
             day_df = full_df[(idx_ny >= day_start) & (idx_ny <= day_end)].copy()
+
             if day_df.empty or len(day_df) < 30:
                 continue
+
             for idx in range(20, len(day_df), SCAN_INTERVAL_MINUTES):
                 now_dt_ny = day_df.index[idx].tz_convert(self.tz_ny)
                 now_ts = now_dt_ny.timestamp()
+
                 self.clean_radar_watchlist(now_ts)
+
                 previous_bars = self.get_previous_daily_context(symbol, current_day)
+
                 if previous_bars is None:
                     continue
+
                 prev_close = safe_float(previous_bars["close"].iloc[-1])
                 current_price = safe_float(day_df.iloc[idx]["close"])
                 today_vol = safe_float(day_df.iloc[:idx + 1]["volume"].sum())
-                if not self.update_radar_watchlist(symbol, current_price, prev_close, today_vol, now_ts):
+
+                if not self.update_radar_watchlist(
+                    symbol,
+                    current_price,
+                    prev_close,
+                    today_vol,
+                    now_ts,
+                ):
                     continue
+
                 last_alert_ts = self.sent_alerts.get(symbol)
+
                 if last_alert_ts and (now_ts - last_alert_ts < ALERT_COOLDOWN_SEC):
                     continue
+
                 alert = self.calculate_signal(symbol, now_dt_ny, day_df, idx)
+
                 if alert:
                     final_alert = self.monitor_alert(alert)
                     self.alerts.append(final_alert)
                     self.sent_alerts[symbol] = now_ts
                     runtime["alerts"] = len(self.alerts)
+
                     print(
                         f"🚀 ALERT {symbol} | {now_dt_ny.strftime('%Y-%m-%d %H:%M')} NY | "
                         f"Score={final_alert['score']} | MaxGain={final_alert['max_gain_pct']}%",
                         flush=True,
                     )
+
+        del minute_data_for_day
 
     def run(self) -> None:
         runtime["status"] = "running"
