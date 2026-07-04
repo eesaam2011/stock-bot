@@ -4,7 +4,7 @@ import time
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
-
+import gc
 import pytz
 import requests
 import pandas as pd
@@ -26,6 +26,13 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_INVESTMENT_CHAT_ID = os.getenv("TELEGRAM_INVESTMENT_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID")
 
 FLOAT_CACHE_URL = os.getenv("FLOAT_CACHE_URL")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GIST_ID = os.getenv("GIST_ID")
+
+CHECKPOINT_STATE_FILE = "backtest_checkpoint_state.json"
+CHECKPOINT_ALERTS_FILE = "backtest_daily_alerts.json"
+CHECKPOINT_MISSED_FILE = "backtest_daily_missed.json"
+CHECKPOINT_REJECTS_FILE = "backtest_daily_rejects.json"
 
 START_DATE = os.getenv("BACKTEST_START_DATE", "2026-06-01")
 END_DATE = os.getenv("BACKTEST_END_DATE", "2026-07-02")
@@ -454,6 +461,65 @@ def fetch_minute_bars_for_day(
 
     print(f"✅ MINUTE {current_day} loaded for {len(all_data)} symbols", flush=True)
     return all_data
+
+def gist_headers() -> Dict[str, str]:
+    if not GITHUB_TOKEN or not GIST_ID:
+        raise RuntimeError("GITHUB_TOKEN or GIST_ID is missing for checkpointing.")
+
+    return {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+
+
+def load_gist_file_json(filename: str, default_value: Any) -> Any:
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        res = requests.get(url, headers=gist_headers(), timeout=20)
+
+        if res.status_code != 200:
+            print(f"⚠️ Gist load failed {filename}: HTTP {res.status_code}", flush=True)
+            return default_value
+
+        files = res.json().get("files", {})
+
+        if filename not in files:
+            return default_value
+
+        content = files[filename].get("content", "")
+
+        if not content:
+            return default_value
+
+        return json.loads(content)
+
+    except Exception as exc:
+        print(f"⚠️ Gist load error {filename}: {exc}", flush=True)
+        return default_value
+
+
+def save_gist_file_json(filename: str, data: Any) -> None:
+    url = f"https://api.github.com/gists/{GIST_ID}"
+
+    payload = {
+        "files": {
+            filename: {
+                "content": json.dumps(data, indent=2, default=str)
+            }
+        }
+    }
+
+    res = requests.patch(
+        url,
+        headers=gist_headers(),
+        json=payload,
+        timeout=40,
+    )
+
+    if res.status_code not in [200, 201]:
+        raise RuntimeError(f"Gist save failed {filename}: HTTP {res.status_code}")
+
+    print(f"✅ Saved checkpoint file to Gist: {filename}", flush=True)
     
 # =========================================================
 # BACKTEST ENGINE
@@ -473,10 +539,123 @@ class EarlyExplosionBacktester:
         self.alerts: List[Dict[str, Any]] = []
         self.reject_stats: Dict[str, int] = {}
         self.missed: List[Dict[str, Any]] = []
+        self.daily_reject_start: Dict[str, int] = {}
 
     def reject(self, reason: str) -> None:
         self.reject_stats[reason] = self.reject_stats.get(reason, 0) + 1
+        
+    def get_last_completed_day(self) -> Optional[str]:
+        state = load_gist_file_json(CHECKPOINT_STATE_FILE, {})
+        return state.get("last_completed_day")
 
+    def save_day_checkpoint(self, current_day) -> None:
+        day_key = str(current_day)
+
+        all_alerts = load_gist_file_json(CHECKPOINT_ALERTS_FILE, {})
+        all_missed = load_gist_file_json(CHECKPOINT_MISSED_FILE, {})
+        all_rejects = load_gist_file_json(CHECKPOINT_REJECTS_FILE, {})
+
+        alerts_df = self.alerts_df()
+        day_alerts = []
+
+        if not alerts_df.empty and "alert_time_ny" in alerts_df.columns:
+            temp = alerts_df.copy()
+            temp["_day"] = pd.to_datetime(
+                temp["alert_time_ny"],
+                errors="coerce"
+            ).dt.date.astype(str)
+
+            day_alerts = temp[temp["_day"] == day_key].drop(
+                columns=["_day"],
+                errors="ignore"
+            ).to_dict("records")
+
+        day_missed = []
+
+        for item in self.missed:
+            item_time = item.get("time_ny")
+
+            if item_time is None:
+                continue
+
+            item_day = str(pd.to_datetime(item_time).date())
+
+            if item_day == day_key:
+                day_missed.append({
+                    k: str(v) if "time" in k else v
+                    for k, v in item.items()
+                })
+
+        day_rejects = {}
+
+        for reason, count in self.reject_stats.items():
+            start_count = self.daily_reject_start.get(reason, 0)
+            delta = count - start_count
+
+            if delta > 0:
+                day_rejects[reason] = delta
+
+        all_alerts[day_key] = day_alerts
+        all_missed[day_key] = day_missed
+        all_rejects[day_key] = day_rejects
+
+        save_gist_file_json(CHECKPOINT_ALERTS_FILE, all_alerts)
+        save_gist_file_json(CHECKPOINT_MISSED_FILE, all_missed)
+        save_gist_file_json(CHECKPOINT_REJECTS_FILE, all_rejects)
+
+        save_gist_file_json(
+            CHECKPOINT_STATE_FILE,
+            {
+                "last_completed_day": day_key,
+                "updated_at_ksa": now_ksa_str(),
+            }
+        )
+
+        print(
+            f"✅ Daily checkpoint saved | {day_key} | "
+            f"alerts={len(day_alerts)} | missed={len(day_missed)} | rejects={len(day_rejects)}",
+            flush=True,
+        )
+
+    def load_checkpoint_results(self) -> None:
+        all_alerts = load_gist_file_json(CHECKPOINT_ALERTS_FILE, {})
+        all_missed = load_gist_file_json(CHECKPOINT_MISSED_FILE, {})
+        all_rejects = load_gist_file_json(CHECKPOINT_REJECTS_FILE, {})
+
+        self.alerts = []
+        self.missed = []
+        self.reject_stats = {}
+
+        for day_items in all_alerts.values():
+            if isinstance(day_items, list):
+                self.alerts.extend(day_items)
+
+        for day_items in all_missed.values():
+            if isinstance(day_items, list):
+                self.missed.extend(day_items)
+
+        for day_rejects in all_rejects.values():
+            if not isinstance(day_rejects, dict):
+                continue
+
+            for reason, count in day_rejects.items():
+                self.reject_stats[reason] = self.reject_stats.get(reason, 0) + int(count)
+
+        runtime["alerts"] = len(self.alerts)
+
+        print(
+            f"📦 Loaded checkpoint totals | alerts={len(self.alerts)} | "
+            f"missed={len(self.missed)} | reject_reasons={len(self.reject_stats)}",
+            flush=True,
+        )
+
+    def clear_daily_memory_after_checkpoint(self) -> None:
+        self.alerts = []
+        self.missed = []
+        self.radar_watchlist = {}
+        self.daily_reject_start = {}
+        gc.collect()
+        
     def load_data(self) -> None:
         assets = clean_assets(self.api)
         self.assets_by_symbol = {a["symbol"]: a for a in assets}
@@ -876,19 +1055,48 @@ class EarlyExplosionBacktester:
         runtime["status"] = "running"
         runtime["started_at"] = now_ksa_str()
         os.makedirs(OUTPUT_DIR, exist_ok=True)
+
         self.load_data()
+
         start_d = datetime.strptime(START_DATE, "%Y-%m-%d").date()
         end_d = datetime.strptime(END_DATE, "%Y-%m-%d").date()
-        d = start_d
+
+        last_completed_day = self.get_last_completed_day()
+
+        if last_completed_day:
+            resume_day = datetime.strptime(last_completed_day, "%Y-%m-%d").date() + timedelta(days=1)
+            d = max(start_d, resume_day)
+
+            print(
+                f"🔁 Resume enabled | last_completed_day={last_completed_day} | starting_from={d}",
+                flush=True,
+            )
+        else:
+            d = start_d
+            print("🆕 No checkpoint found. Starting from beginning.", flush=True)
+
         while d <= end_d:
             if d.weekday() < 5:
+                self.daily_reject_start = dict(self.reject_stats)
+
                 self.run_day(d)
+
+                self.save_day_checkpoint(d)
+                self.clear_daily_memory_after_checkpoint()
+
             else:
                 print(f"⏸️ Skipping weekend: {d}", flush=True)
+
             d += timedelta(days=1)
+
+        print("📦 Loading all checkpoint results for final report...", flush=True)
+        self.load_checkpoint_results()
+
         self.save_results()
+
         runtime["status"] = "finished"
         runtime["finished_at"] = now_ksa_str()
+
         msg = self.build_telegram_summary()
         print(msg, flush=True)
         send_telegram_message(msg)
@@ -901,7 +1109,6 @@ class EarlyExplosionBacktester:
         )
 
         print("✅ Backtest completed. Reports sent. Process will exit now.", flush=True)
-        
         time.sleep(5)
         os._exit(0)
         
