@@ -39,6 +39,10 @@ END_DATE = os.getenv("BACKTEST_END_DATE", "2026-07-02")
 
 OUTPUT_DIR = os.getenv("BACKTEST_OUTPUT_DIR", "backtest_output")
 
+AUDIT_SYMBOLS = os.getenv("AUDIT_SYMBOLS", "").strip()
+AUDIT_START_DATE = os.getenv("AUDIT_START_DATE", START_DATE)
+AUDIT_END_DATE = os.getenv("AUDIT_END_DATE", END_DATE)
+
 PRICE_MIN = 0.3
 PRICE_MAX = 25.0
 MIN_AVG_VOL = 50_000
@@ -1011,6 +1015,197 @@ class EarlyExplosionBacktester:
             self.tz_ny,
         )
 
+    def run_audit_mode(self) -> None:
+        symbols = [
+            s.strip().upper()
+            for s in AUDIT_SYMBOLS.split(",")
+            if s.strip()
+        ]
+
+        if not symbols:
+            print("❌ AUDIT_SYMBOLS is empty.", flush=True)
+            return
+
+        print(f"🔎 AUDIT MODE ENABLED | symbols={symbols}", flush=True)
+
+        self.assets_by_symbol = {
+            s: {"symbol": s, "name": s, "exchange": "AUDIT"}
+            for s in symbols
+        }
+
+        start_daily = (
+            self.tz_ny.localize(
+                datetime.strptime(AUDIT_START_DATE, "%Y-%m-%d")
+            )
+            - timedelta(days=150)
+        )
+
+        end_all = (
+            self.tz_ny.localize(
+                datetime.strptime(AUDIT_END_DATE, "%Y-%m-%d")
+            )
+            + timedelta(days=1)
+        )
+
+        self.daily_data = fetch_bars_bulk(
+            self.api,
+            symbols,
+            tradeapi.rest.TimeFrame.Day,
+            start_daily,
+            end_all,
+            "AUDIT_DAILY",
+            DAILY_BATCH_SIZE,
+        )
+
+        d = datetime.strptime(AUDIT_START_DATE, "%Y-%m-%d").date()
+        end_d = datetime.strptime(AUDIT_END_DATE, "%Y-%m-%d").date()
+
+        while d <= end_d:
+            if d.weekday() >= 5:
+                d += timedelta(days=1)
+                continue
+
+            print(f"\n================ AUDIT DAY {d} ================", flush=True)
+
+            minute_data_for_day = fetch_minute_bars_for_day(
+                self.api,
+                symbols,
+                d,
+                self.tz_ny,
+            )
+
+            for symbol in symbols:
+                print(f"\n🔍 AUDIT SYMBOL: {symbol} | DAY: {d}", flush=True)
+
+                full_df = minute_data_for_day.get(symbol)
+
+                if full_df is None or full_df.empty:
+                    print("❌ No minute data found.", flush=True)
+                    continue
+
+                previous_bars = self.get_previous_daily_context(symbol, d)
+
+                if previous_bars is None:
+                    print("❌ No previous daily context / less than 50 daily bars.", flush=True)
+                    continue
+
+                prev_close = safe_float(previous_bars["close"].iloc[-1])
+                avg_vol_20 = safe_float(previous_bars["volume"].tail(20).mean())
+                resistance_20 = safe_float(previous_bars["high"].tail(20).max())
+
+                print(
+                    f"📌 PrevClose={prev_close} | AvgVol20={avg_vol_20} | Resistance20={resistance_20}",
+                    flush=True,
+                )
+
+                day_start = self.tz_ny.localize(
+                    datetime.combine(
+                        d,
+                        datetime.strptime(MARKET_START_NY, "%H:%M").time(),
+                    )
+                )
+
+                day_end = self.tz_ny.localize(
+                    datetime.combine(
+                        d,
+                        datetime.strptime(MARKET_END_NY, "%H:%M").time(),
+                    )
+                )
+
+                idx_ny = full_df.index.tz_convert(self.tz_ny)
+                day_df = full_df[(idx_ny >= day_start) & (idx_ny <= day_end)].copy()
+
+                if day_df.empty:
+                    print("❌ Empty day dataframe after session filter.", flush=True)
+                    continue
+
+                best_seen = {
+                    "max_change": -999,
+                    "max_rvol": 0,
+                    "max_score": 0,
+                    "radar_seen": False,
+                    "signal_seen": False,
+                    "last_reject": None,
+                }
+
+                for idx in range(20, len(day_df), SCAN_INTERVAL_MINUTES):
+                    now_dt_ny = day_df.index[idx].tz_convert(self.tz_ny)
+                    now_ts = now_dt_ny.timestamp()
+
+                    current_price = safe_float(day_df.iloc[idx]["close"])
+                    today_vol = safe_float(day_df.iloc[:idx + 1]["volume"].sum())
+                    price_change_pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                    rvol = today_vol / avg_vol_20 if avg_vol_20 > 0 else 0
+                    dollar_volume = today_vol * current_price
+
+                    best_seen["max_change"] = max(best_seen["max_change"], price_change_pct)
+                    best_seen["max_rvol"] = max(best_seen["max_rvol"], rvol)
+
+                    radar_ok = self.update_radar_watchlist(
+                        symbol,
+                        current_price,
+                        prev_close,
+                        today_vol,
+                        now_ts,
+                    )
+
+                    if radar_ok:
+                        best_seen["radar_seen"] = True
+
+                    before_rejects = dict(self.reject_stats)
+                    alert = self.calculate_signal(symbol, now_dt_ny, day_df, idx)
+
+                    new_reject = None
+                    for reason, count in self.reject_stats.items():
+                        if count > before_rejects.get(reason, 0):
+                            new_reject = reason
+                            break
+
+                    if new_reject:
+                        best_seen["last_reject"] = new_reject
+
+                    if alert:
+                        best_seen["signal_seen"] = True
+                        best_seen["max_score"] = max(best_seen["max_score"], alert["score"])
+
+                        print(
+                            f"✅ WOULD ALERT | {symbol} | {now_dt_ny} | "
+                            f"price={alert['price']} | score={alert['score']} | "
+                            f"rvol={alert['rvol']} | change={alert['change_pct']}%",
+                            flush=True,
+                        )
+
+                    if idx % 60 == 20:
+                        print(
+                            f"⏱️ {now_dt_ny.strftime('%H:%M')} | "
+                            f"price={round(current_price, 4)} | "
+                            f"change={round(price_change_pct, 2)}% | "
+                            f"rvol={round(rvol, 2)} | "
+                            f"$vol={round(dollar_volume, 0)} | "
+                            f"radar={radar_ok} | last_reject={new_reject}",
+                            flush=True,
+                        )
+
+                print(
+                    f"📊 AUDIT RESULT {symbol} {d} | "
+                    f"radar_seen={best_seen['radar_seen']} | "
+                    f"signal_seen={best_seen['signal_seen']} | "
+                    f"max_change={round(best_seen['max_change'], 2)}% | "
+                    f"max_rvol={round(best_seen['max_rvol'], 2)} | "
+                    f"max_score={best_seen['max_score']} | "
+                    f"last_reject={best_seen['last_reject']}",
+                    flush=True,
+                )
+
+            d += timedelta(days=1)
+
+        print("✅ AUDIT MODE FINISHED.", flush=True)
+        send_telegram_message("✅ انتهى Audit Mode للرموز المحددة. راجع Render Logs للسبب التفصيلي.")
+        runtime["status"] = "audit_completed"
+
+        while True:
+            time.sleep(3600)
+            
         runtime["minute_symbols_loaded"] = len(minute_data_for_day)
 
         day_start = self.tz_ny.localize(
@@ -1086,6 +1281,10 @@ class EarlyExplosionBacktester:
         runtime["status"] = "running"
         runtime["started_at"] = now_ksa_str()
         os.makedirs(OUTPUT_DIR, exist_ok=True)
+        
+        if AUDIT_SYMBOLS:
+            self.run_audit_mode()
+            return
 
         self.load_data()
 
