@@ -159,7 +159,38 @@ def send_telegram_message(text: str) -> None:
     except Exception as exc:
         print(f"❌ Telegram error: {exc}", flush=True)
 
+def send_telegram_document(filepath: str, caption: str = "") -> None:
+    if not TELEGRAM_TOKEN or not TELEGRAM_INVESTMENT_CHAT_ID:
+        print(f"[Telegram-Document-Sim] {filepath}", flush=True)
+        return
 
+    if not os.path.exists(filepath):
+        print(f"⚠️ Telegram document not found: {filepath}", flush=True)
+        return
+
+    try:
+        with open(filepath, "rb") as f:
+            res = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+                data={
+                    "chat_id": TELEGRAM_INVESTMENT_CHAT_ID,
+                    "caption": caption,
+                },
+                files={"document": f},
+                timeout=60,
+            )
+
+        if res.status_code == 200:
+            print(f"✅ Sent Telegram document: {filepath}", flush=True)
+        else:
+            print(
+                f"⚠️ Telegram document failed {filepath}: HTTP {res.status_code} | {res.text}",
+                flush=True,
+            )
+
+    except Exception as exc:
+        print(f"❌ Telegram document error ({filepath}): {exc}", flush=True)
+        
 def load_float_cache() -> Dict[str, Any]:
     if not FLOAT_CACHE_URL:
         raise RuntimeError("FLOAT_CACHE_URL is missing. Backtest stopped to avoid incomplete float data.")
