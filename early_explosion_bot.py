@@ -126,7 +126,8 @@ TRACK_INTERVAL_SEC = 10
 ALERT_COOLDOWN_SEC = 3600
 
 FLOAT_CACHE_FILE = "float_cache.json"
-
+LIVE_ALERTS_FILE = "early_explosion_live_alerts.json"
+LIVE_RESULTS_FILE = "early_explosion_live_results.json"
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_INVESTMENT_CHAT_ID:
@@ -243,7 +244,90 @@ def update_gist_file(filename, content):
                 f"❌ Gist File Update Error ({filename}): {e}",
                 flush=True
             )
-            
+
+def load_gist_json_file(filename, default_value):
+    if not GITHUB_TOKEN or not GIST_ID:
+        return default_value
+
+    url = f"https://api.github.com/gists/{GIST_ID}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+
+        if res.status_code != 200:
+            return default_value
+
+        files = res.json().get("files", {})
+
+        if filename not in files:
+            return default_value
+
+        content = files[filename].get("content", "")
+
+        if not content:
+            return default_value
+
+        import json
+        return json.loads(content)
+
+    except Exception as e:
+        print(f"⚠️ Gist JSON load error ({filename}): {e}", flush=True)
+        return default_value
+
+
+def append_live_alert_to_gist(alert):
+    try:
+        import json
+
+        data = load_gist_json_file(LIVE_ALERTS_FILE, [])
+
+        if not isinstance(data, list):
+            data = []
+
+        data.append(alert)
+
+        # احتفظ بآخر 1000 تنبيه فقط حتى لا يكبر الملف
+        data = data[-1000:]
+
+        update_gist_file(
+            LIVE_ALERTS_FILE,
+            json.dumps(data, indent=2, default=str)
+        )
+
+        print(f"✅ Live alert saved to Gist: {alert.get('symbol')}", flush=True)
+
+    except Exception as e:
+        print(f"⚠️ Save live alert error: {e}", flush=True)
+
+
+def append_live_result_to_gist(result):
+    try:
+        import json
+
+        data = load_gist_json_file(LIVE_RESULTS_FILE, [])
+
+        if not isinstance(data, list):
+            data = []
+
+        data.append(result)
+
+        # احتفظ بآخر 1000 نتيجة فقط
+        data = data[-1000:]
+
+        update_gist_file(
+            LIVE_RESULTS_FILE,
+            json.dumps(data, indent=2, default=str)
+        )
+
+        print(f"✅ Live result saved to Gist: {result.get('symbol')}", flush=True)
+
+    except Exception as e:
+        print(f"⚠️ Save live result error: {e}", flush=True)
+        
 def is_scan_time_allowed():
     tz_ny = pytz.timezone("America/New_York")
     now_ny = datetime.now(tz_ny)
@@ -1330,16 +1414,37 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
             })
 
             with report_lock:
-                session_closed_reports.append({
+                result_record = {
+                    "type": "SESSION_RESULT",
+                    "saved_at_ksa": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+                    "saved_at_ts": time.time(),
+
                     "symbol": symbol,
                     "entry_price": entry_price,
+
+                    "t1": t1,
+                    "t2": t2,
+                    "t3": t3,
+                    "sl": sl,
+
                     "max_gain": max_gain_pct,
                     "h1_hit": h1_hit,
                     "h2_hit": h2_hit,
                     "h3_hit": h3_hit,
+
                     "strong_momentum_sent": strong_momentum_sent,
-                    "weak_momentum_sent": weak_momentum_sent
-                })
+                    "weak_momentum_sent": weak_momentum_sent,
+
+                    "status": "session_closed"
+                }
+
+                session_closed_reports.append(result_record)
+
+                threading.Thread(
+                    target=append_live_result_to_gist,
+                    args=(result_record,),
+                    daemon=True
+                ).start()
 
             break
 
@@ -1519,6 +1624,50 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
         send_final_session_report_if_ready()
         
 def send_explosion_alert(res):
+
+        live_alert_record = {
+        "type": "ENTRY_ALERT",
+        "saved_at_ksa": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "saved_at_ts": time.time(),
+
+        "symbol": res.get("symbol"),
+        "price": res.get("price"),
+        "rvol": res.get("rvol"),
+        "change_pct": res.get("change_pct"),
+        "score": res.get("score"),
+
+        "float_tier": res.get("float_tier"),
+        "real_float": res.get("real_float"),
+        "float_bonus": res.get("float_bonus"),
+
+        "obv_tier": res.get("obv_tier"),
+        "obv_bonus": res.get("obv_bonus"),
+
+        "resistance_20": res.get("resistance_20"),
+        "resistance_50": res.get("resistance_50"),
+        "atr_14": res.get("atr_14"),
+
+        "vol_acceleration": res.get("vol_acceleration"),
+        "volume_acceleration_score": res.get("volume_acceleration_score"),
+        "last_1m_vs_avg": res.get("last_1m_vs_avg"),
+        "last_3m_vs_prev_7m": res.get("last_3m_vs_prev_7m"),
+        "volume_trend_up": res.get("volume_trend_up"),
+        "volume_peak_recent": res.get("volume_peak_recent"),
+
+        "dollar_volume": res.get("dollar_volume"),
+
+        "target1": res.get("target1"),
+        "target2": res.get("target2"),
+        "target3": res.get("target3"),
+        "stop_loss": res.get("stop_loss"),
+    }
+
+    threading.Thread(
+        target=append_live_alert_to_gist,
+        args=(live_alert_record,),
+        daemon=True
+    ).start()
+
     msg = (
         f"🌟 *[إشارة انفجار ذهبية نخبة]* 🌟\n\n"
         f"🎫 *السهم:* `{res['symbol']}`\n"
