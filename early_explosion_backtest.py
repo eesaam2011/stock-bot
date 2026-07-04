@@ -1138,10 +1138,12 @@ class EarlyExplosionBacktester:
             "✅ تم إرسال ملفات CSV الخاصة بباك تيست Early Explosion.\n"
             "سيتم الآن إيقاف السكربت."
         )
+        
+        runtime["status"] = "completed"
+        print("✅ Backtest completed. Reports sent. Service will stay idle.", flush=True)
 
-        print("✅ Backtest completed. Reports sent. Process will exit now.", flush=True)
-        time.sleep(5)
-        os._exit(0)
+        while True:
+            time.sleep(3600)
         
     def alerts_df(self) -> pd.DataFrame:
         df = pd.DataFrame(self.alerts)
