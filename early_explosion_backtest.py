@@ -1,10 +1,11 @@
 import os
 import json
 import time
+import gc
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
-import gc
+
 import pytz
 import requests
 import pandas as pd
@@ -36,7 +37,6 @@ CHECKPOINT_REJECTS_FILE = "backtest_daily_rejects.json"
 
 START_DATE = os.getenv("BACKTEST_START_DATE", "2026-06-01")
 END_DATE = os.getenv("BACKTEST_END_DATE", "2026-07-02")
-
 OUTPUT_DIR = os.getenv("BACKTEST_OUTPUT_DIR", "backtest_output")
 
 AUDIT_SYMBOLS = os.getenv("AUDIT_SYMBOLS", "").strip()
@@ -53,6 +53,7 @@ RVOL_MIN = 1.8
 MIN_PRICE_CHANGE = 4.0
 EXPLOSION_CANDIDATE_MIN_SCORE = 90
 
+# Matched to current live bot
 RADAR_TRIGGER_CHANGE_PCT = 3.5
 RADAR_MIN_DOLLAR_VOLUME = 100_000
 RADAR_EXPIRE_MINUTES = 30
@@ -111,14 +112,14 @@ runtime = {
 @app.route("/")
 def home():
     return f"""
-    <h2>⚡ Early Explosion Backtest v1.0</h2>
+    <h2>⚡ Early Explosion Backtest v1.1</h2>
     <p>Status: {runtime['status']}</p>
     <p>Started: {runtime['started_at']}</p>
     <p>Finished: {runtime['finished_at']}</p>
     <p>Current Day: {runtime['current_day']}</p>
     <p>Symbols After Asset Filter: {runtime['symbols_after_asset_filter']}</p>
     <p>Daily Symbols Loaded: {runtime['daily_symbols_loaded']}</p>
-    <p>Minute Symbols Loaded: {runtime['minute_symbols_loaded']}</p>
+    <p>Minute Symbols Loaded Current Batch: {runtime['minute_symbols_loaded']}</p>
     <p>Float Records: {runtime['float_records']}</p>
     <p>Alerts: {runtime['alerts']}</p>
     <p>Error: {runtime['error']}</p>
@@ -137,7 +138,7 @@ def now_ksa_str() -> str:
     return datetime.now(pytz.timezone("Asia/Riyadh")).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def safe_float(value: Any, default: float = 0.0) -> float:
+def safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
     try:
         if value is None or pd.isna(value):
             return default
@@ -153,52 +154,39 @@ def send_telegram_message(text: str) -> None:
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_INVESTMENT_CHAT_ID,
-                "text": text,
-                "parse_mode": "Markdown",
-            },
+            json={"chat_id": TELEGRAM_INVESTMENT_CHAT_ID, "text": text, "parse_mode": "Markdown"},
             timeout=15,
         )
     except Exception as exc:
         print(f"❌ Telegram error: {exc}", flush=True)
 
+
 def send_telegram_document(filepath: str, caption: str = "") -> None:
     if not TELEGRAM_TOKEN or not TELEGRAM_INVESTMENT_CHAT_ID:
         print(f"[Telegram-Document-Sim] {filepath}", flush=True)
         return
-
     if not os.path.exists(filepath):
         print(f"⚠️ Telegram document not found: {filepath}", flush=True)
         return
-
     try:
         with open(filepath, "rb") as f:
             res = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
-                data={
-                    "chat_id": TELEGRAM_INVESTMENT_CHAT_ID,
-                    "caption": caption,
-                },
+                data={"chat_id": TELEGRAM_INVESTMENT_CHAT_ID, "caption": caption},
                 files={"document": f},
                 timeout=60,
             )
-
         if res.status_code == 200:
             print(f"✅ Sent Telegram document: {filepath}", flush=True)
         else:
-            print(
-                f"⚠️ Telegram document failed {filepath}: HTTP {res.status_code} | {res.text}",
-                flush=True,
-            )
-
+            print(f"⚠️ Telegram document failed {filepath}: HTTP {res.status_code} | {res.text}", flush=True)
     except Exception as exc:
         print(f"❌ Telegram document error ({filepath}): {exc}", flush=True)
-        
+
+
 def load_float_cache() -> Dict[str, Any]:
     if not FLOAT_CACHE_URL:
         raise RuntimeError("FLOAT_CACHE_URL is missing. Backtest stopped to avoid incomplete float data.")
-
     print("📥 Loading float cache from FLOAT_CACHE_URL...", flush=True)
     try:
         res = requests.get(FLOAT_CACHE_URL, timeout=40)
@@ -207,8 +195,8 @@ def load_float_cache() -> Dict[str, Any]:
         data = res.json()
         if not isinstance(data, dict) or len(data) == 0:
             raise RuntimeError("float cache is empty or invalid")
-        print(f"✅ Float records loaded: {len(data)}", flush=True)
         runtime["float_records"] = len(data)
+        print(f"✅ Float records loaded: {len(data)}", flush=True)
         return data
     except Exception as exc:
         raise RuntimeError(f"Failed to load float cache from FLOAT_CACHE_URL: {exc}")
@@ -220,6 +208,49 @@ def get_api() -> tradeapi.REST:
     return tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version="v2")
 
 # =========================================================
+# GIST CHECKPOINT HELPERS
+# =========================================================
+
+def gist_available() -> bool:
+    return bool(GITHUB_TOKEN and GIST_ID)
+
+
+def gist_headers() -> Dict[str, str]:
+    if not gist_available():
+        raise RuntimeError("GITHUB_TOKEN or GIST_ID is missing for checkpointing.")
+    return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+
+
+def load_gist_file_json(filename: str, default_value: Any) -> Any:
+    if not gist_available():
+        return default_value
+    try:
+        res = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=gist_headers(), timeout=20)
+        if res.status_code != 200:
+            print(f"⚠️ Gist load failed {filename}: HTTP {res.status_code}", flush=True)
+            return default_value
+        files = res.json().get("files", {})
+        if filename not in files:
+            return default_value
+        content = files[filename].get("content", "")
+        if not content:
+            return default_value
+        return json.loads(content)
+    except Exception as exc:
+        print(f"⚠️ Gist load error {filename}: {exc}", flush=True)
+        return default_value
+
+
+def save_gist_file_json(filename: str, data: Any) -> None:
+    if not gist_available():
+        return
+    payload = {"files": {filename: {"content": json.dumps(data, indent=2, default=str)}}}
+    res = requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=gist_headers(), json=payload, timeout=40)
+    if res.status_code not in [200, 201]:
+        raise RuntimeError(f"Gist save failed {filename}: HTTP {res.status_code}")
+    print(f"✅ Saved checkpoint file to Gist: {filename}", flush=True)
+
+# =========================================================
 # INDICATORS / BOT LOGIC HELPERS
 # =========================================================
 
@@ -229,12 +260,8 @@ def calculate_atr_14(df: pd.DataFrame) -> float:
     high = df["high"].astype(float)
     low = df["low"].astype(float)
     close = df["close"].astype(float)
-    tr = pd.concat([
-        high - low,
-        (high - close.shift(1)).abs(),
-        (low - close.shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    return safe_float(tr.tail(14).mean())
+    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    return float(tr.tail(14).mean()) if not pd.isna(tr.tail(14).mean()) else 0.0
 
 
 def calculate_obv_bonus(bars_1m: pd.DataFrame) -> Tuple[int, str]:
@@ -265,23 +292,16 @@ def calculate_obv_bonus(bars_1m: pd.DataFrame) -> Tuple[int, str]:
 
 def calculate_volume_acceleration(bars_1m: pd.DataFrame) -> Dict[str, Any]:
     if bars_1m is None or bars_1m.empty or len(bars_1m) < 13:
-        return {
-            "volume_acceleration_score": 0,
-            "vol_acceleration": 0.0,
-            "last_1m_vs_avg": 0.0,
-            "last_3m_vs_prev_7m": 0.0,
-            "volume_trend_up": False,
-            "volume_peak_recent": False,
-        }
+        return {"volume_acceleration_score": 0, "vol_acceleration": 0.0, "last_1m_vs_avg": 0.0, "last_3m_vs_prev_7m": 0.0, "volume_trend_up": False, "volume_peak_recent": False}
     bars_1m = bars_1m.sort_index()
     volumes = bars_1m["volume"].astype(float)
-    last_1m = safe_float(volumes.iloc[-1])
-    avg_prev_10 = safe_float(volumes.iloc[-11:-1].mean())
+    last_1m = float(volumes.iloc[-1])
+    avg_prev_10 = float(volumes.iloc[-11:-1].mean())
     last_1m_vs_avg = last_1m / avg_prev_10 if avg_prev_10 > 0 else 0.0
-    last_3m_avg = safe_float(volumes.iloc[-3:].mean())
-    prev_7m_avg = safe_float(volumes.iloc[-10:-3].mean())
+    last_3m_avg = float(volumes.iloc[-3:].mean())
+    prev_7m_avg = float(volumes.iloc[-10:-3].mean())
     last_3m_vs_prev_7m = last_3m_avg / prev_7m_avg if prev_7m_avg > 0 else 0.0
-    v1, v2, v3 = safe_float(volumes.iloc[-3]), safe_float(volumes.iloc[-2]), safe_float(volumes.iloc[-1])
+    v1, v2, v3 = float(volumes.iloc[-3]), float(volumes.iloc[-2]), float(volumes.iloc[-1])
     volume_trend_up = v1 <= v2 <= v3
     lookback = volumes.iloc[-13:]
     peak_idx = lookback.idxmax()
@@ -303,14 +323,7 @@ def calculate_volume_acceleration(bars_1m: pd.DataFrame) -> Dict[str, Any]:
         score += 2
     if volume_peak_recent:
         score += 3
-    return {
-        "volume_acceleration_score": min(score, 15),
-        "vol_acceleration": round(max(last_1m_vs_avg, last_3m_vs_prev_7m), 2),
-        "last_1m_vs_avg": round(last_1m_vs_avg, 2),
-        "last_3m_vs_prev_7m": round(last_3m_vs_prev_7m, 2),
-        "volume_trend_up": bool(volume_trend_up),
-        "volume_peak_recent": bool(volume_peak_recent),
-    }
+    return {"volume_acceleration_score": min(score, 15), "vol_acceleration": round(max(last_1m_vs_avg, last_3m_vs_prev_7m), 2), "last_1m_vs_avg": round(last_1m_vs_avg, 2), "last_3m_vs_prev_7m": round(last_3m_vs_prev_7m, 2), "volume_trend_up": bool(volume_trend_up), "volume_peak_recent": bool(volume_peak_recent)}
 
 
 def get_float_bonus(real_float: Optional[float]) -> Tuple[int, str]:
@@ -399,163 +412,23 @@ def normalize_bars_df(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         out[sym] = g
     return out
 
-def fetch_bars_bulk(
-    api: tradeapi.REST,
-    symbols: List[str],
-    timeframe: Any,
-    start_dt: datetime,
-    end_dt: datetime,
-    label: str,
-    batch_size: int,
-) -> Dict[str, pd.DataFrame]:
+
+def fetch_bars_bulk(api: tradeapi.REST, symbols: List[str], timeframe: Any, start_dt: datetime, end_dt: datetime, label: str, batch_size: int) -> Dict[str, pd.DataFrame]:
     all_data: Dict[str, pd.DataFrame] = {}
     total_batches = (len(symbols) + batch_size - 1) // batch_size
-
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i:i + batch_size]
         batch_no = i // batch_size + 1
-
-        print(
-            f"📥 Loading {label} batch {batch_no}/{total_batches} | symbols={len(batch)}",
-            flush=True,
-        )
-
+        print(f"📥 Loading {label} batch {batch_no}/{total_batches} | symbols={len(batch)}", flush=True)
         try:
-            bars = api.get_bars(
-                batch,
-                timeframe,
-                start=start_dt.isoformat(),
-                end=end_dt.isoformat(),
-                adjustment="raw",
-                feed="iex",
-            ).df
-
+            bars = api.get_bars(batch, timeframe, start=start_dt.isoformat(), end=end_dt.isoformat(), adjustment="raw", feed="iex").df
             all_data.update(normalize_bars_df(bars))
-
         except Exception as exc:
             print(f"⚠️ {label} batch error: {exc}", flush=True)
-
         time.sleep(BULK_SLEEP_SEC)
-
     print(f"✅ {label} loaded for {len(all_data)} symbols", flush=True)
     return all_data
 
-def fetch_minute_bars_for_day(
-    api: tradeapi.REST,
-    symbols: List[str],
-    current_day,
-    tz_ny,
-) -> Dict[str, pd.DataFrame]:
-    day_start = tz_ny.localize(
-        datetime.combine(
-            current_day,
-            datetime.strptime(MARKET_START_NY, "%H:%M").time(),
-        )
-    )
-
-    day_end = tz_ny.localize(
-        datetime.combine(
-            current_day,
-            datetime.strptime(MARKET_END_NY, "%H:%M").time(),
-        )
-    )
-
-    all_data: Dict[str, pd.DataFrame] = {}
-    total_batches = (len(symbols) + MINUTE_BATCH_SIZE - 1) // MINUTE_BATCH_SIZE
-
-    print(f"📅 Loading MINUTE data for {current_day}", flush=True)
-
-    for i in range(0, len(symbols), MINUTE_BATCH_SIZE):
-        batch = symbols[i:i + MINUTE_BATCH_SIZE]
-        batch_no = i // MINUTE_BATCH_SIZE + 1
-
-        print(
-            f"📥 MINUTE {current_day} batch {batch_no}/{total_batches} | symbols={len(batch)}",
-            flush=True,
-        )
-
-        try:
-            bars = api.get_bars(
-                batch,
-                tradeapi.rest.TimeFrame.Minute,
-                start=day_start.isoformat(),
-                end=day_end.isoformat(),
-                adjustment="raw",
-                feed="iex",
-            ).df
-
-            all_data.update(normalize_bars_df(bars))
-
-        except Exception as exc:
-            print(
-                f"⚠️ MINUTE {current_day} batch {batch_no} error: {exc}",
-                flush=True,
-            )
-
-        time.sleep(BULK_SLEEP_SEC)
-
-    print(f"✅ MINUTE {current_day} loaded for {len(all_data)} symbols", flush=True)
-    return all_data
-
-def gist_headers() -> Dict[str, str]:
-    if not GITHUB_TOKEN or not GIST_ID:
-        raise RuntimeError("GITHUB_TOKEN or GIST_ID is missing for checkpointing.")
-
-    return {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-
-
-def load_gist_file_json(filename: str, default_value: Any) -> Any:
-    try:
-        url = f"https://api.github.com/gists/{GIST_ID}"
-        res = requests.get(url, headers=gist_headers(), timeout=20)
-
-        if res.status_code != 200:
-            print(f"⚠️ Gist load failed {filename}: HTTP {res.status_code}", flush=True)
-            return default_value
-
-        files = res.json().get("files", {})
-
-        if filename not in files:
-            return default_value
-
-        content = files[filename].get("content", "")
-
-        if not content:
-            return default_value
-
-        return json.loads(content)
-
-    except Exception as exc:
-        print(f"⚠️ Gist load error {filename}: {exc}", flush=True)
-        return default_value
-
-
-def save_gist_file_json(filename: str, data: Any) -> None:
-    url = f"https://api.github.com/gists/{GIST_ID}"
-
-    payload = {
-        "files": {
-            filename: {
-                "content": json.dumps(data, indent=2, default=str)
-            }
-        }
-    }
-
-    res = requests.patch(
-        url,
-        headers=gist_headers(),
-        json=payload,
-        timeout=40,
-    )
-
-    if res.status_code not in [200, 201]:
-        raise RuntimeError(f"Gist save failed {filename}: HTTP {res.status_code}")
-
-    print(f"✅ Saved checkpoint file to Gist: {filename}", flush=True)
-    
 # =========================================================
 # BACKTEST ENGINE
 # =========================================================
@@ -568,7 +441,6 @@ class EarlyExplosionBacktester:
         self.float_cache = load_float_cache()
         self.assets_by_symbol: Dict[str, Dict[str, str]] = {}
         self.daily_data: Dict[str, pd.DataFrame] = {}
-        self.minute_data: Dict[str, pd.DataFrame] = {}
         self.radar_watchlist: Dict[str, Dict[str, Any]] = {}
         self.sent_alerts: Dict[str, float] = {}
         self.alerts: List[Dict[str, Any]] = []
@@ -578,111 +450,68 @@ class EarlyExplosionBacktester:
 
     def reject(self, reason: str) -> None:
         self.reject_stats[reason] = self.reject_stats.get(reason, 0) + 1
-        
+
     def get_last_completed_day(self) -> Optional[str]:
         state = load_gist_file_json(CHECKPOINT_STATE_FILE, {})
         return state.get("last_completed_day")
 
     def save_day_checkpoint(self, current_day) -> None:
+        if not gist_available():
+            return
         day_key = str(current_day)
-
         all_alerts = load_gist_file_json(CHECKPOINT_ALERTS_FILE, {})
         all_missed = load_gist_file_json(CHECKPOINT_MISSED_FILE, {})
         all_rejects = load_gist_file_json(CHECKPOINT_REJECTS_FILE, {})
-
         alerts_df = self.alerts_df()
         day_alerts = []
-
         if not alerts_df.empty and "alert_time_ny" in alerts_df.columns:
             temp = alerts_df.copy()
-            temp["_day"] = pd.to_datetime(
-                temp["alert_time_ny"],
-                errors="coerce"
-            ).dt.date.astype(str)
-
-            day_alerts = temp[temp["_day"] == day_key].drop(
-                columns=["_day"],
-                errors="ignore"
-            ).to_dict("records")
-
+            temp["_day"] = pd.to_datetime(temp["alert_time_ny"], errors="coerce").dt.date.astype(str)
+            day_alerts = temp[temp["_day"] == day_key].drop(columns=["_day"], errors="ignore").to_dict("records")
         day_missed = []
-
         for item in self.missed:
             item_time = item.get("time_ny")
-
             if item_time is None:
                 continue
-
             item_day = str(pd.to_datetime(item_time).date())
-
             if item_day == day_key:
-                day_missed.append({
-                    k: str(v) if "time" in k else v
-                    for k, v in item.items()
-                })
-
+                day_missed.append({k: str(v) if "time" in k else v for k, v in item.items()})
         day_rejects = {}
-
         for reason, count in self.reject_stats.items():
-            start_count = self.daily_reject_start.get(reason, 0)
-            delta = count - start_count
-
+            delta = count - self.daily_reject_start.get(reason, 0)
             if delta > 0:
                 day_rejects[reason] = delta
-
         all_alerts[day_key] = day_alerts
         all_missed[day_key] = day_missed
         all_rejects[day_key] = day_rejects
-
         save_gist_file_json(CHECKPOINT_ALERTS_FILE, all_alerts)
         save_gist_file_json(CHECKPOINT_MISSED_FILE, all_missed)
         save_gist_file_json(CHECKPOINT_REJECTS_FILE, all_rejects)
+        save_gist_file_json(CHECKPOINT_STATE_FILE, {"last_completed_day": day_key, "updated_at_ksa": now_ksa_str()})
+        print(f"✅ Daily checkpoint saved | {day_key} | alerts={len(day_alerts)} | missed={len(day_missed)} | rejects={len(day_rejects)}", flush=True)
 
-        save_gist_file_json(
-            CHECKPOINT_STATE_FILE,
-            {
-                "last_completed_day": day_key,
-                "updated_at_ksa": now_ksa_str(),
-            }
-        )
-
-        print(
-            f"✅ Daily checkpoint saved | {day_key} | "
-            f"alerts={len(day_alerts)} | missed={len(day_missed)} | rejects={len(day_rejects)}",
-            flush=True,
-        )
-
-    def load_checkpoint_results(self) -> None:
+    def load_checkpoint_results(self) -> bool:
+        if not gist_available():
+            return False
         all_alerts = load_gist_file_json(CHECKPOINT_ALERTS_FILE, {})
         all_missed = load_gist_file_json(CHECKPOINT_MISSED_FILE, {})
         all_rejects = load_gist_file_json(CHECKPOINT_REJECTS_FILE, {})
-
         self.alerts = []
         self.missed = []
         self.reject_stats = {}
-
         for day_items in all_alerts.values():
             if isinstance(day_items, list):
                 self.alerts.extend(day_items)
-
         for day_items in all_missed.values():
             if isinstance(day_items, list):
                 self.missed.extend(day_items)
-
         for day_rejects in all_rejects.values():
-            if not isinstance(day_rejects, dict):
-                continue
-
-            for reason, count in day_rejects.items():
-                self.reject_stats[reason] = self.reject_stats.get(reason, 0) + int(count)
-
+            if isinstance(day_rejects, dict):
+                for reason, count in day_rejects.items():
+                    self.reject_stats[reason] = self.reject_stats.get(reason, 0) + int(count)
         runtime["alerts"] = len(self.alerts)
-
-        print(
-            f"📦 Loaded checkpoint totals | alerts={len(self.alerts)} | "
-            f"missed={len(self.missed)} | reject_reasons={len(self.reject_stats)}",
-            flush=True,
-        )
+        print(f"📦 Loaded checkpoint totals | alerts={len(self.alerts)} | missed={len(self.missed)} | reject_reasons={len(self.reject_stats)}", flush=True)
+        return True
 
     def clear_daily_memory_after_checkpoint(self) -> None:
         self.alerts = []
@@ -690,39 +519,16 @@ class EarlyExplosionBacktester:
         self.radar_watchlist = {}
         self.daily_reject_start = {}
         gc.collect()
-        
+
     def load_data(self) -> None:
         assets = clean_assets(self.api)
         self.assets_by_symbol = {a["symbol"]: a for a in assets}
-
         symbols = list(self.assets_by_symbol.keys())
-
-        start_daily = (
-            self.tz_ny.localize(
-                datetime.strptime(START_DATE, "%Y-%m-%d")
-            )
-            - timedelta(days=150)
-        )
-
-        end_all = (
-            self.tz_ny.localize(
-                datetime.strptime(END_DATE, "%Y-%m-%d")
-            )
-            + timedelta(days=1)
-        )
-
-        self.daily_data = fetch_bars_bulk(
-            self.api,
-            symbols,
-            tradeapi.rest.TimeFrame.Day,
-            start_daily,
-            end_all,
-            "DAILY",
-            DAILY_BATCH_SIZE,
-        )
-
+        start_daily = self.tz_ny.localize(datetime.strptime(START_DATE, "%Y-%m-%d")) - timedelta(days=150)
+        end_all = self.tz_ny.localize(datetime.strptime(END_DATE, "%Y-%m-%d")) + timedelta(days=1)
+        self.daily_data = fetch_bars_bulk(self.api, symbols, tradeapi.rest.TimeFrame.Day, start_daily, end_all, "DAILY", DAILY_BATCH_SIZE)
         runtime["daily_symbols_loaded"] = len(self.daily_data)
-                
+
     def get_previous_daily_context(self, symbol: str, current_day) -> Optional[pd.DataFrame]:
         df = self.daily_data.get(symbol)
         if df is None or df.empty:
@@ -747,14 +553,7 @@ class EarlyExplosionBacktester:
         existing = self.radar_watchlist.get(symbol, {})
         previous_gain = existing.get("last_gain", change_pct)
         gain_trend = change_pct - previous_gain
-        self.radar_watchlist[symbol] = {
-            "first_seen": existing.get("first_seen", now_ts),
-            "last_seen": now_ts,
-            "highest_gain": max(existing.get("highest_gain", change_pct), change_pct),
-            "highest_dollar_volume": max(existing.get("highest_dollar_volume", dollar_volume), dollar_volume),
-            "last_gain": change_pct,
-            "gain_trend": gain_trend,
-        }
+        self.radar_watchlist[symbol] = {"first_seen": existing.get("first_seen", now_ts), "last_seen": now_ts, "highest_gain": max(existing.get("highest_gain", change_pct), change_pct), "highest_dollar_volume": max(existing.get("highest_dollar_volume", dollar_volume), dollar_volume), "last_gain": change_pct, "gain_trend": gain_trend}
         return True
 
     def clean_radar_watchlist(self, now_ts: float) -> None:
@@ -765,6 +564,15 @@ class EarlyExplosionBacktester:
         for symbol in expired:
             self.radar_watchlist.pop(symbol, None)
 
+    def get_real_float(self, symbol: str) -> Optional[float]:
+        float_info = self.float_cache.get(symbol)
+        real_float = None
+        if isinstance(float_info, dict):
+            real_float = float_info.get("float")
+        elif isinstance(float_info, (int, float)):
+            real_float = float_info
+        return safe_float(real_float, None) if real_float is not None else None
+
     def calculate_signal(self, symbol: str, now_dt_ny: datetime, day_df: pd.DataFrame, idx: int) -> Optional[Dict[str, Any]]:
         asset = self.assets_by_symbol.get(symbol, {})
         asset_name = asset.get("name", "")
@@ -774,15 +582,14 @@ class EarlyExplosionBacktester:
         if any(kw in asset_name.lower() for kw in BAD_NAME_KEYWORDS):
             self.reject("BadName")
             return None
-        current_row = day_df.iloc[idx]
-        current_price = safe_float(current_row["close"])
-        today_vol = safe_float(day_df.iloc[:idx + 1]["volume"].sum())
+        current_price = float(safe_float(day_df.iloc[idx]["close"], 0.0) or 0.0)
+        today_vol = float(safe_float(day_df.iloc[:idx + 1]["volume"].sum(), 0.0) or 0.0)
         current_day = now_dt_ny.date()
         previous_bars = self.get_previous_daily_context(symbol, current_day)
         if previous_bars is None or len(previous_bars) < 50:
             self.reject("History")
             return None
-        prev_close = safe_float(previous_bars["close"].iloc[-1])
+        prev_close = float(safe_float(previous_bars["close"].iloc[-1], 0.0) or 0.0)
         if prev_close <= 0:
             self.reject("PrevBars")
             return None
@@ -790,10 +597,17 @@ class EarlyExplosionBacktester:
         if not (PRICE_MIN <= current_price <= PRICE_MAX):
             self.reject("Price")
             return None
-        avg_vol_20 = safe_float(previous_bars["volume"].tail(20).mean())
-        if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
+        avg_vol_20 = float(safe_float(previous_bars["volume"].tail(20).mean(), 0.0) or 0.0)
+        real_float = self.get_real_float(symbol)
+        float_bonus_raw, float_tier = get_float_bonus(real_float)
+        float_bonus = min(float_bonus_raw, 5)
+        if avg_vol_20 < MIN_AVG_VOL:
             self.reject("AvgVol")
             return None
+        if avg_vol_20 > MAX_AVG_VOL:
+            if real_float is None or real_float > 30_000_000:
+                self.reject("AvgVol")
+                return None
         if price_change_pct < MIN_PRICE_CHANGE:
             self.reject("PriceChange")
             return None
@@ -805,8 +619,8 @@ class EarlyExplosionBacktester:
         if dollar_volume < MIN_DOLLAR_VOLUME:
             self.reject("DollarVol")
             return None
-        resistance_20 = safe_float(previous_bars["high"].tail(20).max())
-        resistance_50 = safe_float(previous_bars["high"].tail(50).max())
+        resistance_20 = float(safe_float(previous_bars["high"].tail(20).max(), 0.0) or 0.0)
+        resistance_50 = float(safe_float(previous_bars["high"].tail(50).max(), 0.0) or 0.0)
         if current_price < resistance_20 * 0.99:
             self.reject("Resistance")
             return None
@@ -814,15 +628,6 @@ class EarlyExplosionBacktester:
         acc = calculate_volume_acceleration(bars_1m)
         obv_bonus_raw, obv_tier = calculate_obv_bonus(bars_1m)
         obv_bonus = min(obv_bonus_raw, 10)
-        float_info = self.float_cache.get(symbol)
-        real_float = None
-        if isinstance(float_info, dict):
-            real_float = float_info.get("float")
-        elif isinstance(float_info, (int, float)):
-            real_float = float_info
-        real_float = safe_float(real_float, None) if real_float is not None else None
-        float_bonus_raw, float_tier = get_float_bonus(real_float)
-        float_bonus = min(float_bonus_raw, 5)
         radar_data = self.radar_watchlist.get(symbol, {})
         gain_trend = radar_data.get("gain_trend", 0)
         score = 0
@@ -882,40 +687,7 @@ class EarlyExplosionBacktester:
         target1 = round(current_price + atr_14, digits)
         target2 = round(current_price + atr_14 * 2, digits)
         target3 = round(max(resistance_50, current_price + atr_14 * 3), digits)
-        return {
-            "symbol": symbol,
-            "asset_name": asset_name,
-            "alert_time_ny": now_dt_ny,
-            "alert_time_ksa": now_dt_ny.astimezone(self.tz_ksa),
-            "price": round(current_price, digits),
-            "rvol": round(rvol, 2),
-            "change_pct": round(price_change_pct, 2),
-            "score": int(score),
-            "score_bucket": score_bucket(score),
-            "price_bucket": price_bucket(current_price),
-            "time_window": time_window(now_dt_ny),
-            "float_tier": float_tier,
-            "real_float": round(real_float, 0) if real_float else None,
-            "float_bonus": float_bonus,
-            "obv_bonus": obv_bonus,
-            "obv_tier": obv_tier,
-            "resistance_20": round(resistance_20, digits),
-            "resistance_50": round(resistance_50, digits),
-            "atr_14": round(atr_14, digits),
-            "vol_acceleration": acc["vol_acceleration"],
-            "volume_acceleration_score": acc["volume_acceleration_score"],
-            "last_1m_vs_avg": acc["last_1m_vs_avg"],
-            "last_3m_vs_prev_7m": acc["last_3m_vs_prev_7m"],
-            "volume_trend_up": acc["volume_trend_up"],
-            "volume_peak_recent": acc["volume_peak_recent"],
-            "dollar_volume": round(dollar_volume, 0),
-            "target1": target1,
-            "target2": target2,
-            "target3": target3,
-            "stop_loss": stop_loss,
-            "_day_df": day_df,
-            "_idx": idx,
-        }
+        return {"symbol": symbol, "asset_name": asset_name, "alert_time_ny": now_dt_ny, "alert_time_ksa": now_dt_ny.astimezone(self.tz_ksa), "price": round(current_price, digits), "rvol": round(rvol, 2), "change_pct": round(price_change_pct, 2), "score": int(score), "score_bucket": score_bucket(score), "price_bucket": price_bucket(current_price), "time_window": time_window(now_dt_ny), "float_tier": float_tier, "real_float": round(real_float, 0) if real_float else None, "float_bonus": float_bonus, "obv_bonus": obv_bonus, "obv_tier": obv_tier, "resistance_20": round(resistance_20, digits), "resistance_50": round(resistance_50, digits), "atr_14": round(atr_14, digits), "vol_acceleration": acc["vol_acceleration"], "volume_acceleration_score": acc["volume_acceleration_score"], "last_1m_vs_avg": acc["last_1m_vs_avg"], "last_3m_vs_prev_7m": acc["last_3m_vs_prev_7m"], "volume_trend_up": acc["volume_trend_up"], "volume_peak_recent": acc["volume_peak_recent"], "dollar_volume": round(dollar_volume, 0), "target1": target1, "target2": target2, "target3": target3, "stop_loss": stop_loss, "_day_df": day_df, "_idx": idx}
 
     def monitor_alert(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         df = alert["_day_df"]
@@ -931,11 +703,10 @@ class EarlyExplosionBacktester:
         for i in range(start_idx, len(df)):
             row = df.iloc[i]
             ts = df.index[i].tz_convert(self.tz_ny)
-            high, low, close = safe_float(row["high"]), safe_float(row["low"]), safe_float(row["close"])
+            high, low, close = float(safe_float(row["high"], 0.0) or 0.0), float(safe_float(row["low"], 0.0) or 0.0), float(safe_float(row["close"], 0.0) or 0.0)
             close_price = close
             if high > max_price:
                 max_price = high
-            # Conservative order: stop first when both target and stop exist in same minute.
             if low <= sl:
                 stop_hit = True
                 stop_time = ts
@@ -952,29 +723,7 @@ class EarlyExplosionBacktester:
                 t3_time = ts
         max_gain_pct = ((max_price - entry) / entry) * 100 if entry > 0 else 0
         close_gain_pct = ((close_price - entry) / entry) * 100 if entry > 0 else 0
-        alert.update({
-            "t1_hit": h1,
-            "t2_hit": h2,
-            "t3_hit": h3,
-            "stop_hit": stop_hit,
-            "t1_time_ny": t1_time,
-            "t2_time_ny": t2_time,
-            "t3_time_ny": t3_time,
-            "stop_time_ny": stop_time,
-            "t1_time_ksa": t1_time.astimezone(self.tz_ksa) if t1_time else None,
-            "t2_time_ksa": t2_time.astimezone(self.tz_ksa) if t2_time else None,
-            "t3_time_ksa": t3_time.astimezone(self.tz_ksa) if t3_time else None,
-            "stop_time_ksa": stop_time.astimezone(self.tz_ksa) if stop_time else None,
-            "t1_minutes": self.minutes_between(alert["alert_time_ny"], t1_time),
-            "t2_minutes": self.minutes_between(alert["alert_time_ny"], t2_time),
-            "t3_minutes": self.minutes_between(alert["alert_time_ny"], t3_time),
-            "stop_minutes": self.minutes_between(alert["alert_time_ny"], stop_time),
-            "max_price": round(max_price, 4 if max_price < 1 else 2),
-            "max_gain_pct": round(max_gain_pct, 2),
-            "close_price": round(close_price, 4 if close_price < 1 else 2),
-            "close_gain_pct": round(close_gain_pct, 2),
-            "exit_status": exit_status,
-        })
+        alert.update({"t1_hit": h1, "t2_hit": h2, "t3_hit": h3, "stop_hit": stop_hit, "t1_time_ny": t1_time, "t2_time_ny": t2_time, "t3_time_ny": t3_time, "stop_time_ny": stop_time, "t1_time_ksa": t1_time.astimezone(self.tz_ksa) if t1_time else None, "t2_time_ksa": t2_time.astimezone(self.tz_ksa) if t2_time else None, "t3_time_ksa": t3_time.astimezone(self.tz_ksa) if t3_time else None, "stop_time_ksa": stop_time.astimezone(self.tz_ksa) if stop_time else None, "t1_minutes": self.minutes_between(alert["alert_time_ny"], t1_time), "t2_minutes": self.minutes_between(alert["alert_time_ny"], t2_time), "t3_minutes": self.minutes_between(alert["alert_time_ny"], t3_time), "stop_minutes": self.minutes_between(alert["alert_time_ny"], stop_time), "max_price": round(max_price, 4 if max_price < 1 else 2), "max_gain_pct": round(max_gain_pct, 2), "close_price": round(close_price, 4 if close_price < 1 else 2), "close_gain_pct": round(close_gain_pct, 2), "exit_status": exit_status})
         alert.pop("_day_df", None)
         alert.pop("_idx", None)
         return alert
@@ -989,361 +738,132 @@ class EarlyExplosionBacktester:
         future = day_df.iloc[idx + 1:]
         if future.empty or current_price <= 0:
             return
-        max_future_high = safe_float(future["high"].max())
+        max_future_high = float(safe_float(future["high"].max(), 0.0) or 0.0)
         future_gain = ((max_future_high - current_price) / current_price) * 100
         if future_gain >= 20:
-            self.missed.append({
-                "symbol": symbol,
-                "time_ny": now_dt_ny,
-                "time_ksa": now_dt_ny.astimezone(self.tz_ksa),
-                "price": round(current_price, 4 if current_price < 1 else 2),
-                "score_at_reject": round(score, 2),
-                "future_max_gain_pct": round(future_gain, 2),
-                "reject_reason": reason,
-            })
+            self.missed.append({"symbol": symbol, "time_ny": now_dt_ny, "time_ksa": now_dt_ny.astimezone(self.tz_ksa), "price": round(current_price, 4 if current_price < 1 else 2), "score_at_reject": round(score, 2), "future_max_gain_pct": round(future_gain, 2), "reject_reason": reason})
+            if len(self.missed) > 500:
+                self.missed = sorted(self.missed, key=lambda x: x.get("future_max_gain_pct", 0), reverse=True)[:500]
 
     def run_day(self, current_day) -> None:
         runtime["current_day"] = str(current_day)
         print(f"📅 Backtesting {current_day}", flush=True)
-
         symbols = list(self.assets_by_symbol.keys())
-
-        minute_data_for_day = fetch_minute_bars_for_day(
-            self.api,
-            symbols,
-            current_day,
-            self.tz_ny,
-        )
-
-    def run_audit_mode(self) -> None:
-        symbols = [
-            s.strip().upper()
-            for s in AUDIT_SYMBOLS.split(",")
-            if s.strip()
-        ]
-
-        if not symbols:
-            print("❌ AUDIT_SYMBOLS is empty.", flush=True)
-            return
-
-        print(f"🔎 AUDIT MODE ENABLED | symbols={symbols}", flush=True)
-
-        self.assets_by_symbol = {
-            s: {"symbol": s, "name": s, "exchange": "AUDIT"}
-            for s in symbols
-        }
-
-        start_daily = (
-            self.tz_ny.localize(
-                datetime.strptime(AUDIT_START_DATE, "%Y-%m-%d")
-            )
-            - timedelta(days=150)
-        )
-
-        end_all = (
-            self.tz_ny.localize(
-                datetime.strptime(AUDIT_END_DATE, "%Y-%m-%d")
-            )
-            + timedelta(days=1)
-        )
-
-        self.daily_data = fetch_bars_bulk(
-            self.api,
-            symbols,
-            tradeapi.rest.TimeFrame.Day,
-            start_daily,
-            end_all,
-            "AUDIT_DAILY",
-            DAILY_BATCH_SIZE,
-        )
-
-        d = datetime.strptime(AUDIT_START_DATE, "%Y-%m-%d").date()
-        end_d = datetime.strptime(AUDIT_END_DATE, "%Y-%m-%d").date()
-
-        while d <= end_d:
-            if d.weekday() >= 5:
-                d += timedelta(days=1)
+        day_start = self.tz_ny.localize(datetime.combine(current_day, datetime.strptime(MARKET_START_NY, "%H:%M").time()))
+        day_end = self.tz_ny.localize(datetime.combine(current_day, datetime.strptime(MARKET_END_NY, "%H:%M").time()))
+        total_batches = (len(symbols) + MINUTE_BATCH_SIZE - 1) // MINUTE_BATCH_SIZE
+        for batch_start in range(0, len(symbols), MINUTE_BATCH_SIZE):
+            batch_symbols = symbols[batch_start:batch_start + MINUTE_BATCH_SIZE]
+            batch_no = batch_start // MINUTE_BATCH_SIZE + 1
+            print(f"📥 MINUTE {current_day} batch {batch_no}/{total_batches} | symbols={len(batch_symbols)}", flush=True)
+            try:
+                bars = self.api.get_bars(batch_symbols, tradeapi.rest.TimeFrame.Minute, start=day_start.isoformat(), end=day_end.isoformat(), adjustment="raw", feed="iex").df
+                minute_batch_data = normalize_bars_df(bars)
+            except Exception as exc:
+                print(f"⚠️ MINUTE {current_day} batch {batch_no} error: {exc}", flush=True)
+                time.sleep(BULK_SLEEP_SEC)
                 continue
-
-            print(f"\n================ AUDIT DAY {d} ================", flush=True)
-
-            minute_data_for_day = fetch_minute_bars_for_day(
-                self.api,
-                symbols,
-                d,
-                self.tz_ny,
-            )
-
-            for symbol in symbols:
-                print(f"\n🔍 AUDIT SYMBOL: {symbol} | DAY: {d}", flush=True)
-
-                full_df = minute_data_for_day.get(symbol)
-
-                if full_df is None or full_df.empty:
-                    print("❌ No minute data found.", flush=True)
+            runtime["minute_symbols_loaded"] = len(minute_batch_data)
+            for symbol, full_df in minute_batch_data.items():
+                if symbol not in self.assets_by_symbol:
                     continue
-
-                previous_bars = self.get_previous_daily_context(symbol, d)
-
-                if previous_bars is None:
-                    print("❌ No previous daily context / less than 50 daily bars.", flush=True)
-                    continue
-
-                prev_close = safe_float(previous_bars["close"].iloc[-1])
-                avg_vol_20 = safe_float(previous_bars["volume"].tail(20).mean())
-                resistance_20 = safe_float(previous_bars["high"].tail(20).max())
-
-                print(
-                    f"📌 PrevClose={prev_close} | AvgVol20={avg_vol_20} | Resistance20={resistance_20}",
-                    flush=True,
-                )
-
-                day_start = self.tz_ny.localize(
-                    datetime.combine(
-                        d,
-                        datetime.strptime(MARKET_START_NY, "%H:%M").time(),
-                    )
-                )
-
-                day_end = self.tz_ny.localize(
-                    datetime.combine(
-                        d,
-                        datetime.strptime(MARKET_END_NY, "%H:%M").time(),
-                    )
-                )
-
                 idx_ny = full_df.index.tz_convert(self.tz_ny)
                 day_df = full_df[(idx_ny >= day_start) & (idx_ny <= day_end)].copy()
-
-                if day_df.empty:
-                    print("❌ Empty day dataframe after session filter.", flush=True)
+                if day_df.empty or len(day_df) < 30:
                     continue
-
-                best_seen = {
-                    "max_change": -999,
-                    "max_rvol": 0,
-                    "max_score": 0,
-                    "radar_seen": False,
-                    "signal_seen": False,
-                    "last_reject": None,
-                }
-
                 for idx in range(20, len(day_df), SCAN_INTERVAL_MINUTES):
                     now_dt_ny = day_df.index[idx].tz_convert(self.tz_ny)
                     now_ts = now_dt_ny.timestamp()
-
-                    current_price = safe_float(day_df.iloc[idx]["close"])
-                    today_vol = safe_float(day_df.iloc[:idx + 1]["volume"].sum())
-                    price_change_pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                    rvol = today_vol / avg_vol_20 if avg_vol_20 > 0 else 0
-                    dollar_volume = today_vol * current_price
-
-                    best_seen["max_change"] = max(best_seen["max_change"], price_change_pct)
-                    best_seen["max_rvol"] = max(best_seen["max_rvol"], rvol)
-
-                    radar_ok = self.update_radar_watchlist(
-                        symbol,
-                        current_price,
-                        prev_close,
-                        today_vol,
-                        now_ts,
-                    )
-
-                    if radar_ok:
-                        best_seen["radar_seen"] = True
-
-                    before_rejects = dict(self.reject_stats)
+                    self.clean_radar_watchlist(now_ts)
+                    previous_bars = self.get_previous_daily_context(symbol, current_day)
+                    if previous_bars is None:
+                        continue
+                    prev_close = float(safe_float(previous_bars["close"].iloc[-1], 0.0) or 0.0)
+                    current_price = float(safe_float(day_df.iloc[idx]["close"], 0.0) or 0.0)
+                    today_vol = float(safe_float(day_df.iloc[:idx + 1]["volume"].sum(), 0.0) or 0.0)
+                    if not self.update_radar_watchlist(symbol, current_price, prev_close, today_vol, now_ts):
+                        continue
+                    last_alert_ts = self.sent_alerts.get(symbol)
+                    if last_alert_ts and (now_ts - last_alert_ts < ALERT_COOLDOWN_SEC):
+                        continue
                     alert = self.calculate_signal(symbol, now_dt_ny, day_df, idx)
-
-                    new_reject = None
-                    for reason, count in self.reject_stats.items():
-                        if count > before_rejects.get(reason, 0):
-                            new_reject = reason
-                            break
-
-                    if new_reject:
-                        best_seen["last_reject"] = new_reject
-
                     if alert:
-                        best_seen["signal_seen"] = True
-                        best_seen["max_score"] = max(best_seen["max_score"], alert["score"])
+                        final_alert = self.monitor_alert(alert)
+                        self.alerts.append(final_alert)
+                        self.sent_alerts[symbol] = now_ts
+                        runtime["alerts"] = len(self.alerts)
+                        print(f"🚀 ALERT {symbol} | {now_dt_ny.strftime('%Y-%m-%d %H:%M')} NY | Score={final_alert['score']} | MaxGain={final_alert['max_gain_pct']}%", flush=True)
+                del day_df
+            del minute_batch_data
+            del bars
+            gc.collect()
+            time.sleep(BULK_SLEEP_SEC)
 
-                        print(
-                            f"✅ WOULD ALERT | {symbol} | {now_dt_ny} | "
-                            f"price={alert['price']} | score={alert['score']} | "
-                            f"rvol={alert['rvol']} | change={alert['change_pct']}%",
-                            flush=True,
-                        )
-
-                    if idx % 60 == 20:
-                        print(
-                            f"⏱️ {now_dt_ny.strftime('%H:%M')} | "
-                            f"price={round(current_price, 4)} | "
-                            f"change={round(price_change_pct, 2)}% | "
-                            f"rvol={round(rvol, 2)} | "
-                            f"$vol={round(dollar_volume, 0)} | "
-                            f"radar={radar_ok} | last_reject={new_reject}",
-                            flush=True,
-                        )
-
-                print(
-                    f"📊 AUDIT RESULT {symbol} {d} | "
-                    f"radar_seen={best_seen['radar_seen']} | "
-                    f"signal_seen={best_seen['signal_seen']} | "
-                    f"max_change={round(best_seen['max_change'], 2)}% | "
-                    f"max_rvol={round(best_seen['max_rvol'], 2)} | "
-                    f"max_score={best_seen['max_score']} | "
-                    f"last_reject={best_seen['last_reject']}",
-                    flush=True,
-                )
-
+    def run_audit_mode(self) -> None:
+        symbols = [s.strip().upper() for s in AUDIT_SYMBOLS.split(",") if s.strip()]
+        if not symbols:
+            print("❌ AUDIT_SYMBOLS is empty.", flush=True)
+            return
+        print(f"🔎 AUDIT MODE ENABLED | symbols={symbols}", flush=True)
+        self.assets_by_symbol = {s: {"symbol": s, "name": s, "exchange": "AUDIT"} for s in symbols}
+        start_daily = self.tz_ny.localize(datetime.strptime(AUDIT_START_DATE, "%Y-%m-%d")) - timedelta(days=150)
+        end_all = self.tz_ny.localize(datetime.strptime(AUDIT_END_DATE, "%Y-%m-%d")) + timedelta(days=1)
+        self.daily_data = fetch_bars_bulk(self.api, symbols, tradeapi.rest.TimeFrame.Day, start_daily, end_all, "AUDIT_DAILY", DAILY_BATCH_SIZE)
+        d = datetime.strptime(AUDIT_START_DATE, "%Y-%m-%d").date()
+        end_d = datetime.strptime(AUDIT_END_DATE, "%Y-%m-%d").date()
+        while d <= end_d:
+            if d.weekday() < 5:
+                self.run_day(d)
             d += timedelta(days=1)
-
         print("✅ AUDIT MODE FINISHED.", flush=True)
-        send_telegram_message("✅ انتهى Audit Mode للرموز المحددة. راجع Render Logs للسبب التفصيلي.")
+        send_telegram_message("✅ انتهى Audit Mode للرموز المحددة. راجع Render Logs.")
         runtime["status"] = "audit_completed"
-
         while True:
             time.sleep(3600)
-            
-        runtime["minute_symbols_loaded"] = len(minute_data_for_day)
-
-        day_start = self.tz_ny.localize(
-            datetime.combine(
-                current_day,
-                datetime.strptime(MARKET_START_NY, "%H:%M").time(),
-            )
-        )
-
-        day_end = self.tz_ny.localize(
-            datetime.combine(
-                current_day,
-                datetime.strptime(MARKET_END_NY, "%H:%M").time(),
-            )
-        )
-
-        for symbol, full_df in minute_data_for_day.items():
-            if symbol not in self.assets_by_symbol:
-                continue
-
-            idx_ny = full_df.index.tz_convert(self.tz_ny)
-            day_df = full_df[(idx_ny >= day_start) & (idx_ny <= day_end)].copy()
-
-            if day_df.empty or len(day_df) < 30:
-                continue
-
-            for idx in range(20, len(day_df), SCAN_INTERVAL_MINUTES):
-                now_dt_ny = day_df.index[idx].tz_convert(self.tz_ny)
-                now_ts = now_dt_ny.timestamp()
-
-                self.clean_radar_watchlist(now_ts)
-
-                previous_bars = self.get_previous_daily_context(symbol, current_day)
-
-                if previous_bars is None:
-                    continue
-
-                prev_close = safe_float(previous_bars["close"].iloc[-1])
-                current_price = safe_float(day_df.iloc[idx]["close"])
-                today_vol = safe_float(day_df.iloc[:idx + 1]["volume"].sum())
-
-                if not self.update_radar_watchlist(
-                    symbol,
-                    current_price,
-                    prev_close,
-                    today_vol,
-                    now_ts,
-                ):
-                    continue
-
-                last_alert_ts = self.sent_alerts.get(symbol)
-
-                if last_alert_ts and (now_ts - last_alert_ts < ALERT_COOLDOWN_SEC):
-                    continue
-
-                alert = self.calculate_signal(symbol, now_dt_ny, day_df, idx)
-
-                if alert:
-                    final_alert = self.monitor_alert(alert)
-                    self.alerts.append(final_alert)
-                    self.sent_alerts[symbol] = now_ts
-                    runtime["alerts"] = len(self.alerts)
-
-                    print(
-                        f"🚀 ALERT {symbol} | {now_dt_ny.strftime('%Y-%m-%d %H:%M')} NY | "
-                        f"Score={final_alert['score']} | MaxGain={final_alert['max_gain_pct']}%",
-                        flush=True,
-                    )
-
-        del minute_data_for_day
 
     def run(self) -> None:
         runtime["status"] = "running"
         runtime["started_at"] = now_ksa_str()
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        
         if AUDIT_SYMBOLS:
             self.run_audit_mode()
             return
-
         self.load_data()
-
         start_d = datetime.strptime(START_DATE, "%Y-%m-%d").date()
         end_d = datetime.strptime(END_DATE, "%Y-%m-%d").date()
-
         last_completed_day = self.get_last_completed_day()
-
         if last_completed_day:
             resume_day = datetime.strptime(last_completed_day, "%Y-%m-%d").date() + timedelta(days=1)
             d = max(start_d, resume_day)
-
-            print(
-                f"🔁 Resume enabled | last_completed_day={last_completed_day} | starting_from={d}",
-                flush=True,
-            )
+            print(f"🔁 Resume enabled | last_completed_day={last_completed_day} | starting_from={d}", flush=True)
         else:
             d = start_d
             print("🆕 No checkpoint found. Starting from beginning.", flush=True)
-
         while d <= end_d:
             if d.weekday() < 5:
                 self.daily_reject_start = dict(self.reject_stats)
-
                 self.run_day(d)
-
                 self.save_day_checkpoint(d)
                 self.clear_daily_memory_after_checkpoint()
-
             else:
                 print(f"⏸️ Skipping weekend: {d}", flush=True)
-
             d += timedelta(days=1)
-
-        print("📦 Loading all checkpoint results for final report...", flush=True)
-        self.load_checkpoint_results()
-
+        if gist_available():
+            print("📦 Loading all checkpoint results for final report...", flush=True)
+            self.load_checkpoint_results()
         self.save_results()
-
         runtime["status"] = "finished"
         runtime["finished_at"] = now_ksa_str()
-
         msg = self.build_telegram_summary()
         print(msg, flush=True)
         send_telegram_message(msg)
-
         self.send_report_files_to_telegram()
-
-        send_telegram_message(
-            "✅ تم إرسال ملفات CSV الخاصة بباك تيست Early Explosion.\n"
-            "سيتم الآن إيقاف السكربت."
-        )
-        
+        send_telegram_message("✅ تم إرسال ملفات CSV الخاصة بباك تيست Early Explosion.\nالخدمة ستبقى idle.")
         runtime["status"] = "completed"
         print("✅ Backtest completed. Reports sent. Service will stay idle.", flush=True)
-
         while True:
             time.sleep(3600)
-        
+
     def alerts_df(self) -> pd.DataFrame:
         df = pd.DataFrame(self.alerts)
         if df.empty:
@@ -1352,113 +872,35 @@ class EarlyExplosionBacktester:
             if "time" in col:
                 df[col] = df[col].astype(str)
         return df
-        
+
     def save_results(self) -> None:
         alerts_df = self.alerts_df()
-
-        # 1) Full alerts file
         alerts_path = os.path.join(OUTPUT_DIR, "backtest_alerts.csv")
         alerts_df.to_csv(alerts_path, index=False)
-
-        # 2) Alert timeline file
-        timeline_cols = [
-            "alert_time_ny",
-            "alert_time_ksa",
-            "symbol",
-            "price",
-            "score",
-            "rvol",
-            "change_pct",
-            "target1",
-            "target2",
-            "target3",
-            "stop_loss",
-            "t1_hit",
-            "t1_time_ny",
-            "t1_minutes",
-            "t2_hit",
-            "t2_time_ny",
-            "t2_minutes",
-            "t3_hit",
-            "t3_time_ny",
-            "t3_minutes",
-            "stop_hit",
-            "stop_time_ny",
-            "stop_minutes",
-            "max_gain_pct",
-            "close_gain_pct",
-            "exit_status",
-        ]
-
+        timeline_cols = ["alert_time_ny", "alert_time_ksa", "symbol", "price", "score", "rvol", "change_pct", "target1", "target2", "target3", "stop_loss", "t1_hit", "t1_time_ny", "t1_minutes", "t2_hit", "t2_time_ny", "t2_minutes", "t3_hit", "t3_time_ny", "t3_minutes", "stop_hit", "stop_time_ny", "stop_minutes", "max_gain_pct", "close_gain_pct", "exit_status"]
         if not alerts_df.empty:
             existing_cols = [c for c in timeline_cols if c in alerts_df.columns]
-            timeline_df = alerts_df[existing_cols].copy()
-            timeline_df = timeline_df.sort_values("alert_time_ny")
+            timeline_df = alerts_df[existing_cols].copy().sort_values("alert_time_ny")
         else:
             timeline_df = pd.DataFrame(columns=timeline_cols)
-
-        timeline_df.to_csv(
-            os.path.join(OUTPUT_DIR, "backtest_alert_timeline.csv"),
-            index=False
-        )
-
-        # 3) Reject stats
-        reject_df = pd.DataFrame([
-            {"reason": reason, "count": count}
-            for reason, count in sorted(
-                self.reject_stats.items(),
-                key=lambda x: x[1],
-                reverse=True
-            )
-        ])
-        reject_df.to_csv(
-            os.path.join(OUTPUT_DIR, "backtest_reject_stats.csv"),
-            index=False
-        )
-
-        # 4) Missed opportunities
+        timeline_df.to_csv(os.path.join(OUTPUT_DIR, "backtest_alert_timeline.csv"), index=False)
+        reject_df = pd.DataFrame([{"reason": reason, "count": count} for reason, count in sorted(self.reject_stats.items(), key=lambda x: x[1], reverse=True)])
+        reject_df.to_csv(os.path.join(OUTPUT_DIR, "backtest_reject_stats.csv"), index=False)
         missed_df = pd.DataFrame(self.missed)
         if not missed_df.empty:
             for col in ["time_ny", "time_ksa"]:
                 if col in missed_df.columns:
                     missed_df[col] = missed_df[col].astype(str)
-
-            missed_df = missed_df.sort_values(
-                "future_max_gain_pct",
-                ascending=False
-            ).head(50)
-
-        missed_df.to_csv(
-            os.path.join(OUTPUT_DIR, "backtest_missed_opportunities.csv"),
-            index=False
-        )
-
-        # 5) Summary
+            missed_df = missed_df.sort_values("future_max_gain_pct", ascending=False).head(50)
+        missed_df.to_csv(os.path.join(OUTPUT_DIR, "backtest_missed_opportunities.csv"), index=False)
         summary_df = pd.DataFrame(self.summary_rows(alerts_df))
-        summary_df.to_csv(
-            os.path.join(OUTPUT_DIR, "backtest_summary.csv"),
-            index=False
-        )
-
-        # 6) Breakdowns + charts
+        summary_df.to_csv(os.path.join(OUTPUT_DIR, "backtest_summary.csv"), index=False)
         self.breakdown_csvs(alerts_df)
         self.generate_charts(alerts_df, reject_df)
-
         print(f"✅ Reports saved in {OUTPUT_DIR}/", flush=True)
-        
-    def send_report_files_to_telegram(self) -> None:
-        files = [
-            "backtest_summary.csv",
-            "backtest_alerts.csv",
-            "backtest_reject_stats.csv",
-            "backtest_missed_opportunities.csv",
-            "backtest_alert_timeline.csv",
-            "breakdown_by_score_bucket.csv",
-            "breakdown_by_time_window.csv",
-            "breakdown_by_float_tier.csv",
-            "breakdown_by_price_bucket.csv",
-        ]
 
+    def send_report_files_to_telegram(self) -> None:
+        files = ["backtest_summary.csv", "backtest_alerts.csv", "backtest_reject_stats.csv", "backtest_missed_opportunities.csv", "backtest_alert_timeline.csv", "breakdown_by_score_bucket.csv", "breakdown_by_time_window.csv", "breakdown_by_float_tier.csv", "breakdown_by_price_bucket.csv"]
         for filename in files:
             path = os.path.join(OUTPUT_DIR, filename)
             send_telegram_document(path, f"📎 {filename}")
@@ -1466,33 +908,9 @@ class EarlyExplosionBacktester:
 
     def summary_rows(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         if df.empty:
-            return [
-                {"metric": "period", "value": f"{START_DATE} to {END_DATE}"},
-                {"metric": "total_alerts", "value": 0},
-                {"metric": "symbols_after_asset_filter", "value": runtime["symbols_after_asset_filter"]},
-            ]
+            return [{"metric": "period", "value": f"{START_DATE} to {END_DATE}"}, {"metric": "total_alerts", "value": 0}, {"metric": "symbols_after_asset_filter", "value": runtime["symbols_after_asset_filter"]}]
         best = df.sort_values("max_gain_pct", ascending=False).iloc[0]
-        return [
-            {"metric": "period", "value": f"{START_DATE} to {END_DATE}"},
-            {"metric": "symbols_after_asset_filter", "value": runtime["symbols_after_asset_filter"]},
-            {"metric": "daily_symbols_loaded", "value": runtime["daily_symbols_loaded"]},
-            {"metric": "minute_symbols_loaded", "value": runtime["minute_symbols_loaded"]},
-            {"metric": "float_records", "value": runtime["float_records"]},
-            {"metric": "total_alerts", "value": len(df)},
-            {"metric": "unique_symbols", "value": df["symbol"].nunique()},
-            {"metric": "t1_hits", "value": int(df["t1_hit"].sum())},
-            {"metric": "t1_rate_pct", "value": round(df["t1_hit"].mean() * 100, 2)},
-            {"metric": "t2_hits", "value": int(df["t2_hit"].sum())},
-            {"metric": "t2_rate_pct", "value": round(df["t2_hit"].mean() * 100, 2)},
-            {"metric": "t3_hits", "value": int(df["t3_hit"].sum())},
-            {"metric": "t3_rate_pct", "value": round(df["t3_hit"].mean() * 100, 2)},
-            {"metric": "stop_hits", "value": int(df["stop_hit"].sum())},
-            {"metric": "stop_rate_pct", "value": round(df["stop_hit"].mean() * 100, 2)},
-            {"metric": "avg_score", "value": round(df["score"].mean(), 2)},
-            {"metric": "avg_max_gain_pct", "value": round(df["max_gain_pct"].mean(), 2)},
-            {"metric": "best_trade_symbol", "value": best["symbol"]},
-            {"metric": "best_trade_gain_pct", "value": best["max_gain_pct"]},
-        ]
+        return [{"metric": "period", "value": f"{START_DATE} to {END_DATE}"}, {"metric": "symbols_after_asset_filter", "value": runtime["symbols_after_asset_filter"]}, {"metric": "daily_symbols_loaded", "value": runtime["daily_symbols_loaded"]}, {"metric": "float_records", "value": runtime["float_records"]}, {"metric": "total_alerts", "value": len(df)}, {"metric": "unique_symbols", "value": df["symbol"].nunique()}, {"metric": "t1_hits", "value": int(df["t1_hit"].sum())}, {"metric": "t1_rate_pct", "value": round(df["t1_hit"].mean() * 100, 2)}, {"metric": "t2_hits", "value": int(df["t2_hit"].sum())}, {"metric": "t2_rate_pct", "value": round(df["t2_hit"].mean() * 100, 2)}, {"metric": "t3_hits", "value": int(df["t3_hit"].sum())}, {"metric": "t3_rate_pct", "value": round(df["t3_hit"].mean() * 100, 2)}, {"metric": "stop_hits", "value": int(df["stop_hit"].sum())}, {"metric": "stop_rate_pct", "value": round(df["stop_hit"].mean() * 100, 2)}, {"metric": "avg_score", "value": round(df["score"].mean(), 2)}, {"metric": "avg_max_gain_pct", "value": round(df["max_gain_pct"].mean(), 2)}, {"metric": "best_trade_symbol", "value": best["symbol"]}, {"metric": "best_trade_gain_pct", "value": best["max_gain_pct"]}]
 
     def breakdown_csvs(self, df: pd.DataFrame) -> None:
         if df.empty:
@@ -1502,15 +920,7 @@ class EarlyExplosionBacktester:
                 continue
             rows = []
             for val, g in df.groupby(col):
-                rows.append({
-                    col: val,
-                    "alerts": len(g),
-                    "t1_rate_pct": round(g["t1_hit"].mean() * 100, 2),
-                    "t2_rate_pct": round(g["t2_hit"].mean() * 100, 2),
-                    "t3_rate_pct": round(g["t3_hit"].mean() * 100, 2),
-                    "stop_rate_pct": round(g["stop_hit"].mean() * 100, 2),
-                    "avg_max_gain_pct": round(g["max_gain_pct"].mean(), 2),
-                })
+                rows.append({col: val, "alerts": len(g), "t1_rate_pct": round(g["t1_hit"].mean() * 100, 2), "t2_rate_pct": round(g["t2_hit"].mean() * 100, 2), "t3_rate_pct": round(g["t3_hit"].mean() * 100, 2), "stop_rate_pct": round(g["stop_hit"].mean() * 100, 2), "avg_max_gain_pct": round(g["max_gain_pct"].mean(), 2)})
             pd.DataFrame(rows).to_csv(os.path.join(OUTPUT_DIR, f"breakdown_by_{col}.csv"), index=False)
 
     def generate_charts(self, alerts_df: pd.DataFrame, reject_df: pd.DataFrame) -> None:
@@ -1521,15 +931,9 @@ class EarlyExplosionBacktester:
         self.save_bar(chart_df.groupby("alert_date").size(), "alerts_by_day.png", "Alerts by Day")
         self.save_hist(chart_df["score"], "score_distribution.png", "Score Distribution")
         self.save_hist(chart_df["max_gain_pct"], "max_gain_distribution.png", "Max Gain Distribution")
-        for col, fname, title in [
-            ("score_bucket", "by_score_bucket_t1.png", "T1 Rate by Score Bucket"),
-            ("time_window", "by_time_window_t1.png", "T1 Rate by Time Window"),
-            ("float_tier", "by_float_tier_t1.png", "T1 Rate by Float Tier"),
-            ("price_bucket", "by_price_bucket_t1.png", "T1 Rate by Price Bucket"),
-        ]:
+        for col, fname, title in [("score_bucket", "by_score_bucket_t1.png", "T1 Rate by Score Bucket"), ("time_window", "by_time_window_t1.png", "T1 Rate by Time Window"), ("float_tier", "by_float_tier_t1.png", "T1 Rate by Float Tier"), ("price_bucket", "by_price_bucket_t1.png", "T1 Rate by Price Bucket")]:
             if col in chart_df.columns:
-                s = chart_df.groupby(col)["t1_hit"].mean() * 100
-                self.save_bar(s, fname, title)
+                self.save_bar(chart_df.groupby(col)["t1_hit"].mean() * 100, fname, title)
         if not reject_df.empty:
             self.save_bar(reject_df.head(12).set_index("reason")["count"], "reject_reasons.png", "Top Reject Reasons")
 
@@ -1552,31 +956,9 @@ class EarlyExplosionBacktester:
     def build_telegram_summary(self) -> str:
         df = pd.DataFrame(self.alerts)
         if df.empty:
-            return (
-                "📊 *Early Explosion Backtest v1.0 انتهى*\n\n"
-                f"🗓️ الفترة: `{START_DATE}` → `{END_DATE}`\n"
-                f"📌 الأسهم بعد الفلترة الأولية: `{runtime['symbols_after_asset_filter']}`\n"
-                "🚫 لم يتم تسجيل أي تنبيه مطابق للشروط.\n"
-                "✅ انتهى الفحص وتوقف السكربت."
-            )
-        total = len(df)
+            return f"📊 *Early Explosion Backtest v1.1 انتهى*\n\n🗓️ الفترة: `{START_DATE}` → `{END_DATE}`\n📌 الأسهم بعد الفلترة الأولية: `{runtime['symbols_after_asset_filter']}`\n🚫 لم يتم تسجيل أي تنبيه مطابق للشروط."
         best = df.sort_values("max_gain_pct", ascending=False).iloc[0]
-        return (
-            "📊 *Early Explosion Backtest v1.0 انتهى*\n\n"
-            f"🗓️ الفترة: `{START_DATE}` → `{END_DATE}`\n"
-            f"📌 الأسهم بعد الفلترة الأولية: `{runtime['symbols_after_asset_filter']}`\n"
-            f"🧬 Float records: `{runtime['float_records']}`\n"
-            f"🚀 عدد التنبيهات: `{total}`\n"
-            f"🎫 الأسهم الفريدة: `{df['symbol'].nunique()}`\n\n"
-            f"✅ T1: `{df['t1_hit'].mean() * 100:.1f}%`\n"
-            f"🔥 T2: `{df['t2_hit'].mean() * 100:.1f}%`\n"
-            f"🚀 T3: `{df['t3_hit'].mean() * 100:.1f}%`\n"
-            f"🛑 Stop: `{df['stop_hit'].mean() * 100:.1f}%`\n\n"
-            f"📈 متوسط أعلى ربح: `{df['max_gain_pct'].mean():.2f}%`\n"
-            f"🏆 أفضل صفقة: `{best['symbol']}` | `{best['max_gain_pct']}%`\n"
-            f"📁 التقارير داخل `{OUTPUT_DIR}`\n"
-            "✅ انتهى الفحص بالكامل وتوقف السكربت."
-        )
+        return f"📊 *Early Explosion Backtest v1.1 انتهى*\n\n🗓️ الفترة: `{START_DATE}` → `{END_DATE}`\n📌 الأسهم بعد الفلترة الأولية: `{runtime['symbols_after_asset_filter']}`\n🧬 Float records: `{runtime['float_records']}`\n🚀 عدد التنبيهات: `{len(df)}`\n🎫 الأسهم الفريدة: `{df['symbol'].nunique()}`\n\n✅ T1: `{df['t1_hit'].mean() * 100:.1f}%`\n🔥 T2: `{df['t2_hit'].mean() * 100:.1f}%`\n🚀 T3: `{df['t3_hit'].mean() * 100:.1f}%`\n🛑 Stop: `{df['stop_hit'].mean() * 100:.1f}%`\n\n📈 متوسط أعلى ربح: `{df['max_gain_pct'].mean():.2f}%`\n🏆 أفضل صفقة: `{best['symbol']}` | `{best['max_gain_pct']}%`\n📁 التقارير داخل `{OUTPUT_DIR}`"
 
 # =========================================================
 # MAIN
