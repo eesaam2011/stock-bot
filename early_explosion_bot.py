@@ -1657,7 +1657,7 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
         
 def send_explosion_alert(res):
 
-        live_alert_record = {
+     live_alert_record = {
         "type": "ENTRY_ALERT",
         "saved_at_ksa": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
         "saved_at_ts": time.time(),
