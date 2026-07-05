@@ -1178,10 +1178,15 @@ def check_explosion(api, symbol, asset_name):
         float_bonus_raw, float_tier = get_float_bonus(real_float)
         float_bonus = min(float_bonus_raw, 5)
 
-        if avg_vol_20 < MIN_AVG_VOL or avg_vol_20 > MAX_AVG_VOL:
+        if avg_vol_20 < MIN_AVG_VOL:
             reject_avg_vol += 1
             return None
 
+        if avg_vol_20 > MAX_AVG_VOL:
+            if real_float is None or real_float > 30_000_000:
+                reject_avg_vol += 1
+                return None
+                
         resistance_20 = float(
             previous_bars["high"].tail(20).max()
         )
