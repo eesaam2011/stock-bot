@@ -120,6 +120,7 @@ reject_blacklist = 0
 reject_bad_name = 0
 reject_bars = 0
 reject_prev_bars = 0
+top_rejected_candidates = []
 
 SCAN_INTERVAL_SEC  = 60
 TRACK_INTERVAL_SEC = 10
@@ -1825,7 +1826,7 @@ def main_scanner():
             stock_count = 0
             clean_radar_watchlist()
             global top_rejected_candidates
-            top_rejected_candidates = [] = []
+            top_rejected_candidates = []
 
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
