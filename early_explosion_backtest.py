@@ -53,12 +53,12 @@ RVOL_MIN = 1.8
 MIN_PRICE_CHANGE = 4.0
 EXPLOSION_CANDIDATE_MIN_SCORE = 90
 
-RADAR_TRIGGER_CHANGE_PCT = 4.0
+RADAR_TRIGGER_CHANGE_PCT = 3.5
 RADAR_MIN_DOLLAR_VOLUME = 100_000
 RADAR_EXPIRE_MINUTES = 30
 
 ALERT_COOLDOWN_SEC = 3600
-SCAN_INTERVAL_MINUTES = 3
+SCAN_INTERVAL_MINUTES = 1
 DAILY_BATCH_SIZE = 700
 MINUTE_BATCH_SIZE = 150
 BULK_SLEEP_SEC = 0.5
@@ -86,7 +86,7 @@ BAD_NAME_KEYWORDS = [
     "spac", "bank", "bancorp", "credit", "lending", "loan", "mortgage",
     "insurance", "casino", "gambling", "betting", "sportsbook",
     "alcohol", "beer", "wine", "tobacco", "cannabis", "marijuana",
-    "hemp", "cruise", "cinema", "movie", "theater"
+    "hemp", "cruise", "cinema", "movie", "theater", "reit", "cbd",
 ]
 
 # =========================================================
