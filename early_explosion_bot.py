@@ -84,7 +84,7 @@ BAD_NAME_KEYWORDS = [
     "spac", "bank", "bancorp", "credit", "lending", "loan", "mortgage",
     "insurance", "casino", "gambling", "betting", "sportsbook",
     "alcohol", "beer", "wine", "tobacco", "cannabis", "marijuana",
-    "hemp", "cruise", "cinema", "movie", "theater"
+    "hemp", "cruise", "cinema", "movie", "theater", "reit", "cbd",
 ]
 
 active_monitors = {}
