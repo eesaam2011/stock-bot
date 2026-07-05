@@ -537,7 +537,7 @@ class EarlyExplosionBacktester:
         temp["_date"] = temp.index.tz_convert(self.tz_ny).date
         previous = temp[temp["_date"] < current_day].copy()
         previous.drop(columns=["_date"], inplace=True, errors="ignore")
-        if len(previous) < 50:
+        if len(previous) < 20:
             return None
         return previous
 
@@ -586,7 +586,7 @@ class EarlyExplosionBacktester:
         today_vol = float(safe_float(day_df.iloc[:idx + 1]["volume"].sum(), 0.0) or 0.0)
         current_day = now_dt_ny.date()
         previous_bars = self.get_previous_daily_context(symbol, current_day)
-        if previous_bars is None or len(previous_bars) < 50:
+        if previous_bars is None or len(previous_bars) < 20:
             self.reject("History")
             return None
         prev_close = float(safe_float(previous_bars["close"].iloc[-1], 0.0) or 0.0)
