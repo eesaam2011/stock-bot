@@ -100,7 +100,7 @@ FLOAT_CACHE_MINUTE = 15
 FINNHUB_DELAY_SEC = 1.05
 last_float_cache_date = None
 float_cache_building = False
-RADAR_TRIGGER_CHANGE_PCT = 4.0
+RADAR_TRIGGER_CHANGE_PCT = 3.5
 RADAR_MIN_DOLLAR_VOLUME = 100_000
 RADAR_EXPIRE_MINUTES = 30
 gist_lock = threading.Lock()
@@ -121,7 +121,7 @@ reject_bad_name = 0
 reject_bars = 0
 reject_prev_bars = 0
 
-SCAN_INTERVAL_SEC  = 180
+SCAN_INTERVAL_SEC  = 60
 TRACK_INTERVAL_SEC = 10
 ALERT_COOLDOWN_SEC = 3600
 
