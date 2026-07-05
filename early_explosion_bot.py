@@ -1028,7 +1028,30 @@ def calculate_volume_acceleration(bars_1m):
         "volume_trend_up": bool(volume_trend_up),
         "volume_peak_recent": bool(volume_peak_recent)
     }
-    
+
+def track_rejected_candidate(symbol, score, reason, rvol, price_change_pct, vol_acceleration, dollar_volume):
+    global top_rejected_candidates
+
+    try:
+        top_rejected_candidates.append({
+            "symbol": symbol,
+            "score": float(score),
+            "reason": reason,
+            "rvol": float(rvol),
+            "change_pct": float(price_change_pct),
+            "vol_acceleration": float(vol_acceleration),
+            "dollar_volume": float(dollar_volume)
+        })
+
+        top_rejected_candidates = sorted(
+            top_rejected_candidates,
+            key=lambda x: x.get("score", 0),
+            reverse=True
+        )[:10]
+
+    except Exception:
+        pass
+        
 def check_explosion(api, symbol, asset_name):
     global reject_price_change
     global reject_rvol
@@ -1293,9 +1316,18 @@ def check_explosion(api, symbol, asset_name):
             )
 
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
+            track_rejected_candidate(
+                symbol,
+                score,
+                "LOW_SCORE",
+                rvol,
+                price_change_pct,
+                vol_acceleration,
+                dollar_volume
+            )
             reject_score += 1
             return None
-
+            
         digits = 4 if current_price < 1 else 2
 
         stop_loss = round(current_price * 0.93, digits)
@@ -1792,6 +1824,8 @@ def main_scanner():
             alerts_sent = 0
             stock_count = 0
             clean_radar_watchlist()
+            global top_rejected_candidates
+            top_rejected_candidates = [] = []
 
             for i in range(0, len(tradable_assets), BATCH_SIZE):
                 batch = tradable_assets[i:i + BATCH_SIZE]
@@ -1869,7 +1903,21 @@ def main_scanner():
                 f"✅ Symbols checked this scan: {stock_count}",
                 flush=True
             )
-            
+            if top_rejected_candidates:
+                print("🔍 Top 10 Rejected Candidates:", flush=True)
+
+                for idx, item in enumerate(top_rejected_candidates, start=1):
+                    print(
+                        f"{idx}. {item['symbol']} | "
+                        f"Score={item['score']:.1f} | "
+                        f"Reason={item['reason']} | "
+                        f"RVOL={item['rvol']:.2f} | "
+                        f"Change={item['change_pct']:.2f}% | "
+                        f"Accel={item['vol_acceleration']:.2f}x | "
+                        f"DollarVol=${item['dollar_volume']:,.0f}",
+                        flush=True
+                    )
+                    
             print(f"📡 Radar Watchlist size: {len(radar_watchlist)}", flush=True)
             top_trends = sorted(
                 radar_watchlist.items(),
