@@ -856,15 +856,42 @@ def finnhub_wait_slot():
 def load_news_cache():
     global NEWS_CACHE
 
-    NEWS_CACHE = redis_get_json(KEY_NEWS, {}) or {}
+    raw_cache = redis_get_json(KEY_NEWS, {}) or {}
+
+    now_ts = time.time()
+
+    cleaned_cache = {}
+
+    for symbol, item in raw_cache.items():
+        try:
+            cached_at = safe_float(item.get("cached_at"))
+            ttl = safe_float(item.get("ttl"), NEWS_CACHE_TTL)
+
+            if cached_at > 0 and now_ts - cached_at <= ttl:
+                cleaned_cache[symbol] = item
+
+        except Exception:
+            continue
+
+    NEWS_CACHE = cleaned_cache
+
+    if len(cleaned_cache) != len(raw_cache):
+        save_news_cache()
+
+        log(
+            f"News cache cleaned: "
+            f"before={len(raw_cache)} after={len(cleaned_cache)}"
+        )
 
     return NEWS_CACHE
 
-
 def save_news_cache():
-    redis_set_json(KEY_NEWS, NEWS_CACHE)
-
-
+    redis_set_json(
+        KEY_NEWS,
+        NEWS_CACHE,
+        expire_seconds=7 * 24 * 60 * 60
+    )
+    
 def classify_news_text(text):
     text = (text or "").lower()
 
