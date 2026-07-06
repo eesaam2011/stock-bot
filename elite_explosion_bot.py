@@ -1038,6 +1038,7 @@ def sustained_breakout_ok(df, resistance):
 # =========================================================
 # NEWS HELPERS
 # =========================================================
+
 def get_cached_news(symbol):
     item = news_cache.get(symbol)
 
@@ -1060,11 +1061,12 @@ def get_cached_news(symbol):
             if now <= exp:
                 return item
 
+        news_cache.pop(symbol, None)
         return None
 
     except Exception:
+        news_cache.pop(symbol, None)
         return None
-
 
 def classify_news(headlines):
     text = " ".join(headlines).lower()
