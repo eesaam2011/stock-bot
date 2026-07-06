@@ -1030,7 +1030,7 @@ def calculate_volume_acceleration(bars_1m):
         "volume_peak_recent": bool(volume_peak_recent)
     }
 
-def track_rejected_candidate(symbol, score, reason, rvol, price_change_pct, vol_acceleration, dollar_volume):
+def track_rejected_candidate(symbol, score, reason, rvol, price_change_pct, vol_acceleration, dollar_volume, breakdown=None):
     global top_rejected_candidates
 
     try:
@@ -1042,6 +1042,7 @@ def track_rejected_candidate(symbol, score, reason, rvol, price_change_pct, vol_
             "change_pct": float(price_change_pct),
             "vol_acceleration": float(vol_acceleration),
             "dollar_volume": float(dollar_volume)
+            "breakdown": breakdown or {}
         })
 
         top_rejected_candidates = sorted(
@@ -1320,7 +1321,17 @@ def check_explosion(api, symbol, asset_name):
                 f"AccelScore={volume_acceleration_score}",
                 flush=True
             )
-
+        score_breakdown = {
+            "RVOL": 25 if rvol >= 10 else 20 if rvol >= 5 else 15 if rvol >= RVOL_MIN else 0,
+            "Accel": volume_acceleration_score,
+            "Price": 20 if price_change_pct >= 20 else 15 if price_change_pct >= 10 else 10 if price_change_pct >= MIN_PRICE_CHANGE else 0,
+            "Breakout": 15 if current_price >= resistance_20 else 8 if current_price >= resistance_20 * 0.99 else 0,
+            "OBV": obv_bonus,
+            "Float": float_bonus,
+            "Liquidity": 10 if dollar_volume >= 10_000_000 else 7 if dollar_volume >= 2_000_000 else 5 if dollar_volume >= MIN_DOLLAR_VOLUME else 0,
+            "GainTrend": 5 if gain_trend >= 1.0 else 3 if gain_trend >= 0.5 else 1 if gain_trend > 0 else 0,
+        }
+        
         if score < EXPLOSION_CANDIDATE_MIN_SCORE:
             track_rejected_candidate(
                 symbol,
@@ -1329,7 +1340,8 @@ def check_explosion(api, symbol, asset_name):
                 rvol,
                 price_change_pct,
                 vol_acceleration,
-                dollar_volume
+                dollar_volume,
+                score_breakdown
             )
             reject_score += 1
             return None
