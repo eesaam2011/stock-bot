@@ -1332,7 +1332,14 @@ def check_explosion(api, symbol, asset_name):
             "GainTrend": 5 if gain_trend >= 1.0 else 3 if gain_trend >= 0.5 else 1 if gain_trend > 0 else 0,
         }
         
-        if score < EXPLOSION_CANDIDATE_MIN_SCORE:
+        mega_volume_exception = (
+            score >= 87
+            and rvol >= 20
+            and dollar_volume >= 10_000_000
+            and volume_acceleration_score >= 10
+        )
+
+        if score < EXPLOSION_CANDIDATE_MIN_SCORE and not mega_volume_exception:
             track_rejected_candidate(
                 symbol,
                 score,
