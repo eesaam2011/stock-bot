@@ -1936,6 +1936,22 @@ def main_scanner():
                         flush=True
                     )
                     
+                    breakdown = item.get("breakdown", {})
+
+                    if breakdown:
+                        print(
+                            f"   Breakdown | "
+                            f"RVOL={breakdown.get('RVOL', 0)} | "
+                            f"Accel={breakdown.get('Accel', 0)} | "
+                            f"Price={breakdown.get('Price', 0)} | "
+                            f"Breakout={breakdown.get('Breakout', 0)} | "
+                            f"OBV={breakdown.get('OBV', 0)} | "
+                            f"Float={breakdown.get('Float', 0)} | "
+                            f"Liquidity={breakdown.get('Liquidity', 0)} | "
+                            f"GainTrend={breakdown.get('GainTrend', 0)}",
+                            flush=True
+                        )
+                        
             print(f"📡 Radar Watchlist size: {len(radar_watchlist)}", flush=True)
             top_trends = sorted(
                 radar_watchlist.items(),
