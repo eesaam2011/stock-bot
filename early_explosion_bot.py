@@ -1041,7 +1041,7 @@ def track_rejected_candidate(symbol, score, reason, rvol, price_change_pct, vol_
             "rvol": float(rvol),
             "change_pct": float(price_change_pct),
             "vol_acceleration": float(vol_acceleration),
-            "dollar_volume": float(dollar_volume)
+            "dollar_volume": float(dollar_volume),
             "breakdown": breakdown or {}
         })
 
