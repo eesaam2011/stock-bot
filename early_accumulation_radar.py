@@ -504,7 +504,7 @@ def get_1m_bars_batch(symbols: List[str], limit: int = BARS_LIMIT) -> Dict[str, 
                 batch,
                 tradeapi.TimeFrame.Minute,
                 limit=limit,
-                adjustment="raw"
+                adjustment="split"
             ).df
 
             if bars_df is None or bars_df.empty:
@@ -575,7 +575,7 @@ def get_1m_bars_single(symbol: str, limit: int = BARS_LIMIT) -> pd.DataFrame:
             symbol,
             tradeapi.TimeFrame.Minute,
             limit=limit,
-            adjustment="raw"
+            adjustment="split"
         ).df
 
         if bars is None or bars.empty:
