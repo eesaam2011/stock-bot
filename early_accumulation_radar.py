@@ -1162,7 +1162,7 @@ def should_load_float_today(last_float_load_date: Optional[str]) -> bool:
     return last_float_load_date != today
 
 def cleanup_old_alerts(state: Dict[str, Any], max_age_hours: int = 48) -> None:
-    cutoff = now_saudi() - timedelta(hours=max_age_hours)
+    cutoff = now_saudi() - dt.timedelta(hours=max_age_hours)
     for key in ("sent_early_alerts", "sent_entry_alerts", "sent_failure_alerts"):
         items = state.get(key, {})
         cleaned = {}
