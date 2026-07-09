@@ -113,8 +113,7 @@ def parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
         return None
 
 def is_weekday_ny() -> bool:
-    return now_ny().weekda
-    y() < 5
+    return datetime.now(NY_TZ).weekday() < 5
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
