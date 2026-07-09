@@ -304,10 +304,16 @@ def default_state() -> Dict[str, Any]:
 
 def load_state() -> Dict[str, Any]:
     state = redis_get_json(REDIS_STATE_KEY, None)
+
     if state is None:
         state = read_json_file(STATE_FILE, default_state())
+
+    if not isinstance(state, dict):
+        state = default_state()
+
     for key, value in default_state().items():
         state.setdefault(key, value)
+
     return state
 
 def save_state(state: Dict[str, Any]) -> None:
