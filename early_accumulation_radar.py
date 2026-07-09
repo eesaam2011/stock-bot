@@ -49,7 +49,7 @@ MIN_DOLLAR_VOLUME = float(os.getenv("MIN_DOLLAR_VOLUME", "500000"))
 MIN_RVOL_EARLY = float(os.getenv("MIN_RVOL_EARLY", "1.5"))
 MAX_DAY_GAIN_FOR_EARLY = float(os.getenv("MAX_DAY_GAIN_FOR_EARLY", "15.0"))
 ENTRY_RVOL_MIN = float(os.getenv("ENTRY_RVOL_MIN", "2.5"))
-ENTRY_MIN_BREAKOUT_PCT = float(os.getenv("ENTRY_MIN_BREAKOUT_PCT", "0.3"))
+ENTRY_MIN_BREAKOUT_PCT = float(os.getenv("ENTRY_MIN_BREAKOUT_PCT", "0.15"))
 FAIL_RVOL_MIN = float(os.getenv("FAIL_RVOL_MIN", "1.2"))
 EARLY_ALERT_MIN_SCORE = int(os.getenv("EARLY_ALERT_MIN_SCORE", "80"))
 
