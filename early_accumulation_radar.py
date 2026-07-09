@@ -65,6 +65,7 @@ WATCHLIST_GRACE_MINUTES = 10
 
 runtime_stats = {
     "started_at": None,
+    "startup_message_sent": False,
     "last_universe_build": None,
     "last_accumulation_scan": None,
     "last_watchlist_monitor": None,
@@ -1130,6 +1131,27 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
             
     runtime_stats["watchlist_count"] = len(watchlist)
 
+@app.route("/")
+def home():
+    return jsonify({
+        "bot": BOT_NAME,
+        "status": "running",
+        "started_at": runtime_stats["started_at"],
+        "universe_count": runtime_stats["universe_count"],
+        "watchlist_count": runtime_stats["watchlist_count"],
+        "early_alerts_sent": runtime_stats["early_alerts_sent"],
+        "entry_alerts_sent": runtime_stats["entry_alerts_sent"],
+        "failure_alerts_sent": runtime_stats["failure_alerts_sent"],
+        "last_universe_build": runtime_stats["last_universe_build"],
+        "last_accumulation_scan": runtime_stats["last_accumulation_scan"],
+        "last_watchlist_monitor": runtime_stats["last_watchlist_monitor"],
+    })
+
+
+@app.route("/health")
+def health():
+    return "ok", 200
+    
 current_universe: List[str] = []
 float_cache: Dict[str, Any] = {}
 
@@ -1185,6 +1207,17 @@ def main_loop():
                 time.sleep(300)
                 continue
 
+            if runtime_stats.get("startup_message_sent") is not True:
+                send_telegram_message(
+                    f"✅ <b>{BOT_NAME}</b>\n\n"
+                    f"🚀 تم تشغيل البوت بنجاح.\n\n"
+                    f"📦 Universe: <b>{len(current_universe)}</b>\n"
+                    f"📊 Float Cache: <b>{len(float_cache)}</b>\n"
+                    f"👀 Watchlist: <b>{len(watchlist)}</b>\n\n"
+                    f"🕒 {now_saudi().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                runtime_stats["startup_message_sent"] = True
+                
             now_ts = time.time()
             if now_ts - last_cleanup_ts >= 60 * 60:
                 cleanup_old_alerts(state)
@@ -1224,4 +1257,7 @@ def main_loop():
 
 
 if __name__ == "__main__":
-    main_loop()
+    threading.Thread(target=main_loop, daemon=True).start()
+
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
