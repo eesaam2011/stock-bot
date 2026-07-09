@@ -928,14 +928,14 @@ def already_sent_recently(sent_map: Dict[str, Any], symbol: str, hours: int) -> 
     dt = parse_iso(item.get("time") if isinstance(item, dict) else item)
     if not dt:
         return False
-    return now_saudi() - dt < timedelta(hours=hours)
+    return now_saudi() - dt < dt.timedelta(hours=hours)
 
 def add_to_watchlist(watchlist: Dict[str, Any], data: Dict[str, Any]) -> None:
     symbol = data["symbol"]
     watchlist[symbol] = {
         "symbol": symbol,
         "created_at": iso_now(),
-        "expires_at": (now_saudi() + timedelta(hours=WATCHLIST_TTL_HOURS)).isoformat(),
+        "expires_at": (now_saudi() + dt.timedelta(hours=WATCHLIST_TTL_HOURS)).isoformat(),
         "early_price": data["price"],
         "early_score": data["score"],
         "early_resistance": data.get("resistance"),
@@ -975,7 +975,7 @@ def check_entry_conditions(data: Dict[str, Any], df: pd.DataFrame) -> bool:
 
 def failure_reason(data: Optional[Dict[str, Any]], df: pd.DataFrame, watch: Dict[str, Any]) -> Optional[str]:
     created_at = parse_iso(watch.get("created_at"))
-    if created_at and now_saudi() - created_at < timedelta(minutes=WATCHLIST_GRACE_MINUTES):
+    if created_at and now_saudi() - created_at < dt.timedelta(minutes=WATCHLIST_GRACE_MINUTES):
         return None
         
     expires_at = parse_iso(watch.get("expires_at"))
