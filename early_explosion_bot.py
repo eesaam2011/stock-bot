@@ -555,9 +555,23 @@ def analyze_news_sentiment(text):
     text = (text or "").lower()
 
     positive_keywords = [
-        "approval", "approved", "fda", "contract", "partnership",
-        "acquisition", "merger", "patent", "launch", "breakthrough",
-        "grant", "agreement", "collaboration", "positive", "expands"
+        "approval", "approved", "fda",
+        "contract", "agreement", "deal",
+        "partnership", "collaboration",
+        "distribution", "distributor",
+        "supply", "supply agreement",
+        "exclusive", "exclusive agreement",
+        "license", "licensing",
+        "purchase order", "order",
+        "commercial", "commercial supply",
+        "commercialization",
+        "launch", "expands", "expansion",
+        "milestone", "breakthrough",
+        "patent", "grant",
+        "merger", "acquisition",
+        "positive",
+        "phase 1", "phase 2", "phase 3",
+        "topline", "successful"
     ]
 
     negative_keywords = [
