@@ -10,6 +10,8 @@ import pandas as pd
 import numpy as np
 import pytz
 import alpaca_trade_api as tradeapi
+from flask import Flask, jsonify
+import threading
 
 # ==============================================================================
 # 🧠 Early Accumulation Radar
@@ -72,6 +74,8 @@ runtime_stats = {
     "entry_alerts_sent": 0,
     "failure_alerts_sent": 0,
 }
+app = Flask(__name__)
+
 BAD_SUFFIXES = ("W", "U", "R", "P", "Q", "Z")
 
 BAD_NAME_KEYWORDS = [
@@ -108,7 +112,8 @@ def parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
         return None
 
 def is_weekday_ny() -> bool:
-    return now_ny().weekday() < 5
+    return now_ny().weekda
+    y() < 5
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
