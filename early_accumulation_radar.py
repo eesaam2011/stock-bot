@@ -2,8 +2,8 @@ import os
 import json
 import time
 import math
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from import datetime as dt
+typing import Dict, List, Optional, Tuple, Any
 
 import requests
 import pandas as pd
@@ -95,26 +95,26 @@ SYMBOL_BLACKLIST = {
     "NCLH", "CCL", "RCL", "AMC", "CNK", "IMAX", "HITI",
 }
 
-def now_saudi() -> datetime:
-    return datetime.now(SAUDI_TZ)
+def now_saudi() -> dt.datetime:
+    return dt.datetime.now(SAUDI_TZ)
 
-def now_ny() -> datetime:
-    return datetime.now(NY_TZ)
+def now_ny() -> dt.datetime:
+    return dt.datetime.now(NY_TZ)
 
 def iso_now() -> str:
     return now_saudi().isoformat()
 
-def parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
+def parse_iso(dt_str: Optional[str]) -> Optional[dt.datetime]:
     if not dt_str:
         return None
     try:
-        return datetime.fromisoformat(dt_str)
+        return dt.datetime.fromisoformat(dt_str)
     except Exception:
         return None
 
 def is_weekday_ny() -> bool:
-    return datetime.now(NY_TZ).weekday() < 5
-
+    return dt.datetime.now(NY_TZ).weekday() < 5
+    
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
