@@ -1922,28 +1922,33 @@ def execute_entry_if_any(scored_candidates):
     if not candidate:
         return False
 
-    # إعادة بناء Metrics باستخدام Snapshot جديد قبل الإرسال
     fresh_candidate = build_symbol_metrics(candidate["symbol"])
     if not fresh_candidate:
         return False
 
-    candidate = fresh_candidate
+    score, breakdown = calculate_final_score(
+        fresh_candidate["symbol"],
+        fresh_candidate
+    )
 
-    candidate = score_candidate(candidate)
-    if not candidate:
+    fresh_candidate["final_score"] = score
+    fresh_candidate["score_breakdown"] = breakdown
+
+    ok, reason = passes_decision_engine(fresh_candidate)
+    if not ok:
+        fresh_candidate["decision_reason"] = reason
         return False
 
-    plan = calculate_trade_plan(candidate)
+    plan = calculate_trade_plan(fresh_candidate)
     if not plan:
         return False
 
-    ok = send_entry_alert(candidate, plan)
+    alert_ok = send_entry_alert(fresh_candidate, plan)
 
-    # الإرسال أولاً، ثم الحفظ والتسجيل
-    if ok:
-        register_entry(candidate, plan)
+    if alert_ok:
+        register_entry(fresh_candidate, plan)
 
-    return ok
+    return alert_ok
 
 # =========================================================
 # MONITORING HELPERS
