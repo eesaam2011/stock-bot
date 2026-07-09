@@ -1088,7 +1088,7 @@ def check_explosion(api, symbol, asset_name):
             start=start_dt.isoformat(),
             end=end_dt.isoformat(),
             limit=60,
-            adjustment="raw",
+            adjustment="split",
             feed="iex"
         ).df
 
