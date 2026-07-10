@@ -1170,7 +1170,7 @@ def should_load_float_today(last_float_load_date: Optional[str]) -> bool:
     today = now_sa.date().isoformat()
     return last_float_load_date != today
 
- def cleanup_old_alerts(
+def cleanup_old_alerts(
     state: Dict[str, Any],
     max_age_hours: int = 48
 ) -> None:
