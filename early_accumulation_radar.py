@@ -201,25 +201,48 @@ def redis_get_json(key: str, default: Any) -> Any:
 
     try:
         url = f"{UPSTASH_REDIS_REST_URL}/get/{key}"
-        headers = {"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"}
+        headers = {
+            "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"
+        }
 
-        r = requests.get(url, headers=headers, timeout=15)
+        r = requests.get(
+            url,
+            headers=headers,
+            timeout=15
+        )
 
         if r.status_code != 200:
-            print(f"[REDIS] GET failed {key}: {r.status_code} {r.text[:200]}", flush=True)
+            print(
+                f"[REDIS] GET failed {key}: "
+                f"{r.status_code} {r.text[:200]}",
+                flush=True
+            )
             return default
 
         value = r.json().get("result")
 
-        if not value:
+        if value is None or value == "":
             return default
 
-        return json.loads(value)
+        parsed = value
+
+        for _ in range(3):
+            if not isinstance(parsed, str):
+                break
+
+            try:
+                parsed = json.loads(parsed)
+            except Exception:
+                break
+
+        return parsed
 
     except Exception as e:
-        print(f"[REDIS] GET exception {key}: {e}", flush=True)
+        print(
+            f"[REDIS] GET exception {key}: {e}",
+            flush=True
+        )
         return default
-
 
 def redis_set_json(key: str, data: Any) -> bool:
     if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
