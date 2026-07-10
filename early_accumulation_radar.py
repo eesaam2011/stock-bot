@@ -920,15 +920,25 @@ def build_failure_alert_message(symbol: str, price: float, reason: str) -> str:
         f"⏱️ النتيجة:\nتمت إزالته من قائمة المراقبة."
     )
 
-def already_sent_recently(sent_map: Dict[str, Any], symbol: str, hours: int) -> bool:
+def already_sent_recently(
+    sent_map: Dict[str, Any],
+    symbol: str,
+    hours: int
+) -> bool:
     item = sent_map.get(symbol)
+
     if not item:
         return False
-    dt = parse_iso(item.get("time") if isinstance(item, dict) else item)
-    if not dt:
-        return False
-    return now_saudi() - dt < dt.timedelta(hours=hours)
 
+    alert_time = parse_iso(
+        item.get("time") if isinstance(item, dict) else item
+    )
+
+    if not alert_time:
+        return False
+
+    return now_saudi() - alert_time < dt.timedelta(hours=hours)
+    
 def add_to_watchlist(watchlist: Dict[str, Any], data: Dict[str, Any]) -> None:
     symbol = data["symbol"]
     watchlist[symbol] = {
@@ -1160,15 +1170,28 @@ def should_load_float_today(last_float_load_date: Optional[str]) -> bool:
     today = now_sa.date().isoformat()
     return last_float_load_date != today
 
-def cleanup_old_alerts(state: Dict[str, Any], max_age_hours: int = 48) -> None:
+ def cleanup_old_alerts(
+    state: Dict[str, Any],
+    max_age_hours: int = 48
+) -> None:
     cutoff = now_saudi() - dt.timedelta(hours=max_age_hours)
-    for key in ("sent_early_alerts", "sent_entry_alerts", "sent_failure_alerts"):
+
+    for key in (
+        "sent_early_alerts",
+        "sent_entry_alerts",
+        "sent_failure_alerts"
+    ):
         items = state.get(key, {})
         cleaned = {}
+
         for symbol, item in items.items():
-            dt = parse_iso(item.get("time") if isinstance(item, dict) else item)
-            if dt and dt >= cutoff:
+            alert_time = parse_iso(
+                item.get("time") if isinstance(item, dict) else item
+            )
+
+            if alert_time and alert_time >= cutoff:
                 cleaned[symbol] = item
+
         state[key] = cleaned
         
 def main_loop():
