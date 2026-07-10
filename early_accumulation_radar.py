@@ -331,18 +331,32 @@ def default_state() -> Dict[str, Any]:
     }
 
 def load_state() -> Dict[str, Any]:
-    state = redis_get_json(REDIS_STATE_KEY, None)
+    loaded_state = redis_get_json(
+        REDIS_STATE_KEY,
+        None
+    )
 
-    if state is None:
-        state = read_json_file(STATE_FILE, default_state())
+    if loaded_state is None:
+        loaded_state = read_json_file(
+            STATE_FILE,
+            default_state()
+        )
 
-    if not isinstance(state, dict):
-        state = default_state()
+    if not isinstance(loaded_state, dict):
+        print(
+            f"[STATE] Invalid Redis type: "
+            f"{type(loaded_state).__name__}. "
+            f"Using default state.",
+            flush=True
+        )
+        loaded_state = default_state()
 
-    for key, value in default_state().items():
-        state.setdefault(key, value)
+    defaults = default_state()
 
-    return state
+    for key, value in defaults.items():
+        loaded_state.setdefault(key, value)
+
+    return loaded_state
 
 def save_state(state: Dict[str, Any]) -> None:
     state["updated_at"] = iso_now()
@@ -350,7 +364,21 @@ def save_state(state: Dict[str, Any]) -> None:
         write_json_file(STATE_FILE, state)
         
 def load_watchlist() -> Dict[str, Any]:
-    return redis_get_json(REDIS_WATCHLIST_KEY, {})
+    loaded_watchlist = redis_get_json(
+        REDIS_WATCHLIST_KEY,
+        {}
+    )
+
+    if not isinstance(loaded_watchlist, dict):
+        print(
+            f"[WATCHLIST] Invalid Redis type: "
+            f"{type(loaded_watchlist).__name__}. "
+            f"Starting with empty watchlist.",
+            flush=True
+        )
+        return {}
+
+    return loaded_watchlist
     
 def save_watchlist(watchlist: Dict[str, Any]) -> None:
     if not redis_set_json(REDIS_WATCHLIST_KEY, watchlist):
