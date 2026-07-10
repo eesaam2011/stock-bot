@@ -1227,9 +1227,13 @@ def check_explosion(api, symbol, asset_name):
             reject_dollar_volume += 1
             return None
 
-        if current_price < resistance_20 * 0.99:
-            reject_resistance += 1
-            return None
+        resistance_points = 0
+
+        if current_price >= resistance_20:
+            resistance_points = 15
+        elif current_price >= resistance_20 * 0.99:
+            resistance_points = 8
+            
 
         bars_1m = api.get_bars(
             symbol,
@@ -1271,10 +1275,7 @@ def check_explosion(api, symbol, asset_name):
             score += 8
 
         # Breakout / Resistance: max 15
-        if current_price >= resistance_20:
-            score += 15
-        elif current_price >= resistance_20 * 0.99:
-            score += 8
+        score += resistance_points
 
         # Volume Acceleration: max 15
         score += volume_acceleration_score
