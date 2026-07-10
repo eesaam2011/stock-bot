@@ -104,7 +104,7 @@ MONITOR_INTERVAL_SEC = 30
 
 RE_ALERT_BLOCK_HOURS = 2
 MAX_MONITOR_MINUTES = 120
-
+WEAKNESS_GRACE_SECONDS = 120
 BARS_LIMIT = 120
 ATR_PERIOD = 14
 
@@ -854,10 +854,24 @@ def analyze_symbol(item):
     if not atr or atr <= 0:
         return None
 
-    entry = round(float(price), 4)
+    live_price, live_spread_pct = get_snapshot_price_and_spread(symbol)
+
+    if live_price is None:
+        return None
+
+    if not (PRICE_MIN <= live_price <= PRICE_MAX):
+        return None
+
+    if (
+        live_spread_pct is not None
+        and live_spread_pct > MAX_SPREAD_PCT
+    ):
+        return None
+
+    entry = round(float(live_price), 4)
     t1 = round(entry + (1.5 * atr), 4)
     t2 = round(entry + (3.0 * atr), 4)
-
+    
     swing_low = find_recent_swing_low(df)
     max_stop = entry * 0.95
     stop = max(swing_low, max_stop)
@@ -876,7 +890,11 @@ def analyze_symbol(item):
         "rvol": round(rvol, 2),
         "volume_acceleration": round(vol_acc_ratio, 2),
         "float": float_shares,
-        "spread_pct": round(spread_pct, 2) if spread_pct is not None else None,
+        "spread_pct": (
+            round(live_spread_pct, 2)
+            if live_spread_pct is not None
+            else None
+        ), 
         "breakout_level": breakout_level,
         "alerted_at": datetime.now(timezone.utc).isoformat(),
         "status": "active"
@@ -925,27 +943,32 @@ def save_active_trade(data):
 # MONITORING
 # =========================================================
 
-def check_trade_weakness(symbol, trade):
+def check_trade_weakness(symbol, trade, current_price):
     df = get_1m_bars(symbol, limit=60)
 
     if df is None or len(df) < 20:
         return False, "لا توجد بيانات كافية"
 
-    price = float(df["close"].iloc[-1])
+    price = float(current_price)
 
     if price <= trade["stop"]:
         return True, "كسر وقف الخسارة"
 
     typical = (df["high"] + df["low"] + df["close"]) / 3
-    vwap = (typical * df["volume"]).cumsum() / df["volume"].cumsum()
+    cumulative_volume = df["volume"].cumsum()
+
+    if cumulative_volume.iloc[-1] <= 0:
+        return False, ""
+
+    vwap = (typical * df["volume"]).cumsum() / cumulative_volume
 
     if price < float(vwap.iloc[-1]):
-        return True, "فقدان VWAP"
+        return True, "فقدان متوسط السعر المرجح بالحجم"
 
     _, obv_ok = score_obv(df)
 
     if not obv_ok:
-        return True, "تحول OBV إلى سلبي"
+        return True, "تحول مؤشر تدفق الحجم إلى سلبي"
 
     _, ratio = score_volume_acceleration(df)
 
@@ -953,7 +976,6 @@ def check_trade_weakness(symbol, trade):
         return True, "انهيار واضح في تسارع الحجم"
 
     return False, ""
-
 
 def monitor_trades_loop():
     global active_monitoring_count
@@ -1006,19 +1028,36 @@ def monitor_trades_loop():
                     trades[symbol] = trade
                     changed = True
 
-                weak, reason = check_trade_weakness(symbol, trade)
-
-                if weak:
+                if price <= trade["stop"]:
                     send_telegram(
                         f"⚠️ <b>إشارة خروج / ضعف</b>\n\n"
                         f"السهم: <b>{symbol}</b>\n"
                         f"السعر الحالي: <b>{round(price, 4)}</b>\n"
-                        f"السبب: <b>{reason}</b>"
+                        f"السبب: <b>كسر وقف الخسارة</b>"
                     )
-                    
+
                     trades.pop(symbol, None)
                     changed = True
                     continue
+
+                if age.total_seconds() >= WEAKNESS_GRACE_SECONDS:
+                    weak, reason = check_trade_weakness(
+                        symbol,
+                        trade,
+                        price
+                    )
+
+                    if weak:
+                        send_telegram(
+                            f"⚠️ <b>إشارة خروج / ضعف</b>\n\n"
+                            f"السهم: <b>{symbol}</b>\n"
+                            f"السعر الحالي: <b>{round(price, 4)}</b>\n"
+                            f"السبب: <b>{reason}</b>"
+                        )
+
+                        trades.pop(symbol, None)
+                        changed = True
+                        continue
 
                 if age >= timedelta(minutes=MAX_MONITOR_MINUTES):
                     send_telegram(
