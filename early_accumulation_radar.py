@@ -770,7 +770,56 @@ def get_1m_bars_single(symbol: str, limit: int = BARS_LIMIT) -> pd.DataFrame:
     except Exception as e:
         print(f"[BARS SINGLE] {symbol} failed: {e}", flush=True)
         return pd.DataFrame()
-        
+
+def prefer_current_ny_session_bars(
+    df: pd.DataFrame,
+    minimum_current_bars: int = OBV_LOOKBACK
+) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    if "timestamp" not in df.columns:
+        return df
+
+    work = df.copy()
+
+    timestamps = pd.to_datetime(
+        work["timestamp"],
+        utc=True,
+        errors="coerce"
+    )
+
+    valid_mask = timestamps.notna()
+
+    if not valid_mask.any():
+        return df
+
+    work = work.loc[valid_mask].copy()
+    timestamps = timestamps.loc[valid_mask]
+
+    ny_dates = timestamps.dt.tz_convert(
+        "America/New_York"
+    ).dt.date
+
+    current_ny_date = now_ny().date()
+
+    current_session = work.loc[
+        ny_dates == current_ny_date
+    ].copy()
+
+    if len(current_session) >= minimum_current_bars:
+        return (
+            current_session
+            .sort_values("timestamp")
+            .reset_index(drop=True)
+        )
+
+    return (
+        work
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+    
 def calculate_obv(df: pd.DataFrame) -> pd.Series:
     close = df["close"].astype(float)
     volume = df["volume"].astype(float)
@@ -1320,9 +1369,17 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
         watch = watchlist.get(symbol, {})
         snapshot = snapshots.get(symbol)
         df = batched_bars.get(symbol, pd.DataFrame())
+
         if len(df) < OBV_LOOKBACK:
-            df = get_1m_bars_single(symbol, BARS_LIMIT)
-        
+            df = get_1m_bars_single(
+                symbol,
+                BARS_LIMIT
+            )
+
+        df = prefer_current_ny_session_bars(
+            df,
+            OBV_LOOKBACK
+        )        
         # 🌟 تم تعطيل الفلتر هنا بتمرير early_mode=False (التعديل الخاص بك)
         current_data = analyze_symbol(symbol, snapshot, df, float_cache, early_mode=False) if snapshot is not None else None
         current_price = safe_float(watch.get("early_price"), 0)
@@ -1405,9 +1462,23 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
 
         if len(df) < OBV_LOOKBACK:
             fallback_used += 1
-            df = get_1m_bars_single(symbol, BARS_LIMIT)
+            df = get_1m_bars_single(
+                symbol,
+                BARS_LIMIT
+            )
 
-        data = analyze_symbol(symbol, snapshot, df, float_cache_data, early_mode=True)
+        df = prefer_current_ny_session_bars(
+            df,
+            OBV_LOOKBACK
+        )
+
+        data = analyze_symbol(
+            symbol,
+            snapshot,
+            df,
+            float_cache_data,
+            early_mode=True
+        )
         
         if (
             data
