@@ -51,6 +51,19 @@ MIN_RVOL_EARLY = float(os.getenv("MIN_RVOL_EARLY", "1.5"))
 MAX_DAY_GAIN_FOR_EARLY = float(os.getenv("MAX_DAY_GAIN_FOR_EARLY", "15.0"))
 ENTRY_RVOL_MIN = float(os.getenv("ENTRY_RVOL_MIN", "2.5"))
 ENTRY_MIN_BREAKOUT_PCT = float(os.getenv("ENTRY_MIN_BREAKOUT_PCT", "0.15"))
+
+ENTRY_MAX_CLOSED_BAR_AGE_SECONDS = int(
+    os.getenv("ENTRY_MAX_CLOSED_BAR_AGE_SECONDS", "120")
+)
+
+ENTRY_BREAKOUT_VOLUME_MULTIPLIER = float(
+    os.getenv("ENTRY_BREAKOUT_VOLUME_MULTIPLIER", "1.25")
+)
+
+ENTRY_BREAKOUT_VOLUME_LOOKBACK = int(
+    os.getenv("ENTRY_BREAKOUT_VOLUME_LOOKBACK", "10")
+)
+
 FAIL_RVOL_MIN = float(os.getenv("FAIL_RVOL_MIN", "1.2"))
 EARLY_ALERT_MIN_SCORE = int(os.getenv("EARLY_ALERT_MIN_SCORE", "80"))
 
@@ -858,6 +871,44 @@ def close_above_resistance(df: pd.DataFrame, resistance: float) -> bool:
         return False
     return safe_float(df["close"].iloc[-1], 0) > resistance
 
+def get_last_closed_bar(
+    df: pd.DataFrame
+) -> Optional[Tuple[pd.Series, pd.Timestamp, int]]:
+    if df is None or df.empty:
+        return None
+
+    if "timestamp" not in df.columns:
+        return None
+
+    timestamps = pd.to_datetime(
+        df["timestamp"],
+        utc=True,
+        errors="coerce"
+    )
+
+    now_utc = pd.Timestamp.now(tz="UTC")
+
+    closed_mask = (
+        timestamps.notna()
+        & ((timestamps + pd.Timedelta(minutes=1)) <= now_utc)
+    )
+
+    if not closed_mask.any():
+        return None
+
+    closed_positions = np.flatnonzero(
+        closed_mask.to_numpy()
+    )
+
+    if len(closed_positions) == 0:
+        return None
+
+    last_position = int(closed_positions[-1])
+    last_bar = df.iloc[last_position]
+    last_timestamp = timestamps.iloc[last_position]
+
+    return last_bar, last_timestamp, last_position
+    
 def distance_to_resistance_pct(price: float, resistance: Optional[float]) -> float:
     if not resistance or resistance <= 0:
         return 999.0
@@ -1106,22 +1157,93 @@ def add_to_watchlist(watchlist: Dict[str, Any], data: Dict[str, Any]) -> None:
         "snapshot": data,
     }
 
-def check_entry_conditions(data: Dict[str, Any], df: pd.DataFrame) -> bool:
-    resistance = data.get("resistance")
-    price = safe_float(data.get("price"), 0)
+def check_entry_conditions(
+    data: Dict[str, Any],
+    df: pd.DataFrame
+) -> bool:
+    resistance = safe_float(
+        data.get("resistance"),
+        0
+    )
 
-    if not resistance or resistance <= 0:
+    if resistance <= 0:
         return False
 
-    if price <= resistance:
+    closed_bar_result = get_last_closed_bar(df)
+
+    if closed_bar_result is None:
         return False
 
-    breakout_pct = ((price - resistance) / resistance) * 100.0
+    last_bar, last_timestamp, last_position = closed_bar_result
+
+    last_close = safe_float(
+        last_bar.get("close"),
+        0
+    )
+
+    last_volume = safe_float(
+        last_bar.get("volume"),
+        0
+    )
+
+    if last_close <= resistance:
+        return False
+
+    breakout_pct = (
+        (last_close - resistance)
+        / resistance
+    ) * 100.0
 
     if breakout_pct < ENTRY_MIN_BREAKOUT_PCT:
         return False
 
-    if not close_above_resistance(df, resistance):
+    now_utc = pd.Timestamp.now(tz="UTC")
+
+    bar_close_time = (
+        last_timestamp
+        + pd.Timedelta(minutes=1)
+    )
+
+    closed_bar_age_seconds = (
+        now_utc - bar_close_time
+    ).total_seconds()
+
+    if (
+        closed_bar_age_seconds < 0
+        or closed_bar_age_seconds
+        > ENTRY_MAX_CLOSED_BAR_AGE_SECONDS
+    ):
+        return False
+
+    previous_start = max(
+        0,
+        last_position - ENTRY_BREAKOUT_VOLUME_LOOKBACK
+    )
+
+    previous_volumes = (
+        df.iloc[previous_start:last_position]["volume"]
+        .astype(float)
+    )
+
+    if previous_volumes.empty:
+        return False
+
+    average_previous_volume = safe_float(
+        previous_volumes.mean(),
+        0
+    )
+
+    if average_previous_volume <= 0:
+        return False
+
+    breakout_volume_ratio = (
+        last_volume / average_previous_volume
+    )
+
+    if (
+        breakout_volume_ratio
+        < ENTRY_BREAKOUT_VOLUME_MULTIPLIER
+    ):
         return False
 
     if safe_float(data.get("rvol"), 0) <= ENTRY_RVOL_MIN:
@@ -1131,7 +1253,7 @@ def check_entry_conditions(data: Dict[str, Any], df: pd.DataFrame) -> bool:
         return False
 
     return True
-
+    
 def failure_reason(data: Optional[Dict[str, Any]], df: pd.DataFrame, watch: Dict[str, Any]) -> Optional[str]:
     created_at = parse_iso(watch.get("created_at"))
     if created_at and now_saudi() - created_at < dt.timedelta(minutes=WATCHLIST_GRACE_MINUTES):
