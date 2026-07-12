@@ -49,6 +49,9 @@ PRICE_MAX = float(os.getenv("PRICE_MAX", "20.0"))
 MIN_DOLLAR_VOLUME = float(os.getenv("MIN_DOLLAR_VOLUME", "500000"))
 MIN_RVOL_EARLY = float(os.getenv("MIN_RVOL_EARLY", "1.5"))
 MAX_DAY_GAIN_FOR_EARLY = float(os.getenv("MAX_DAY_GAIN_FOR_EARLY", "15.0"))
+MAX_DAY_GAIN_HARD_LIMIT = float(
+    os.getenv("MAX_DAY_GAIN_HARD_LIMIT", "25.0")
+)
 ENTRY_RVOL_MIN = float(os.getenv("ENTRY_RVOL_MIN", "2.5"))
 ENTRY_MIN_BREAKOUT_PCT = float(os.getenv("ENTRY_MIN_BREAKOUT_PCT", "0.15"))
 
@@ -1024,22 +1027,46 @@ def analyze_symbol(symbol: str, snapshot: Any, df: pd.DataFrame, float_cache: Di
     dollar_volume = price * daily_volume
     if dollar_volume < MIN_DOLLAR_VOLUME:
         return None
+        
     day_change_pct = get_day_change_pct(snapshot, price)
-    
-    # 🌟 تطبيق الفلتر فقط إذا كان الفحص تنبيهاً مبكراً (التعديل الخاص بك)
-    if early_mode and day_change_pct > MAX_DAY_GAIN_FOR_EARLY:
+       day_change_pct = get_day_change_pct(
+        snapshot,
+        price
+    )
+
+    if (
+        early_mode
+        and day_change_pct > MAX_DAY_GAIN_HARD_LIMIT
+    ):
         return None
 
     if df.empty or len(df) < OBV_LOOKBACK:
         return None
-        
+
     rvol = calculate_rvol(df)
     accel = calculate_volume_acceleration(df)
-    
+    metrics = obv_metrics(df)
+
     if early_mode and rvol < MIN_RVOL_EARLY:
         return None
-    resistance = resistance_body_level(df, RESISTANCE_BODY_LOOKBACK)
-    metrics = obv_metrics(df)
+
+    if (
+        early_mode
+        and day_change_pct > MAX_DAY_GAIN_FOR_EARLY
+        and not (
+            rvol >= ENTRY_RVOL_MIN
+            and accel.get("volume_acceleration", False)
+            and metrics.get("obv_breakout", False)
+            and metrics.get("obv_curve_ok", False)
+        )
+    ):
+        return None
+
+    resistance = resistance_body_level(
+        df,
+        RESISTANCE_BODY_LOOKBACK
+    )
+
     float_shares = extract_float_shares(symbol, float_cache)
     f_score, f_tier = float_score(float_shares)
     o_score = obv_score(metrics)
@@ -1355,7 +1382,10 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
         daily_volume = get_daily_volume_from_snapshot(snapshot)
         if price * daily_volume < MIN_DOLLAR_VOLUME:
             continue
-        if get_day_change_pct(snapshot, price) > MAX_DAY_GAIN_FOR_EARLY:
+        if (
+            get_day_change_pct(snapshot, price)
+            > MAX_DAY_GAIN_HARD_LIMIT
+        ):
             continue
             
         candidates_symbols.append(symbol)
