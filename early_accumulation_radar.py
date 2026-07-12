@@ -1068,17 +1068,25 @@ def resistance_score(price: float, resistance: Optional[float]) -> int:
     return 0
 
 # 🌟 تم إضافة متغير early_mode لتمكين تعطيل فلتر صعود اليوم أثناء المراقبة
-def analyze_symbol(symbol: str, snapshot: Any, df: pd.DataFrame, float_cache: Dict[str, Any], early_mode: bool = True) -> Optional[Dict[str, Any]]:
+def analyze_symbol(
+    symbol: str,
+    snapshot: Any,
+    df: pd.DataFrame,
+    float_cache: Dict[str, Any],
+    early_mode: bool = True
+) -> Optional[Dict[str, Any]]:
     price = get_latest_price_from_snapshot(snapshot)
+
     if not price or price < PRICE_MIN or price > PRICE_MAX:
         return None
+
     daily_volume = get_daily_volume_from_snapshot(snapshot)
     dollar_volume = price * daily_volume
+
     if dollar_volume < MIN_DOLLAR_VOLUME:
         return None
-        
-    day_change_pct = get_day_change_pct(snapshot, price)
-       day_change_pct = get_day_change_pct(
+
+    day_change_pct = get_day_change_pct(
         snapshot,
         price
     )
@@ -1116,13 +1124,25 @@ def analyze_symbol(symbol: str, snapshot: Any, df: pd.DataFrame, float_cache: Di
         RESISTANCE_BODY_LOOKBACK
     )
 
-    float_shares = extract_float_shares(symbol, float_cache)
+    float_shares = extract_float_shares(
+        symbol,
+        float_cache
+    )
+
     f_score, f_tier = float_score(float_shares)
     o_score = obv_score(metrics)
     rv_score = rvol_score(rvol)
     v_score = volume_score(df, dollar_volume)
     res_score = resistance_score(price, resistance)
-    total_score = f_score + o_score + rv_score + v_score + res_score
+
+    total_score = (
+        f_score
+        + o_score
+        + rv_score
+        + v_score
+        + res_score
+    )
+
     return {
         "symbol": symbol,
         "price": price,
@@ -1136,22 +1156,39 @@ def analyze_symbol(symbol: str, snapshot: Any, df: pd.DataFrame, float_cache: Di
         "obv_curve_ok": bool(metrics.get("obv_curve_ok")),
         "rvol": rvol,
         "rvol_score": rv_score,
-        "volume_score": v_score, 
-        "volume_expansion": accel.get("volume_acceleration", False),
-        "volume_acceleration_score": accel.get("volume_acceleration_score", 0),
-        "last_1m_vs_avg": accel.get("last_1m_vs_avg", 0),
-        "last_3m_vs_prev_7m": accel.get("last_3m_vs_prev_7m", 0),
-        "volume_trend_up": accel.get("volume_trend_up", False),
-        "volume_peak_recent": accel.get("volume_peak_recent", False),
+        "volume_score": v_score,
+        "volume_expansion": bool(
+            accel.get("volume_acceleration", False)
+        ),
+        "volume_acceleration_score": int(
+            accel.get("volume_acceleration_score", 0)
+        ),
+        "last_1m_vs_avg": safe_float(
+            accel.get("last_1m_vs_avg"),
+            0
+        ),
+        "last_3m_vs_prev_7m": safe_float(
+            accel.get("last_3m_vs_prev_7m"),
+            0
+        ),
+        "volume_trend_up": bool(
+            accel.get("volume_trend_up", False)
+        ),
+        "volume_peak_recent": bool(
+            accel.get("volume_peak_recent", False)
+        ),
         "resistance": resistance,
         "resistance_score": res_score,
-        "distance_to_resistance_pct": distance_to_resistance_pct(price, resistance),
+        "distance_to_resistance_pct": distance_to_resistance_pct(
+            price,
+            resistance
+        ),
         "daily_volume": daily_volume,
         "dollar_volume": dollar_volume,
         "day_change_pct": day_change_pct,
         "timestamp": iso_now(),
     }
-
+    
 def build_early_alert_message(data: Dict[str, Any]) -> str:
     return (
         f"🧠 <b>تنبيه مبكر - رادار التجميع</b>\n\n"
