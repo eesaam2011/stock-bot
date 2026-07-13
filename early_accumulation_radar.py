@@ -66,12 +66,28 @@ ENTRY_BREAKOUT_VOLUME_MULTIPLIER = float(
 ENTRY_BREAKOUT_VOLUME_LOOKBACK = int(
     os.getenv("ENTRY_BREAKOUT_VOLUME_LOOKBACK", "10")
 )
-STRONG_BREAKOUT_MIN_SCORE = int(
-    os.getenv("STRONG_BREAKOUT_MIN_SCORE", "90")
+ENTRY_BREAKOUT_VOLUME_LOOKBACK = int(
+    os.getenv("ENTRY_BREAKOUT_VOLUME_LOOKBACK", "10")
 )
 
-EXPLOSION_MIN_SCORE = int(
-    os.getenv("EXPLOSION_MIN_SCORE", "97")
+TRADE_PLAN_ATR_PERIOD = int(
+    os.getenv("TRADE_PLAN_ATR_PERIOD", "14")
+)
+
+TRADE_PLAN_SWING_LOOKBACK = int(
+    os.getenv("TRADE_PLAN_SWING_LOOKBACK", "10")
+)
+
+STRONG_MAX_STOP_PCT = float(
+    os.getenv("STRONG_MAX_STOP_PCT", "5.0")
+)
+
+EXPLOSION_MAX_STOP_PCT = float(
+    os.getenv("EXPLOSION_MAX_STOP_PCT", "7.0")
+)
+
+EXPLOSION_CONFIDENCE_MIN = int(
+    os.getenv("EXPLOSION_CONFIDENCE_MIN", "94")
 )
 FAIL_RVOL_MIN = float(os.getenv("FAIL_RVOL_MIN", "1.2"))
 EARLY_ALERT_MIN_SCORE = int(os.getenv("EARLY_ALERT_MIN_SCORE", "80"))
@@ -1215,25 +1231,462 @@ def build_early_alert_message(data: Dict[str, Any]) -> str:
         f"👀 تمت إضافته إلى قائمة المراقبة لمدة 24 ساعة."
     )
 
-def build_entry_alert_message(current: Dict[str, Any], watch: Dict[str, Any]) -> str:
-    signal_title, confidence = classify_entry_signal(
-        current
+            
+def calculate_intraday_atr(
+    df: pd.DataFrame,
+    period: int = TRADE_PLAN_ATR_PERIOD
+) -> float:
+    if df is None or df.empty or len(df) < period + 1:
+        return 0.0
+
+    work = df.copy()
+
+    high = work["high"].astype(float)
+    low = work["low"].astype(float)
+    close = work["close"].astype(float)
+    previous_close = close.shift(1)
+
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1
+    ).max(axis=1)
+
+    atr = safe_float(
+        true_range.tail(period).mean(),
+        0
     )
-    return (
+
+    return atr if atr > 0 else 0.0
+
+def classify_entry_signal(
+    current: Dict[str, Any],
+    df: pd.DataFrame
+) -> Tuple[str, int]:
+    confidence = 0
+
+    rvol = safe_float(
+        current.get("rvol"),
+        0
+    )
+
+    float_shares = safe_float(
+        current.get("float_shares"),
+        0
+    )
+
+    dollar_volume = safe_float(
+        current.get("dollar_volume"),
+        0
+    )
+
+    volume_acceleration_score = safe_float(
+        current.get("volume_acceleration_score"),
+        0
+    )
+
+    resistance = safe_float(
+        current.get("resistance"),
+        0
+    )
+
+    closed_bar_result = get_last_closed_bar(df)
+
+    if closed_bar_result is not None:
+        last_bar, _, _ = closed_bar_result
+        entry_price = safe_float(
+            last_bar.get("close"),
+            0
+        )
+    else:
+        entry_price = safe_float(
+            current.get("price"),
+            0
+        )
+
+    breakout_pct = 0.0
+
+    if resistance > 0 and entry_price > resistance:
+        breakout_pct = (
+            (entry_price - resistance)
+            / resistance
+        ) * 100.0
+
+    accumulation_score = safe_float(
+        current.get("score"),
+        0
+    )
+
+    if accumulation_score >= 95:
+        confidence += 18
+    elif accumulation_score >= 90:
+        confidence += 15
+    elif accumulation_score >= 85:
+        confidence += 12
+    else:
+        confidence += 9
+
+    if rvol >= 8:
+        confidence += 22
+    elif rvol >= 6:
+        confidence += 19
+    elif rvol >= 4:
+        confidence += 15
+    elif rvol >= ENTRY_RVOL_MIN:
+        confidence += 10
+
+    if volume_acceleration_score >= 16:
+        confidence += 16
+    elif volume_acceleration_score >= 12:
+        confidence += 13
+    elif volume_acceleration_score >= 8:
+        confidence += 10
+
+    if current.get("volume_expansion"):
+        confidence += 5
+
+    if current.get("obv_breakout"):
+        confidence += 8
+
+    if current.get("obv_curve_ok"):
+        confidence += 6
+
+    if float_shares > 0:
+        if float_shares <= 5_000_000:
+            confidence += 13
+        elif float_shares <= 10_000_000:
+            confidence += 11
+        elif float_shares <= 20_000_000:
+            confidence += 8
+        elif float_shares <= 50_000_000:
+            confidence += 5
+        elif float_shares <= 100_000_000:
+            confidence += 2
+
+    if breakout_pct >= 1.0:
+        confidence += 7
+    elif breakout_pct >= 0.5:
+        confidence += 5
+    elif breakout_pct >= ENTRY_MIN_BREAKOUT_PCT:
+        confidence += 3
+
+    if dollar_volume >= 10_000_000:
+        confidence += 5
+    elif dollar_volume >= 3_000_000:
+        confidence += 4
+    elif dollar_volume >= 1_000_000:
+        confidence += 3
+    elif dollar_volume >= MIN_DOLLAR_VOLUME:
+        confidence += 1
+
+    confidence = max(
+        0,
+        min(100, int(confidence))
+    )
+
+    explosion_conditions = (
+        confidence >= EXPLOSION_CONFIDENCE_MIN
+        and rvol >= 6.0
+        and current.get("volume_expansion")
+        and current.get("obv_breakout")
+        and current.get("obv_curve_ok")
+        and breakout_pct >= 0.50
+        and dollar_volume >= 1_000_000
+        and (
+            float_shares <= 10_000_000
+            if float_shares > 0
+            else False
+        )
+    )
+
+    if explosion_conditions:
+        return "🚀 انفجار محتمل", confidence
+
+    return "🔥 اختراق قوي", confidence
+
+def calculate_entry_trade_plan(
+    current: Dict[str, Any],
+    df: pd.DataFrame,
+    signal_title: str
+) -> Dict[str, Any]:
+    resistance = safe_float(
+        current.get("resistance"),
+        0
+    )
+
+    live_price = safe_float(
+        current.get("price"),
+        0
+    )
+
+    closed_bar_result = get_last_closed_bar(df)
+
+    if closed_bar_result is not None:
+        last_bar, _, last_position = closed_bar_result
+
+        entry_price = safe_float(
+            last_bar.get("close"),
+            live_price
+        )
+    else:
+        entry_price = live_price
+        last_position = len(df) - 1
+
+    atr = calculate_intraday_atr(
+        df,
+        TRADE_PLAN_ATR_PERIOD
+    )
+
+    swing_start = max(
+        0,
+        last_position - TRADE_PLAN_SWING_LOOKBACK
+    )
+
+    swing_section = df.iloc[
+        swing_start:last_position
+    ]
+
+    if not swing_section.empty:
+        swing_low = safe_float(
+            swing_section["low"].astype(float).min(),
+            0
+        )
+    else:
+        swing_low = 0.0
+
+    is_explosion = signal_title.startswith("🚀")
+
+    if is_explosion:
+        atr_stop = (
+            resistance - (atr * 0.75)
+            if resistance > 0 and atr > 0
+            else 0
+        )
+
+        technical_candidates = [
+            value
+            for value in (swing_low, atr_stop)
+            if value > 0 and value < entry_price
+        ]
+
+        technical_stop = (
+            min(technical_candidates)
+            if technical_candidates
+            else entry_price * 0.95
+        )
+
+        maximum_stop_pct = EXPLOSION_MAX_STOP_PCT
+
+    else:
+        atr_stop = (
+            resistance - (atr * 0.50)
+            if resistance > 0 and atr > 0
+            else 0
+        )
+
+        technical_candidates = [
+            value
+            for value in (swing_low, atr_stop)
+            if value > 0 and value < entry_price
+        ]
+
+        technical_stop = (
+            max(technical_candidates)
+            if technical_candidates
+            else entry_price * 0.97
+        )
+
+        maximum_stop_pct = STRONG_MAX_STOP_PCT
+
+    maximum_allowed_stop = entry_price * (
+        1 - (maximum_stop_pct / 100.0)
+    )
+
+    stop_price = max(
+        technical_stop,
+        maximum_allowed_stop
+    )
+
+    if stop_price >= entry_price:
+        stop_price = maximum_allowed_stop
+
+    risk_per_share = entry_price - stop_price
+
+    if risk_per_share <= 0:
+        risk_per_share = entry_price * 0.02
+        stop_price = entry_price - risk_per_share
+
+    stop_pct = (
+        risk_per_share / entry_price
+    ) * 100.0
+
+    if is_explosion:
+        target_1 = entry_price + (
+            risk_per_share * 1.5
+        )
+
+        target_2 = entry_price + (
+            risk_per_share * 3.0
+        )
+
+        target_3 = entry_price + (
+            risk_per_share * 5.0
+        )
+
+        extended_target = entry_price + (
+            risk_per_share * 8.0
+        )
+
+    else:
+        target_1 = entry_price + risk_per_share
+        target_2 = entry_price + (
+            risk_per_share * 2.0
+        )
+
+        target_3 = entry_price + (
+            risk_per_share * 3.0
+        )
+
+        extended_target = None
+
+    return {
+        "entry_price": entry_price,
+        "live_price": live_price,
+        "resistance": resistance,
+        "atr": atr,
+        "swing_low": swing_low,
+        "stop_price": stop_price,
+        "stop_pct": stop_pct,
+        "risk_per_share": risk_per_share,
+        "target_1": target_1,
+        "target_2": target_2,
+        "target_3": target_3,
+        "extended_target": extended_target,
+    }
+    
+def build_entry_alert_message(
+    current: Dict[str, Any],
+    watch: Dict[str, Any],
+    df: pd.DataFrame
+) -> str:
+    signal_title, confidence = classify_entry_signal(
+        current,
+        df
+    )
+
+    trade_plan = calculate_entry_trade_plan(
+        current,
+        df,
+        signal_title
+    )
+
+    entry_price = safe_float(
+        trade_plan.get("entry_price"),
+        0
+    )
+
+    live_price = safe_float(
+        trade_plan.get("live_price"),
+        0
+    )
+
+    resistance = safe_float(
+        trade_plan.get("resistance"),
+        0
+    )
+
+    stop_price = safe_float(
+        trade_plan.get("stop_price"),
+        0
+    )
+
+    stop_pct = safe_float(
+        trade_plan.get("stop_pct"),
+        0
+    )
+
+    target_1 = safe_float(
+        trade_plan.get("target_1"),
+        0
+    )
+
+    target_2 = safe_float(
+        trade_plan.get("target_2"),
+        0
+    )
+
+    target_3 = safe_float(
+        trade_plan.get("target_3"),
+        0
+    )
+
+    extended_target = trade_plan.get(
+        "extended_target"
+    )
+
+    message = (
         f"{signal_title}\n\n"
         f"🏷️ السهم: <b>{current['symbol']}</b>\n"
-        f"💰 السعر الحالي: <b>{fmt_price(current['price'])}$</b>\n\n"
-        f"💯 قوة الإشارة: <b>{confidence}/100</b>\n\n"
-        f"⭐ درجة التجميع الحالية: <b>{int(current.get('score', 0))}/100</b>\n"
-        f"⚡ RVOL: <b>{safe_float(current.get('rvol')):.2f}x</b>\n\n"
-        f"🎯 تم اختراق مقاومة البدنة: <b>{fmt_price(current.get('resistance'))}$</b>\n\n"
-        f"✅ شروط الدخول المتحققة:\n"
-        f"• اختراق أعلى بدنة خلال آخر 100 شمعة 1m\n"
-        f"• إغلاق فوق المقاومة\n"
-        f"• RVOL أعلى من 2.5\n"
-        f"• مؤشر السيولة الموزونة ما زال صاعدًا\n\n"
-        f"📋 النتيجة:\nالسهم انتقل من مرحلة التجميع إلى مرحلة الاختراق."
+        f"💰 سعر الدخول الفني: "
+        f"<b>{fmt_price(entry_price)}$</b>\n"
+        f"📍 السعر اللحظي: "
+        f"<b>{fmt_price(live_price)}$</b>\n"
+        f"🎯 المقاومة المخترقة: "
+        f"<b>{fmt_price(resistance)}$</b>\n\n"
+
+        f"💯 نسبة الثقة: "
+        f"<b>{confidence}/100</b>\n"
+        f"⭐ درجة التجميع: "
+        f"<b>{int(current.get('score', 0))}/100</b>\n"
+        f"⚡ RVOL: "
+        f"<b>{safe_float(current.get('rvol')):.2f}x</b>\n"
+        f"📦 تسارع الحجم: "
+        f"<b>{'نعم' if current.get('volume_expansion') else 'لا'}</b>\n"
+        f"🚀 اختراق السيولة: "
+        f"<b>{'نعم' if current.get('obv_breakout') else 'لا'}</b>\n\n"
+
+        f"🛑 وقف الخسارة الفني: "
+        f"<b>{fmt_price(stop_price)}$</b>\n"
+        f"📉 مسافة الوقف: "
+        f"<b>{stop_pct:.2f}%</b>\n\n"
+
+        f"🎯 الهدف الأول: "
+        f"<b>{fmt_price(target_1)}$</b>\n"
+        f"🎯 الهدف الثاني: "
+        f"<b>{fmt_price(target_2)}$</b>\n"
+        f"🎯 الهدف الثالث: "
+        f"<b>{fmt_price(target_3)}$</b>\n"
     )
+
+    if (
+        signal_title.startswith("🚀")
+        and extended_target is not None
+    ):
+        message += (
+            f"🌟 الهدف الممتد: "
+            f"<b>{fmt_price(extended_target)}$</b>\n\n"
+            f"💎 يستمر الهدف الممتد ما دام الزخم "
+            f"والسيولة لم يظهرا ضعفًا واضحًا.\n"
+        )
+    else:
+        message += "\n"
+
+    message += (
+        f"✅ شروط التأكيد:\n"
+        f"• إغلاق شمعة دقيقة مكتملة فوق المقاومة.\n"
+        f"• السعر اللحظي ما زال محافظًا فوق المقاومة.\n"
+        f"• حجم شمعة الاختراق أعلى من المتوسط المطلوب.\n"
+        f"• RVOL أعلى من الحد المطلوب.\n"
+        f"• منحنى السيولة الموزونة ما زال سليمًا.\n\n"
+        f"📋 النتيجة:\n"
+        f"السهم انتقل من مرحلة التجميع "
+        f"إلى مرحلة الاختراق المؤكد."
+    )
+
+    return message
 
 def build_failure_alert_message(symbol: str, price: float, reason: str) -> str:
     return (
@@ -1498,22 +1951,45 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
             
         if current_data and not df.empty and check_entry_conditions(current_data, df):
             if not state["sent_entry_alerts"].get(symbol):
-                if send_telegram_message(build_entry_alert_message(current_data, watch)):
-                    state["sent_entry_alerts"][symbol] = {"time": iso_now(), "price": current_price}
+                if send_telegram_message(
+                    build_entry_alert_message(
+                        current_data,
+                        watch,
+                        df
+                    )
+                ):
+                    state["sent_entry_alerts"][symbol] = {
+                        "time": iso_now(),
+                        "price": current_price,
+                    }
                     runtime_stats["entry_alerts_sent"] += 1
+
             to_remove.append(symbol)
             continue
-            
+
         reason = failure_reason(current_data, df, watch)
+
         if reason:
             if not state["sent_failure_alerts"].get(symbol):
-                if send_telegram_message(build_failure_alert_message(symbol, current_price, reason)):
-                    state["sent_failure_alerts"][symbol] = {"time": iso_now(), "price": current_price, "reason": reason}
+                if send_telegram_message(
+                    build_failure_alert_message(
+                        symbol,
+                        current_price,
+                        reason,
+                    )
+                ):
+                    state["sent_failure_alerts"][symbol] = {
+                        "time": iso_now(),
+                        "price": current_price,
+                        "reason": reason,
+                    }
                     runtime_stats["failure_alerts_sent"] += 1
+
             to_remove.append(symbol)
             continue
-            
+
         watchlist[symbol] = watch
+        
         
     for symbol in to_remove:
         watchlist.pop(symbol, None)
