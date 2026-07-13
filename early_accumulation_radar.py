@@ -66,7 +66,13 @@ ENTRY_BREAKOUT_VOLUME_MULTIPLIER = float(
 ENTRY_BREAKOUT_VOLUME_LOOKBACK = int(
     os.getenv("ENTRY_BREAKOUT_VOLUME_LOOKBACK", "10")
 )
+STRONG_BREAKOUT_MIN_SCORE = int(
+    os.getenv("STRONG_BREAKOUT_MIN_SCORE", "90")
+)
 
+EXPLOSION_MIN_SCORE = int(
+    os.getenv("EXPLOSION_MIN_SCORE", "97")
+)
 FAIL_RVOL_MIN = float(os.getenv("FAIL_RVOL_MIN", "1.2"))
 EARLY_ALERT_MIN_SCORE = int(os.getenv("EARLY_ALERT_MIN_SCORE", "80"))
 
@@ -1210,10 +1216,14 @@ def build_early_alert_message(data: Dict[str, Any]) -> str:
     )
 
 def build_entry_alert_message(current: Dict[str, Any], watch: Dict[str, Any]) -> str:
+    signal_title, confidence = classify_entry_signal(
+        current
+    )
     return (
-        f"🚀 <b>تنبيه دخول - تأكيد الاختراق</b>\n\n"
+        f"{signal_title}\n\n"
         f"🏷️ السهم: <b>{current['symbol']}</b>\n"
         f"💰 السعر الحالي: <b>{fmt_price(current['price'])}$</b>\n\n"
+        f"💯 قوة الإشارة: <b>{confidence}/100</b>\n\n"
         f"⭐ درجة التجميع الحالية: <b>{int(current.get('score', 0))}/100</b>\n"
         f"⚡ RVOL: <b>{safe_float(current.get('rvol')):.2f}x</b>\n\n"
         f"🎯 تم اختراق مقاومة البدنة: <b>{fmt_price(current.get('resistance'))}$</b>\n\n"
@@ -1301,7 +1311,14 @@ def check_entry_conditions(
 
     if last_close <= resistance:
         return False
+    live_price = safe_float(
+        data.get("price"),
+        0
+    )
 
+    if live_price <= resistance:
+        return False
+        
     breakout_pct = (
         (last_close - resistance)
         / resistance
@@ -1309,7 +1326,14 @@ def check_entry_conditions(
 
     if breakout_pct < ENTRY_MIN_BREAKOUT_PCT:
         return False
+    live_breakout_pct = (
+        (live_price - resistance)
+        / resistance
+    ) * 100.0
 
+    if live_breakout_pct < ENTRY_MIN_BREAKOUT_PCT:
+        return False
+        
     now_utc = pd.Timestamp.now(tz="UTC")
 
     bar_close_time = (
@@ -1366,6 +1390,47 @@ def check_entry_conditions(
         return False
 
     return True
+
+def classify_entry_signal(
+    data: Dict[str, Any]
+) -> Tuple[str, int]:
+    confidence = int(
+        max(
+            0,
+            min(
+                100,
+                data.get("score", 0)
+            )
+        )
+    )
+
+    if safe_float(data.get("rvol"), 0) >= 4:
+        confidence += 2
+
+    if safe_float(data.get("rvol"), 0) >= 6:
+        confidence += 2
+
+    if data.get("volume_expansion"):
+        confidence += 2
+
+    if data.get("obv_breakout"):
+        confidence += 2
+
+    if data.get("obv_curve_ok"):
+        confidence += 1
+
+    if safe_float(data.get("float_shares"), 999999999) <= 20_000_000:
+        confidence += 2
+
+    if safe_float(data.get("float_shares"), 999999999) <= 10_000_000:
+        confidence += 2
+
+    confidence = min(confidence, 100)
+
+    if confidence >= EXPLOSION_MIN_SCORE:
+        return "🚀 انفجار محتمل", confidence
+
+    return "🔥 اختراق قوي", confidence
     
 def failure_reason(data: Optional[Dict[str, Any]], df: pd.DataFrame, watch: Dict[str, Any]) -> Optional[str]:
     created_at = parse_iso(watch.get("created_at"))
