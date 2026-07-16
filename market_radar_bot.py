@@ -86,7 +86,16 @@ FLOAT_CACHE_FILENAME = os.getenv(
 # ==============================================================================
 
 PORT = int(os.getenv("PORT", "10000"))
+app = Flask(__name__)
 
+@app.route("/")
+def home():
+    return "Market-Only Entry Bot is running", 200
+
+@app.route("/health")
+def health():
+    return {"status": "ok"}, 200
+    
 SCAN_INTERVAL = 30
 
 MONITOR_INTERVAL = 30
@@ -4527,8 +4536,6 @@ if __name__ == "__main__":
         daemon=True,
         name="market-only-main-loop"
     ).start()
-
-    port = int(os.environ.get("PORT", 10000))
 
     app.run(
         host="0.0.0.0",
