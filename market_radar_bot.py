@@ -544,11 +544,10 @@ def is_last_market_hour():
 
     return start <= ny <= end
 
-
 def is_regular_market_hours():
     """
     ساعات التداول الرسمية للسوق الأمريكي فقط: 9:30 - 16:00 بتوقيت نيويورك.
-    التنبيهات (Elite Alerts) تُرسل فقط خلال هذه النافذة.
+    تنبيهات Market Radar Bot تُرسل فقط خلال هذه النافذة.
     """
     ny = now_ny()
 
@@ -1957,12 +1956,10 @@ def rebuild_universe(full=True):
 
 def is_universe_empty():
     """
-    دالة مساعدة تُستخدم من ملف التشغيل (elite_radar_bot.py) بدل قراءة
+    دالة مساعدة تُستخدم من ملف التشغيل (market_radar_bot.py) بدل قراءة
     المتغير UNIVERSE مباشرة، حتى تبقى القراءة دائمًا محدثة من داخل هذا الملف.
     """
     return not UNIVERSE
-
-
 
 # ==============================================================================
 # Batch Engine
@@ -3324,7 +3321,7 @@ def build_alert_message(metrics, trade_plan):
         high_target_text += "⚠️ محدودة حاليًا\n"
         high_target_text += "📌 يحتاج استمرار الزخم أو مساحة أفضل فوق المقاومات.\n"
 
-    message = f"""🚀 <b>رادار النخبة - Elite Radar</b>
+    message = f"""🚀 <b>رادار السوق - Market Radar Bot</b>
 
 📈 <b>السهم:</b> {symbol}
 
@@ -3447,7 +3444,7 @@ def send_elite_alert(metrics):
 
     runtime_stats["alerts_sent"] += 1
 
-    log(f"Elite alert sent: {symbol} score={safe_float(metrics.get('final_score')):.1f}")
+    log(f"Market Radar alert sent: {symbol} score={safe_float(metrics.get('final_score')):.1f}")
 
     return True
 
@@ -3909,11 +3906,10 @@ def load_runtime_state():
         for key, value in saved.items():
             runtime_stats[key] = value
 
-
 def startup_message():
-    message = f"""🚀 <b>Elite Radar بدأ التشغيل</b>
+    message = f"""🚀 <b>Market Radar Bot بدأ التشغيل</b>
 
-🧩 الوضع: Background Worker
+🧩 الوضع: Render Web Service
 📥 سجلات الفلوت: {len(FLOAT_CACHE)}
 📦 Universe: {len(UNIVERSE)}
 ⚡ Priority Universe: {len(PRIORITY_UNIVERSE)}
@@ -3923,11 +3919,10 @@ def startup_message():
 """
 
     send_telegram(message)
-
-
+    
 def startup():
-    log("Elite Radar startup sequence...")
-
+    log("Market Radar Bot startup sequence...")
+    
     load_runtime_state()
 
     load_news_cache()
@@ -4054,6 +4049,7 @@ def scan_once():
     sent = 0
 
     # No fixed max: send only truly qualified candidates.
+    
     for metrics in finalists:
         if send_elite_alert(metrics):
             sent += 1
@@ -4126,8 +4122,8 @@ def send_daily_summary():
         if isinstance(item, dict) and item.get("date") == today:
             today_alerts += 1
 
-    message = f"""📊 <b>Elite Radar - ملخص اليوم</b>
 
+    message = f"""📊 <b>Market Radar Bot - ملخص اليوم</b>
 📅 التاريخ: {today}
 
 🔍 عدد جولات الفحص: {runtime_stats.get('total_scans', 0)}
@@ -4272,7 +4268,7 @@ def weekend_analysis():
     else:
         close_text = "لا يوجد سبب خروج متكرر واضح.\n"
 
-    message = f"""🧠 <b>Elite Radar - تحليل الويكند</b>
+    message = f"""🧠 <b>Market Radar Bot - تحليل الويكند</b>
 
 📊 <b>نتائج التنبيهات:</b>
 ✅ صفقات ناجحة: {wins}
@@ -4518,7 +4514,7 @@ def main_loop():
                 time.sleep(60)
 
         except KeyboardInterrupt:
-            log("Elite Radar stopped manually.")
+            log("Market Radar Bot stopped manually.")
             break
 
         except Exception as e:
