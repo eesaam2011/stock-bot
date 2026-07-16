@@ -290,21 +290,25 @@ def send_telegram(message):
 
 log("======================================")
 
-log("Elite Radar Starting...")
+log("Market Radar Bot Starting...")
 
-log("Background Worker Mode")
+log("Render Web Service Mode")
 
 log("Loading Environment Variables...")
 
-log("Preparing Redis...")
+log("Initializing Redis...")
 
-log("Preparing Float Manager...")
+log("Loading Float Cache...")
 
-log("Preparing Universe Engine...")
+log("Initializing Universe Engine...")
 
-log("Preparing Scan Engine...")
+log("Initializing Discovery Engine...")
 
-log("Preparing Trade Manager...")
+log("Initializing Scan Engine...")
+
+log("Initializing Trade Manager...")
+
+log("Starting Monitoring Threads...")
 
 log("======================================")
 
