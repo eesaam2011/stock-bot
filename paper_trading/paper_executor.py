@@ -311,8 +311,13 @@ def execute_paper_trade_request(trade_request):
     if qty <= 0:
         return False
 
-    stop_price = calculate_stop_loss(alert_price, stop_loss)
-
+    stop_price = normalize_stop_price(
+        calculate_stop_loss(
+            alert_price,
+            stop_loss,
+        )
+    )
+    
     buy_order = submit_market_buy(symbol, qty)
 
     if not buy_order:
