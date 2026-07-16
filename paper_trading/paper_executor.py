@@ -169,7 +169,14 @@ def calculate_stop_loss(alert_price, stop_loss):
     fallback_stop = alert_price * (1 - DEFAULT_STOP_LOSS_PCT / 100)
     return round(fallback_stop, 4)
 
+def normalize_stop_price(price):
+    price = float(price)
 
+    if price >= 1:
+        return round(price, 2)
+
+    return round(price, 4)
+    
 def wait_for_order_fill(order_id, max_wait_seconds=20):
     started_at = time.time()
 
