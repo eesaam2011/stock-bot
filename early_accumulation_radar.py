@@ -1764,27 +1764,21 @@ def check_entry_conditions(
 
     if last_close <= resistance:
         return False
+        
     live_price = safe_float(
         data.get("price"),
         0
     )
 
-    if live_price <= resistance:
+    if live_price <= (resistance * 0.998):
         return False
-        
+
     breakout_pct = (
         (last_close - resistance)
         / resistance
     ) * 100.0
 
     if breakout_pct < ENTRY_MIN_BREAKOUT_PCT:
-        return False
-    live_breakout_pct = (
-        (live_price - resistance)
-        / resistance
-    ) * 100.0
-
-    if live_breakout_pct < ENTRY_MIN_BREAKOUT_PCT:
         return False
         
     now_utc = pd.Timestamp.now(tz="UTC")
