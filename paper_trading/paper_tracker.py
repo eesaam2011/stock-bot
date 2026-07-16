@@ -262,6 +262,9 @@ def calculate_new_stop(trade, current_price):
 
     return None, None
 
+def normalize_stop_price(stop_price):
+    return round(float(stop_price), 2)
+    
 def raise_stop_if_needed(trade, current_price):
     symbol = trade.get("symbol")
     qty = trade.get("qty")
@@ -276,8 +279,10 @@ def raise_stop_if_needed(trade, current_price):
     if not new_stop or not reason:
         return trade
 
-    new_stop = round(float(new_stop), 4)
-
+    new_stop = normalize_stop_price(
+        new_stop
+    )
+    
     if new_stop <= old_stop:
         return trade
 
