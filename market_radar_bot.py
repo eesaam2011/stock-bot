@@ -4534,12 +4534,12 @@ if __name__ == "__main__":
     threading.Thread(
         target=main_loop,
         daemon=True,
-        name="market-only-main-loop"
+        name="market-radar-main-loop"
     ).start()
 
     app.run(
         host="0.0.0.0",
-        port=port,
+        port=PORT,
         debug=False,
         use_reloader=False
     )
