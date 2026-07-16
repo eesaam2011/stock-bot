@@ -140,7 +140,7 @@ WATCHLIST_RECHECK = 30
 # Redis Keys
 # ==============================================================================
 
-REDIS_PREFIX = "elite"
+REDIS_PREFIX = "market_radar"
 
 KEY_STATE = f"{REDIS_PREFIX}:state"
 
@@ -167,7 +167,6 @@ KEY_RUNTIME = f"{REDIS_PREFIX}:runtime"
 KEY_ALERTS = f"{REDIS_PREFIX}:alerts"
 
 KEY_PATTERNS = f"{REDIS_PREFIX}:patterns"
-
 
 # ==============================================================================
 # Runtime Stats
