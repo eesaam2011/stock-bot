@@ -31,6 +31,7 @@ import random
 import zoneinfo
 import numpy as np
 import pandas as pd
+from flask import Flask
 
 from datetime import datetime, timedelta, timezone
 from collections import deque
@@ -4523,5 +4524,15 @@ def main_loop():
 if __name__ == "__main__":
     threading.Thread(
         target=main_loop,
-        daemon=True
+        daemon=True,
+        name="market-only-main-loop"
     ).start()
+
+    port = int(os.environ.get("PORT", 10000))
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False
+    )
