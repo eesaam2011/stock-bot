@@ -4316,7 +4316,7 @@ def maybe_reload_float_cache():
     # Temporary mode:
     # Early Explosion is still responsible for updating float_cache.json.
     # Elite Radar reloads the Gist copy at 11:00 KSA.
-    if current.hour == 10 and current.minute == 45:
+    if current.hour == 11 and current.minute == 0:
         key = current.strftime("%Y-%m-%d %H:%M")
 
         if key != last_float_reload_key:
