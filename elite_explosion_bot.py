@@ -1468,9 +1468,13 @@ def calculate_final_score(symbol, metrics):
 # =========================================================
 # METRICS BUILDER
 # =========================================================
-def build_symbol_metrics(symbol):
+def build_symbol_metrics(symbol, snapshot_data=None):
     try:
-        snap = get_snapshot_price_data(symbol)
+        snap = snapshot_data
+
+        if snap is None:
+            snap = get_snapshot_price_data(symbol)
+
         if not snap:
             return None
 
@@ -1513,6 +1517,9 @@ def build_symbol_metrics(symbol):
         if profile.get("require_above_vwap", True) and price < vwap:
             return None
 
+        if price < ema9:
+            return None
+
         if ema9 < ema20 * 0.995:
             return None
 
@@ -1526,11 +1533,16 @@ def build_symbol_metrics(symbol):
 
         day_high = snap.get("day_high", 0)
         near_high_pct = 999
-        if day_high and day_high > 0 and price:
+
+        if day_high and day_high > 0:
             near_high_pct = ((day_high - price) / day_high) * 100
 
-        obv_positive = last["obv"] > last["obv_ema10"]
-        obv_rising = df["obv"].iloc[-1] > df["obv"].iloc[-3] if len(df) >= 3 else False
+        obv_positive = safe_float(last["obv"]) > safe_float(last["obv_ema10"])
+        obv_rising = (
+            df["obv"].iloc[-1] > df["obv"].iloc[-3]
+            if len(df) >= 3
+            else False
+        )
 
         if profile.get("require_sustained_breakout", False):
             if resistance > 0 and price > resistance:
@@ -1548,7 +1560,6 @@ def build_symbol_metrics(symbol):
             "price_change_pct": snap.get("price_change_pct", 0),
             "day_high": day_high,
             "near_high_pct": near_high_pct,
-
             "rvol": rvol,
             "volume_acceleration": volume_accel,
             "vwap": vwap,
@@ -1566,7 +1577,8 @@ def build_symbol_metrics(symbol):
 
     except Exception as e:
         print(f"⚠️ Metrics failed for {symbol}: {e}")
-        return None
+        return None  
+
 
 
 # =========================================================
