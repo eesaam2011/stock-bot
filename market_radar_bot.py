@@ -3241,6 +3241,7 @@ def build_trade_plan(metrics):
     atr = safe_float(metrics.get("atr"))
     vwap = safe_float(metrics.get("vwap"))
     resistance = safe_float(metrics.get("resistance"))
+    breakout = bool(metrics.get("breakout"))
 
     if price <= 0:
         save_rejection(
@@ -3258,17 +3259,71 @@ def build_trade_plan(metrics):
         )
         return None, "ATR invalid"
 
-    swing_stop = price - max(atr * 1.2, price * 0.025)
-    vwap_stop = vwap * 0.992 if vwap > 0 else swing_stop
-    breakout_stop = resistance * 0.992 if metrics.get("breakout") and resistance > 0 else swing_stop
-    max_loss_stop = price * (1 - (MAX_STOP / 100))
+    # ------------------------------------------------------------------
+    # بناء وقف الخسارة من أقرب مستوى إبطال صالح أسفل سعر الدخول
+    # ------------------------------------------------------------------
+    stop_candidates = []
+
+    atr_stop = price - max(
+        atr * 1.5,
+        price * 0.015
+    )
+
+    if 0 < atr_stop < price:
+        stop_candidates.append(atr_stop)
+
+    if 0 < vwap < price:
+        stop_candidates.append(
+            vwap * 0.995
+        )
+
+    if breakout and 0 < resistance < price:
+        stop_candidates.append(
+            resistance * 0.995
+        )
+
+    if not stop_candidates:
+        save_rejection(
+            symbol,
+            "تعذر تحديد مستوى وقف صالح",
+            {
+                "price": price,
+                "atr": atr,
+                "vwap": vwap,
+                "resistance": resistance
+            }
+        )
+        return None, "no valid stop candidate"
+
+    # أقرب مستوى إبطال صالح إلى السعر
+    stop = max(stop_candidates)
+
+    # منع الوقف من أن يكون ضيقًا جدًا
+    minimum_stop_distance_pct = 1.25
+    minimum_distance_stop = price * (
+        1 - (minimum_stop_distance_pct / 100)
+    )
+
+    stop = min(
+        stop,
+        minimum_distance_stop
+    )
+
+    # منع المخاطرة من تجاوز MAX_STOP
+    max_loss_stop = price * (
+        1 - (MAX_STOP / 100)
+    )
 
     stop = max(
-        min(swing_stop, vwap_stop, breakout_stop),
+        stop,
         max_loss_stop
     )
 
-    stop_distance_pct = ((price - stop) / price) * 100 if price > 0 else 999
+    stop_distance_pct = (
+        ((price - stop) / price) * 100
+        if price > 0
+        else 999
+    )
 
     if stop_distance_pct <= 0:
         save_rejection(
@@ -3279,7 +3334,11 @@ def build_trade_plan(metrics):
                 "stop": stop
             }
         )
-        return None, f"invalid stop | price={fmt_price(price)} stop={fmt_price(stop)}"
+        return None, (
+            f"invalid stop | "
+            f"price={fmt_price(price)} "
+            f"stop={fmt_price(stop)}"
+        )
 
     if stop_distance_pct > MAX_STOP:
         save_rejection(
@@ -3291,28 +3350,58 @@ def build_trade_plan(metrics):
                 "stop_distance_pct": stop_distance_pct
             }
         )
-        return None, f"stop too far {stop_distance_pct:.2f}% > {MAX_STOP}%"
+        return None, (
+            f"stop too far "
+            f"{stop_distance_pct:.2f}% > {MAX_STOP}%"
+        )
 
-    t1 = price + (atr * 1.2)
-    t2 = price + (atr * 2.2)
-
-    t3_atr = price + (atr * 3.5)
-
-    if resistance > price:
-        t3 = max(t3_atr, resistance)
-    else:
-        t3 = t3_atr
-
-    high_target = None
-    high_target_data = metrics.get("high_target", {})
-
-    if high_target_data.get("has_high_target"):
-        high_target = safe_float(high_target_data.get("extended_target"))
-
-    reward = t1 - price
     risk = price - stop
 
-    reward_risk = reward / risk if risk > 0 else 0
+    # ------------------------------------------------------------------
+    # الأهداف تجمع بين ATR ومضاعفات المخاطرة
+    # ------------------------------------------------------------------
+    t1 = price + max(
+        atr * 1.2,
+        risk * 1.5
+    )
+
+    t2 = price + max(
+        atr * 2.2,
+        risk * 2.5
+    )
+
+    t3 = price + max(
+        atr * 3.5,
+        risk * 4.0
+    )
+
+    # إذا كانت هناك مقاومة أعلى من الدخول، لا تجعل الهدف الثالث تحتها
+    if resistance > price:
+        t3 = max(
+            t3,
+            resistance
+        )
+
+    high_target = None
+    high_target_data = metrics.get(
+        "high_target",
+        {}
+    )
+
+    if high_target_data.get("has_high_target"):
+        candidate_high_target = safe_float(
+            high_target_data.get("extended_target")
+        )
+
+        if candidate_high_target > t3:
+            high_target = candidate_high_target
+
+    reward = t1 - price
+    reward_risk = (
+        reward / risk
+        if risk > 0
+        else 0
+    )
 
     if reward_risk < 1.2:
         save_rejection(
@@ -3325,7 +3414,10 @@ def build_trade_plan(metrics):
                 "t1": t1
             }
         )
-        return None, f"weak reward/risk {reward_risk:.2f} < 1.20"
+        return None, (
+            f"weak reward/risk "
+            f"{reward_risk:.2f} < 1.20"
+        )
 
     plan = {
         "symbol": symbol,
@@ -3333,6 +3425,7 @@ def build_trade_plan(metrics):
         "initial_stop": stop,
         "stop": stop,
         "stop_distance_pct": stop_distance_pct,
+        "risk_per_share": risk,
         "t1": t1,
         "t2": t2,
         "t3": t3,
@@ -3343,12 +3436,13 @@ def build_trade_plan(metrics):
         "hit_t3": False,
         "hit_high_target": False,
         "status": "active",
-        "created_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "created_at": datetime.now(
+            saudi_tz
+        ).strftime("%Y-%m-%d %H:%M:%S"),
         "date": today_ksa()
     }
 
     return plan, "OK"
-
 
 # ==============================================================================
 # Final Safety Check
@@ -3589,26 +3683,54 @@ Penalty: -{safe_float(metrics.get('penalty_points')):.1f}
 # ==============================================================================
 
 def activate_trade(symbol, metrics, trade_plan):
-    
-    entry_price = safe_float(trade_plan.get("entry"))
+    now_str = datetime.now(
+        saudi_tz
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    entry_price = safe_float(
+        trade_plan.get("entry")
+    )
+
+    if entry_price <= 0:
+        log(
+            f"Cannot activate trade for {symbol}: "
+            f"invalid entry price"
+        )
+        return False
+
+    # نسخ مستقلة حتى لا تتغير البيانات لاحقًا
+    stored_metrics = dict(metrics)
+    stored_trade_plan = dict(trade_plan)
 
     item = {
         "symbol": symbol,
-        "metrics": metrics,
-        "trade_plan": trade_plan,
+        "metrics": stored_metrics,
+        "trade_plan": stored_trade_plan,
         "highest_price": entry_price,
         "lowest_price": entry_price,
         "max_profit_pct": 0.0,
         "max_drawdown_pct": 0.0,
-        "opened_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
-        "last_update": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "opened_at": now_str,
+        "last_update": now_str,
         "date": today_ksa()
     }
 
     with ACTIVE_TRADES_LOCK:
         ACTIVE_TRADES[symbol] = item
 
-    redis_hset_json(KEY_ACTIVE, symbol, item)
+    redis_hset_json(
+        KEY_ACTIVE,
+        symbol,
+        item
+    )
+
+    log(
+        f"Trade activated: {symbol} | "
+        f"entry={fmt_price(entry_price)} | "
+        f"stop={fmt_price(stored_trade_plan.get('stop'))}"
+    )
+
+    return True
     
 def send_elite_alert(metrics):
     symbol = metrics["symbol"]
