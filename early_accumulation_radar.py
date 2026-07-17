@@ -1770,7 +1770,7 @@ def check_entry_conditions(
         0
     )
 
-    if live_price <= (resistance * 0.998):
+    if live_price <= (resistance * 0.995):
         return False
 
     breakout_pct = (
