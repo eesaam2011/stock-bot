@@ -1590,10 +1590,9 @@ def get_next_scan_batch():
     if not priority_universe:
         return []
 
-    batch_size = 200
     batch = []
 
-    for _ in range(min(batch_size, len(priority_universe))):
+    for _ in range(min(SCAN_BATCH_SIZE, len(priority_universe))):
         if scan_cursor >= len(priority_universe):
             scan_cursor = 0
 
@@ -1601,7 +1600,6 @@ def get_next_scan_batch():
         scan_cursor += 1
 
     return batch
-
 
 def scan_market_batch():
     runtime_stats["batch_scanned"] = 0
@@ -1618,9 +1616,32 @@ def scan_market_batch():
     if not batch:
         return [], []
 
+    snapshot_start_ts = time.time()
+
+    snapshots = get_bulk_snapshots(batch)
+
+    print(
+        f"📡 Scanner Bulk Snapshots | "
+        f"Requested: {len(batch)} | "
+        f"Received: {len(snapshots)} | "
+        f"Time: {fmt_sec(snapshot_start_ts)}"
+    )
+
+    missing_snapshots = len(batch) - len(snapshots)
+    runtime_stats["scanner_missing_snapshots"] = missing_snapshots
+
     for symbol in batch:
         try:
-            metrics = build_symbol_metrics(symbol)
+            snap_data = snapshots.get(symbol)
+
+            if not snap_data:
+                continue
+
+            metrics = build_symbol_metrics(
+                symbol,
+                snapshot_data=snap_data,
+            )
+
             if not metrics:
                 continue
 
@@ -1629,6 +1650,7 @@ def scan_market_batch():
                 active_candidates.append(metrics)
 
             score, breakdown = calculate_final_score(symbol, metrics)
+
             metrics["final_score"] = score
             metrics["score_breakdown"] = breakdown
 
@@ -1640,7 +1662,7 @@ def scan_market_batch():
     rebuild_news_queue(active_candidates)
 
     return scored_candidates, active_candidates
-
+    
 # =========================================================
 # DECISION ENGINE
 # =========================================================
