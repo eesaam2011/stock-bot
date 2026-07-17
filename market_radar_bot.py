@@ -1615,70 +1615,198 @@ def calculate_volume_acceleration(df):
     }
 
 def calculate_resistance(df, lookback=80):
-    if df.empty or len(df) < 30:
-        return {
-            "resistance": 0,
-            "distance_pct": 999,
-            "breakout": False,
-            "touches": 0
-        }
+    empty_result = {
+        "resistance": 0,
+        "distance_pct": 999,
+        "breakout": False,
+        "touches": 0
+    }
 
-    current_price = safe_float(df["close"].iloc[-1])
+    if df.empty or len(df) < 30:
+        return empty_result
 
     recent = df.tail(lookback).copy()
 
-    recent["body_high"] = recent[["open", "close"]].max(axis=1)
+    current_close = safe_float(recent["close"].iloc[-1])
+    current_open = safe_float(recent["open"].iloc[-1])
 
-    body_levels = sorted(
-        recent["body_high"].iloc[:-1].tolist(),
-        reverse=True
-    )
+    if current_close <= 0:
+        return empty_result
+
+    # لا ندخل الشمعة الحالية في بناء المقاومة
+    history = recent.iloc[:-1].copy()
+
+    history["body_high"] = history[["open", "close"]].max(axis=1)
+
+    body_levels = [
+        safe_float(value)
+        for value in history["body_high"].tolist()
+        if safe_float(value) > 0
+    ]
 
     if not body_levels:
-        return {
-            "resistance": 0,
-            "distance_pct": 999,
-            "breakout": False,
-            "touches": 0
-        }
+        return empty_result
 
-    best_level = body_levels[0]
-    best_touches = 0
+    # حساب ATR داخليًا لجعل سماحية تجميع المستويات متكيفة مع حركة السهم
+    previous_close = history["close"].shift(1)
 
-    for i, level in enumerate(body_levels):
-        tolerance = level * 0.003
+    true_range = pd.concat(
+        [
+            history["high"] - history["low"],
+            (history["high"] - previous_close).abs(),
+            (history["low"] - previous_close).abs()
+        ],
+        axis=1
+    ).max(axis=1)
 
-        touches = sum(
-            1
-            for j, x in enumerate(body_levels)
-            if j != i and abs(x - level) <= tolerance
+    atr_value = safe_float(true_range.tail(14).mean())
+
+    # --------------------------------------------------------------------------
+    # Clustering للمقاومات المتقاربة
+    # --------------------------------------------------------------------------
+    clusters = []
+
+    for position, level in enumerate(body_levels):
+        matched_cluster = None
+
+        for cluster in clusters:
+            cluster_level = statistics.median(cluster["levels"])
+
+            tolerance = max(
+                cluster_level * 0.003,
+                atr_value * 0.15
+            )
+
+            # منع السماحية من أن تصبح واسعة أكثر من اللازم
+            tolerance = min(
+                tolerance,
+                cluster_level * 0.01
+            )
+
+            if abs(level - cluster_level) <= tolerance:
+                matched_cluster = cluster
+                break
+
+        if matched_cluster is None:
+            clusters.append(
+                {
+                    "levels": [level],
+                    "last_position": position
+                }
+            )
+        else:
+            matched_cluster["levels"].append(level)
+            matched_cluster["last_position"] = position
+
+    resistance_candidates = []
+
+    total_bars = max(1, len(body_levels))
+
+    for cluster in clusters:
+        level = safe_float(statistics.median(cluster["levels"]))
+        touches = len(cluster["levels"])
+
+        if level <= 0 or touches < 2:
+            continue
+
+        distance_pct = (
+            (level - current_close)
+            / current_close
+        ) * 100
+
+        # نستبعد المقاومات البعيدة وغير المرتبطة بالسعر الحالي
+        if distance_pct > 8:
+            continue
+
+        # لا نستخدم مستوى أصبح بعيدًا جدًا تحت السعر
+        if distance_pct < -4:
+            continue
+
+        recency = (
+            safe_float(cluster.get("last_position"))
+            / total_bars
         )
 
-        if touches > best_touches:
-            best_touches = touches
-            best_level = level
+        # الأفضلية:
+        # 1. عدد اللمسات
+        # 2. حداثة المستوى
+        # 3. قربه من السعر الحالي
+        quality_score = (
+            (touches * 10)
+            + (recency * 5)
+            - abs(distance_pct)
+        )
 
-    resistance = safe_float(best_level)
+        resistance_candidates.append(
+            {
+                "level": level,
+                "touches": touches,
+                "distance_pct": distance_pct,
+                "quality_score": quality_score
+            }
+        )
 
-    if current_price > 0 and resistance > 0:
-        distance_pct = (
-            (resistance - current_price)
-            / current_price
-        ) * 100
+    if not resistance_candidates:
+        return empty_result
+
+    # نعطي الأولوية لأقرب مقاومة معتبرة فوق السعر
+    levels_above_price = [
+        candidate
+        for candidate in resistance_candidates
+        if candidate["distance_pct"] >= -0.20
+    ]
+
+    if levels_above_price:
+        selected = min(
+            levels_above_price,
+            key=lambda item: (
+                max(item["distance_pct"], 0),
+                -item["touches"],
+                -item["quality_score"]
+            )
+        )
     else:
-        distance_pct = 999
+        # في حال حصل اختراق حديث نختار أقوى مستوى قريب أسفل السعر
+        selected = max(
+            resistance_candidates,
+            key=lambda item: item["quality_score"]
+        )
+
+    resistance = safe_float(selected["level"])
+    touches = safe_int(selected["touches"])
+    distance_pct = safe_float(selected["distance_pct"], 999)
+
+    # هامش يمنع اعتبار مجرد ملامسة بسيطة اختراقًا
+    breakout_buffer = max(
+        resistance * 0.001,
+        atr_value * 0.05
+    )
+
+    breakout_level = resistance + breakout_buffer
+
+    previous_closes = [
+        safe_float(value)
+        for value in recent["close"].iloc[-4:-1].tolist()
+    ]
+
+    crossed_recently = any(
+        close <= breakout_level
+        for close in previous_closes
+        if close > 0
+    )
 
     breakout = (
-        current_price > resistance
-        and df["close"].iloc[-1] > df["open"].iloc[-1]
-        and best_touches >= 1
+        current_close > breakout_level
+        and current_close > current_open
+        and crossed_recently
+        and touches >= 2
     )
 
     return {
         "resistance": resistance,
         "distance_pct": distance_pct,
         "breakout": bool(breakout),
-        "touches": best_touches
+        "touches": touches
     }
     
 def get_15m_trend(symbol):
