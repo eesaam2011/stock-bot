@@ -3888,42 +3888,96 @@ def send_trade_exit(symbol, text):
 
 def monitor_single_trade(symbol, item):
     trade_plan = item.get("trade_plan", {})
-
     metrics = item.get("metrics", {})
 
     snapshot = get_snapshot(symbol)
-
     price = safe_float(snapshot.get("price"))
 
     if price <= 0:
         return
 
     entry = safe_float(trade_plan.get("entry"))
+
+    if entry <= 0:
+        log(f"Monitor skipped {symbol}: invalid entry")
+        return
+
+    # --------------------------------------------------------------------------
+    # أحدث البيانات
+    # --------------------------------------------------------------------------
+
+    df = get_bars(
+        symbol,
+        TimeFrame.Minute,
+        limit=120,
+        cache_ttl=20
+    )
+
+    latest_bar_high = price
+    latest_bar_low = price
+
+    if not df.empty:
+        latest_bar_high = max(
+            price,
+            safe_float(df["high"].iloc[-1], price)
+        )
+
+        latest_bar_low = min(
+            price,
+            safe_float(df["low"].iloc[-1], price)
+        )
+
+    previous_highest = safe_float(
+        item.get("highest_price"),
+        entry
+    )
+
+    previous_lowest = safe_float(
+        item.get("lowest_price"),
+        entry
+    )
+
     highest_price = max(
-        safe_float(item.get("highest_price"), entry),
-        price
+        previous_highest,
+        latest_bar_high
     )
 
     lowest_price = min(
-        safe_float(item.get("lowest_price"), entry),
-        price
+        previous_lowest,
+        latest_bar_low
     )
 
     item["highest_price"] = highest_price
     item["lowest_price"] = lowest_price
 
-    if entry > 0:
-        item["max_profit_pct"] = ((highest_price - entry) / entry) * 100
-        item["max_drawdown_pct"] = ((lowest_price - entry) / entry) * 100
-        
+    item["max_profit_pct"] = (
+        ((highest_price - entry) / entry) * 100
+    )
+
+    item["max_drawdown_pct"] = (
+        ((lowest_price - entry) / entry) * 100
+    )
+
     stop = safe_float(trade_plan.get("stop"))
     t1 = safe_float(trade_plan.get("t1"))
     t2 = safe_float(trade_plan.get("t2"))
     t3 = safe_float(trade_plan.get("t3"))
-    high_target = safe_float(trade_plan.get("high_target"))
+    high_target = safe_float(
+        trade_plan.get("high_target")
+    )
+
+    messages = []
+    updated = False
+
+    # نستخدم أعلى سعر حديث لتسجيل الأهداف التي ربما تحققت بين دورتين
+    target_check_price = max(
+        price,
+        latest_bar_high
+    )
 
     # --------------------------------------------------------------------------
-    # Stop hit
+    # وقف الخسارة
+    # نستخدم السعر الحالي لتجنب افتراض ترتيب الحركة داخل شمعة الدقيقة
     # --------------------------------------------------------------------------
 
     if stop > 0 and price <= stop:
@@ -3936,183 +3990,310 @@ def monitor_single_trade(symbol, item):
 ضرب وقف الخسارة."""
         )
 
-        close_active_trade(symbol, item, "stop_hit")
-
+        close_active_trade(
+            symbol,
+            item,
+            "stop_hit"
+        )
         return
 
-    messages = []
-
-    updated = False
-
     # --------------------------------------------------------------------------
-    # T1 hit
+    # T1
     # --------------------------------------------------------------------------
 
-    if not trade_plan.get("hit_t1") and t1 > 0 and price >= t1:
+    if (
+        not trade_plan.get("hit_t1")
+        and t1 > 0
+        and target_check_price >= t1
+    ):
         trade_plan["hit_t1"] = True
 
-        new_stop = max(stop, entry * 1.002)
+        current_stop = safe_float(
+            trade_plan.get("stop")
+        )
 
-        if new_stop > stop:
+        new_stop = max(
+            current_stop,
+            entry * 1.002
+        )
+
+        if new_stop > current_stop:
             trade_plan["stop"] = new_stop
 
         messages.append(
             f"""🎯 وصل الهدف الأول T1
-💰 السعر الحالي: {fmt_price(price)}
+💰 أعلى سعر حديث: {fmt_price(target_check_price)}
 🛑 الوقف الجديد: {fmt_price(trade_plan.get("stop"))}"""
         )
 
         updated = True
 
     # --------------------------------------------------------------------------
-    # T2 hit
+    # T2
     # --------------------------------------------------------------------------
 
-    if not trade_plan.get("hit_t2") and t2 > 0 and price >= t2:
+    if (
+        not trade_plan.get("hit_t2")
+        and t2 > 0
+        and target_check_price >= t2
+    ):
         trade_plan["hit_t2"] = True
 
         atr = safe_float(metrics.get("atr"))
 
         if atr <= 0:
-            atr = price * 0.025
+            atr = entry * 0.025
+
+        current_stop = safe_float(
+            trade_plan.get("stop")
+        )
 
         new_stop = max(
-            safe_float(trade_plan.get("stop")),
-            price - max(atr, price * 0.02)
+            current_stop,
+            entry + ((t1 - entry) * 0.50),
+            target_check_price - max(
+                atr,
+                target_check_price * 0.02
+            )
         )
 
         trade_plan["stop"] = new_stop
 
         messages.append(
             f"""🎯 وصل الهدف الثاني T2
-💰 السعر الحالي: {fmt_price(price)}
-🛑 الوقف الجديد: {fmt_price(trade_plan.get("stop"))}"""
+💰 أعلى سعر حديث: {fmt_price(target_check_price)}
+🛑 الوقف الجديد: {fmt_price(new_stop)}"""
         )
 
         updated = True
 
     # --------------------------------------------------------------------------
-    # T3 hit
+    # T3
     # --------------------------------------------------------------------------
 
-    if not trade_plan.get("hit_t3") and t3 > 0 and price >= t3:
+    if (
+        not trade_plan.get("hit_t3")
+        and t3 > 0
+        and target_check_price >= t3
+    ):
         trade_plan["hit_t3"] = True
 
         atr = safe_float(metrics.get("atr"))
 
         if atr <= 0:
-            atr = price * 0.02
+            atr = entry * 0.02
+
+        current_stop = safe_float(
+            trade_plan.get("stop")
+        )
 
         new_stop = max(
-            safe_float(trade_plan.get("stop")),
-            price - max(atr * 0.8, price * 0.018)
+            current_stop,
+            t2,
+            target_check_price - max(
+                atr * 0.8,
+                target_check_price * 0.018
+            )
         )
 
         trade_plan["stop"] = new_stop
 
         messages.append(
             f"""🎯 وصل الهدف الثالث T3
-💰 السعر الحالي: {fmt_price(price)}
-🛑 الوقف الجديد: {fmt_price(trade_plan.get("stop"))}
+💰 أعلى سعر حديث: {fmt_price(target_check_price)}
+🛑 الوقف الجديد: {fmt_price(new_stop)}
 
-📌 الصفقة وصلت لهدف قوي، يتم تشديد الوقف لحماية الربح."""
+📌 الصفقة وصلت إلى هدف قوي، وستستمر المتابعة بوقف متحرك."""
         )
 
         updated = True
 
     # --------------------------------------------------------------------------
-    # High target hit
+    # الهدف الممتد
     # --------------------------------------------------------------------------
 
     if (
         high_target > 0
         and not trade_plan.get("hit_high_target")
-        and price >= high_target
+        and target_check_price >= high_target
     ):
         trade_plan["hit_high_target"] = True
 
         messages.append(
             f"""🚀 وصل الهدف الممتد
-💰 السعر الحالي: {fmt_price(price)}
+💰 أعلى سعر حديث: {fmt_price(target_check_price)}
 🎯 الهدف الممتد: {fmt_price(high_target)}
 
-📌 هذه حركة قوية جدًا، يُفضل مراقبة الوقف المتحرك."""
+📌 تستمر المتابعة بوقف متحرك لحماية الربح."""
         )
 
         updated = True
 
     # --------------------------------------------------------------------------
-    # Weakness / emergency checks
+    # وقف متحرك مستمر بعد T2
     # --------------------------------------------------------------------------
 
-    df = get_bars(symbol, TimeFrame.Minute, limit=80, cache_ttl=20)
+    if trade_plan.get("hit_t2"):
+        atr = safe_float(metrics.get("atr"))
+
+        if atr <= 0:
+            atr = highest_price * 0.02
+
+        if trade_plan.get("hit_t3"):
+            trailing_distance = max(
+                atr * 0.8,
+                highest_price * 0.018
+            )
+        else:
+            trailing_distance = max(
+                atr * 1.1,
+                highest_price * 0.022
+            )
+
+        trailing_stop = (
+            highest_price - trailing_distance
+        )
+
+        current_stop = safe_float(
+            trade_plan.get("stop")
+        )
+
+        if trailing_stop > current_stop:
+            trade_plan["stop"] = trailing_stop
+            updated = True
+
+    # --------------------------------------------------------------------------
+    # فحوصات الضعف
+    # --------------------------------------------------------------------------
 
     if not df.empty and len(df) >= 30:
         vwap = calculate_vwap(df)
-
         obv_data = calculate_obv(df)
-
         rvol = calculate_rvol(df)
 
-        volume_accel = calculate_volume_acceleration(df)
+        volume_accel = calculate_volume_acceleration(
+            df
+        )
 
-        volume_accel_ratio = safe_float(volume_accel.get("ratio"))
+        volume_accel_ratio = safe_float(
+            volume_accel.get("ratio")
+        )
 
-        close = safe_float(df["close"].iloc[-1])
+        last_close = safe_float(
+            df["close"].iloc[-1]
+        )
 
-        open_ = safe_float(df["open"].iloc[-1])
+        last_open = safe_float(
+            df["open"].iloc[-1]
+        )
 
-        # VWAP failure before T1
-        if (
+        last_high = safe_float(
+            df["high"].iloc[-1]
+        )
+
+        last_low = safe_float(
+            df["low"].iloc[-1]
+        )
+
+        previous_close = safe_float(
+            df["close"].iloc[-2]
+        )
+
+        candle_range = max(
+            last_high - last_low,
+            0
+        )
+
+        candle_body = abs(
+            last_close - last_open
+        )
+
+        body_ratio = (
+            candle_body / candle_range
+            if candle_range > 0
+            else 0
+        )
+
+        close_position = (
+            (last_close - last_low) / candle_range
+            if candle_range > 0
+            else 0.5
+        )
+
+        strong_bearish_candle = (
+            last_close < last_open
+            and body_ratio >= 0.60
+            and close_position <= 0.25
+        )
+
+        # خروج VWAP قبل T1 يحتاج تأكيد إغلاق شمعتين
+        two_closes_below_vwap = (
             vwap > 0
-            and price < vwap
+            and last_close < vwap
+            and previous_close < vwap
+        )
+
+        if (
+            two_closes_below_vwap
+            and strong_bearish_candle
             and not trade_plan.get("hit_t1")
         ):
             send_trade_exit(
                 symbol,
                 f"""💰 السعر الحالي: {fmt_price(price)}
-📉 كسر VWAP قبل تحقيق الهدف الأول.
+📉 إغلاق شمعتين تحت VWAP مع شمعة هابطة قوية.
 
 📌 سبب الخروج:
-فشل مبكر في الزخم."""
+فشل مبكر مؤكد في الزخم."""
             )
 
-            close_active_trade(symbol, item, "vwap_failure_before_t1")
-
+            close_active_trade(
+                symbol,
+                item,
+                "confirmed_vwap_failure_before_t1"
+            )
             return
 
-        # VWAP weakness after T1
+        # بعد T1 لا نخرج فورًا، بل نحمي الدخول
         if (
             vwap > 0
-            and price < vwap
+            and last_close < vwap
             and trade_plan.get("hit_t1")
         ):
+            current_stop = safe_float(
+                trade_plan.get("stop")
+            )
+
             new_stop = max(
-                safe_float(trade_plan.get("stop")),
+                current_stop,
                 entry
             )
 
-            if new_stop > safe_float(trade_plan.get("stop")):
+            if new_stop > current_stop:
                 trade_plan["stop"] = new_stop
 
                 messages.append(
-                    f"""⚠️ السعر كسر VWAP بعد تحقيق هدف
+                    f"""⚠️ إغلاق تحت VWAP بعد تحقيق هدف
 🛑 تم تشديد الوقف إلى: {fmt_price(new_stop)}"""
                 )
 
                 updated = True
 
-        # OBV deterioration after profit
+        # ضعف OBV بعد الربح
         if (
             not obv_data.get("obv_rising")
             and trade_plan.get("hit_t1")
         ):
+            current_stop = safe_float(
+                trade_plan.get("stop")
+            )
+
             new_stop = max(
-                safe_float(trade_plan.get("stop")),
+                current_stop,
                 entry
             )
 
-            if new_stop > safe_float(trade_plan.get("stop")):
+            if new_stop > current_stop:
                 trade_plan["stop"] = new_stop
 
                 messages.append(
@@ -4122,48 +4303,63 @@ def monitor_single_trade(symbol, item):
 
                 updated = True
 
-        # Volume collapse
+        # انهيار الحجم قبل T1 يحتاج شمعة ضعيفة أيضًا
         if (
             rvol < 1.5
             and volume_accel_ratio < 1.0
+            and strong_bearish_candle
             and not trade_plan.get("hit_t1")
         ):
             send_trade_exit(
                 symbol,
                 f"""💰 السعر الحالي: {fmt_price(price)}
-📉 انهيار واضح في RVOL وتسارع الحجم قبل تحقيق الهدف.
+📉 انهيار في RVOL وتسارع الحجم مع شمعة هابطة قوية.
 
 📌 سبب الخروج:
-Volume Death."""
+Volume Death مؤكد."""
             )
 
-            close_active_trade(symbol, item, "volume_death_before_t1")
-
+            close_active_trade(
+                symbol,
+                item,
+                "confirmed_volume_death_before_t1"
+            )
             return
 
-        # Weak red candle after extended move
+        # ضعف بعد T2
         if (
-            close < open_
+            strong_bearish_candle
             and trade_plan.get("hit_t2")
-            and close <= safe_float(df["low"].iloc[-1]) * 1.01
         ):
-            new_stop = max(
-                safe_float(trade_plan.get("stop")),
-                price - max(safe_float(metrics.get("atr")), price * 0.015)
+            current_stop = safe_float(
+                trade_plan.get("stop")
             )
 
-            if new_stop > safe_float(trade_plan.get("stop")):
+            atr = safe_float(metrics.get("atr"))
+
+            if atr <= 0:
+                atr = price * 0.02
+
+            new_stop = max(
+                current_stop,
+                price - max(
+                    atr,
+                    price * 0.015
+                )
+            )
+
+            if new_stop > current_stop:
                 trade_plan["stop"] = new_stop
 
                 messages.append(
-                    f"""⚠️ شمعة دقيقة ضعيفة بعد امتداد قوي
+                    f"""⚠️ شمعة دقيقة هابطة بقوة بعد امتداد
 🛑 تم تشديد الوقف إلى: {fmt_price(new_stop)}"""
                 )
 
                 updated = True
 
     # --------------------------------------------------------------------------
-    # Send updates
+    # الإرسال والحفظ
     # --------------------------------------------------------------------------
 
     if messages:
@@ -4172,13 +4368,14 @@ Volume Death."""
             "\n\n".join(messages)
         )
 
-    if updated:
-        item["trade_plan"] = trade_plan
-        item["last_update"] = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+    item["trade_plan"] = trade_plan
+    item["last_update"] = datetime.now(
+        saudi_tz
+    ).strftime("%Y-%m-%d %H:%M:%S")
 
-        update_active_trade(symbol, item)
-
-
+    # الحفظ كل دورة ضروري لحفظ أعلى سعر وأقل سعر والإحصاءات
+    update_active_trade(symbol, item)    
+        
 def monitor_active_trades():
     trades = load_active_trades()
 
