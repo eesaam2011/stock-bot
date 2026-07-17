@@ -3360,7 +3360,6 @@ def final_safety_check(metrics, trade_plan):
     snapshot = get_snapshot(symbol)
 
     price = safe_float(snapshot.get("price"))
-
     spread_pct = safe_float(snapshot.get("spread_pct"), 999)
 
     if price <= 0:
@@ -3369,9 +3368,21 @@ def final_safety_check(metrics, trade_plan):
     if spread_pct > MAX_SPREAD:
         return False, "السبريد توسع قبل الإرسال"
 
-    vwap = safe_float(metrics.get("vwap"))
+    # أحدث شموع قبل الإرسال
+    df = get_bars(
+        symbol,
+        TimeFrame.Minute,
+        limit=20,
+        cache_ttl=5
+    )
 
-    if vwap > 0 and price < vwap:
+    # إعادة حساب VWAP من البيانات الأحدث
+    if not df.empty and len(df) >= 5:
+        live_vwap = calculate_vwap(df)
+    else:
+        live_vwap = safe_float(metrics.get("vwap"))
+
+    if live_vwap > 0 and price < live_vwap:
         return False, "كسر VWAP قبل الإرسال"
 
     entry = safe_float(trade_plan.get("entry"))
@@ -3384,7 +3395,11 @@ def final_safety_check(metrics, trade_plan):
 
     final_score = safe_float(metrics.get("final_score"))
 
-    required_score = LAST_HOUR_SCORE if is_last_market_hour() else MIN_SCORE
+    required_score = (
+        LAST_HOUR_SCORE
+        if is_last_market_hour()
+        else MIN_SCORE
+    )
 
     if final_score < required_score:
         return False, "الدرجة النهائية أقل من المطلوب"
@@ -3394,22 +3409,59 @@ def final_safety_check(metrics, trade_plan):
         accel = safe_float(metrics.get("volume_accel_ratio"))
         trend_ok = bool(metrics.get("trend_15m_ok"))
 
-        if not (rvol >= 5 and accel >= 2 and trend_ok):
+        if not (
+            rvol >= 5
+            and accel >= 2
+            and trend_ok
+        ):
             return False, "آخر ساعة والسهم لا يملك زخمًا استثنائيًا"
 
-    df = get_bars(symbol, TimeFrame.Minute, limit=10, cache_ttl=5)
-
     if not df.empty and len(df) >= 3:
-        last_close = safe_float(df["close"].iloc[-1])
         last_open = safe_float(df["open"].iloc[-1])
+        last_high = safe_float(df["high"].iloc[-1])
         last_low = safe_float(df["low"].iloc[-1])
+        last_close = safe_float(df["close"].iloc[-1])
 
-        if last_close < last_open and last_close <= last_low * 1.01:
-            return False, "آخر شمعة دقيقة ضعيفة جدًا"
+        candle_range = max(
+            last_high - last_low,
+            0
+        )
+
+        candle_body = abs(
+            last_close - last_open
+        )
+
+        body_ratio = (
+            candle_body / candle_range
+            if candle_range > 0
+            else 0
+        )
+
+        close_position = (
+            (last_close - last_low) / candle_range
+            if candle_range > 0
+            else 0.5
+        )
+
+        strong_bearish_candle = (
+            last_close < last_open
+            and body_ratio >= 0.60
+            and close_position <= 0.25
+        )
+
+        if strong_bearish_candle:
+            return False, "آخر شمعة دقيقة هابطة بقوة"
+
+    # نحمي الاختراق فقط إذا كان المرشح مصنفًا أصلًا كاختراق
+    if bool(metrics.get("breakout")):
+        resistance = safe_float(
+            metrics.get("resistance")
+        )
+
+        if resistance > 0 and price <= resistance:
+            return False, "فشل الاختراق قبل الإرسال"
 
     return True, "OK"
-
-
 
 # ==============================================================================
 # Alert Message Builder - Arabic
