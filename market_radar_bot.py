@@ -2105,77 +2105,137 @@ def is_universe_empty():
 # ==============================================================================
 
 priority_cursor = 0
-normal_cursor = 0
+
 DISCOVERY_INTERVAL = 300
-DISCOVERY_CHUNK_SIZE = 250
+DISCOVERY_CHUNK_SIZE = 400
+
 
 def get_next_batch():
     global priority_cursor
 
-    batch_size = 200
+    batch_size = 300
 
     if not PRIORITY_UNIVERSE:
         return []
 
-    source = PRIORITY_UNIVERSE
+    source = list(PRIORITY_UNIVERSE)
 
     if priority_cursor >= len(source):
         priority_cursor = 0
 
-    batch = source[priority_cursor:priority_cursor + batch_size]
+    batch = source[
+        priority_cursor:
+        priority_cursor + batch_size
+    ]
 
     if len(batch) < batch_size:
-        batch += source[:batch_size - len(batch)]
+        remaining = batch_size - len(batch)
+        batch += source[:remaining]
 
-    priority_cursor = (priority_cursor + batch_size) % max(len(source), 1)
+    priority_cursor = (
+        priority_cursor + batch_size
+    ) % max(len(source), 1)
 
     return list(dict.fromkeys(batch))
 
 def run_discovery_scan():
     global PRIORITY_UNIVERSE
     global NORMAL_UNIVERSE
+    global priority_cursor
 
-    if not NORMAL_UNIVERSE:
+    if not UNIVERSE:
+        log("Discovery scan skipped: UNIVERSE is empty")
         return
 
-    promoted = set()
+    scan_source = list(dict.fromkeys(UNIVERSE))
 
-    for chunk in chunk_list(NORMAL_UNIVERSE, DISCOVERY_CHUNK_SIZE):
-        snapshots_map = get_snapshots_batch(chunk)
+    hot_symbols = set()
+    checked_symbols = 0
+    snapshot_count = 0
+    error_count = 0
+
+    total_chunks = math.ceil(
+        len(scan_source) / DISCOVERY_CHUNK_SIZE
+    )
+
+    log(
+        f"Discovery scan started | "
+        f"Universe={len(scan_source)} | "
+        f"ChunkSize={DISCOVERY_CHUNK_SIZE} | "
+        f"Chunks={total_chunks}"
+    )
+
+    for chunk_number, chunk in enumerate(
+        chunk_list(
+            scan_source,
+            DISCOVERY_CHUNK_SIZE
+        ),
+        start=1
+    ):
+        try:
+            snapshots_map = get_snapshots_batch(chunk) or {}
+        except Exception as e:
+            error_count += len(chunk)
+
+            log(
+                f"Discovery batch error | "
+                f"Chunk={chunk_number}/{total_chunks} | "
+                f"Symbols={len(chunk)} | "
+                f"Error={e}"
+            )
+            continue
+
+        snapshot_count += len(snapshots_map)
 
         for symbol in chunk:
+            checked_symbols += 1
+
             try:
                 snapshot = snapshots_map.get(symbol)
 
                 if not snapshot:
                     continue
 
-                hot, snapshot = fast_priority_check(symbol, snapshot=snapshot)
-                
+                hot, _ = fast_priority_check(
+                    symbol,
+                    snapshot=snapshot
+                )
+
                 if hot:
-                    promoted.add(symbol)
+                    hot_symbols.add(symbol)
 
             except Exception as e:
-                log(f"Discovery scan error {symbol}: {e}")
+                error_count += 1
+                log(
+                    f"Discovery scan error {symbol}: {e}"
+                )
 
-    if not promoted:
         log(
-            f"Discovery scan completed | "
-            f"Promoted=0 | "
-            f"Priority={len(PRIORITY_UNIVERSE)} | "
-            f"Normal={len(NORMAL_UNIVERSE)}"
+            f"Discovery progress | "
+            f"Chunk={chunk_number}/{total_chunks} | "
+            f"Checked={checked_symbols}/{len(scan_source)} | "
+            f"Hot={len(hot_symbols)}"
         )
-        return
 
-    priority_set = set(promoted)
+    previous_priority = set(PRIORITY_UNIVERSE)
 
-    normal_set = set(UNIVERSE) - priority_set
+    new_priority_set = set(hot_symbols)
+    new_normal_set = set(scan_source) - new_priority_set
 
-    PRIORITY_UNIVERSE = sorted(priority_set)
+    promoted = new_priority_set - previous_priority
+    demoted = previous_priority - new_priority_set
 
-    NORMAL_UNIVERSE = sorted(normal_set)
-    
-    redis_set_json(KEY_PRIORITY, PRIORITY_UNIVERSE)
+    PRIORITY_UNIVERSE = sorted(new_priority_set)
+    NORMAL_UNIVERSE = sorted(new_normal_set)
+
+    # إعادة المؤشر إذا أصبحت قائمة Priority أصغر
+    if priority_cursor >= len(PRIORITY_UNIVERSE):
+        priority_cursor = 0
+
+    redis_set_json(
+        KEY_PRIORITY,
+        PRIORITY_UNIVERSE
+    )
 
     redis_set_json(
         f"{REDIS_PREFIX}:normal",
@@ -2184,11 +2244,15 @@ def run_discovery_scan():
 
     log(
         f"Discovery scan completed | "
-        f"Promoted={len(promoted)} | "
+        f"Universe={len(scan_source)} | "
+        f"Checked={checked_symbols} | "
+        f"Snapshots={snapshot_count} | "
         f"Priority={len(PRIORITY_UNIVERSE)} | "
-        f"Normal={len(NORMAL_UNIVERSE)}"
+        f"Normal={len(NORMAL_UNIVERSE)} | "
+        f"Promoted={len(promoted)} | "
+        f"Demoted={len(demoted)} | "
+        f"Errors={error_count}"
     )
-
 
 # ==============================================================================
 # Watchlist / Memory
