@@ -1961,9 +1961,32 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
             to_remove.append(symbol)
             continue
 
-        reason = failure_reason(current_data, df, watch)
+        reason = failure_reason(
+            current_data,
+            df,
+            watch
+        )
 
         if reason:
+            previous_reason = watch.get(
+                "pending_failure_reason"
+            )
+
+            if previous_reason == reason:
+                watch["failure_count"] = (
+                    int(watch.get("failure_count", 0))
+                    + 1
+                )
+            else:
+                watch["pending_failure_reason"] = reason
+                watch["failure_count"] = 1
+
+            # لا نحذف السهم بسبب قراءة واحدة مؤقتة.
+            # مع فحص كل 10 ثوانٍ، 6 قراءات تعني نحو دقيقة.
+            if watch["failure_count"] < 6:
+                watchlist[symbol] = watch
+                continue
+
             if not state["sent_failure_alerts"].get(symbol):
                 if send_telegram_message(
                     build_failure_alert_message(
@@ -1977,13 +2000,19 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
                         "price": current_price,
                         "reason": reason,
                     }
-                    runtime_stats["failure_alerts_sent"] += 1
+
+                    runtime_stats[
+                        "failure_alerts_sent"
+                    ] += 1
 
             to_remove.append(symbol)
             continue
 
+        # تعافت الإشارة، فنصفر عداد الفشل المؤقت.
+        watch["failure_count"] = 0
+        watch["pending_failure_reason"] = None
+
         watchlist[symbol] = watch
-        
         
     for symbol in to_remove:
         watchlist.pop(symbol, None)
