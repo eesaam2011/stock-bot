@@ -4001,7 +4001,7 @@ def close_active_trade(symbol, item, reason):
         runtime_stats["active_trades"] = len(ACTIVE_TRADES)
 
 def send_trade_update(symbol, text):
-    message = f"""🟢 <b>Elite Radar - تحديث صفقة</b>
+    message = f"""🟢 <b>market radar bot - تحديث صفقة</b>
 
 📈 <b>السهم:</b> {symbol}
 
@@ -4012,7 +4012,7 @@ def send_trade_update(symbol, text):
 
 
 def send_trade_exit(symbol, text):
-    message = f"""🔴 <b>Elite Radar - خروج / تحذير</b>
+    message = f"""🔴 <b>market radar bot - خروج / تحذير</b>
 
 📈 <b>السهم:</b> {symbol}
 
