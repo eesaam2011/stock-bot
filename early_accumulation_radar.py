@@ -41,7 +41,7 @@ NY_TZ = pytz.timezone("America/New_York")
 
 UNIVERSE_REBUILD_INTERVAL = 30 * 60      # إعادة بناء الـ Universe كل 30 دقيقة
 ACCUMULATION_SCAN_INTERVAL = 2 * 60      # فحص السوق كل دقيقتين
-WATCHLIST_MONITOR_INTERVAL = 30          # مراقبة جميع أسهم الـ Watchlist كل 30 ثانية
+WATCHLIST_MONITOR_INTERVAL = 10          # مراقبة جميع أسهم الـ Watchlist كل 30 ثانية
 WATCHLIST_TTL_HOURS = 24                 # الاحتفاظ بالسهم في الـ Watchlist لمدة 24 ساعة
 
 PRICE_MIN = float(os.getenv("PRICE_MIN", "0.5"))
