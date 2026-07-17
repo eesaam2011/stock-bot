@@ -253,34 +253,45 @@ def json_loads(data):
 # ==============================================================================
 # Telegram
 # ==============================================================================
-
 def send_telegram(message):
 
     try:
-
-        requests.post(
-
+        response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-
             json={
-
                 "chat_id": TELEGRAM_CHAT_ID,
-
                 "text": message,
-
                 "parse_mode": "HTML",
-
                 "disable_web_page_preview": True
-
             },
-
             timeout=15
-
         )
 
-    except Exception as e:
+        if response.ok:
+            return True
 
-        log(e)
+        log(
+            f"Telegram Error | "
+            f"HTTP={response.status_code} | "
+            f"Response={response.text}"
+        )
+        return False
+
+    except requests.exceptions.Timeout:
+        log("Telegram Error | Request timed out")
+        return False
+
+    except requests.exceptions.ConnectionError:
+        log("Telegram Error | Connection failed")
+        return False
+
+    except requests.exceptions.RequestException as e:
+        log(f"Telegram Request Error | {e}")
+        return False
+
+    except Exception as e:
+        log(f"Telegram Unexpected Error | {e}")
+        return False
 
 
 # ==============================================================================
