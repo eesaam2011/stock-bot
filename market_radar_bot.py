@@ -3735,27 +3735,43 @@ def activate_trade(symbol, metrics, trade_plan):
 def send_elite_alert(metrics):
     symbol = metrics["symbol"]
 
+    # التنبيهات الجديدة خلال السوق الرسمي فقط
     if not is_regular_market_hours():
         log(
             f"Alert skipped {symbol}: خارج ساعات التداول الرسمية "
-            f"(مراقبة/بريه فقط، لا يتم إرسال تنبيهات)"
+            f"(مراقبة فقط، لا يتم إرسال تنبيهات دخول)"
         )
         return False
 
+    # منع تكرار تنبيه الدخول في اليوم نفسه
     if already_alerted_today(symbol):
-        log(f"Finalist rejected {symbol}: already alerted today")
+        log(
+            f"Finalist rejected {symbol}: "
+            f"already alerted today"
+        )
         return False
 
+    # بناء خطة الصفقة
     trade_plan, plan_reason = build_trade_plan(metrics)
 
     if not trade_plan:
-        log(f"Finalist rejected {symbol}: trade plan failed - {plan_reason}")
+        log(
+            f"Finalist rejected {symbol}: "
+            f"trade plan failed - {plan_reason}"
+        )
         return False
 
-    ok, reason = final_safety_check(metrics, trade_plan)
+    # آخر فحص مباشر قبل إرسال التنبيه
+    ok, reason = final_safety_check(
+        metrics,
+        trade_plan
+    )
 
     if not ok:
-        log(f"Finalist rejected {symbol}: final safety failed - {reason}")
+        log(
+            f"Finalist rejected {symbol}: "
+            f"final safety failed - {reason}"
+        )
 
         save_rejection(
             symbol,
@@ -3767,31 +3783,76 @@ def send_elite_alert(metrics):
         )
         return False
 
-    message = build_alert_message(metrics, trade_plan)
+    # بناء رسالة التنبيه
+    message = build_alert_message(
+        metrics,
+        trade_plan
+    )
 
-    send_telegram(message)
+    # لا نسجل التنبيه إلا بعد التأكد من نجاح إرساله
+    sent = send_telegram(message)
 
+    if not sent:
+        log(
+            f"Market Radar alert failed: {symbol} | "
+            f"Telegram send failed"
+        )
+        return False
+
+    alert_time = datetime.now(
+        saudi_tz
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    # تسجيل التنبيه لمنع التكرار
     save_sent_alert(
         symbol,
         {
             "date": today_ksa(),
-            "time": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
-            "score": metrics.get("final_score")
+            "time": alert_time,
+            "score": safe_float(
+                metrics.get("final_score")
+            ),
+            "entry": safe_float(
+                trade_plan.get("entry")
+            )
         }
     )
 
-    save_alert_history(symbol, metrics, trade_plan)
+    # حفظ سجل التنبيه والصفقة
+    save_alert_history(
+        symbol,
+        metrics,
+        trade_plan
+    )
 
-    activate_trade(symbol, metrics, trade_plan)
+    # تفعيل المتابعة
+    activated = activate_trade(
+        symbol,
+        metrics,
+        trade_plan
+    )
 
+    if not activated:
+        log(
+            f"Market Radar warning: {symbol} | "
+            f"alert sent but trade activation failed"
+        )
+
+    # إزالة السهم من قائمة الانتظار بعد نجاح التنبيه
     remove_from_watchlist(symbol)
 
-    runtime_stats["alerts_sent"] += 1
+    runtime_stats["alerts_sent"] = (
+        int(runtime_stats.get("alerts_sent", 0)) + 1
+    )
 
-    log(f"Market Radar alert sent: {symbol} score={safe_float(metrics.get('final_score')):.1f}")
+    log(
+        f"Market Radar alert sent: {symbol} | "
+        f"score={safe_float(metrics.get('final_score')):.1f} | "
+        f"entry={fmt_price(trade_plan.get('entry'))} | "
+        f"monitoring={'active' if activated else 'failed'}"
+    )
 
     return True
-
 
 # ==============================================================================
 # Active Trade Manager
