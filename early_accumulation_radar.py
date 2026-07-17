@@ -1838,47 +1838,6 @@ def check_entry_conditions(
 
     return True
 
-def classify_entry_signal(
-    data: Dict[str, Any]
-) -> Tuple[str, int]:
-    confidence = int(
-        max(
-            0,
-            min(
-                100,
-                data.get("score", 0)
-            )
-        )
-    )
-
-    if safe_float(data.get("rvol"), 0) >= 4:
-        confidence += 2
-
-    if safe_float(data.get("rvol"), 0) >= 6:
-        confidence += 2
-
-    if data.get("volume_expansion"):
-        confidence += 2
-
-    if data.get("obv_breakout"):
-        confidence += 2
-
-    if data.get("obv_curve_ok"):
-        confidence += 1
-
-    if safe_float(data.get("float_shares"), 999999999) <= 20_000_000:
-        confidence += 2
-
-    if safe_float(data.get("float_shares"), 999999999) <= 10_000_000:
-        confidence += 2
-
-    confidence = min(confidence, 100)
-
-    if confidence >= EXPLOSION_MIN_SCORE:
-        return "🚀 انفجار محتمل", confidence
-
-    return "🔥 اختراق قوي", confidence
-    
 def failure_reason(data: Optional[Dict[str, Any]], df: pd.DataFrame, watch: Dict[str, Any]) -> Optional[str]:
     created_at = parse_iso(watch.get("created_at"))
     if created_at and now_saudi() - created_at < dt.timedelta(minutes=WATCHLIST_GRACE_MINUTES):
