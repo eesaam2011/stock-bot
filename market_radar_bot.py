@@ -2836,38 +2836,53 @@ def calculate_synergy_multiplier(
     positive_news
 ):
     multiplier = 1.00
-
     reasons = []
 
     float_value = get_float(symbol)
 
-    low_float = float_value and float_value <= 50_000_000
+    low_float = bool(
+        float_value
+        and float_value <= 50_000_000
+    )
 
     strong_rvol = rvol >= 4
-
     strong_accel = volume_accel_ratio >= 2
 
+    # فلوت جيد مع نشاط حقيقي
     if low_float and strong_rvol:
-        multiplier += 0.10
+        multiplier += 0.05
         reasons.append("فلوت منخفض مع RVOL قوي")
 
+    # توافق الحجم النسبي مع تسارع الحجم
     if strong_rvol and strong_accel:
-        multiplier += 0.10
+        multiplier += 0.06
         reasons.append("RVOL قوي مع تسارع واضح في الحجم")
 
+    # تأكيد اتجاهي متكامل
     if price > vwap and obv_rising and trend_15m_ok:
-        multiplier += 0.10
-        reasons.append("السعر فوق VWAP مع OBV صاعد واتجاه 15 دقيقة داعم")
+        multiplier += 0.04
+        reasons.append(
+            "السعر فوق VWAP مع OBV صاعد واتجاه 15 دقيقة داعم"
+        )
 
-    if breakout and atr_pct >= 1.5 and resistance_distance_pct <= 1.5:
-        multiplier += 0.10
-        reasons.append("اختراق مع ATR مناسب وقرب ممتاز من منطقة الدخول")
+    # اختراق حديث وقريب من المقاومة، وليس سهمًا ممتدًا بعيدًا عنها
+    breakout_near_level = (
+        breakout
+        and -2.0 <= resistance_distance_pct <= 0
+    )
 
-    if positive_news and strong_rvol:
+    if breakout_near_level and atr_pct >= 1.5:
         multiplier += 0.05
+        reasons.append(
+            "اختراق مؤكد قريب من المقاومة مع ATR مناسب"
+        )
+
+    # الخبر لا يكفي وحده، بل يحتاج زخمًا فعليًا
+    if positive_news and strong_rvol:
+        multiplier += 0.03
         reasons.append("خبر إيجابي داعم مع زخم قوي")
 
-    multiplier = min(multiplier, 1.25)
+    multiplier = min(multiplier, 1.20)
 
     return multiplier, reasons
 
@@ -2881,22 +2896,29 @@ def calculate_penalties(
     minor_negative_news
 ):
     penalties = 0
-
     warnings = []
 
     float_value = get_float(symbol)
 
-    if float_value and float_value > 100_000_000:
-        penalties += 5
-        warnings.append("الفلوت مرتفع نسبيًا")
-
+    # لا نجمع عقوبتي الفلوت على السهم نفسه
     if float_value and float_value > 500_000_000:
         penalties += 25
         warnings.append("فلوت عالي جدًا")
 
-    if resistance_distance_pct <= 0.30 and not breakout:
-        penalties += 8
-        warnings.append("مقاومة قريبة جدًا")
+    elif float_value and float_value > 100_000_000:
+        penalties += 5
+        warnings.append("الفلوت مرتفع نسبيًا")
+
+    if not breakout:
+        # السهم أسفل مقاومة قريبة جدًا ولم يؤكد الاختراق
+        if 0 <= resistance_distance_pct <= 0.30:
+            penalties += 8
+            warnings.append("مقاومة قريبة جدًا دون اختراق")
+
+        # السعر تجاوز المستوى لكن لم تتحقق جودة الاختراق
+        elif resistance_distance_pct < -0.30:
+            penalties += 6
+            warnings.append("السعر فوق المقاومة دون تأكيد اختراق")
 
     if atr_pct < 1.5:
         penalties += 5
@@ -2910,13 +2932,7 @@ def calculate_penalties(
         penalties += 12
         warnings.append("خبر سلبي خفيف")
 
-    if is_last_market_hour():
-        penalties += 5
-        warnings.append("وضع آخر ساعة: شروط أكثر صرامة")
-
     return penalties, warnings
-
-
 
 # ==============================================================================
 # Hard Rules
