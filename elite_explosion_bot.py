@@ -2011,6 +2011,21 @@ def update_trailing_stop(trade, price):
 
 def check_monitoring_weakness(symbol, trade, price):
     try:
+        # لا نفعّل مخارج ضعف الحركة خلال أول 3 دقائق
+        entered_at = trade.get("entered_at")
+
+        if entered_at:
+            try:
+                elapsed = (
+                    now_ksa() - datetime.fromisoformat(entered_at)
+                ).total_seconds()
+
+                if elapsed < 180:
+                    return None
+
+            except Exception:
+                pass
+                
         df = get_bars_df(symbol, TimeFrame.Minute, limit=60)
         if df is None or len(df) < 20:
             return None
