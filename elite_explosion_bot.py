@@ -1993,11 +1993,14 @@ def get_current_price(symbol):
         return None
     return snap.get("price")
 
-
 def update_trailing_stop(trade, price):
     try:
         if price > trade.get("highest_price", trade["entry"]):
             trade["highest_price"] = price
+
+        # لا نرفع الوقف قبل تحقيق الهدف الأول
+        if not trade.get("t1_hit", False):
+            return
 
         highest = trade.get("highest_price", trade["entry"])
         trailing_stop = highest * (1 - TRAILING_STOP_PCT / 100)
@@ -2005,9 +2008,8 @@ def update_trailing_stop(trade, price):
         if trailing_stop > trade.get("stop", 0):
             trade["stop"] = round(trailing_stop, 4)
 
-    except Exception:
-        pass
-
+    except Exception as e:
+        print(f"⚠️ Trailing stop update failed: {e}")
 
 def check_monitoring_weakness(symbol, trade, price):
     try:
