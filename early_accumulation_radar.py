@@ -932,14 +932,20 @@ def calculate_volume_acceleration(df: pd.DataFrame) -> Dict[str, Any]:
 def volume_expansion_ok(df: pd.DataFrame) -> bool:
     return calculate_volume_acceleration(df).get("volume_acceleration", False)
     
-def resistance_body_level(df: pd.DataFrame, lookback: int = RESISTANCE_BODY_LOOKBACK) -> Optional[float]:
+def resistance_body_level(
+    df: pd.DataFrame,
+    lookback: int = RESISTANCE_BODY_LOOKBACK
+) -> Optional[float]:
     if len(df) < lookback + 1:
         return None
-    base = df.iloc[-(lookback + 1):-1].copy()
-    body_high = base[["open", "close"]].max(axis=1)
-    resistance = safe_float(body_high.max(), 0)
-    return resistance if resistance > 0 else None
 
+    base = df.iloc[-(lookback + 1):-1].copy()
+
+    # استخدم أعلى القمم الفعلية بدلاً من أعلى جسم شمعة
+    resistance = safe_float(base["high"].max(), 0)
+
+    return resistance if resistance > 0 else None
+    
 def close_above_resistance(df: pd.DataFrame, resistance: float) -> bool:
     if df.empty or resistance <= 0:
         return False
@@ -1752,8 +1758,18 @@ def check_entry_conditions(
 
     last_bar, last_timestamp, last_position = closed_bar_result
 
+    if last_position < 1:
+        return False
+
+    previous_bar = df.iloc[last_position - 1]
+
     last_close = safe_float(
         last_bar.get("close"),
+        0
+    )
+
+    previous_close = safe_float(
+        previous_bar.get("close"),
         0
     )
 
@@ -1762,15 +1778,19 @@ def check_entry_conditions(
         0
     )
 
-    if last_close <= resistance:
+    # اشتراط إغلاق آخر شمعتين مكتملتين فوق المقاومة
+    if (
+        previous_close <= resistance
+        or last_close <= resistance
+    ):
         return False
-        
+
     live_price = safe_float(
         data.get("price"),
         0
     )
 
-    if live_price <= (resistance * 0.995):
+    if live_price < (resistance * 0.995):
         return False
 
     breakout_pct = (
@@ -1780,7 +1800,7 @@ def check_entry_conditions(
 
     if breakout_pct < ENTRY_MIN_BREAKOUT_PCT:
         return False
-        
+
     now_utc = pd.Timestamp.now(tz="UTC")
 
     bar_close_time = (
