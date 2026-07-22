@@ -1924,6 +1924,20 @@ def monitor_watchlist(watchlist: Dict[str, Any], state: Dict[str, Any], float_ca
             watch["snapshot"] = current_data
             
         if current_data and not df.empty and check_entry_conditions(current_data, df):
+            _, confidence = classify_entry_signal(
+                current_data,
+                df
+            )
+
+            if confidence < MIN_ENTRY_CONFIDENCE:
+                print(
+                    f"⛔ {symbol} entry rejected: "
+                    f"confidence={confidence} "
+                    f"< {MIN_ENTRY_CONFIDENCE}"
+                )
+                watchlist[symbol] = watch
+                continue
+                
             if not state["sent_entry_alerts"].get(symbol):
                 if send_telegram_message(
                     build_entry_alert_message(
