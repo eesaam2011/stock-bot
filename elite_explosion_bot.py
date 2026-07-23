@@ -2003,14 +2003,21 @@ def update_trailing_stop(trade, price):
             return
 
         highest = trade.get("highest_price", trade["entry"])
-        trailing_stop = highest * (1 - TRAILING_STOP_PCT / 100)
+
+        # بعد الهدف الثالث نعطي السهم مساحة أكبر
+        if trade.get("t3_hit", False):
+            trailing_pct = 3.0
+        else:
+            trailing_pct = TRAILING_STOP_PCT
+
+        trailing_stop = highest * (1 - trailing_pct / 100)
 
         if trailing_stop > trade.get("stop", 0):
             trade["stop"] = round(trailing_stop, 4)
 
     except Exception as e:
         print(f"⚠️ Trailing stop update failed: {e}")
-
+        
 def check_monitoring_weakness(symbol, trade, price):
     try:
         # لا نفعّل مخارج ضعف الحركة خلال أول 3 دقائق
