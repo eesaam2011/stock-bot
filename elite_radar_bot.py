@@ -2756,10 +2756,19 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
     price = safe_float(snapshot.get("price"))
 
     if df is None or df.empty:
-        df = get_bars(symbol, TimeFrame.Minute, limit=160, cache_ttl=60)
-        
+        df = get_bars(
+            symbol,
+            TimeFrame.Minute,
+            limit=160,
+            cache_ttl=60
+        )
+
     if df.empty or len(df) < 40:
-        save_rejection(symbol, "بيانات الشموع غير كافية", snapshot)
+        save_rejection(
+            symbol,
+            "بيانات الشموع غير كافية",
+            snapshot
+        )
         return None
 
     vwap = calculate_vwap(df)
@@ -2798,7 +2807,6 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         return None
 
     volume_acceleration = calculate_volume_acceleration(df)
-
     volume_accel_ratio = safe_float(volume_acceleration.get("ratio"))
 
     obv_data = calculate_obv(df)
@@ -2830,6 +2838,38 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         return None
 
     resistance_data = calculate_resistance(df)
+
+    resistance = safe_float(
+        resistance_data.get("resistance")
+    )
+
+    resistance_distance_pct = safe_float(
+        resistance_data.get("distance_pct"),
+        999
+    )
+
+    last_close = safe_float(df["close"].iloc[-1])
+    previous_close = safe_float(df["close"].iloc[-2])
+
+    breakout_pct = 999
+
+    if resistance > 0:
+        breakout_pct = (
+            (price - resistance) / resistance
+        ) * 100
+
+    fresh_breakout = (
+        resistance > 0
+        and previous_close <= resistance
+        and last_close > resistance
+        and price >= resistance
+    )
+
+    breakout_hold = (
+        resistance > 0
+        and last_close > resistance
+        and price >= resistance * 0.997
+    )
 
     trend_15m = get_15m_trend(symbol)
 
@@ -2865,8 +2905,11 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         trend_15m_ok=trend_15m.get("ok"),
         float_score=float_points,
         breakout=resistance_data.get("breakout"),
-        resistance_distance_pct=safe_float(resistance_data.get("distance_pct"), 999),
-        spread_pct=safe_float(snapshot.get("spread_pct"), 999),
+        resistance_distance_pct=resistance_distance_pct,
+        spread_pct=safe_float(
+            snapshot.get("spread_pct"),
+            999
+        ),
         news_bonus=safe_int(news_data.get("bonus"))
     )
 
@@ -2880,15 +2923,18 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         trend_15m_ok=trend_15m.get("ok"),
         breakout=resistance_data.get("breakout"),
         atr_pct=atr_pct,
-        resistance_distance_pct=safe_float(resistance_data.get("distance_pct"), 999),
+        resistance_distance_pct=resistance_distance_pct,
         positive_news=news_data.get("positive")
     )
 
     penalty_points, warnings = calculate_penalties(
         symbol=symbol,
         atr_pct=atr_pct,
-        spread_pct=safe_float(snapshot.get("spread_pct"), 999),
-        resistance_distance_pct=safe_float(resistance_data.get("distance_pct"), 999),
+        spread_pct=safe_float(
+            snapshot.get("spread_pct"),
+            999
+        ),
+        resistance_distance_pct=resistance_distance_pct,
         breakout=resistance_data.get("breakout"),
         minor_negative_news=news_data.get("minor_negative")
     )
@@ -2905,15 +2951,27 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         99,
         max(
             50,
-            final_score - (len(warnings) * 2) + (5 if len(synergy_reasons) >= 3 else 0)
+            final_score
+            - (len(warnings) * 2)
+            + (5 if len(synergy_reasons) >= 3 else 0)
         )
+    )
+
+    armed = (
+        final_score >= max(0, MIN_SCORE - 5)
+        and resistance > 0
+        and price >= resistance * 0.985
+        and price <= resistance * 1.020
+        and price >= vwap
+        and rvol >= 2.5
+        and not news_data.get("serious_negative")
     )
 
     high_target = analyze_high_target(
         symbol=symbol,
         price=price,
         atr=atr,
-        resistance=safe_float(resistance_data.get("resistance")),
+        resistance=resistance,
         rvol=rvol,
         trend_15m_ok=trend_15m.get("ok")
     )
@@ -2930,10 +2988,19 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         "price": price,
         "bid": safe_float(snapshot.get("bid")),
         "ask": safe_float(snapshot.get("ask")),
-        "spread_pct": safe_float(snapshot.get("spread_pct"), 999),
-        "day_volume": safe_float(snapshot.get("day_volume")),
-        "dollar_volume": safe_float(snapshot.get("dollar_volume")),
-        "gap_pct": safe_float(snapshot.get("gap_pct")),
+        "spread_pct": safe_float(
+            snapshot.get("spread_pct"),
+            999
+        ),
+        "day_volume": safe_float(
+            snapshot.get("day_volume")
+        ),
+        "dollar_volume": safe_float(
+            snapshot.get("dollar_volume")
+        ),
+        "gap_pct": safe_float(
+            snapshot.get("gap_pct")
+        ),
         "vwap": vwap,
         "rvol": rvol,
         "volume_accel_ratio": volume_accel_ratio,
@@ -2946,9 +3013,15 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         "atr_pct": atr_pct,
         "trend_15m_ok": trend_15m.get("ok"),
         "trend_15m_rising": trend_15m.get("rising"),
-        "resistance": safe_float(resistance_data.get("resistance")),
-        "resistance_distance_pct": safe_float(resistance_data.get("distance_pct"), 999),
+        "resistance": resistance,
+        "resistance_distance_pct": resistance_distance_pct,
         "breakout": resistance_data.get("breakout"),
+        "breakout_pct": breakout_pct,
+        "last_close": last_close,
+        "previous_close": previous_close,
+        "fresh_breakout": fresh_breakout,
+        "breakout_hold": breakout_hold,
+        "armed": armed,
         "float_value": get_float(symbol),
         "float_score": float_points,
         "float_label": get_float_label(symbol),
@@ -2966,12 +3039,13 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         "confidence": confidence,
         "phase": phase,
         "high_target": high_target,
-        "evaluated_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "evaluated_at": datetime.now(saudi_tz).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
     }
 
-    return metrics
-
-
+    return metrics    
+    
 # ==============================================================================
 # Trade Plan Engine
 # ==============================================================================
@@ -3101,7 +3175,6 @@ def final_safety_check(metrics, trade_plan):
     snapshot = get_snapshot(symbol)
 
     price = safe_float(snapshot.get("price"))
-
     spread_pct = safe_float(snapshot.get("spread_pct"), 999)
 
     if price <= 0:
@@ -3123,9 +3196,32 @@ def final_safety_check(metrics, trade_plan):
         if extension_pct > 7:
             return False, "السعر ابتعد عن منطقة الدخول"
 
+    resistance = safe_float(metrics.get("resistance"))
+
+    if resistance > 0:
+        breakout_pct = ((price - resistance) / resistance) * 100
+
+        if breakout_pct > 2.5:
+            return False, (
+                f"الدخول متأخر ({breakout_pct:.2f}% فوق المقاومة)"
+            )
+
+    day_high = safe_float(snapshot.get("day_high"))
+
+    if (
+        day_high > 0
+        and price >= day_high * 0.995
+        and safe_float(snapshot.get("gap_pct")) >= 5
+    ):
+        return False, "السعر عند قمة اليوم بعد اندفاع قوي"
+
     final_score = safe_float(metrics.get("final_score"))
 
-    required_score = LAST_HOUR_SCORE if is_last_market_hour() else MIN_SCORE
+    required_score = (
+        LAST_HOUR_SCORE
+        if is_last_market_hour()
+        else MIN_SCORE
+    )
 
     if final_score < required_score:
         return False, "الدرجة النهائية أقل من المطلوب"
@@ -3138,19 +3234,44 @@ def final_safety_check(metrics, trade_plan):
         if not (rvol >= 5 and accel >= 2 and trend_ok):
             return False, "آخر ساعة والسهم لا يملك زخمًا استثنائيًا"
 
-    df = get_bars(symbol, TimeFrame.Minute, limit=10, cache_ttl=5)
+    df = get_bars(
+        symbol,
+        TimeFrame.Minute,
+        limit=10,
+        cache_ttl=0
+    )
 
-    if not df.empty and len(df) >= 3:
-        last_close = safe_float(df["close"].iloc[-1])
-        last_open = safe_float(df["open"].iloc[-1])
-        last_low = safe_float(df["low"].iloc[-1])
+    if df.empty or len(df) < 3:
+        return False, "تعذر تأكيد الاختراق"
 
-        if last_close < last_open and last_close <= last_low * 1.01:
-            return False, "آخر شمعة دقيقة ضعيفة جدًا"
+    previous_close = safe_float(df["close"].iloc[-2])
+    last_close = safe_float(df["close"].iloc[-1])
+    last_open = safe_float(df["open"].iloc[-1])
+    last_low = safe_float(df["low"].iloc[-1])
+
+    if resistance > 0:
+        fresh_breakout = (
+            previous_close <= resistance
+            and last_close > resistance
+        )
+
+        breakout_hold = (
+            previous_close > resistance
+            and last_close >= resistance * 0.997
+            and price >= resistance * 0.997
+        )
+
+        if not (fresh_breakout or breakout_hold):
+            return False, "لا يوجد اختراق حديث أو ثبات فوق المقاومة"
+
+    if (
+        last_close < last_open
+        and last_close <= last_low * 1.01
+    ):
+        return False, "آخر شمعة دقيقة ضعيفة جدًا"
 
     return True, "OK"
-
-
+    
 # ==============================================================================
 # Alert Message Builder - Arabic
 # ==============================================================================
