@@ -10,6 +10,7 @@ import traceback
 import sys
 import builtins
 import functools
+import threading
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -69,7 +70,9 @@ priority_universe = []
 score_history = {}
 news_cache = {}
 daily_statistics = {}
-
+FAST_WATCHLIST = {}
+FAST_WATCHLIST_LOCK = threading.RLock()
+ENTRY_EXECUTION_LOCK = threading.RLock()
 news_queue = []
 news_cursor = 0
 scan_cursor = 0
@@ -184,7 +187,16 @@ def get_session_profile():
     name = get_session_profile_name()
     return SESSION_PROFILES.get(name, SESSION_PROFILES["REGULAR"])
 
+def get_required_entry_score():
+    profile = get_session_profile()
 
+    return safe_float(
+        profile.get(
+            "min_score",
+            ENTRY_MIN_SCORE,
+        )
+    )
+    
 # =========================================================
 # REDIS HELPERS - UPSTASH REST
 # =========================================================
@@ -1689,7 +1701,171 @@ def remove_from_fast_watchlist(symbol, reason=""):
         )
 
     return True
-    
+
+def fast_watchlist_monitor_loop():
+    print(
+        "👀 FAST_WATCHLIST monitor started | "
+        f"Interval: {FAST_WATCHLIST_SCAN_INTERVAL}s | "
+        f"Max age: {FAST_WATCHLIST_MAX_AGE_SECONDS // 60}m"
+    )
+
+    while True:
+        try:
+            if not is_work_time():
+                time.sleep(FAST_WATCHLIST_SCAN_INTERVAL)
+                continue
+
+            with FAST_WATCHLIST_LOCK:
+                watchlist_snapshot = [
+                    dict(item)
+                    for item in FAST_WATCHLIST.values()
+                ]
+
+            if not watchlist_snapshot:
+                time.sleep(FAST_WATCHLIST_SCAN_INTERVAL)
+                continue
+
+            watchlist_snapshot.sort(
+                key=lambda item: safe_float(
+                    item.get("last_score")
+                ),
+                reverse=True,
+            )
+
+            required_score = get_required_entry_score()
+
+            for watch_item in watchlist_snapshot:
+                symbol = watch_item.get("symbol")
+
+                if not symbol:
+                    continue
+
+                with FAST_WATCHLIST_LOCK:
+                    current_item = FAST_WATCHLIST.get(symbol)
+
+                    if current_item is None:
+                        continue
+
+                    added_at = safe_float(
+                        current_item.get("added_at")
+                    )
+
+                age_seconds = time.time() - added_at
+
+                if age_seconds >= FAST_WATCHLIST_MAX_AGE_SECONDS:
+                    remove_from_fast_watchlist(
+                        symbol,
+                        reason="maximum monitoring time reached",
+                    )
+                    continue
+
+                try:
+                    metrics = build_symbol_metrics(symbol)
+
+                    if not metrics:
+                        print(
+                            f"⚠️ FAST_WATCHLIST no metrics: "
+                            f"{symbol}"
+                        )
+                        continue
+
+                    final_score, score_breakdown = (
+                        calculate_final_score(
+                            symbol,
+                            metrics,
+                        )
+                    )
+
+                    final_score = safe_float(final_score)
+
+                    metrics["final_score"] = final_score
+                    metrics["score_breakdown"] = score_breakdown
+
+                    with FAST_WATCHLIST_LOCK:
+                        current_item = FAST_WATCHLIST.get(symbol)
+
+                        if current_item is None:
+                            continue
+
+                        current_item["last_check_at"] = time.time()
+                        current_item["last_score"] = final_score
+
+                        if final_score < FAST_WATCHLIST_MIN_SCORE:
+                            current_item["weak_cycles"] = (
+                                int(
+                                    current_item.get(
+                                        "weak_cycles",
+                                        0,
+                                    )
+                                )
+                                + 1
+                            )
+                        else:
+                            current_item["weak_cycles"] = 0
+
+                        weak_cycles = int(
+                            current_item.get(
+                                "weak_cycles",
+                                0,
+                            )
+                        )
+
+                    print(
+                        f"👀 FAST_WATCHLIST check: "
+                        f"{symbol} | "
+                        f"Score: {final_score:.1f} | "
+                        f"Weak: "
+                        f"{weak_cycles}/"
+                        f"{FAST_WATCHLIST_MAX_WEAK_CYCLES}"
+                    )
+
+                    if (
+                        final_score < FAST_WATCHLIST_MIN_SCORE
+                        and weak_cycles
+                        >= FAST_WATCHLIST_MAX_WEAK_CYCLES
+                    ):
+                        remove_from_fast_watchlist(
+                            symbol,
+                            reason=(
+                                f"score below "
+                                f"{FAST_WATCHLIST_MIN_SCORE:.0f} "
+                                f"for {weak_cycles} "
+                                f"consecutive checks"
+                            ),
+                        )
+                        continue
+
+                    if final_score < required_score:
+                        continue
+
+                    alert_sent = execute_entry_if_any([metrics])
+
+                    if alert_sent:
+                        remove_from_fast_watchlist(
+                            symbol,
+                            reason=(
+                                f"entry sent with score "
+                                f"{final_score:.1f}"
+                            ),
+                        )
+
+                except Exception as symbol_error:
+                    print(
+                        f"❌ FAST_WATCHLIST symbol error: "
+                        f"{symbol} | {symbol_error}"
+                    )
+                    traceback.print_exc()
+
+            time.sleep(FAST_WATCHLIST_SCAN_INTERVAL)
+
+        except Exception as loop_error:
+            print(
+                f"❌ FAST_WATCHLIST loop error: "
+                f"{loop_error}"
+            )
+            traceback.print_exc()
+            time.sleep(FAST_WATCHLIST_SCAN_INTERVAL)
+            
 def scan_market_batch():
     runtime_stats["batch_scanned"] = 0
     runtime_stats["passed_activity_filter"] = 0
@@ -2057,38 +2233,109 @@ def register_entry(metrics, plan):
     redis_set_json(REDIS_KEYS["sent_alerts"], sent_alerts)
 
 def execute_entry_if_any(scored_candidates):
-    candidate = select_best_entry_candidate(scored_candidates)
+    with ENTRY_EXECUTION_LOCK:
+        candidate = select_best_entry_candidate(
+            scored_candidates
+        )
 
-    if not candidate:
-        return False
+        if not candidate:
+            return False
 
-    fresh_candidate = build_symbol_metrics(candidate["symbol"])
-    if not fresh_candidate:
-        return False
+        symbol = candidate.get("symbol")
 
-    score, breakdown = calculate_final_score(
-        fresh_candidate["symbol"],
-        fresh_candidate
-    )
+        if not symbol:
+            return False
 
-    fresh_candidate["final_score"] = score
-    fresh_candidate["score_breakdown"] = breakdown
+        fresh_candidate = build_symbol_metrics(symbol)
 
-    ok, reason = passes_decision_engine(fresh_candidate)
-    if not ok:
-        fresh_candidate["decision_reason"] = reason
-        return False
+        if not fresh_candidate:
+            print(
+                f"⏳ Entry cancelled after refresh: "
+                f"{symbol} | Metrics unavailable"
+            )
+            return False
 
-    plan = calculate_trade_plan(fresh_candidate)
-    if not plan:
-        return False
+        score, breakdown = calculate_final_score(
+            symbol,
+            fresh_candidate,
+        )
 
-    alert_ok = send_entry_alert(fresh_candidate, plan)
+        score = safe_float(score)
 
-    if alert_ok:
-        register_entry(fresh_candidate, plan)
+        fresh_candidate["final_score"] = score
+        fresh_candidate["score_breakdown"] = breakdown
 
-    return alert_ok
+        required_score = get_required_entry_score()
+
+        if score < required_score:
+            print(
+                f"⏳ Entry cancelled after refresh: "
+                f"{symbol} | "
+                f"Score: {score:.1f} | "
+                f"Required: {required_score:.1f}"
+            )
+
+            if score >= FAST_WATCHLIST_MIN_SCORE:
+                add_to_fast_watchlist(
+                    symbol=symbol,
+                    score=score,
+                )
+            else:
+                remove_from_fast_watchlist(
+                    symbol,
+                    reason=(
+                        f"refreshed score below "
+                        f"{FAST_WATCHLIST_MIN_SCORE:.0f}"
+                    ),
+                )
+
+            return False
+
+        ok, reason = passes_decision_engine(
+            fresh_candidate
+        )
+
+        if not ok:
+            fresh_candidate["decision_reason"] = reason
+
+            print(
+                f"⏳ Entry cancelled by decision engine: "
+                f"{symbol} | Reason: {reason}"
+            )
+
+            if (
+                score >= FAST_WATCHLIST_MIN_SCORE
+                and score < required_score
+            ):
+                add_to_fast_watchlist(
+                    symbol=symbol,
+                    score=score,
+                )
+
+            return False
+
+        plan = calculate_trade_plan(fresh_candidate)
+
+        if not plan:
+            return False
+
+        alert_ok = send_entry_alert(
+            fresh_candidate,
+            plan,
+        )
+
+        if alert_ok:
+            register_entry(
+                fresh_candidate,
+                plan,
+            )
+
+            remove_from_fast_watchlist(
+                symbol,
+                reason="entry alert sent",
+            )
+
+        return alert_ok
 
 # =========================================================
 # MONITORING HELPERS
@@ -2357,7 +2604,10 @@ def run_scan_cycle():
     alert_time = fmt_sec(alert_start)
 
     runtime_stats["last_scan"] = now_ksa().isoformat()
-
+    
+    with FAST_WATCHLIST_LOCK:
+        fast_watchlist_count = len(FAST_WATCHLIST)
+        
     print("")
     print("📊 Scan Diagnostic")
     print(f"   Universe: {runtime_stats.get('universe_count', 0)}")
@@ -2371,6 +2621,10 @@ def run_scan_cycle():
     print(f"   Total Alerts Sent: {runtime_stats.get('alerts_sent', 0)}")
     print(f"   News Queue Count: {runtime_stats.get('news_queue_count', 0)}")
     print(f"   Active Monitoring: {len(active_monitoring)}")
+    print(
+        f"   FAST_WATCHLIST: "
+        f"{fast_watchlist_count}"
+    )
     print(f"   Scan Time: {scan_time}")
     print(f"   Decision/Alert Time: {alert_time}")
 
@@ -2521,12 +2775,18 @@ def main_loop():
             # HEARTBEAT
             # =====================================================
             if now_ts - last_heartbeat_ts >= 15:
+                with FAST_WATCHLIST_LOCK:
+                    fast_watchlist_count = len(
+                        FAST_WATCHLIST
+                    )
+
                 print(
                     f"💓 Heartbeat | "
                     f"KSA {now_ksa().strftime('%H:%M:%S')} | "
                     f"Session={get_session_profile_name()} | "
                     f"Universe={len(priority_universe)} | "
                     f"Monitoring={len(active_monitoring)} | "
+                    f"FastWatch={fast_watchlist_count} | "
                     f"NewsQueue={len(news_queue)}"
                 )
 
@@ -2595,6 +2855,13 @@ if __name__ == "__main__":
 
     if RESTORE_ACTIVE_MONITORING:
         recover_active_monitoring_after_restart()
+
+    fast_watchlist_thread = threading.Thread(
+        target=fast_watchlist_monitor_loop,
+        name="fast-watchlist-monitor",
+        daemon=True,
+    )
+    fast_watchlist_thread.start()
 
     main_loop()
     
