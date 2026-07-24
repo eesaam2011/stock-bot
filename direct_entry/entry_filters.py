@@ -261,7 +261,15 @@ def analyze_entry_opportunity(row):
                 "grade": None,
                 "reason": reason,
             }
+            
+    float_bonus, float_tier = calculate_float_bonus(row)
+    news_bonus = calculate_news_bonus(row)
 
+    row["float_bonus"] = float_bonus
+    row["float_tier"] = float_tier
+    row["news_bonus"] = news_bonus
+    row["quality_bonus"] = float_bonus + news_bonus
+    
     confirmed_result = analyze_confirmed_breakout(
         row
     )
