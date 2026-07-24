@@ -1948,7 +1948,7 @@ def run_discovery_scan():
         )
         return
 
-    priority_set = set(promoted)
+    priority_set = set(PRIORITY_UNIVERSE) | promoted
 
     normal_set = set(UNIVERSE) - priority_set
 
