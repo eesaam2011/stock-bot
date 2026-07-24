@@ -1742,7 +1742,24 @@ def scan_market_batch():
 
             metrics["final_score"] = score
             metrics["score_breakdown"] = breakdown
+            
+            session_profile = get_session_profile()
 
+            required_score = safe_float(
+                session_profile.get(
+                    "min_score",
+                    ENTRY_MIN_SCORE,
+                )
+            )
+
+            if (
+                FAST_WATCHLIST_MIN_SCORE <= score < required_score
+            ):
+                add_to_fast_watchlist(
+                    symbol=symbol,
+                    score=score,
+                )
+    
             scored_candidates.append(metrics)
 
         except Exception as e:
