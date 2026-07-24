@@ -4890,7 +4890,9 @@ def analyze_trade_result(item):
     if close_reason in [
         "stop_hit",
         "vwap_failure_before_t1",
-        "volume_death_before_t1"
+        "volume_death_before_t1",
+        "confirmed_vwap_failure_before_t1",
+        "confirmed_volume_death_before_t1"
     ]:
         return "loss"
 
