@@ -622,31 +622,230 @@ WEAK_OR_ROUTINE_PHRASES = [
     "annual meeting", "investor day", "appoints", "announces date", "files form",
 ]
 
+NEGATION_PATTERNS = [
+    "not",
+    "no",
+    "never",
+    "denies",
+    "denied",
+    "deny",
+    "fails to",
+    "failed to",
+    "failure to",
+    "unable to",
+    "did not",
+    "does not",
+    "do not",
+    "has not",
+    "have not",
+    "had not",
+    "without",
+    "withdraws",
+    "withdrew",
+    "withdrawn",
+    "rejected",
+    "rejects",
+    "rejection",
+    "no longer",
+    "terminated",
+    "discontinued",
+    "missed",
+    "misses",
+    "failed to meet",
+    "did not meet",
+    "does not meet",
+    "unlikely to receive",
+    "will not receive",
+    "cannot obtain",
+    "could not obtain",
+]
 
+NEGATIVE_EVENT_PHRASES = [
+    "complete response letter",
+    "clinical hold",
+    "partial clinical hold",
+    "trial halted",
+    "trial suspended",
+    "trial discontinued",
+    "trial terminated",
+    "study discontinued",
+    "failed to meet primary endpoint",
+    "did not meet primary endpoint",
+    "missed primary endpoint",
+    "primary endpoint was not met",
+    "no statistically significant improvement",
+    "no significant improvement",
+    "no positive data",
+    "negative topline results",
+    "negative top-line results",
+    "fda rejection",
+    "fda rejected",
+    "application rejected",
+    "approval denied",
+    "clearance denied",
+    "regulatory rejection",
+    "withdrawn application",
+    "withdrew its application",
+    "terminated agreement",
+    "agreement terminated",
+    "contract terminated",
+    "contract cancelled",
+    "contract canceled",
+    "partnership terminated",
+    "merger terminated",
+    "acquisition terminated",
+]
+
+NEGATION_EXCEPTIONS = [
+    "no dilution",
+    "without dilution",
+    "non-dilutive",
+    "non dilutive",
+    "no debt",
+    "debt free",
+    "debt-free",
+    "without debt",
+    "no financing required",
+    "no additional financing",
+]
+
+def normalize_news_text(text):
+    text = str(text or "").lower()
+    text = text.replace("’", "'")
+    text = text.replace("–", "-")
+    text = text.replace("—", "-")
+    return " ".join(text.split())
+
+
+def phrase_has_negation(text, phrase, words_before=8, words_after=3):
+    normalized_text = normalize_news_text(text)
+    normalized_phrase = normalize_news_text(phrase)
+
+    if not normalized_text or not normalized_phrase:
+        return False
+
+    # Ignore common positive "no ..." expressions
+    for exception in NEGATION_EXCEPTIONS:
+        if exception in normalized_text:
+            normalized_text = normalized_text.replace(exception, "")
+            
+    text_words = normalized_text.split()
+    phrase_words = normalized_phrase.split()
+
+    if len(phrase_words) > len(text_words):
+        return False
+
+    phrase_length = len(phrase_words)
+
+    for index in range(len(text_words) - phrase_length + 1):
+        if text_words[index:index + phrase_length] != phrase_words:
+            continue
+
+        context_start = max(0, index - words_before)
+        context_end = min(
+            len(text_words),
+            index + phrase_length + words_after,
+        )
+
+        context = " ".join(text_words[context_start:context_end])
+
+        if any(pattern in context for pattern in NEGATION_PATTERNS):
+            return True
+
+    return False
+
+
+def get_context_aware_phrase_hits(text, phrases):
+    valid_hits = []
+    negated_hits = []
+
+    for phrase in phrases:
+        normalized_phrase = normalize_news_text(phrase)
+
+        if normalized_phrase not in text:
+            continue
+
+        if phrase_has_negation(text, phrase):
+            negated_hits.append(phrase)
+        else:
+            valid_hits.append(phrase)
+
+    return valid_hits, negated_hits
+    
 def classify_news_item(item):
     headline = str(item.get("headline", "") or "")
     summary = str(item.get("summary", "") or "")
-    text = f"{headline} {summary}".lower()
+    text = normalize_news_text(f"{headline} {summary}")
+    headline_text = normalize_news_text(headline)
 
-    serious_negative = [p for p in SERIOUS_NEGATIVE_PHRASES if p in text]
-    minor_negative = [p for p in MINOR_NEGATIVE_PHRASES if p in text]
-    major_hits = [p for p in MAJOR_CATALYST_PHRASES if p in text]
-    positive_hits = [p for p in POSITIVE_CATALYST_PHRASES if p in text]
-    routine_hits = [p for p in WEAK_OR_ROUTINE_PHRASES if p in text]
+    serious_negative = [
+        phrase
+        for phrase in SERIOUS_NEGATIVE_PHRASES
+        if normalize_news_text(phrase) in text
+    ]
+
+    minor_negative = [
+        phrase
+        for phrase in MINOR_NEGATIVE_PHRASES
+        if normalize_news_text(phrase) in text
+    ]
+
+    negative_event_hits = [
+        phrase
+        for phrase in NEGATIVE_EVENT_PHRASES
+        if normalize_news_text(phrase) in text
+    ]
+
+    major_hits, negated_major_hits = get_context_aware_phrase_hits(
+        text,
+        MAJOR_CATALYST_PHRASES,
+    )
+
+    positive_hits, negated_positive_hits = get_context_aware_phrase_hits(
+        text,
+        POSITIVE_CATALYST_PHRASES,
+    )
+
+    routine_hits = [
+        phrase
+        for phrase in WEAK_OR_ROUTINE_PHRASES
+        if normalize_news_text(phrase) in text
+    ]
 
     score = 0
     reasons = []
 
     if serious_negative:
         score -= 100
+
     if minor_negative:
         score -= 20
+
+    if negative_event_hits:
+        score -= min(60, len(set(negative_event_hits)) * 30)
+
+    if negated_major_hits:
+        score -= min(50, len(set(negated_major_hits)) * 25)
+
+    if negated_positive_hits:
+        score -= min(30, len(set(negated_positive_hits)) * 12)
 
     score += min(len(set(positive_hits)) * 10, 40)
     score += min(len(set(major_hits)) * 18, 45)
 
-    if headline and any(p in headline.lower() for p in MAJOR_CATALYST_PHRASES):
+    headline_major_hits, headline_negated_major_hits = (
+        get_context_aware_phrase_hits(
+            headline_text,
+            MAJOR_CATALYST_PHRASES,
+        )
+    )
+
+    if headline_major_hits:
         score += 10
+
+    if headline_negated_major_hits:
+        score -= 15
+        
     if routine_hits and not major_hits:
         score -= 15
 
@@ -667,20 +866,50 @@ def classify_news_item(item):
             score += 5
 
     if major_hits:
-        reasons.append("محفز رئيسي: " + ", ".join(sorted(set(major_hits))[:3]))
+        reasons.append(
+            "محفز رئيسي: "
+            + ", ".join(sorted(set(major_hits))[:3])
+        )
     elif positive_hits:
-        reasons.append("محفز إيجابي: " + ", ".join(sorted(set(positive_hits))[:3]))
+        reasons.append(
+            "محفز إيجابي: "
+            + ", ".join(sorted(set(positive_hits))[:3])
+        )
+
+    if negated_major_hits:
+        reasons.append(
+            "تم استبعاد محفز رئيسي بسبب النفي: "
+            + ", ".join(sorted(set(negated_major_hits))[:3])
+        )
+
+    if negated_positive_hits:
+        reasons.append(
+            "تم استبعاد محفز إيجابي بسبب النفي: "
+            + ", ".join(sorted(set(negated_positive_hits))[:3])
+        )
+
+    if negative_event_hits:
+        reasons.append(
+            "حدث سلبي صريح: "
+            + ", ".join(sorted(set(negative_event_hits))[:3])
+        )
+
     if age_minutes < 99999:
         reasons.append(f"عمر الخبر {age_minutes:.0f} دقيقة")
-
+        
     category = "neutral"
-    if serious_negative:
+
+    if serious_negative or negative_event_hits:
         category = "serious_negative"
     elif score >= 85:
         category = "major_catalyst"
     elif score >= MIN_CATALYST_SCORE:
         category = "positive_catalyst"
-    elif minor_negative:
+    elif (
+        minor_negative
+        or negated_major_hits
+        or negated_positive_hits
+    ):
         category = "minor_negative"
 
     return {
@@ -695,10 +924,20 @@ def classify_news_item(item):
         "category": category,
         "positive": category in {"positive_catalyst", "major_catalyst"},
         "major": category == "major_catalyst",
-        "serious_negative": bool(serious_negative),
-        "minor_negative": bool(minor_negative),
+        "serious_negative": bool(
+            serious_negative
+            or negative_event_hits
+        ),
+        "minor_negative": bool(
+            minor_negative
+            or negated_major_hits
+            or negated_positive_hits
+        ),
         "matched_positive": sorted(set(positive_hits)),
         "matched_major": sorted(set(major_hits)),
+        "negated_positive": sorted(set(negated_positive_hits)),
+        "negated_major": sorted(set(negated_major_hits)),
+        "negative_events": sorted(set(negative_event_hits)),
         "reasons": reasons,
     }
 
