@@ -2100,7 +2100,7 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
             flush=True
         )
 
-                if state["sent_early_alerts"].get(symbol):
+        if state["sent_early_alerts"].get(symbol):
             continue
 
         if send_telegram_message(
