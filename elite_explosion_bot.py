@@ -1601,6 +1601,71 @@ def get_next_scan_batch():
 
     return batch
 
+def add_to_fast_watchlist(symbol, score):
+    symbol = str(symbol or "").strip().upper()
+
+    if not symbol:
+        return False
+
+    score = safe_float(score)
+
+    if score < FAST_WATCHLIST_MIN_SCORE:
+        return False
+
+    required_score = get_required_entry_score()
+
+    if required_score is None:
+        return False
+
+    if score >= required_score:
+        return False
+
+    now_ts = time.time()
+
+    with FAST_WATCHLIST_LOCK:
+        existing = FAST_WATCHLIST.get(symbol)
+
+        if existing:
+            existing["last_score"] = score
+            return True
+
+        if len(FAST_WATCHLIST) >= FAST_WATCHLIST_MAX_SYMBOLS:
+            weakest_symbol = min(
+                FAST_WATCHLIST,
+                key=lambda item: safe_float(
+                    FAST_WATCHLIST[item].get("last_score")
+                ),
+            )
+
+            weakest_score = safe_float(
+                FAST_WATCHLIST[weakest_symbol].get("last_score")
+            )
+
+            if score <= weakest_score:
+                return False
+
+            FAST_WATCHLIST.pop(weakest_symbol, None)
+
+            print(
+                f"🗑️ FAST_WATCHLIST removed weakest: "
+                f"{weakest_symbol} | Score: {weakest_score:.1f}"
+            )
+
+        FAST_WATCHLIST[symbol] = {
+            "symbol": symbol,
+            "added_at": now_ts,
+            "last_check_at": 0.0,
+            "last_score": score,
+            "weak_cycles": 0,
+        }
+
+    print(
+        f"👀 FAST_WATCHLIST added: "
+        f"{symbol} | Score: {score:.1f}"
+    )
+
+    return True
+    
 def scan_market_batch():
     runtime_stats["batch_scanned"] = 0
     runtime_stats["passed_activity_filter"] = 0
