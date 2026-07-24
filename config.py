@@ -55,7 +55,7 @@ MAX_SPREAD_PCT = 2.5
 # =========================================================
 # ENTRY SCORE
 # =========================================================
-ENTRY_MIN_SCORE = 90
+ENTRY_MIN_SCORE = 86
 REPEAT_BLOCK_HOURS = 12
 
 SCORE_WEIGHTS = {
@@ -68,13 +68,21 @@ SCORE_WEIGHTS = {
     "liquidity": 5,
 }
 
+# =========================================================
+# FAST WATCHLIST
+# =========================================================
+FAST_WATCHLIST_MIN_SCORE = 75.0
+FAST_WATCHLIST_SCAN_INTERVAL = 7
+FAST_WATCHLIST_MAX_AGE_SECONDS = 20 * 60
+FAST_WATCHLIST_MAX_WEAK_CYCLES = 3
+FAST_WATCHLIST_MAX_SYMBOLS = 50
 
 # =========================================================
 # SESSION PROFILES
 # =========================================================
 SESSION_PROFILES = {
     "PREMARKET": {
-        "min_score": 90,
+        "min_score": 86,
         "min_rvol": 3.0,
         "min_price_change_pct": 5.0,
         "min_volume_acceleration": 1.8,
@@ -85,7 +93,7 @@ SESSION_PROFILES = {
     },
 
     "REGULAR": {
-        "min_score": 90,
+        "min_score": 86,
         "min_rvol": 3.0,
         "min_price_change_pct": 5.0,
         "min_volume_acceleration": 1.6,
