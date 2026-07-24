@@ -1014,19 +1014,22 @@ def get_symbol_news(symbol):
     cached = NEWS_CACHE.get(symbol)
 
     if cached:
-        cached_at = cached.get("cached_at", 0)
-        ttl = cached.get("ttl", NEWS_CACHE_TTL)
+        cached_at = safe_float(cached.get("cached_at"))
+        ttl = safe_float(cached.get("ttl"), NEWS_CACHE_TTL)
 
-        if time.time() - cached_at <= ttl:
-            data = cached.get("data", {})
+        if cached_at > 0 and time.time() - cached_at <= ttl:
+            data = dict(cached.get("data", {}))
             data["cached"] = True
             return data
 
     try:
         finnhub_wait_slot()
 
-        to_date = datetime.now(timezone.utc).date()
-        from_date = to_date - timedelta(hours=NEWS_LOOKBACK_HOURS)
+        now_utc = datetime.now(timezone.utc)
+        cutoff_utc = now_utc - timedelta(hours=NEWS_LOOKBACK_HOURS)
+
+        to_date = now_utc.date()
+        from_date = cutoff_utc.date()
 
         response = requests.get(
             "https://finnhub.io/api/v1/company-news",
@@ -1059,18 +1062,56 @@ def get_symbol_news(symbol):
             if not isinstance(items, list):
                 items = []
 
-            items = items[:10]
+            filtered_items = []
+
+            for item in items:
+                try:
+                    published_ts = safe_float(
+                        item.get("datetime"),
+                        0
+                    )
+
+                    if published_ts <= 0:
+                        continue
+
+                    published_at = datetime.fromtimestamp(
+                        published_ts,
+                        tz=timezone.utc
+                    )
+
+                    if cutoff_utc <= published_at <= now_utc:
+                        filtered_items.append(item)
+
+                except Exception:
+                    continue
+
+            filtered_items.sort(
+                key=lambda item: safe_float(
+                    item.get("datetime"),
+                    0
+                ),
+                reverse=True
+            )
+
+            items = filtered_items[:10]
 
             combined_text = " ".join(
                 [
-                    f"{item.get('headline', '')} {item.get('summary', '')}"
+                    (
+                        f"{item.get('headline', '')} "
+                        f"{item.get('summary', '')}"
+                    )
                     for item in items
                 ]
             )
 
             result = classify_news_text(combined_text)
 
-            headline = items[0].get("headline", "") if items else ""
+            headline = (
+                items[0].get("headline", "")
+                if items
+                else ""
+            )
 
             text_lower = combined_text.lower()
 
@@ -1081,6 +1122,7 @@ def get_symbol_news(symbol):
 
             if result["serious_negative"]:
                 category = "serious_negative"
+
                 ttl = max(
                     SERIOUS_NEGATIVE_NEWS_TTL,
                     preopen_ttl
@@ -1105,7 +1147,10 @@ def get_symbol_news(symbol):
                     "earnings beat"
                 ]
 
-                if any(word in text_lower for word in major_words):
+                if any(
+                    word in text_lower
+                    for word in major_words
+                ):
                     category = "major_catalyst"
 
                     ttl = max(
@@ -1151,8 +1196,7 @@ def get_symbol_news(symbol):
             "category": "exception",
             "cached": False
         }
-        
-
+    
 # ==============================================================================
 # Alpaca Data Helpers
 # ==============================================================================
