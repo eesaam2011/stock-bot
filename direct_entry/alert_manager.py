@@ -205,6 +205,9 @@ def build_direct_entry_message(alert):
     stop_loss = price * 0.985
     target_1 = price * 1.02
     target_2 = price * 1.04
+    alert["stop_loss"] = stop_loss
+    alert["target1"] = target1
+    alert["target2"] = target2
 
     message = (
         f"🎯 بوت الدخول المباشر\n\n"
