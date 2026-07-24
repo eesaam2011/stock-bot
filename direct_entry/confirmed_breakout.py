@@ -24,6 +24,8 @@ def analyze_confirmed_breakout(row):
     if resistance <= 0:
         return None
 
+    bars = bars.sort_index()
+
     last_3_closes = list(
         bars["close"].tail(3)
     )
@@ -40,14 +42,16 @@ def analyze_confirmed_breakout(row):
     volume_2 = float(last_3_volumes[1])
     volume_3 = float(last_3_volumes[2])
 
+    # تأكيد الاختراق بإغلاق آخر شمعتين فوق المقاومة.
     closes_above_resistance = (
-        close_1 > resistance
-        and close_2 > resistance
+        close_2 > resistance
         and close_3 > resistance
     )
 
+    # السماح بتراجع بسيط لا يتجاوز 0.5% بين شمعة التأكيد
+    # الأخيرة والشمعة السابقة.
     closes_hold_breakout = (
-        close_3 >= close_1
+        close_3 >= close_2 * 0.995
     )
 
     strict_volume_confirmed = (
@@ -73,7 +77,7 @@ def analyze_confirmed_breakout(row):
     if not closes_above_resistance:
         print(
             f"🧱 REJECT {row.get('symbol')} | "
-            f"3 closes above resistance failed",
+            f"2 closes above resistance failed",
             flush=True,
         )
         return None
@@ -120,7 +124,10 @@ def analyze_confirmed_breakout(row):
     return {
         "ready_to_alert": True,
         "grade": "CONFIRMED_BREAKOUT",
-        "reason": "Confirmed breakout with 3 closes holding above resistance",
+        "reason": (
+            "Confirmed breakout with 2 closes "
+            "holding above resistance"
+        ),
         "price": entry_price,
         "stop_loss": stop_loss,
         "confirmed_resistance": resistance,
