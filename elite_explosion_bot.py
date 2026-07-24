@@ -1665,6 +1665,30 @@ def add_to_fast_watchlist(symbol, score):
     )
 
     return True
+
+def remove_from_fast_watchlist(symbol, reason=""):
+    symbol = str(symbol or "").strip().upper()
+
+    if not symbol:
+        return False
+
+    with FAST_WATCHLIST_LOCK:
+        removed = FAST_WATCHLIST.pop(symbol, None)
+
+    if removed is None:
+        return False
+
+    if reason:
+        print(
+            f"🗑️ FAST_WATCHLIST removed: "
+            f"{symbol} | Reason: {reason}"
+        )
+    else:
+        print(
+            f"🗑️ FAST_WATCHLIST removed: {symbol}"
+        )
+
+    return True
     
 def scan_market_batch():
     runtime_stats["batch_scanned"] = 0
