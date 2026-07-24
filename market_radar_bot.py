@@ -4743,6 +4743,7 @@ def scan_once():
             # If near-final, do deep news check
             if safe_float(metrics.get("final_score")) >= required_score - 8:
                 deep_news_count += 1
+
                 deep_metrics = evaluate_candidate(
                     symbol,
                     deep_news=True,
@@ -4750,8 +4751,10 @@ def scan_once():
                     df=df
                 )
 
-                if deep_metrics:
-                    metrics = deep_metrics
+                if not deep_metrics:
+                    continue
+
+                metrics = deep_metrics
 
             metrics = apply_pattern_boost(metrics)
 
