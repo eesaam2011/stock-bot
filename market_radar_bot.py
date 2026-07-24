@@ -1,5 +1,5 @@
 # ==============================================================================
-# Elite Radar
+# market radar bot
 # Version : 1.1
 # File    : market_radar_bot.py
 # Author  : OpenAI + Essam
