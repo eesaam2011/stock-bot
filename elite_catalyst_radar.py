@@ -1,7 +1,7 @@
 # ==============================================================================
 # Elite Catalyst Radar
-# Version : 2.2
-# Build   : VERIFIED-2026-07-24-A
+# Version : 2.2.2
+# Build   : VERIFIED-2026-07-24-C
 # File    : elite_catalyst_radar.py
 # Author  : OpenAI + Essam
 #
@@ -107,7 +107,7 @@ VOLUME_DEATH_CONFIRMATIONS = 2
 NEWS_REVALIDATE_BEFORE_ALERT = True
 REDIS_CLEANUP_INTERVAL = 30 * 60
 STALE_ACTIVE_TRADE_SECONDS = 18 * 60 * 60
-END_OF_DAY_CLOSE_HOUR_NY = 16
+END_OF_DAY_CLOSE_HOUR_NY = 18
 END_OF_DAY_CLOSE_MINUTE_NY = 5
 
 FULL_UNIVERSE_REFRESH_TIMES_KSA = {"10:45", "16:20"}
@@ -1176,7 +1176,7 @@ def evaluate_news_entry(symbol, watch_item, snapshot=None):
         return None, hard_reason
 
     price = safe_float(snapshot.get("price"))
-    df = get_bars(symbol, TimeFrame.Minute, limit=390, cache_ttl=4)
+    df = get_bars(symbol, TimeFrame.Minute, limit=1000, cache_ttl=4)
     df = current_ny_session_df(df)
     if df.empty or len(df) < 40:
         return None, "بيانات الدقيقة للجلسة الحالية غير كافية"
@@ -1412,7 +1412,7 @@ def final_safety_check(metrics, watch_item):
         if above_pct > 3.0:
             return False, f"الدخول متأخر {above_pct:.2f}% فوق المقاومة", None, None
 
-    df = get_bars(symbol, TimeFrame.Minute, limit=390, cache_ttl=0)
+    df = get_bars(symbol, TimeFrame.Minute, limit=1000, cache_ttl=0)
     df = completed_indicator_df(df)
     if df.empty or len(df) < 40:
         return False, "تعذر تحديث الشموع المكتملة", None, None
@@ -1776,7 +1776,7 @@ def monitor_single_trade(symbol, item):
             plan["stop"] = trailing_candidate
             changed = True
 
-    df = get_bars(symbol, TimeFrame.Minute, limit=390, cache_ttl=15)
+    df = get_bars(symbol, TimeFrame.Minute, limit=1000, cache_ttl=15)
     df = current_ny_session_df(df)
     if not df.empty and len(df) >= 30:
         vwap = calculate_vwap(df)
