@@ -92,13 +92,16 @@ FLOAT_RELOAD_HOUR_KSA = 10
 FLOAT_RELOAD_MINUTE_KSA = 45
 
 # Technical confirmation after a news catalyst.
-MIN_CATALYST_SCORE = 65
+MIN_CATALYST_SCORE = 55
 MIN_ENTRY_SCORE = 78
 LAST_HOUR_ENTRY_SCORE = 86
 MIN_RVOL = 2.0
 MIN_VOLUME_ACCEL = 1.25
 MIN_ATR_PCT = 0.80
 MAX_RESISTANCE_DISTANCE_PCT = 2.5
+SNAPSHOT_BATCH_SIZE = 200
+VWAP_FAILURE_CONFIRMATIONS = 2
+VOLUME_DEATH_CONFIRMATIONS = 2
 
 FULL_UNIVERSE_REFRESH_TIMES_KSA = {"10:45", "16:20"}
 
@@ -298,6 +301,16 @@ def redis_hset_json(key, field, value):
     return redis_command(["HSET", key, field, json_dumps(value)])
 
 
+def redis_hget_json(key, field, default=None):
+    raw = redis_command(["HGET", key, field])
+    if raw is None:
+        return default
+    try:
+        return json_loads(raw)
+    except Exception:
+        return default
+
+
 def redis_hgetall_json(key):
     raw = redis_command(["HGETALL", key])
     output = {}
@@ -316,6 +329,10 @@ def redis_hgetall_json(key):
 
 def redis_hdel(key, field):
     return redis_command(["HDEL", key, field])
+
+
+def redis_delete(key):
+    return redis_command(["DEL", key])
 
 # ==============================================================================
 # Market / Date Helpers
@@ -346,6 +363,11 @@ def unix_to_dt(timestamp):
         return datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
     except Exception:
         return None
+
+
+def chunks(items, size):
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
 
 # ==============================================================================
 # Symbol Filters
@@ -502,7 +524,7 @@ def get_min_dollar_volume(float_shares):
 def build_clean_universe():
     global UNIVERSE
     log("Building clean news universe from Alpaca assets...")
-    symbols = []
+    clean_symbols = []
     try:
         for asset in api.list_assets(status="active"):
             symbol = str(getattr(asset, "symbol", "")).upper()
@@ -515,11 +537,28 @@ def build_clean_universe():
                 continue
             if is_bad_asset_name(getattr(asset, "name", "")):
                 continue
-            symbols.append(symbol)
+            clean_symbols.append(symbol)
     except Exception as exc:
-        log(f"Universe build error: {exc}")
-    UNIVERSE = sorted(set(symbols))
-    redis_set_json(KEY_UNIVERSE, UNIVERSE)
+        log(f"Universe asset build error: {exc}")
+
+    clean_symbols = sorted(set(clean_symbols))
+    filtered_symbols = []
+    for batch in chunks(clean_symbols, SNAPSHOT_BATCH_SIZE):
+        snapshots = get_snapshots_batch(batch)
+        for symbol, snapshot in snapshots.items():
+            price = safe_float(snapshot.get("price"))
+            if PRICE_MIN <= price <= PRICE_MAX:
+                filtered_symbols.append(symbol)
+
+    if filtered_symbols:
+        UNIVERSE = sorted(set(filtered_symbols))
+        redis_set_json(KEY_UNIVERSE, UNIVERSE)
+    elif not UNIVERSE:
+        UNIVERSE = clean_symbols
+        log("Price-filtered Universe was empty; using clean asset list as fallback.")
+    else:
+        log("Universe refresh returned no priced symbols; preserving existing Universe.")
+
     runtime_stats["universe_size"] = len(UNIVERSE)
     runtime_stats["last_universe"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
     log(f"News universe ready: {len(UNIVERSE)} symbols")
@@ -728,12 +767,23 @@ def analyze_symbol_news(symbol):
         "items_count": len(classified),
     }
     NEWS_CACHE[symbol] = result
-    redis_set_json(KEY_NEWS_CACHE, NEWS_CACHE, expire_seconds=7 * 24 * 60 * 60)
+    redis_hset_json(KEY_NEWS_CACHE, symbol, result)
     return result
 
 # ==============================================================================
 # NEWS_WATCHLIST
 # ==============================================================================
+
+def is_symbol_news_blocked(symbol):
+    blocked = redis_hget_json(KEY_BLOCKED_NEWS, symbol)
+    if not blocked:
+        return False
+    expires_at = safe_float(blocked.get("expires_at"))
+    if expires_at <= time.time():
+        redis_hdel(KEY_BLOCKED_NEWS, symbol)
+        return False
+    return True
+
 
 def load_news_watchlist():
     global NEWS_WATCHLIST
@@ -833,7 +883,7 @@ def get_bars(symbol, timeframe=TimeFrame.Minute, limit=160, cache_ttl=5):
         return pd.DataFrame()
 
 
-def get_snapshots_batch(symbols):
+def _get_snapshots_single_batch(symbols):
     result = {}
     if not symbols:
         return result
@@ -872,11 +922,33 @@ def get_snapshots_batch(symbols):
         log(f"Snapshot batch error: {exc}")
     return result
 
+
+def get_snapshots_batch(symbols):
+    result = {}
+    symbols = list(dict.fromkeys(symbols or []))
+    for batch in chunks(symbols, SNAPSHOT_BATCH_SIZE):
+        result.update(_get_snapshots_single_batch(batch))
+    return result
+
 # ==============================================================================
 # Indicators
 # ==============================================================================
 
+def filter_current_ny_session(df):
+    if df.empty:
+        return df
+    result = df.copy()
+    try:
+        index = pd.to_datetime(result.index, utc=True)
+        ny_index = index.tz_convert(ny_tz)
+        result = result[ny_index.date == now_ny().date()]
+    except Exception:
+        return df
+    return result
+
+
 def calculate_vwap(df):
+    df = filter_current_ny_session(df)
     if df.empty:
         return 0
     volume = df["volume"].clip(lower=0)
@@ -1318,6 +1390,17 @@ def send_catalyst_alert(metrics):
     if already_alerted_today(symbol):
         remove_from_news_watchlist(symbol, "already alerted today")
         return False
+
+    watch_item = NEWS_WATCHLIST.get(symbol)
+    if not watch_item:
+        return False
+    fresh_snapshot = get_snapshots_batch([symbol]).get(symbol)
+    fresh_metrics, status = evaluate_news_entry(symbol, watch_item, snapshot=fresh_snapshot)
+    if not fresh_metrics or not fresh_metrics.get("entry_ready"):
+        log(f"Fresh finalist rejected {symbol}: {status}")
+        return False
+    metrics = fresh_metrics
+
     plan, reason = build_trade_plan(metrics)
     if not plan:
         log(f"Finalist rejected {symbol}: {reason}")
@@ -1345,16 +1428,30 @@ def send_catalyst_alert(metrics):
 
 def load_news_cache():
     global NEWS_CACHE
-    raw = redis_get_json(KEY_NEWS_CACHE, {}) or {}
+    raw = redis_hgetall_json(KEY_NEWS_CACHE)
+
+    # Migrate the Version 2.0 whole-dictionary Redis string into a Hash once.
+    if not raw:
+        legacy = redis_get_json(KEY_NEWS_CACHE, {}) or {}
+        if isinstance(legacy, dict) and legacy:
+            redis_delete(KEY_NEWS_CACHE)
+            for symbol, item in legacy.items():
+                if isinstance(item, dict):
+                    redis_hset_json(KEY_NEWS_CACHE, symbol, item)
+            raw = legacy
+
     now_ts = time.time()
     NEWS_CACHE = {
         symbol: item for symbol, item in raw.items()
-        if now_ts - safe_float(item.get("checked_at")) <= NEWS_RECHECK_TTL
+        if isinstance(item, dict)
+        and now_ts - safe_float(item.get("checked_at")) <= NEWS_RECHECK_TTL
     }
 
 
 def process_news_symbol(symbol):
     runtime_stats["news_symbols_checked"] += 1
+    if is_symbol_news_blocked(symbol):
+        return
     runtime_stats["last_news_scan"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
     result = analyze_symbol_news(symbol)
     best = result.get("best", {})
@@ -1449,13 +1546,15 @@ def monitor_news_watchlist_once():
 
 def news_watch_loop():
     while True:
+        cycle_started = time.time()
         try:
             if not is_weekend() and is_scan_window():
                 monitor_news_watchlist_once()
         except Exception as exc:
             log(f"News watch loop error: {exc}")
             log(traceback.format_exc())
-        time.sleep(NEWS_WATCH_MONITOR_INTERVAL)
+        elapsed = time.time() - cycle_started
+        time.sleep(max(0.5, NEWS_WATCH_MONITOR_INTERVAL - elapsed))
 
 # ==============================================================================
 # Active Trade Monitor
@@ -1524,22 +1623,32 @@ def monitor_single_trade(symbol, item):
         vwap = calculate_vwap(df)
         rvol = calculate_rvol(df)
         accel = safe_float(calculate_volume_acceleration(df).get("ratio"))
-        if vwap > 0 and price < vwap and not plan.get("hit_t1"):
-            send_trade_update(symbol, f"💰 السعر: {fmt_price(price)}\n📉 كسر VWAP قبل T1.", True)
-            close_active_trade(symbol, item, "vwap_failure_before_t1")
-            return
-        if rvol < 1.3 and accel < 0.9 and not plan.get("hit_t1"):
-            send_trade_update(symbol, f"💰 السعر: {fmt_price(price)}\n📉 انهيار الزخم والحجم قبل T1.", True)
-            close_active_trade(symbol, item, "volume_death_before_t1")
-            return
+        if not plan.get("hit_t1"):
+            if vwap > 0 and price < vwap:
+                item["vwap_failure_count"] = safe_int(item.get("vwap_failure_count")) + 1
+            else:
+                item["vwap_failure_count"] = 0
+
+            if rvol < 1.3 and accel < 0.9:
+                item["volume_death_count"] = safe_int(item.get("volume_death_count")) + 1
+            else:
+                item["volume_death_count"] = 0
+
+            if item["vwap_failure_count"] >= VWAP_FAILURE_CONFIRMATIONS:
+                send_trade_update(symbol, f"💰 السعر: {fmt_price(price)}\n📉 تم تأكيد كسر VWAP قبل T1.", True)
+                close_active_trade(symbol, item, "confirmed_vwap_failure_before_t1")
+                return
+            if item["volume_death_count"] >= VOLUME_DEATH_CONFIRMATIONS:
+                send_trade_update(symbol, f"💰 السعر: {fmt_price(price)}\n📉 تم تأكيد انهيار الزخم والحجم قبل T1.", True)
+                close_active_trade(symbol, item, "confirmed_volume_death_before_t1")
+                return
 
     if messages:
         send_trade_update(symbol, "\n\n".join(messages))
-    if changed:
-        item["trade_plan"] = plan
-        redis_hset_json(KEY_ACTIVE, symbol, item)
-        with ACTIVE_TRADES_LOCK:
-            ACTIVE_TRADES[symbol] = item
+    item["trade_plan"] = plan
+    redis_hset_json(KEY_ACTIVE, symbol, item)
+    with ACTIVE_TRADES_LOCK:
+        ACTIVE_TRADES[symbol] = item
 
 
 def trade_monitor_loop():
