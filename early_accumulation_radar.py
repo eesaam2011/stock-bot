@@ -2100,11 +2100,25 @@ def scan_accumulation(universe: List[str], watchlist: Dict[str, Any], state: Dic
             flush=True
         )
 
-        if send_telegram_message(build_early_alert_message(data)):
-            state["sent_early_alerts"][symbol] = {"time": iso_now(), "price": data["price"], "score": data["score"]}
-            add_to_watchlist(watchlist, data)
+                if state["sent_early_alerts"].get(symbol):
+            continue
+
+        if send_telegram_message(
+            build_early_alert_message(data)
+        ):
+            state["sent_early_alerts"][symbol] = {
+                "time": iso_now(),
+                "price": data["price"],
+                "score": data["score"],
+            }
+
+            add_to_watchlist(
+                watchlist,
+                data
+            )
+
             runtime_stats["early_alerts_sent"] += 1
-            
+
     runtime_stats["watchlist_count"] = len(watchlist)
 
 @app.route("/")
