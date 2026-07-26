@@ -1912,6 +1912,15 @@ def fast_watchlist_monitor_loop():
 
                         current_item["last_check_at"] = time.time()
                         current_item["last_score"] = final_score
+                        current_item["peak_score"] = max(
+                            safe_float(
+                                current_item.get(
+                                    "peak_score",
+                                    final_score,
+                                )
+                            ),
+                            final_score,
+                        )
 
                         if final_score < FAST_WATCHLIST_MIN_SCORE:
                             current_item["weak_cycles"] = (
