@@ -47,6 +47,7 @@ GIST_TOKEN = os.getenv("GIST_TOKEN")
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
+MARKET_RADAR_NEWS_HASH_KEY = "market_radar:news"
 
 # =========================================================
 # CLIENTS
@@ -1057,7 +1058,239 @@ def sustained_breakout_ok(df, resistance):
 # =========================================================
 # NEWS HELPERS
 # =========================================================
+def get_market_radar_news(symbol):
+    symbol = str(symbol or "").strip().upper()
 
+    if not symbol:
+        return None
+
+    try:
+        raw_value = redis_request([
+            "HGET",
+            MARKET_RADAR_NEWS_HASH_KEY,
+            symbol,
+        ])
+
+        if not raw_value:
+            runtime_stats["shared_news_misses"] = (
+                runtime_stats.get(
+                    "shared_news_misses",
+                    0,
+                )
+                + 1
+            )
+            return None
+
+        payload = json.loads(raw_value)
+
+        if not isinstance(payload, dict):
+            runtime_stats["shared_news_invalid"] = (
+                runtime_stats.get(
+                    "shared_news_invalid",
+                    0,
+                )
+                + 1
+            )
+            return None
+
+        if payload.get("status") != "ok":
+            runtime_stats["shared_news_invalid"] = (
+                runtime_stats.get(
+                    "shared_news_invalid",
+                    0,
+                )
+                + 1
+            )
+            return None
+
+        articles = payload.get("articles", [])
+
+        if not isinstance(articles, list) or not articles:
+            runtime_stats["shared_news_misses"] = (
+                runtime_stats.get(
+                    "shared_news_misses",
+                    0,
+                )
+                + 1
+            )
+            return None
+
+        next_refresh_at = safe_float(
+            payload.get("next_refresh_at")
+        )
+
+        now_ts = time.time()
+
+        if (
+            next_refresh_at > 0
+            and now_ts > next_refresh_at
+        ):
+            runtime_stats["shared_news_expired"] = (
+                runtime_stats.get(
+                    "shared_news_expired",
+                    0,
+                )
+                + 1
+            )
+
+            print(
+                f"⌛ Market Radar news expired: "
+                f"{symbol}"
+            )
+            return None
+
+        news_texts = []
+        first_headline = ""
+        first_source = ""
+
+        for article in articles[:5]:
+            if not isinstance(article, dict):
+                continue
+
+            headline = str(
+                article.get("headline", "")
+                or ""
+            ).strip()
+
+            summary = str(
+                article.get("summary", "")
+                or ""
+            ).strip()
+
+            source = str(
+                article.get("source", "")
+                or ""
+            ).strip()
+
+            if not first_headline and headline:
+                first_headline = headline
+
+            if not first_source and source:
+                first_source = source
+
+            combined_text = " ".join(
+                part
+                for part in (
+                    headline,
+                    summary,
+                )
+                if part
+            ).strip()
+
+            if combined_text:
+                news_texts.append(combined_text)
+
+        if not news_texts:
+            runtime_stats["shared_news_invalid"] = (
+                runtime_stats.get(
+                    "shared_news_invalid",
+                    0,
+                )
+                + 1
+            )
+            return None
+
+        classification = classify_news(
+            news_texts
+        )
+
+        now = now_ksa()
+
+        if next_refresh_at > now_ts:
+            expires_at = datetime.fromtimestamp(
+                next_refresh_at,
+                tz=ZoneInfo(TIMEZONE_KSA),
+            )
+        else:
+            expires_at = now + timedelta(
+                seconds=NEWS_CACHE_TTL
+            )
+
+        reject_until = None
+
+        if classification["risk_level"] == "serious":
+            reject_until = now + timedelta(
+                hours=SERIOUS_NEGATIVE_REJECT_HOURS
+            )
+
+        elif classification["sentiment"] == "positive":
+            positive_expiry = now + timedelta(
+                hours=POSITIVE_NEWS_BONUS_HOURS
+            )
+
+            if positive_expiry > expires_at:
+                expires_at = positive_expiry
+
+        result = {
+            "fetched_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "sentiment": classification["sentiment"],
+            "risk_level": classification["risk_level"],
+            "headline": first_headline,
+            "source": (
+                f"Market Radar / {first_source}"
+                if first_source
+                else "Market Radar"
+            ),
+            "news_score": classification["news_score"],
+            "reason": classification["reason"],
+            "reject_until": (
+                reject_until.isoformat()
+                if reject_until
+                else None
+            ),
+        }
+
+        news_cache[symbol] = result
+
+        runtime_stats["shared_news_hits"] = (
+            runtime_stats.get(
+                "shared_news_hits",
+                0,
+            )
+            + 1
+        )
+
+        print(
+            f"✅ Market Radar news hit: "
+            f"{symbol} | "
+            f"Articles: {len(articles[:5])} | "
+            f"Sentiment: "
+            f"{classification['sentiment']}"
+        )
+
+        return result
+
+    except json.JSONDecodeError:
+        runtime_stats["shared_news_invalid"] = (
+            runtime_stats.get(
+                "shared_news_invalid",
+                0,
+            )
+            + 1
+        )
+
+        print(
+            f"⚠️ Invalid Market Radar news JSON: "
+            f"{symbol}"
+        )
+        return None
+
+    except Exception as e:
+        runtime_stats["shared_news_errors"] = (
+            runtime_stats.get(
+                "shared_news_errors",
+                0,
+            )
+            + 1
+        )
+
+        print(
+            f"⚠️ Market Radar news read failed "
+            f"{symbol}: {e}"
+        )
+        return None
+        
 def get_cached_news(symbol):
     item = news_cache.get(symbol)
 
@@ -1124,9 +1357,10 @@ def classify_news(headlines):
         "reason": None,
     }
 
-
 def fetch_symbol_news(symbol):
-    if not FINNHUB_API_KEY:
+    symbol = str(symbol or "").strip().upper()
+
+    if not symbol:
         return {
             "sentiment": "neutral",
             "risk_level": "none",
@@ -1139,31 +1373,78 @@ def fetch_symbol_news(symbol):
     cached = get_cached_news(symbol)
 
     if cached:
-        runtime_stats["news_cache_hits"] = runtime_stats.get("news_cache_hits", 0) + 1
+        runtime_stats["news_cache_hits"] = (
+            runtime_stats.get(
+                "news_cache_hits",
+                0,
+            )
+            + 1
+        )
         return cached
-        
+
+    shared_news = get_market_radar_news(
+        symbol
+    )
+
+    if shared_news:
+        return shared_news
+
+    if not FINNHUB_API_KEY:
+        return {
+            "sentiment": "neutral",
+            "risk_level": "none",
+            "headline": "",
+            "source": "none",
+            "news_score": 0,
+            "reject_until": None,
+        }
+
     try:
         to_date = now_ksa().date()
-        from_date = to_date - timedelta(hours=NEWS_LOOKBACK_HOURS)
+        from_date = to_date - timedelta(
+            hours=NEWS_LOOKBACK_HOURS
+        )
 
-        url = "https://finnhub.io/api/v1/company-news"
+        url = (
+            "https://finnhub.io/api/v1/"
+            "company-news"
+        )
+
         params = {
             "symbol": symbol,
-            "from": from_date.strftime("%Y-%m-%d"),
-            "to": to_date.strftime("%Y-%m-%d"),
+            "from": from_date.strftime(
+                "%Y-%m-%d"
+            ),
+            "to": to_date.strftime(
+                "%Y-%m-%d"
+            ),
             "token": FINNHUB_API_KEY,
         }
 
-        runtime_stats["news_api_requests"] = runtime_stats.get("news_api_requests", 0) + 1
+        runtime_stats["news_api_requests"] = (
+            runtime_stats.get(
+                "news_api_requests",
+                0,
+            )
+            + 1
+        )
+
+        print(
+            f"🌐 Finnhub fallback: {symbol}"
+        )
 
         r = requests.get(
             url,
             params=params,
             timeout=10,
         )
-        
+
         if r.status_code != 200:
-            print(f"⚠️ Finnhub news failed {symbol}: {r.status_code}")
+            print(
+                f"⚠️ Finnhub news failed "
+                f"{symbol}: {r.status_code}"
+            )
+
             return {
                 "sentiment": "neutral",
                 "risk_level": "none",
@@ -1174,42 +1455,88 @@ def fetch_symbol_news(symbol):
             }
 
         data = r.json()
-        headlines = []
+        news_texts = []
+        first_headline = ""
 
         if isinstance(data, list):
             for item in data[:10]:
-                headline = item.get("headline", "")
-                if headline:
-                    headlines.append(headline)
+                if not isinstance(item, dict):
+                    continue
 
-        classification = classify_news(headlines)
+                headline = str(
+                    item.get("headline", "")
+                    or ""
+                ).strip()
+
+                summary = str(
+                    item.get("summary", "")
+                    or ""
+                ).strip()
+
+                if not first_headline and headline:
+                    first_headline = headline
+
+                combined_text = " ".join(
+                    part
+                    for part in (
+                        headline,
+                        summary,
+                    )
+                    if part
+                ).strip()
+
+                if combined_text:
+                    news_texts.append(
+                        combined_text
+                    )
+
+        classification = classify_news(
+            news_texts
+        )
 
         now = now_ksa()
-        expires_at = now + timedelta(seconds=NEWS_CACHE_TTL)
+
+        expires_at = now + timedelta(
+            seconds=NEWS_CACHE_TTL
+        )
+
         reject_until = None
 
         if classification["risk_level"] == "serious":
-            reject_until = now + timedelta(hours=SERIOUS_NEGATIVE_REJECT_HOURS)
+            reject_until = now + timedelta(
+                hours=SERIOUS_NEGATIVE_REJECT_HOURS
+            )
+
         elif classification["sentiment"] == "positive":
-            expires_at = now + timedelta(hours=POSITIVE_NEWS_BONUS_HOURS)
+            expires_at = now + timedelta(
+                hours=POSITIVE_NEWS_BONUS_HOURS
+            )
 
         result = {
             "fetched_at": now.isoformat(),
             "expires_at": expires_at.isoformat(),
             "sentiment": classification["sentiment"],
             "risk_level": classification["risk_level"],
-            "headline": headlines[0] if headlines else "",
+            "headline": first_headline,
             "source": "Finnhub",
             "news_score": classification["news_score"],
             "reason": classification["reason"],
-            "reject_until": reject_until.isoformat() if reject_until else None,
+            "reject_until": (
+                reject_until.isoformat()
+                if reject_until
+                else None
+            ),
         }
 
         news_cache[symbol] = result
         return result
 
     except Exception as e:
-        print(f"⚠️ News fetch exception {symbol}: {e}")
+        print(
+            f"⚠️ News fetch exception "
+            f"{symbol}: {e}"
+        )
+
         return {
             "sentiment": "neutral",
             "risk_level": "none",
@@ -1218,7 +1545,6 @@ def fetch_symbol_news(symbol):
             "news_score": 0,
             "reject_until": None,
         }
-
 
 # =========================================================
 # ACTIVITY FILTER
