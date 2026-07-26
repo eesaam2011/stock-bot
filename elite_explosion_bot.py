@@ -598,6 +598,12 @@ def normalize_snapshot_item(symbol, snap):
             spread_pct = ((ask - bid) / price) * 100
 
         day_volume = safe_float(getattr(daily_bar, "v", 0)) if daily_bar else 0
+        day_high = (
+            safe_float(getattr(daily_bar, "h", 0))
+            if daily_bar
+            else 0
+        )
+        
         prev_close = safe_float(getattr(prev_daily_bar, "c", 0)) if prev_daily_bar else 0
 
         price_change_pct = 0
@@ -613,6 +619,7 @@ def normalize_snapshot_item(symbol, snap):
             "ask": ask,
             "spread_pct": spread_pct,
             "day_volume": day_volume,
+            "day_high": day_high,
             "prev_close": prev_close,
             "price_change_pct": price_change_pct,
             "dollar_volume": dollar_volume,
