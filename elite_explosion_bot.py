@@ -2006,7 +2006,8 @@ def scan_market_batch():
 
     active_candidates = []
     scored_candidates = []
-
+    rejection_counts = {}
+    
     batch = get_next_scan_batch()
     runtime_stats["batch_scanned"] = len(batch)
 
@@ -2032,11 +2033,16 @@ def scan_market_batch():
             snap_data = snapshots.get(symbol)
 
             if not snap_data:
+                record_scan_rejection(
+                    rejection_counts,
+                    "missing_bulk_snapshot",
+                )
                 continue
 
             metrics = build_symbol_metrics(
                 symbol,
                 snapshot_data=snap_data,
+                rejection_counts=rejection_counts,
             )
 
             if not metrics:
@@ -2074,6 +2080,10 @@ def scan_market_batch():
             print(f"⚠️ Scan error {symbol}: {e}")
 
     rebuild_news_queue(active_candidates)
+
+    runtime_stats["scan_rejection_counts"] = (
+        rejection_counts
+    )
 
     return scored_candidates, active_candidates
     
