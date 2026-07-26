@@ -1752,6 +1752,15 @@ def add_to_fast_watchlist(symbol, score):
 
         if existing:
             existing["last_score"] = score
+            existing["peak_score"] = max(
+                safe_float(
+                    existing.get(
+                        "peak_score",
+                        score,
+                    )
+                ),
+                score,
+            )
             return True
 
         if len(FAST_WATCHLIST) >= FAST_WATCHLIST_MAX_SYMBOLS:
@@ -1781,6 +1790,7 @@ def add_to_fast_watchlist(symbol, score):
             "added_at": now_ts,
             "last_check_at": 0.0,
             "last_score": score,
+            "peak_score": score,
             "weak_cycles": 0,
         }
 
