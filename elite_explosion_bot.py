@@ -1480,7 +1480,21 @@ def calculate_final_score(symbol, metrics):
 # =========================================================
 # METRICS BUILDER
 # =========================================================
-def build_symbol_metrics(symbol, snapshot_data=None):
+def record_scan_rejection(rejection_counts, reason):
+    if rejection_counts is None:
+        return
+
+    rejection_counts[reason] = (
+        int(rejection_counts.get(reason, 0))
+        + 1
+    )
+
+
+def build_symbol_metrics(
+    symbol,
+    snapshot_data=None,
+    rejection_counts=None,
+):
     try:
         snap = snapshot_data
 
@@ -1488,22 +1502,74 @@ def build_symbol_metrics(symbol, snapshot_data=None):
             snap = get_snapshot_price_data(symbol)
 
         if not snap:
+            record_scan_rejection(
+                rejection_counts,
+                "snapshot_unavailable",
+            )
             return None
 
         price = snap.get("price")
-        if not price or price < PRICE_MIN or price > PRICE_MAX:
+
+        if not price:
+            record_scan_rejection(
+                rejection_counts,
+                "missing_price",
+            )
+            return None
+
+        if price < PRICE_MIN or price > PRICE_MAX:
+            record_scan_rejection(
+                rejection_counts,
+                "price_out_of_range",
+            )
             return None
 
         profile = get_session_profile()
 
-        if snap.get("spread_pct", 999) > profile.get("max_spread_pct", MAX_SPREAD_PCT):
+        if (
+            snap.get("spread_pct", 999)
+            > profile.get(
+                "max_spread_pct",
+                MAX_SPREAD_PCT,
+            )
+        ):
+            record_scan_rejection(
+                rejection_counts,
+                "wide_spread_before_score",
+            )
             return None
 
-        if snap.get("dollar_volume", 0) < profile.get("min_dollar_volume", MIN_DOLLAR_VOLUME):
+        if (
+            snap.get("dollar_volume", 0)
+            < profile.get(
+                "min_dollar_volume",
+                MIN_DOLLAR_VOLUME,
+            )
+        ):
+            record_scan_rejection(
+                rejection_counts,
+                "low_dollar_volume_before_score",
+            )
             return None
 
-        df = get_bars_df(symbol, TimeFrame.Minute, limit=120)
-        if df is None or len(df) < 30:
+        df = get_bars_df(
+            symbol,
+            TimeFrame.Minute,
+            limit=120,
+        )
+
+        if df is None:
+            record_scan_rejection(
+                rejection_counts,
+                "bars_unavailable",
+            )
+            return None
+
+        if len(df) < 30:
+            record_scan_rejection(
+                rejection_counts,
+                "insufficient_bars",
+            )
             return None
 
         for col in ["open", "high", "low", "close", "volume"]:
@@ -1512,6 +1578,10 @@ def build_symbol_metrics(symbol, snapshot_data=None):
         df = df.dropna(subset=["open", "high", "low", "close", "volume"])
 
         if len(df) < 30:
+            record_scan_rejection(
+                rejection_counts,
+                "insufficient_clean_bars",
+            )
             return None
 
         df["vwap"] = calculate_vwap(df)
@@ -1526,16 +1596,41 @@ def build_symbol_metrics(symbol, snapshot_data=None):
         ema9 = safe_float(last["ema9"])
         ema20 = safe_float(last["ema20"])
 
-        if profile.get("require_above_vwap", True) and price < vwap:
+        if (
+            profile.get("require_above_vwap", True)
+            and price < vwap
+        ):
+            record_scan_rejection(
+                rejection_counts,
+                "below_vwap_before_score",
+            )
             return None
 
         if price < ema9:
+            record_scan_rejection(
+                rejection_counts,
+                "below_ema9",
+            )
             return None
 
         if ema9 < ema20 * 0.995:
+            record_scan_rejection(
+                rejection_counts,
+                "ema9_below_ema20",
+            )
             return None
 
-        if profile.get("reject_one_candle_spike", True) and reject_one_candle_spike(df):
+        if (
+            profile.get(
+                "reject_one_candle_spike",
+                True,
+            )
+            and reject_one_candle_spike(df)
+        ):
+            record_scan_rejection(
+                rejection_counts,
+                "one_candle_spike",
+            )
             return None
 
         resistance = calculate_resistance(df, lookback=50)
@@ -1556,9 +1651,19 @@ def build_symbol_metrics(symbol, snapshot_data=None):
             else False
         )
 
-        if profile.get("require_sustained_breakout", False):
+        if profile.get(
+            "require_sustained_breakout",
+            False,
+        ):
             if resistance > 0 and price > resistance:
-                if not sustained_breakout_ok(df, resistance):
+                if not sustained_breakout_ok(
+                    df,
+                    resistance,
+                ):
+                    record_scan_rejection(
+                        rejection_counts,
+                        "unsustained_breakout",
+                    )
                     return None
 
         metrics = {
@@ -1588,8 +1693,16 @@ def build_symbol_metrics(symbol, snapshot_data=None):
         return metrics
 
     except Exception as e:
-        print(f"⚠️ Metrics failed for {symbol}: {e}")
-        return None  
+        record_scan_rejection(
+            rejection_counts,
+            "metrics_exception",
+        )
+
+        print(
+            f"⚠️ Metrics failed for "
+            f"{symbol}: {e}"
+        )
+        return None
 
 
 
