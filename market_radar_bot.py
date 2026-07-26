@@ -111,11 +111,11 @@ FULL_SNAPSHOT_REBUILD_TIMES_KSA = [
 
 NEWS_CACHE_TTL = 60 * 60
 
-POSITIVE_NEWS_TTL = 2 * 60 * 60
-SERIOUS_NEGATIVE_NEWS_TTL = 72 * 60 * 60
-MAJOR_CATALYST_NEWS_TTL = 6 * 60 * 60
-
 NEWS_LOOKBACK_HOURS = 12
+
+MAX_SHARED_NEWS_ARTICLES = 5
+
+SHARED_NEWS_HASH_TTL = 7 * 24 * 60 * 60
 
 FINNHUB_MAX_REQUESTS_PER_MINUTE = 40
 
@@ -416,7 +416,48 @@ def redis_hgetall_json(key):
 def redis_hdel(key, field):
     return redis_command(["HDEL", key, field])
 
+def redis_hget_json(key, field, default=None):
+    result = redis_command(["HGET", key, field])
 
+    if result is None:
+        return default
+
+    try:
+        return json_loads(result)
+
+    except Exception:
+        return default
+
+
+def redis_expire(key, expire_seconds):
+    return redis_command(
+        [
+            "EXPIRE",
+            key,
+            int(expire_seconds)
+        ]
+    )
+
+
+def redis_delete(key):
+    return redis_command(
+        [
+            "DEL",
+            key
+        ]
+    )
+
+
+def redis_key_type(key):
+    result = redis_command(
+        [
+            "TYPE",
+            key
+        ]
+    )
+
+    return str(result or "none").lower()
+    
 
 # ==============================================================================
 # Utility Helpers
@@ -935,51 +976,367 @@ def finnhub_wait_slot():
 
         LAST_FINNHUB_REQUEST_TIME = time.time()
 
-def load_news_cache():
-    global NEWS_CACHE
+            
+def normalize_news_article(article):
+    if not isinstance(article, dict):
+        return None
 
-    raw_cache = redis_get_json(KEY_NEWS, {}) or {}
+    published_ts = safe_int(
+        article.get("datetime"),
+        0
+    )
+
+    if published_ts <= 0:
+        return None
+
+    return {
+        "id": article.get("id"),
+        "datetime": published_ts,
+        "headline": str(
+            article.get("headline") or ""
+        ).strip(),
+        "summary": str(
+            article.get("summary") or ""
+        ).strip(),
+        "source": str(
+            article.get("source") or ""
+        ).strip(),
+        "url": str(
+            article.get("url") or ""
+        ).strip(),
+        "category": str(
+            article.get("category") or ""
+        ).strip(),
+        "related": str(
+            article.get("related") or ""
+        ).strip()
+    }
+
+
+def filter_recent_news_articles(articles):
+    if not isinstance(articles, list):
+        return []
 
     now_ts = time.time()
 
+    cutoff_ts = (
+        now_ts
+        - (NEWS_LOOKBACK_HOURS * 60 * 60)
+    )
+
+    normalized_articles = []
+
+    seen_articles = set()
+
+    for article in articles:
+        normalized = normalize_news_article(
+            article
+        )
+
+        if not normalized:
+            continue
+
+        published_ts = safe_float(
+            normalized.get("datetime")
+        )
+
+        if published_ts < cutoff_ts:
+            continue
+
+        if published_ts > now_ts + 300:
+            continue
+
+        article_id = normalized.get("id")
+
+        duplicate_key = (
+            str(article_id)
+            if article_id is not None
+            else (
+                f"{normalized.get('datetime')}:"
+                f"{normalized.get('headline')}"
+            )
+        )
+
+        if duplicate_key in seen_articles:
+            continue
+
+        seen_articles.add(duplicate_key)
+
+        normalized_articles.append(
+            normalized
+        )
+
+    normalized_articles.sort(
+        key=lambda item: safe_float(
+            item.get("datetime")
+        ),
+        reverse=True
+    )
+
+    return normalized_articles[
+        :MAX_SHARED_NEWS_ARTICLES
+    ]
+
+
+def normalize_shared_news_item(
+    symbol,
+    item
+):
+    if not isinstance(item, dict):
+        return None
+
+    symbol = str(
+        symbol or item.get("symbol") or ""
+    ).upper().strip()
+
+    if not symbol:
+        return None
+
+    fetched_at = safe_float(
+        item.get("fetched_at")
+    )
+
+    next_refresh_at = safe_float(
+        item.get("next_refresh_at")
+    )
+
+    articles = filter_recent_news_articles(
+        item.get("articles", [])
+    )
+
+    return {
+        "symbol": symbol,
+        "fetched_at": fetched_at,
+        "next_refresh_at": next_refresh_at,
+        "lookback_hours": NEWS_LOOKBACK_HOURS,
+        "status": str(
+            item.get("status") or "ok"
+        ),
+        "articles": articles
+    }
+
+
+def save_symbol_news_cache(
+    symbol,
+    cache_item
+):
+    symbol = symbol.upper().strip()
+
+    normalized_item = normalize_shared_news_item(
+        symbol,
+        cache_item
+    )
+
+    if not normalized_item:
+        return False
+
+    NEWS_CACHE[symbol] = normalized_item
+
+    redis_hset_json(
+        KEY_NEWS,
+        symbol,
+        normalized_item
+    )
+
+    redis_expire(
+        KEY_NEWS,
+        SHARED_NEWS_HASH_TTL
+    )
+
+    return True
+
+
+def remove_symbol_news_cache(symbol):
+    symbol = symbol.upper().strip()
+
+    NEWS_CACHE.pop(
+        symbol,
+        None
+    )
+
+    redis_hdel(
+        KEY_NEWS,
+        symbol
+    )
+
+
+def get_cached_symbol_news(symbol):
+    symbol = symbol.upper().strip()
+
+    cached_item = NEWS_CACHE.get(
+        symbol
+    )
+
+    if not cached_item:
+        cached_item = redis_hget_json(
+            KEY_NEWS,
+            symbol,
+            None
+        )
+
+    if not isinstance(cached_item, dict):
+        return None
+
+    normalized_item = normalize_shared_news_item(
+        symbol,
+        cached_item
+    )
+
+    if not normalized_item:
+        return None
+
+    NEWS_CACHE[symbol] = normalized_item
+
+    return normalized_item
+
+
+def load_news_cache():
+    global NEWS_CACHE
+
+    key_type = redis_key_type(
+        KEY_NEWS
+    )
+
+    if key_type == "string":
+        log(
+            "Old news cache format detected. "
+            "Deleting old JSON key before converting "
+            "market_radar:news to Redis Hash..."
+        )
+
+        redis_delete(
+            KEY_NEWS
+        )
+
+        key_type = "none"
+
+    if key_type not in [
+        "none",
+        "hash"
+    ]:
+        log(
+            f"Unexpected Redis news key type: "
+            f"{key_type}. Rebuilding news cache..."
+        )
+
+        redis_delete(
+            KEY_NEWS
+        )
+
+    raw_cache = redis_hgetall_json(
+        KEY_NEWS
+    )
+
     cleaned_cache = {}
+
+    removed_count = 0
+    updated_count = 0
+
+    now_ts = time.time()
+
+    maximum_entry_age = (
+        SHARED_NEWS_HASH_TTL
+    )
 
     for symbol, item in raw_cache.items():
         try:
-            cached_at = safe_float(item.get("cached_at"))
-            ttl = safe_float(item.get("ttl"), NEWS_CACHE_TTL)
+            symbol = str(
+                symbol
+            ).upper().strip()
 
-            if cached_at > 0 and now_ts - cached_at <= ttl:
-                cleaned_cache[symbol] = item
+            normalized_item = (
+                normalize_shared_news_item(
+                    symbol,
+                    item
+                )
+            )
+
+            if not normalized_item:
+                redis_hdel(
+                    KEY_NEWS,
+                    symbol
+                )
+
+                removed_count += 1
+                continue
+
+            fetched_at = safe_float(
+                normalized_item.get(
+                    "fetched_at"
+                )
+            )
+
+            if (
+                fetched_at <= 0
+                or now_ts - fetched_at
+                > maximum_entry_age
+            ):
+                redis_hdel(
+                    KEY_NEWS,
+                    symbol
+                )
+
+                removed_count += 1
+                continue
+
+            cleaned_cache[symbol] = (
+                normalized_item
+            )
+
+            if normalized_item != item:
+                redis_hset_json(
+                    KEY_NEWS,
+                    symbol,
+                    normalized_item
+                )
+
+                updated_count += 1
 
         except Exception:
-            continue
+            redis_hdel(
+                KEY_NEWS,
+                symbol
+            )
+
+            removed_count += 1
 
     NEWS_CACHE = cleaned_cache
 
-    if len(cleaned_cache) != len(raw_cache):
-        save_news_cache()
-
-        log(
-            f"News cache cleaned: "
-            f"before={len(raw_cache)} after={len(cleaned_cache)}"
+    if NEWS_CACHE:
+        redis_expire(
+            KEY_NEWS,
+            SHARED_NEWS_HASH_TTL
         )
+
+    log(
+        f"Shared news cache loaded | "
+        f"Symbols={len(NEWS_CACHE)} | "
+        f"Updated={updated_count} | "
+        f"Removed={removed_count}"
+    )
 
     return NEWS_CACHE
 
-def save_news_cache():
-    redis_set_json(
-        KEY_NEWS,
-        NEWS_CACHE,
-        expire_seconds=7 * 24 * 60 * 60
-    )
-    
-def classify_news_text(text):
-    text = (text or "").lower()
 
-    serious_negative = any(word in text for word in SERIOUS_NEGATIVE_NEWS)
-    minor_negative = any(word in text for word in MINOR_NEGATIVE_NEWS)
-    positive = any(word in text for word in POSITIVE_NEWS)
+def classify_news_text(text):
+    text = (
+        text or ""
+    ).lower()
+
+    serious_negative = any(
+        word in text
+        for word in SERIOUS_NEGATIVE_NEWS
+    )
+
+    minor_negative = any(
+        word in text
+        for word in MINOR_NEGATIVE_NEWS
+    )
+
+    positive = any(
+        word in text
+        for word in POSITIVE_NEWS
+    )
 
     bonus = 0
 
@@ -996,6 +1353,87 @@ def classify_news_text(text):
         "bonus": bonus
     }
 
+
+def analyze_news_articles(
+    articles,
+    status="ok",
+    cached=False
+):
+    articles = filter_recent_news_articles(
+        articles
+    )
+
+    combined_text = " ".join(
+        (
+            f"{article.get('headline', '')} "
+            f"{article.get('summary', '')}"
+        )
+        for article in articles
+    )
+
+    result = classify_news_text(
+        combined_text
+    )
+
+    headline = (
+        articles[0].get(
+            "headline",
+            ""
+        )
+        if articles
+        else ""
+    )
+
+    text_lower = combined_text.lower()
+
+    category = "neutral"
+
+    if result["serious_negative"]:
+        category = "serious_negative"
+
+    elif result["positive"]:
+        category = "positive"
+
+        major_words = [
+            "fda",
+            "approval",
+            "contract",
+            "purchase order",
+            "merger",
+            "acquisition",
+            "buyout",
+            "partnership",
+            "phase 3",
+            "breakthrough",
+            "positive data",
+            "earnings beat"
+        ]
+
+        if any(
+            word in text_lower
+            for word in major_words
+        ):
+            category = "major_catalyst"
+
+    elif result["minor_negative"]:
+        category = "minor_negative"
+
+    return {
+        "status": status,
+        "positive": result["positive"],
+        "minor_negative": result[
+            "minor_negative"
+        ],
+        "serious_negative": result[
+            "serious_negative"
+        ],
+        "bonus": result["bonus"],
+        "headline": headline,
+        "category": category,
+        "cached": bool(cached)
+    }
+
+
 def get_symbol_news(symbol):
     if not FINNHUB_API_KEY:
         return {
@@ -1009,194 +1447,185 @@ def get_symbol_news(symbol):
             "cached": False
         }
 
-    symbol = symbol.upper()
+    symbol = symbol.upper().strip()
 
-    cached = NEWS_CACHE.get(symbol)
+    now_ts = time.time()
 
-    if cached:
-        cached_at = safe_float(cached.get("cached_at"))
-        ttl = safe_float(cached.get("ttl"), NEWS_CACHE_TTL)
+    cached_item = get_cached_symbol_news(
+        symbol
+    )
 
-        if cached_at > 0 and time.time() - cached_at <= ttl:
-            data = dict(cached.get("data", {}))
-            data["cached"] = True
-            return data
+    if cached_item:
+        next_refresh_at = safe_float(
+            cached_item.get(
+                "next_refresh_at"
+            )
+        )
+
+        if now_ts < next_refresh_at:
+            return analyze_news_articles(
+                cached_item.get(
+                    "articles",
+                    []
+                ),
+                status=cached_item.get(
+                    "status",
+                    "ok"
+                ),
+                cached=True
+            )
+
+    previous_articles = []
+
+    if cached_item:
+        previous_articles = (
+            cached_item.get(
+                "articles",
+                []
+            )
+        )
 
     try:
         finnhub_wait_slot()
 
-        now_utc = datetime.now(timezone.utc)
-        cutoff_utc = now_utc - timedelta(hours=NEWS_LOOKBACK_HOURS)
+        now_utc = datetime.now(
+            timezone.utc
+        )
 
-        to_date = now_utc.date()
-        from_date = cutoff_utc.date()
+        cutoff_utc = (
+            now_utc
+            - timedelta(
+                hours=NEWS_LOOKBACK_HOURS
+            )
+        )
 
         response = requests.get(
             "https://finnhub.io/api/v1/company-news",
             params={
                 "symbol": symbol,
-                "from": from_date.strftime("%Y-%m-%d"),
-                "to": to_date.strftime("%Y-%m-%d"),
+                "from": cutoff_utc.date().strftime(
+                    "%Y-%m-%d"
+                ),
+                "to": now_utc.date().strftime(
+                    "%Y-%m-%d"
+                ),
                 "token": FINNHUB_API_KEY
             },
             timeout=15
         )
 
+        fetched_at = time.time()
+
+        next_refresh_at = (
+            fetched_at
+            + NEWS_CACHE_TTL
+        )
+
         if response.status_code != 200:
-            data = {
-                "status": f"error_{response.status_code}",
-                "positive": False,
-                "minor_negative": False,
-                "serious_negative": False,
-                "bonus": 0,
-                "headline": "",
-                "category": "error",
-                "cached": False
-            }
+            status = (
+                f"error_"
+                f"{response.status_code}"
+            )
 
-            ttl = NEWS_CACHE_TTL
-
-        else:
-            items = response.json()
-
-            if not isinstance(items, list):
-                items = []
-
-            filtered_items = []
-
-            for item in items:
-                try:
-                    published_ts = safe_float(
-                        item.get("datetime"),
-                        0
-                    )
-
-                    if published_ts <= 0:
-                        continue
-
-                    published_at = datetime.fromtimestamp(
-                        published_ts,
-                        tz=timezone.utc
-                    )
-
-                    if cutoff_utc <= published_at <= now_utc:
-                        filtered_items.append(item)
-
-                except Exception:
-                    continue
-
-            filtered_items.sort(
-                key=lambda item: safe_float(
-                    item.get("datetime"),
-                    0
+            cache_item = {
+                "symbol": symbol,
+                "fetched_at": fetched_at,
+                "next_refresh_at": (
+                    next_refresh_at
                 ),
-                reverse=True
-            )
-
-            items = filtered_items[:10]
-
-            combined_text = " ".join(
-                [
-                    (
-                        f"{item.get('headline', '')} "
-                        f"{item.get('summary', '')}"
-                    )
-                    for item in items
-                ]
-            )
-
-            result = classify_news_text(combined_text)
-
-            headline = (
-                items[0].get("headline", "")
-                if items
-                else ""
-            )
-
-            text_lower = combined_text.lower()
-
-            category = "neutral"
-            ttl = NEWS_CACHE_TTL
-
-            preopen_ttl = seconds_until_next_market_preopen()
-
-            if result["serious_negative"]:
-                category = "serious_negative"
-
-                ttl = max(
-                    SERIOUS_NEGATIVE_NEWS_TTL,
-                    preopen_ttl
+                "lookback_hours": (
+                    NEWS_LOOKBACK_HOURS
+                ),
+                "status": status,
+                "articles": (
+                    previous_articles
                 )
-
-            elif result["positive"]:
-                category = "positive"
-                ttl = POSITIVE_NEWS_TTL
-
-                major_words = [
-                    "fda",
-                    "approval",
-                    "contract",
-                    "purchase order",
-                    "merger",
-                    "acquisition",
-                    "buyout",
-                    "partnership",
-                    "phase 3",
-                    "breakthrough",
-                    "positive data",
-                    "earnings beat"
-                ]
-
-                if any(
-                    word in text_lower
-                    for word in major_words
-                ):
-                    category = "major_catalyst"
-
-                    ttl = max(
-                        MAJOR_CATALYST_NEWS_TTL,
-                        preopen_ttl
-                    )
-
-            elif result["minor_negative"]:
-                category = "minor_negative"
-                ttl = 24 * 60 * 60
-
-            data = {
-                "status": "ok",
-                "positive": result["positive"],
-                "minor_negative": result["minor_negative"],
-                "serious_negative": result["serious_negative"],
-                "bonus": result["bonus"],
-                "headline": headline,
-                "category": category,
-                "cached": False
             }
 
-        NEWS_CACHE[symbol] = {
-            "cached_at": time.time(),
-            "ttl": ttl,
-            "data": data
+            save_symbol_news_cache(
+                symbol,
+                cache_item
+            )
+
+            return analyze_news_articles(
+                previous_articles,
+                status=status,
+                cached=False
+            )
+
+        raw_items = response.json()
+
+        if not isinstance(
+            raw_items,
+            list
+        ):
+            raw_items = []
+
+        articles = (
+            filter_recent_news_articles(
+                raw_items
+            )
+        )
+
+        cache_item = {
+            "symbol": symbol,
+            "fetched_at": fetched_at,
+            "next_refresh_at": (
+                next_refresh_at
+            ),
+            "lookback_hours": (
+                NEWS_LOOKBACK_HOURS
+            ),
+            "status": "ok",
+            "articles": articles
         }
 
-        save_news_cache()
+        save_symbol_news_cache(
+            symbol,
+            cache_item
+        )
 
-        return data
+        return analyze_news_articles(
+            articles,
+            status="ok",
+            cached=False
+        )
 
     except Exception as e:
-        log(f"Finnhub error for {symbol}: {e}")
+        log(
+            f"Finnhub error for "
+            f"{symbol}: {e}"
+        )
 
-        return {
+        fetched_at = time.time()
+
+        cache_item = {
+            "symbol": symbol,
+            "fetched_at": fetched_at,
+            "next_refresh_at": (
+                fetched_at
+                + NEWS_CACHE_TTL
+            ),
+            "lookback_hours": (
+                NEWS_LOOKBACK_HOURS
+            ),
             "status": "exception",
-            "positive": False,
-            "minor_negative": False,
-            "serious_negative": False,
-            "bonus": 0,
-            "headline": "",
-            "category": "exception",
-            "cached": False
+            "articles": (
+                previous_articles
+            )
         }
-    
+
+        save_symbol_news_cache(
+            symbol,
+            cache_item
+        )
+
+        return analyze_news_articles(
+            previous_articles,
+            status="exception",
+            cached=False
+        )
+        
 # ==============================================================================
 # Alpaca Data Helpers
 # ==============================================================================
