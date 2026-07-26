@@ -2705,25 +2705,219 @@ def print_cycle_header(title):
     print("══════════════════════════════════════════")
 
 
-def print_top_scores(scored_candidates, limit=5):
+def format_decision_reason(reason):
+    reason_map = {
+        "ok": "اجتاز شروط الدخول",
+        "repeat_block": "تنبيه سابق خلال فترة المنع",
+        "already_monitoring": "السهم تحت المراقبة حاليًا",
+        "low_score": "السكور أقل من حد الجلسة",
+        "low_rvol": "RVOL أقل من المطلوب",
+        "low_price_change": "ارتفاع السعر أقل من المطلوب",
+        "low_volume_acceleration": "تسارع الفوليوم أقل من المطلوب",
+        "wide_spread": "السبريد أعلى من المسموح",
+        "low_dollar_volume": "Dollar Volume أقل من المطلوب",
+        "below_vwap": "السعر تحت VWAP",
+        "obv_not_positive": "OBV غير إيجابي",
+    }
+
+    if not reason:
+        return "غير محدد"
+
+    if str(reason).startswith(
+        "serious_negative_news:"
+    ):
+        detail = str(reason).split(
+            ":",
+            1,
+        )[-1]
+
+        return (
+            f"خبر سلبي خطير: {detail}"
+        )
+
+    return reason_map.get(
+        reason,
+        str(reason),
+    )
+
+
+def print_top_scores(
+    scored_candidates,
+    limit=10,
+):
     if not scored_candidates:
-        print("⭐ Top Scores: لا يوجد")
+        print("🏆 Top 10 Scores: لا يوجد")
         return
 
     ranked = sorted(
         scored_candidates,
-        key=lambda x: x.get("final_score", 0),
+        key=lambda item: safe_float(
+            item.get("final_score")
+        ),
         reverse=True,
     )[:limit]
 
-    print("⭐ Top Scores:")
-    for item in ranked:
+    required_score = get_required_entry_score()
+
+    with FAST_WATCHLIST_LOCK:
+        watchlist_symbols = set(
+            FAST_WATCHLIST.keys()
+        )
+
+    print("")
+    print(
+        f"🏆 TOP {len(ranked)} SCORED CANDIDATES"
+    )
+
+    for index, item in enumerate(
+        ranked,
+        start=1,
+    ):
+        symbol = item.get(
+            "symbol",
+            "UNKNOWN",
+        )
+
+        final_score = safe_float(
+            item.get("final_score")
+        )
+
+        rvol = safe_float(
+            item.get("rvol")
+        )
+
+        accel = safe_float(
+            item.get(
+                "volume_acceleration",
+                {},
+            ).get("ratio")
+        )
+
+        change_pct = safe_float(
+            item.get("price_change_pct")
+        )
+
+        spread_pct = safe_float(
+            item.get("spread_pct"),
+            999,
+        )
+
+        decision_reason = item.get(
+            "decision_reason",
+            "not_evaluated",
+        )
+
+        if symbol in watchlist_symbols:
+            result_text = (
+                "👀 FAST_WATCHLIST"
+            )
+        elif decision_reason == "ok":
+            result_text = (
+                "✅ اجتاز Decision Engine"
+            )
+        else:
+            result_text = (
+                "❌ مرفوض"
+            )
+
+        points_needed = max(
+            0.0,
+            required_score - final_score,
+        )
+
         print(
-            f"   {item.get('symbol')} | "
-            f"Score: {item.get('final_score', 0):.1f} | "
-            f"RVOL: {item.get('rvol', 0):.2f} | "
-            f"Accel: {item.get('volume_acceleration', {}).get('ratio', 0):.2f}x | "
-            f"Change: {item.get('price_change_pct', 0):.2f}%"
+            f"   {index}) {symbol} | "
+            f"Score={final_score:.1f} | "
+            f"RVOL={rvol:.2f} | "
+            f"Accel={accel:.2f}x | "
+            f"Change={change_pct:.2f}% | "
+            f"Spread={spread_pct:.2f}%"
+        )
+
+        print(
+            f"      Result: {result_text} | "
+            f"Reason: "
+            f"{format_decision_reason(decision_reason)} | "
+            f"Need={points_needed:.1f}"
+        )
+
+def print_rejection_summary(
+    scored_candidates,
+):
+    metric_rejections = runtime_stats.get(
+        "scan_rejection_counts",
+        {},
+    )
+
+    decision_rejections = {}
+
+    for item in scored_candidates:
+        reason = item.get(
+            "decision_reason"
+        )
+
+        if not reason or reason == "ok":
+            continue
+
+        decision_rejections[reason] = (
+            int(
+                decision_rejections.get(
+                    reason,
+                    0,
+                )
+            )
+            + 1
+        )
+
+    print("")
+    print("📊 REJECTION SUMMARY")
+
+    if metric_rejections:
+        print(
+            "   Before Score Engine:"
+        )
+
+        ranked_metric_rejections = sorted(
+            metric_rejections.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+
+        for reason, count in (
+            ranked_metric_rejections
+        ):
+            print(
+                f"      {reason}: {count}"
+            )
+    else:
+        print(
+            "   Before Score Engine: "
+            "لا يوجد"
+        )
+
+    if decision_rejections:
+        print(
+            "   Decision Engine:"
+        )
+
+        ranked_decision_rejections = sorted(
+            decision_rejections.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+
+        for reason, count in (
+            ranked_decision_rejections
+        ):
+            print(
+                f"      "
+                f"{format_decision_reason(reason)}: "
+                f"{count}"
+            )
+    else:
+        print(
+            "   Decision Engine: "
+            "لا يوجد رفض"
         )
         
 # =========================================================
@@ -2770,9 +2964,23 @@ def run_scan_cycle():
     print(f"   Scan Time: {scan_time}")
     print(f"   Decision/Alert Time: {alert_time}")
 
-    print_top_scores(scored_candidates)
+    print_top_scores(
+        scored_candidates,
+        limit=10,
+    )
 
-    print(f"⏱ Total Scan Cycle Time: {fmt_sec(start_ts)}")
+    print_rejection_summary(
+        scored_candidates,
+    )
+
+    print_fast_watchlist_status(
+        limit=10,
+    )
+
+    print(
+        f"⏱ Total Scan Cycle Time: "
+        f"{fmt_sec(start_ts)}"
+    )
     print("══════════════════════════════════════════")
 
 def run_news_cycle():
