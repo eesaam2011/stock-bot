@@ -3364,7 +3364,12 @@ def run_news_cycle():
 
     runtime_stats["news_api_requests"] = 0
     runtime_stats["news_cache_hits"] = 0
-
+    runtime_stats["shared_news_hits"] = 0
+    runtime_stats["shared_news_misses"] = 0
+    runtime_stats["shared_news_expired"] = 0
+    runtime_stats["shared_news_invalid"] = 0
+    runtime_stats["shared_news_errors"] = 0
+    
     process_news_queue()
 
     after_queue = len(news_queue)
@@ -3396,6 +3401,26 @@ def run_news_cycle():
     print(f"   Processed This Cycle: {runtime_stats.get('news_processed_this_cycle', 0)}")
     print(f"   API Requests: {runtime_stats.get('news_api_requests', 0)}")
     print(f"   Cache Hits: {runtime_stats.get('news_cache_hits', 0)}")
+    print(
+        f"   Market Radar Hits: "
+        f"{runtime_stats.get('shared_news_hits', 0)}"
+    )
+    print(
+        f"   Market Radar Misses: "
+        f"{runtime_stats.get('shared_news_misses', 0)}"
+    )
+    print(
+        f"   Market Radar Expired: "
+        f"{runtime_stats.get('shared_news_expired', 0)}"
+    )
+    print(
+        f"   Market Radar Invalid: "
+        f"{runtime_stats.get('shared_news_invalid', 0)}"
+    )
+    print(
+        f"   Market Radar Errors: "
+        f"{runtime_stats.get('shared_news_errors', 0)}"
+    )
     print(f"   Cache Before: {before_cache}")
     print(f"   Cache After: {len(news_cache)}")
     print(f"   Positive Cached: {positive}")
