@@ -2003,7 +2003,8 @@ def scan_market_batch():
     runtime_stats["passed_activity_filter"] = 0
     runtime_stats["reached_score_engine"] = 0
     runtime_stats["reached_decision_engine"] = 0
-
+    runtime_stats["scan_rejection_counts"] = {}
+    
     active_candidates = []
     scored_candidates = []
     rejection_counts = {}
@@ -2077,7 +2078,15 @@ def scan_market_batch():
             scored_candidates.append(metrics)
 
         except Exception as e:
-            print(f"⚠️ Scan error {symbol}: {e}")
+            record_scan_rejection(
+                rejection_counts,
+                "scan_exception",
+            )
+
+            print(
+                f"⚠️ Scan error "
+                f"{symbol}: {e}"
+            )
 
     rebuild_news_queue(active_candidates)
 
@@ -2841,6 +2850,31 @@ def print_top_scores(
             f"Need={points_needed:.1f}"
         )
 
+def format_scan_rejection_reason(reason):
+    reason_map = {
+        "missing_bulk_snapshot": "Snapshot غير متوفر",
+        "snapshot_unavailable": "بيانات Snapshot غير متوفرة",
+        "missing_price": "السعر غير متوفر",
+        "price_out_of_range": "السعر خارج النطاق",
+        "wide_spread_before_score": "السبريد أعلى من المسموح",
+        "low_dollar_volume_before_score": "Dollar Volume أقل من المطلوب",
+        "bars_unavailable": "بيانات الشموع غير متوفرة",
+        "insufficient_bars": "عدد الشموع غير كافٍ",
+        "insufficient_clean_bars": "الشموع الصالحة بعد التنظيف غير كافية",
+        "below_vwap_before_score": "السعر تحت VWAP",
+        "below_ema9": "السعر تحت EMA9",
+        "ema9_below_ema20": "EMA9 أضعف من EMA20",
+        "one_candle_spike": "الحركة ناتجة عن شمعة انفجار واحدة",
+        "unsustained_breakout": "الاختراق غير مستمر",
+        "metrics_exception": "خطأ أثناء بناء البيانات",
+        "scan_exception": "خطأ أثناء فحص السهم",
+    }
+
+    return reason_map.get(
+        reason,
+        str(reason),
+    )
+    
 def print_rejection_summary(
     scored_candidates,
 ):
@@ -2887,8 +2921,11 @@ def print_rejection_summary(
             ranked_metric_rejections
         ):
             print(
-                f"      {reason}: {count}"
+                f"      "
+                f"{format_scan_rejection_reason(reason)}: "
+                f"{count}"
             )
+            
     else:
         print(
             "   Before Score Engine: "
