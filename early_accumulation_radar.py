@@ -153,6 +153,26 @@ def parse_iso(dt_str: Optional[str]) -> Optional[dt.datetime]:
 
 def is_weekday_ny() -> bool:
     return dt.datetime.now(NY_TZ).weekday() < 5
+
+def is_accumulation_scan_time() -> bool:
+    now = now_ny()
+
+    if now.weekday() >= 5:
+        return False
+
+    current_minutes = (
+        now.hour * 60
+        + now.minute
+    )
+
+    start_minutes = 4 * 60
+    end_minutes = 15 * 60 + 55
+
+    return (
+        start_minutes
+        <= current_minutes
+        < end_minutes
+    )
     
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -2252,12 +2272,35 @@ def main_loop():
                 save_state(state)
 
             if now_ts - last_scan_ts >= ACCUMULATION_SCAN_INTERVAL:
-                print("[SCAN] Running accumulation scan...", flush=True)
-                scan_accumulation(current_universe, watchlist, state, float_cache)
-                runtime_stats["last_accumulation_scan"] = iso_now()
-                state["last_accumulation_scan"] = iso_now()
-                save_watchlist(watchlist)
-                save_state(state)
+                if is_accumulation_scan_time():
+                    print(
+                        "[SCAN] Running accumulation scan...",
+                        flush=True
+                    )
+
+                    scan_accumulation(
+                        current_universe,
+                        watchlist,
+                        state,
+                        float_cache
+                    )
+
+                    runtime_stats[
+                        "last_accumulation_scan"
+                    ] = iso_now()
+
+                    state[
+                        "last_accumulation_scan"
+                    ] = iso_now()
+
+                    save_watchlist(watchlist)
+                    save_state(state)
+                else:
+                    print(
+                        "[SCAN] Outside accumulation scan window.",
+                        flush=True
+                    )
+
                 last_scan_ts = now_ts
 
             if now_ts - last_monitor_ts >= WATCHLIST_MONITOR_INTERVAL:
