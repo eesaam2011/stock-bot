@@ -1744,13 +1744,6 @@ def check_entry_conditions(
     data: Dict[str, Any],
     df: pd.DataFrame
 ) -> bool:
-    resistance = safe_float(
-        data.get("resistance"),
-        0
-    )
-
-    if resistance <= 0:
-        return False
 
     closed_bar_result = get_last_closed_bar(df)
 
@@ -1759,10 +1752,34 @@ def check_entry_conditions(
 
     last_bar, last_timestamp, last_position = closed_bar_result
 
-    if last_position < 1:
+    if last_position < 2:
         return False
 
     previous_bar = df.iloc[last_position - 1]
+
+    resistance_end_position = last_position - 1
+
+    resistance_start_position = max(
+        0,
+        resistance_end_position - RESISTANCE_BODY_LOOKBACK
+    )
+
+    resistance_section = df.iloc[
+        resistance_start_position:resistance_end_position
+    ]
+
+    if resistance_section.empty:
+        return False
+
+    resistance = safe_float(
+        resistance_section["high"].astype(float).max(),
+        0
+    )
+
+    if resistance <= 0:
+        return False
+
+    data["resistance"] = resistance
 
     last_close = safe_float(
         last_bar.get("close"),
