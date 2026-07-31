@@ -55,7 +55,7 @@ MAX_SPREAD_PCT = 2.5
 # =========================================================
 # ENTRY SCORE
 # =========================================================
-ENTRY_MIN_SCORE = 86
+ENTRY_MIN_SCORE = 88.5
 REPEAT_BLOCK_HOURS = 12
 
 SCORE_WEIGHTS = {
