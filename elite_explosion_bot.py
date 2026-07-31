@@ -3289,6 +3289,82 @@ def print_rejection_summary(
             "   Decision Engine: "
             "لا يوجد رفض"
         )
+
+def print_fast_watchlist_status(limit=10):
+    required_score = get_required_entry_score()
+    now_ts = time.time()
+
+    with FAST_WATCHLIST_LOCK:
+        items = [
+            dict(item)
+            for item in FAST_WATCHLIST.values()
+        ]
+
+    print("")
+    print(
+        f"👀 FAST_WATCHLIST STATUS | "
+        f"Count={len(items)}"
+    )
+
+    if not items:
+        print("   لا يوجد")
+        return
+
+    ranked = sorted(
+        items,
+        key=lambda item: safe_float(
+            item.get("last_score")
+        ),
+        reverse=True,
+    )[:limit]
+
+    for item in ranked:
+        symbol = item.get(
+            "symbol",
+            "UNKNOWN",
+        )
+
+        last_score = safe_float(
+            item.get("last_score")
+        )
+
+        peak_score = safe_float(
+            item.get(
+                "peak_score",
+                last_score,
+            )
+        )
+
+        added_at = safe_float(
+            item.get("added_at")
+        )
+
+        age_minutes = max(
+            0.0,
+            (now_ts - added_at) / 60,
+        )
+
+        weak_cycles = int(
+            item.get(
+                "weak_cycles",
+                0,
+            )
+        )
+
+        points_needed = max(
+            0.0,
+            required_score - last_score,
+        )
+
+        print(
+            f"   {symbol} | "
+            f"Score={last_score:.1f} | "
+            f"Peak={peak_score:.1f} | "
+            f"Age={age_minutes:.1f}m | "
+            f"Weak={weak_cycles}/"
+            f"{FAST_WATCHLIST_MAX_WEAK_CYCLES} | "
+            f"Need={points_needed:.1f}"
+        )
         
 # =========================================================
 # MAIN CYCLE
