@@ -236,6 +236,9 @@ ACTIVITY_FILTER = {
 ATR_PERIOD = 14
 STOP_ATR_MULTIPLIER = 1.5
 
+MIN_STOP_DISTANCE_PCT = 4.0
+MAX_STOP_DISTANCE_PCT = 12.0
+
 TARGETS = {
     "T1_ATR": 1.0,
     "T2_ATR": 2.0,
@@ -249,6 +252,23 @@ EXIT_ON_LOSE_VWAP = True
 EXIT_ON_OBV_WEAKNESS = True
 EXIT_ON_VOLUME_COLLAPSE = True
 
+
+# =========================================================
+# ENTRY COST / REWARD PROTECTION
+# =========================================================
+ROUND_TRIP_SPREAD_MULTIPLIER = 2.0
+EXPECTED_SLIPPAGE_PCT = 0.50
+MIN_T1_NET_REWARD_PCT = 0.75
+
+# =========================================================
+# TRADING HALT / RESUME
+# =========================================================
+ALPACA_STATUS_STREAM_URL = (
+    "wss://stream.data.alpaca.markets/v2/sip"
+)
+
+HALT_RESUME_COOLDOWN_SECONDS = 90
+HALT_STREAM_RECONNECT_SECONDS = 10
 
 # =========================================================
 # REDIS
