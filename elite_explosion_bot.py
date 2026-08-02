@@ -4142,6 +4142,8 @@ def main_loop():
                     f"Universe={len(priority_universe)} | "
                     f"Monitoring={len(active_monitoring)} | "
                     f"FastWatch={fast_watchlist_count} | "
+                    f"HaltStream="
+                    f"{'ON' if halt_stream_connected else 'OFF'} | "
                     f"NewsQueue={len(news_queue)}"
                 )
 
