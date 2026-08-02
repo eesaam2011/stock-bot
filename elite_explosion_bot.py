@@ -11,6 +11,7 @@ import sys
 import builtins
 import functools
 import threading
+import websocket
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -74,6 +75,12 @@ daily_statistics = {}
 FAST_WATCHLIST = {}
 FAST_WATCHLIST_LOCK = threading.RLock()
 ENTRY_EXECUTION_LOCK = threading.RLock()
+TRADING_STATUS = {}
+TRADING_STATUS_LOCK = threading.RLock()
+
+halt_stream_connected = False
+halt_stream_last_message_at = 0.0
+
 news_queue = []
 news_cursor = 0
 scan_cursor = 0
@@ -516,7 +523,350 @@ def safe_float(x, default=0.0):
     except Exception:
         return default
 
+# =========================================================
+# TRADING HALT / RESUME
+# =========================================================
+def update_trading_status(message):
+    global halt_stream_last_message_at
 
+    if not isinstance(message, dict):
+        return
+
+    if message.get("T") != "s":
+        return
+
+    symbol = str(
+        message.get("S", "")
+        or ""
+    ).strip().upper()
+
+    if not symbol:
+        return
+
+    status_code = str(
+        message.get("sc", "")
+        or ""
+    ).strip().upper()
+
+    status_message = str(
+        message.get("sm", "")
+        or ""
+    ).strip()
+
+    reason_code = str(
+        message.get("rc", "")
+        or ""
+    ).strip().upper()
+
+    reason_message = str(
+        message.get("rm", "")
+        or ""
+    ).strip()
+
+    event_time = str(
+        message.get("t", "")
+        or ""
+    ).strip()
+
+    now_ts = time.time()
+    halt_stream_last_message_at = now_ts
+
+    halt_codes = {
+        "2",
+        "H",
+        "P",
+        "F",
+    }
+
+    full_resume_codes = {
+        "3",
+        "T",
+    }
+
+    quotation_resume_codes = {
+        "Q",
+    }
+
+    with TRADING_STATUS_LOCK:
+        current = TRADING_STATUS.get(
+            symbol,
+            {},
+        )
+
+        was_halted = bool(
+            current.get("halted", False)
+        )
+
+        if status_code in halt_codes:
+            TRADING_STATUS[symbol] = {
+                "symbol": symbol,
+                "halted": True,
+                "status_code": status_code,
+                "status_message": status_message,
+                "reason_code": reason_code,
+                "reason_message": reason_message,
+                "event_time": event_time,
+                "halted_at": now_ts,
+                "resumed_at": 0.0,
+                "quotation_resumed_at": 0.0,
+                "updated_at": now_ts,
+            }
+
+            print(
+                f"🛑 TRADING HALT: {symbol} | "
+                f"Status={status_code} | "
+                f"Reason={reason_code} | "
+                f"{reason_message}"
+            )
+            return
+
+        if status_code in quotation_resume_codes:
+            current["symbol"] = symbol
+            current["status_code"] = status_code
+            current["status_message"] = status_message
+            current["reason_code"] = reason_code
+            current["reason_message"] = reason_message
+            current["event_time"] = event_time
+            current["quotation_resumed_at"] = now_ts
+            current["updated_at"] = now_ts
+
+            TRADING_STATUS[symbol] = current
+
+            print(
+                f"🟡 QUOTATION RESUMED: {symbol} | "
+                f"Waiting for full trading resume"
+            )
+            return
+
+        if status_code in full_resume_codes:
+            current["symbol"] = symbol
+            current["halted"] = False
+            current["status_code"] = status_code
+            current["status_message"] = status_message
+            current["reason_code"] = reason_code
+            current["reason_message"] = reason_message
+            current["event_time"] = event_time
+            current["resumed_at"] = now_ts
+            current["updated_at"] = now_ts
+
+            TRADING_STATUS[symbol] = current
+
+            if was_halted:
+                print(
+                    f"✅ TRADING RESUMED: {symbol} | "
+                    f"Cooldown="
+                    f"{HALT_RESUME_COOLDOWN_SECONDS}s"
+                )
+
+
+def get_trading_block_reason(symbol):
+    symbol = str(symbol or "").strip().upper()
+
+    if not symbol:
+        return True, "invalid_symbol"
+
+    with TRADING_STATUS_LOCK:
+        item = dict(
+            TRADING_STATUS.get(
+                symbol,
+                {},
+            )
+        )
+
+    if not item:
+        return False, ""
+
+    if item.get("halted", False):
+        reason_code = item.get(
+            "reason_code",
+            "",
+        )
+
+        reason_message = item.get(
+            "reason_message",
+            "",
+        )
+
+        return (
+            True,
+            (
+                f"trading_halt:"
+                f"{reason_code}:"
+                f"{reason_message}"
+            ),
+        )
+
+    resumed_at = safe_float(
+        item.get("resumed_at")
+    )
+
+    if resumed_at > 0:
+        elapsed = time.time() - resumed_at
+
+        if elapsed < HALT_RESUME_COOLDOWN_SECONDS:
+            remaining = max(
+                0,
+                int(
+                    HALT_RESUME_COOLDOWN_SECONDS
+                    - elapsed
+                ),
+            )
+
+            return (
+                True,
+                f"post_resume_cooldown:{remaining}s",
+            )
+
+    return False, ""
+
+
+def alpaca_status_stream_on_open(ws):
+    global halt_stream_connected
+
+    halt_stream_connected = True
+
+    print(
+        "✅ Alpaca Trading Status stream connected"
+    )
+
+    auth_message = {
+        "action": "auth",
+        "key": ALPACA_API_KEY,
+        "secret": ALPACA_SECRET_KEY,
+    }
+
+    ws.send(
+        json.dumps(auth_message)
+    )
+
+
+def alpaca_status_stream_on_message(
+    ws,
+    raw_message,
+):
+    global halt_stream_connected
+    global halt_stream_last_message_at
+
+    try:
+        messages = json.loads(raw_message)
+
+        if not isinstance(messages, list):
+            messages = [messages]
+
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+
+            message_type = message.get("T")
+
+            if (
+                message_type == "success"
+                and message.get("msg")
+                == "authenticated"
+            ):
+                subscribe_message = {
+                    "action": "subscribe",
+                    "statuses": ["*"],
+                }
+
+                ws.send(
+                    json.dumps(
+                        subscribe_message
+                    )
+                )
+
+                print(
+                    "👂 Subscribed to Alpaca "
+                    "Trading Status: *"
+                )
+                continue
+
+            if message_type == "error":
+                print(
+                    f"❌ Alpaca status stream error: "
+                    f"{message}"
+                )
+                continue
+
+            if message_type == "subscription":
+                halt_stream_connected = True
+                halt_stream_last_message_at = (
+                    time.time()
+                )
+                continue
+
+            update_trading_status(message)
+
+    except Exception as e:
+        print(
+            f"⚠️ Trading Status message error: "
+            f"{e}"
+        )
+
+
+def alpaca_status_stream_on_error(
+    ws,
+    error,
+):
+    global halt_stream_connected
+
+    halt_stream_connected = False
+
+    print(
+        f"❌ Alpaca Trading Status "
+        f"WebSocket error: {error}"
+    )
+
+
+def alpaca_status_stream_on_close(
+    ws,
+    close_status_code,
+    close_message,
+):
+    global halt_stream_connected
+
+    halt_stream_connected = False
+
+    print(
+        f"⚠️ Alpaca Trading Status "
+        f"stream closed | "
+        f"Code={close_status_code} | "
+        f"Message={close_message}"
+    )
+
+
+def trading_status_stream_loop():
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                ALPACA_STATUS_STREAM_URL,
+                on_open=alpaca_status_stream_on_open,
+                on_message=(
+                    alpaca_status_stream_on_message
+                ),
+                on_error=(
+                    alpaca_status_stream_on_error
+                ),
+                on_close=(
+                    alpaca_status_stream_on_close
+                ),
+            )
+
+            ws.run_forever(
+                ping_interval=20,
+                ping_timeout=10,
+            )
+
+        except Exception as e:
+            print(
+                f"❌ Trading Status stream "
+                f"loop error: {e}"
+            )
+
+        time.sleep(
+            HALT_STREAM_RECONNECT_SECONDS
+        )
+        
 def get_snapshot_price_data(symbol):
     try:
         snap = api.get_snapshot(symbol)
@@ -2531,23 +2881,63 @@ def select_best_entry_candidate(scored_candidates):
 # TARGETS / RISK
 # =========================================================
 def calculate_trade_plan(metrics):
-    price = metrics.get("price", 0)
-    atr = metrics.get("atr", 0)
+    price = safe_float(
+        metrics.get("price")
+    )
 
-    if not price or price <= 0:
+    atr = safe_float(
+        metrics.get("atr")
+    )
+
+    if price <= 0:
         return None
 
-    if not atr or atr <= 0:
+    if atr <= 0:
         atr = price * 0.03
 
-    stop = price - (atr * STOP_ATR_MULTIPLIER)
-    t1 = price + (atr * TARGETS["T1_ATR"])
-    t2 = price + (atr * TARGETS["T2_ATR"])
-    t3 = price + (atr * TARGETS["T3_ATR"])
+    atr_stop_distance = (
+        atr * STOP_ATR_MULTIPLIER
+    )
 
-    max_stop = price * 0.94
-    if stop < max_stop:
-        stop = max_stop
+    min_stop_distance = (
+        price
+        * MIN_STOP_DISTANCE_PCT
+        / 100
+    )
+
+    max_stop_distance = (
+        price
+        * MAX_STOP_DISTANCE_PCT
+        / 100
+    )
+
+    stop_distance = max(
+        atr_stop_distance,
+        min_stop_distance,
+    )
+
+    stop_distance = min(
+        stop_distance,
+        max_stop_distance,
+    )
+
+    stop = price - stop_distance
+
+    t1 = price + (
+        atr * TARGETS["T1_ATR"]
+    )
+
+    t2 = price + (
+        atr * TARGETS["T2_ATR"]
+    )
+
+    t3 = price + (
+        atr * TARGETS["T3_ATR"]
+    )
+
+    stop_distance_pct = (
+        stop_distance / price
+    ) * 100
 
     return {
         "entry": round(price, 4),
@@ -2556,9 +2946,83 @@ def calculate_trade_plan(metrics):
         "t2": round(t2, 4),
         "t3": round(t3, 4),
         "atr": round(atr, 4),
+        "stop_distance_pct": round(
+            stop_distance_pct,
+            2,
+        ),
+    }    
+
+def validate_entry_cost_reward(
+    metrics,
+    plan,
+):
+    entry = safe_float(
+        plan.get("entry")
+    )
+
+    t1 = safe_float(
+        plan.get("t1")
+    )
+
+    spread_pct = safe_float(
+        metrics.get("spread_pct"),
+        999,
+    )
+
+    if entry <= 0 or t1 <= entry:
+        return False, {
+            "reason": "invalid_trade_plan",
+            "t1_reward_pct": 0.0,
+            "estimated_cost_pct": 0.0,
+            "net_t1_reward_pct": 0.0,
+        }
+
+    t1_reward_pct = (
+        (t1 - entry) / entry
+    ) * 100
+
+    estimated_cost_pct = (
+        spread_pct
+        * ROUND_TRIP_SPREAD_MULTIPLIER
+    ) + EXPECTED_SLIPPAGE_PCT
+
+    net_t1_reward_pct = (
+        t1_reward_pct
+        - estimated_cost_pct
+    )
+
+    result = {
+        "reason": "ok",
+        "t1_reward_pct": round(
+            t1_reward_pct,
+            2,
+        ),
+        "spread_pct": round(
+            spread_pct,
+            2,
+        ),
+        "estimated_cost_pct": round(
+            estimated_cost_pct,
+            2,
+        ),
+        "net_t1_reward_pct": round(
+            net_t1_reward_pct,
+            2,
+        ),
     }
 
+    if (
+        net_t1_reward_pct
+        < MIN_T1_NET_REWARD_PCT
+    ):
+        result["reason"] = (
+            "insufficient_net_t1_reward"
+        )
 
+        return False, result
+
+    return True, result
+    
 # =========================================================
 # TELEGRAM ALERTS
 # =========================================================
@@ -2729,7 +3193,17 @@ def execute_entry_if_any(scored_candidates):
 
         if not symbol:
             return False
+        entry_blocked, block_reason = (
+            get_trading_block_reason(symbol)
+        )
 
+        if entry_blocked:
+            print(
+                f"🛑 Entry blocked: {symbol} | "
+                f"Reason: {block_reason}"
+            )
+            return False
+            
         fresh_candidate = build_symbol_metrics(symbol)
 
         if not fresh_candidate:
@@ -2798,11 +3272,48 @@ def execute_entry_if_any(scored_candidates):
 
             return False
 
-        plan = calculate_trade_plan(fresh_candidate)
+        plan = calculate_trade_plan(
+            fresh_candidate
+        )
 
         if not plan:
             return False
 
+        cost_reward_ok, cost_reward = (
+            validate_entry_cost_reward(
+                fresh_candidate,
+                plan,
+            )
+        )
+
+        fresh_candidate[
+            "cost_reward"
+        ] = cost_reward
+
+        if not cost_reward_ok:
+            print(
+                f"⛔ Entry rejected by "
+                f"cost/reward: {symbol} | "
+                f"T1={cost_reward.get('t1_reward_pct', 0):.2f}% | "
+                f"Cost={cost_reward.get('estimated_cost_pct', 0):.2f}% | "
+                f"Net={cost_reward.get('net_t1_reward_pct', 0):.2f}% | "
+                f"Required="
+                f"{MIN_T1_NET_REWARD_PCT:.2f}%"
+            )
+            return False
+            
+        entry_blocked, block_reason = (
+            get_trading_block_reason(symbol)
+        )
+
+        if entry_blocked:
+            print(
+                f"🛑 Entry cancelled before alert: "
+                f"{symbol} | "
+                f"Reason: {block_reason}"
+            )
+            return False
+            
         alert_ok = send_entry_alert(
             fresh_candidate,
             plan,
@@ -2910,6 +3421,29 @@ def check_monitoring_weakness(symbol, trade, price):
 
 
 def monitor_trade(symbol, trade):
+     monitoring_blocked, block_reason = (
+        get_trading_block_reason(symbol)
+    )
+
+    if monitoring_blocked:
+        print(
+            f"⏸ Monitoring paused: "
+            f"{symbol} | "
+            f"Reason: {block_reason}"
+        )
+
+        trade["monitoring_paused"] = True
+        trade["monitoring_pause_reason"] = (
+            block_reason
+        )
+        trade["last_check"] = (
+            now_ksa().isoformat()
+        )
+        return
+
+    trade["monitoring_paused"] = False
+    trade["monitoring_pause_reason"] = ""
+
     price = get_current_price(symbol)
     if not price:
         return
@@ -3676,6 +4210,13 @@ if __name__ == "__main__":
 
     if RESTORE_ACTIVE_MONITORING:
         recover_active_monitoring_after_restart()
+
+    trading_status_thread = threading.Thread(
+        target=trading_status_stream_loop,
+        name="alpaca-trading-status",
+        daemon=True,
+    )
+    trading_status_thread.start()
 
     fast_watchlist_thread = threading.Thread(
         target=fast_watchlist_monitor_loop,
