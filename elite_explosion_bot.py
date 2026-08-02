@@ -3421,7 +3421,7 @@ def check_monitoring_weakness(symbol, trade, price):
 
 
 def monitor_trade(symbol, trade):
-     monitoring_blocked, block_reason = (
+    monitoring_blocked, block_reason = (
         get_trading_block_reason(symbol)
     )
 
