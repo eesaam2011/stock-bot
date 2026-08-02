@@ -7,3 +7,4 @@ yfinance
 alpaca-py
 orjson
 matplotlib
+websocket-client==1.8.0
