@@ -17,7 +17,19 @@ def analyze_confirmed_breakout(row):
     quality_bonus = float(
         row.get("quality_bonus", 0) or 0
     )
-
+    move_3m = float(
+        row.get("move_3m", 0) or 0
+    )
+    move_5m = float(
+        row.get("move_5m", 0) or 0
+    )
+    close_position = float(
+        row.get("close_position", 0) or 0
+    )
+    float_shares = float(
+        row.get("float_shares", 0) or 0
+    )
+    
     if bars is None or len(bars) < 3:
         return None
 
@@ -73,7 +85,31 @@ def analyze_confirmed_breakout(row):
         strict_volume_confirmed
         or boosted_volume_confirmed
     )
+    momentum_continuation = (
+        close_3 >= close_2
+        and close_position >= 0.70
+        and (
+            move_3m >= 0.40
+            or move_5m >= 0.80
+        )
+    )
 
+    low_float_support = (
+        0 < float_shares <= 50_000_000
+    )
+
+    breakout_quality_confirmed = (
+        momentum_continuation
+        or (
+            low_float_support
+            and close_position >= 0.65
+            and (
+                move_3m >= 0.30
+                or move_5m >= 0.60
+            )
+        )
+    )
+    
     if not closes_above_resistance:
         print(
             f"🧱 REJECT {row.get('symbol')} | "
@@ -98,7 +134,19 @@ def analyze_confirmed_breakout(row):
             flush=True,
         )
         return None
-
+        
+    if not breakout_quality_confirmed:
+        print(
+            f"🧱 REJECT {row.get('symbol')} | "
+            f"weak momentum continuation | "
+            f"move3m={move_3m:.2f}% "
+            f"move5m={move_5m:.2f}% "
+            f"close_position={close_position:.2f} "
+            f"float={float_shares}",
+            flush=True,
+        )
+        return None
+        
     current_price = float(
         row.get("price", close_3) or close_3
     )
