@@ -3460,8 +3460,19 @@ def monitor_trade(symbol, trade):
     if not trade.get("t1_hit") and price >= trade.get("t1", 999999):
         trade["t1_hit"] = True
         runtime_stats["t1_hits"] += 1
-        send_target_alert(symbol, TELEGRAM_T1_TITLE, trade, price, "T1")
 
+        update_trailing_stop(
+            trade,
+            price,
+        )
+
+        send_target_alert(
+            symbol,
+            TELEGRAM_T1_TITLE,
+            trade,
+            price,
+            "T1",
+        )
     if not trade.get("t2_hit") and price >= trade.get("t2", 999999):
         trade["t2_hit"] = True
         runtime_stats["t2_hits"] += 1
@@ -3470,7 +3481,19 @@ def monitor_trade(symbol, trade):
     if not trade.get("t3_hit") and price >= trade.get("t3", 999999):
         trade["t3_hit"] = True
         runtime_stats["t3_hits"] += 1
-        send_target_alert(symbol, TELEGRAM_T3_TITLE, trade, price, "T3")
+
+        update_trailing_stop(
+            trade,
+            price,
+        )
+
+        send_target_alert(
+            symbol,
+            TELEGRAM_T3_TITLE,
+            trade,
+            price,
+            "T3",
+        )
 
     if trade.get("t3_hit") and not trade.get("momentum_alert_sent"):
         weakness = check_monitoring_weakness(symbol, trade, price)
