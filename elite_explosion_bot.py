@@ -2735,12 +2735,7 @@ def scan_market_batch():
             if passes_activity_filter(metrics):
                 runtime_stats["passed_activity_filter"] += 1
                 active_candidates.append(metrics)
-
-            score, breakdown = calculate_final_score(symbol, metrics)
-
-            metrics["final_score"] = score
-            metrics["score_breakdown"] = breakdown
-            
+                
             session_profile = get_session_profile()
 
             required_score = safe_float(
@@ -2749,6 +2744,24 @@ def scan_market_batch():
                     ENTRY_MIN_SCORE,
                 )
             )
+            score, breakdown = calculate_final_score(symbol, metrics)
+
+            metrics["final_score"] = score
+            metrics["score_breakdown"] = breakdown
+            
+            if score >= 80:
+                print(
+                    f"📈 Near Entry | "
+                    f"{symbol} | "
+                    f"Score={score:.1f}/"
+                    f"{required_score:.1f} | "
+                    f"RVOL={metrics.get('rvol', 0):.2f} | "
+                    f"Accel={metrics.get('volume_acceleration', {}).get('ratio', 0):.2f} | "
+                    f"Price={metrics.get('price_change_pct', 0):.2f}% | "
+                    f"Spread={metrics.get('spread_pct', 0):.2f}% | "
+                    f"Float={metrics.get('float_bonus', 0)} | "
+                    f"News={breakdown.get('news_score', 0)}"
+                )
 
             if (
                 FAST_WATCHLIST_MIN_SCORE <= score < required_score
