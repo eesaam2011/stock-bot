@@ -4425,41 +4425,315 @@ def update_active_trade(symbol, item):
         ACTIVE_TRADES[symbol] = item
 
     redis_hset_json(KEY_ACTIVE, symbol, item)
-    
-def close_active_trade(symbol, item, reason):
+
+def get_highest_target_label(trade_plan):
+    if trade_plan.get("hit_high_target"):
+        return "الهدف الممتد"
+
+    if trade_plan.get("hit_t3"):
+        return "T3"
+
+    if trade_plan.get("hit_t2"):
+        return "T2"
+
+    if trade_plan.get("hit_t1"):
+        return "T1"
+
+    return "لم يتحقق T1"
+
+
+def calculate_trade_realized_pct(item):
     trade_plan = item.get("trade_plan", {})
+
+    entry = safe_float(
+        trade_plan.get("entry")
+    )
+
+    exit_price = safe_float(
+        item.get("exit_price")
+    )
+
+    if entry <= 0 or exit_price <= 0:
+        return None
+
+    return (
+        (exit_price - entry)
+        / entry
+    ) * 100
+
+
+def build_trade_outcome_reason(item):
+    trade_plan = item.get("trade_plan", {})
+    metrics = item.get("metrics", {})
+
+    close_reason = str(
+        item.get("close_reason") or ""
+    )
+
+    entry = safe_float(
+        trade_plan.get("entry")
+    )
+
+    realized_pct = calculate_trade_realized_pct(
+        item
+    )
+
+    max_profit_pct = safe_float(
+        item.get("max_profit_pct")
+    )
+
+    day_high = safe_float(
+        metrics.get("day_high")
+    )
+
+    rvol = safe_float(
+        metrics.get("rvol")
+    )
+
+    accel = safe_float(
+        metrics.get("volume_accel_ratio")
+    )
+
+    breakout = bool(
+        metrics.get("breakout")
+    )
+
+    obv_rising = bool(
+        metrics.get("obv_rising")
+    )
+
+    trend_ok = bool(
+        metrics.get("trend_15m_ok")
+    )
+
+    # ------------------------------------------------------------------
+    # أسباب فشل واضحة من منطق المراقبة
+    # ------------------------------------------------------------------
+
+    if close_reason == "confirmed_vwap_failure_before_t1":
+        return (
+            "فقد السهم الزخم بعد الدخول، "
+            "وأغلق شمعتين تحت VWAP مع شمعة هابطة قوية."
+        )
+
+    if close_reason == "confirmed_volume_death_before_t1":
+        return (
+            "انهار RVOL وتسارع الحجم قبل تحقيق T1، "
+            "وتأكد الضعف بشمعة هابطة قوية."
+        )
+
+    if close_reason == "stop_hit":
+        entry_near_day_high = (
+            entry > 0
+            and day_high > 0
+            and entry >= day_high * 0.97
+        )
+
+        if (
+            breakout
+            and max_profit_pct < 1.0
+        ):
+            return (
+                "الاختراق لم يستمر بعد الدخول، "
+                "ولم يمنح السهم امتدادًا كافيًا قبل انعكاسه وكسر الوقف."
+            )
+
+        if (
+            entry_near_day_high
+            and max_profit_pct < 1.5
+        ):
+            return (
+                "الدخول كان قريبًا جدًا من قمة اليوم، "
+                "ثم فقد السهم الزخم سريعًا وانعكس إلى وقف الخسارة."
+            )
+
+        if max_profit_pct < 0.5:
+            return (
+                "السهم لم يحقق تقدمًا فعليًا بعد الدخول "
+                "وانعكس مباشرة تقريبًا إلى وقف الخسارة."
+            )
+
+        if trade_plan.get("hit_t2"):
+            return (
+                "الصفقة حققت تقدمًا جيدًا ثم انعكست لاحقًا "
+                "إلى الوقف المتحرك."
+            )
+
+        if trade_plan.get("hit_t1"):
+            return (
+                "الصفقة حققت T1 ثم فقدت الزخم لاحقًا "
+                "وخرجت على الوقف المرفوع."
+            )
+
+        return (
+            "السهم لم يتمكن من استمرار الحركة بعد الدخول "
+            "وانتهى بكسر وقف الخسارة."
+        )
+
+    # ------------------------------------------------------------------
+    # أسباب النجاح
+    # ------------------------------------------------------------------
+
+    if realized_pct is not None and realized_pct > 0:
+        reasons = []
+
+        highest_target = get_highest_target_label(
+            trade_plan
+        )
+
+        if highest_target != "لم يتحقق T1":
+            reasons.append(
+                f"حقق {highest_target}"
+            )
+
+        if rvol >= 4:
+            reasons.append(
+                "RVOL قوي"
+            )
+
+        if accel >= 2:
+            reasons.append(
+                "استمرار واضح في تسارع الحجم"
+            )
+
+        if breakout:
+            reasons.append(
+                "اختراق ناجح للمقاومة"
+            )
+
+        if obv_rising:
+            reasons.append(
+                "OBV داعم"
+            )
+
+        if trend_ok:
+            reasons.append(
+                "اتجاه 15 دقيقة داعم"
+            )
+
+        if reasons:
+            return " + ".join(
+                reasons[:4]
+            )
+
+        return (
+            "السهم حافظ على الحركة الإيجابية بعد الدخول "
+            "وخرج بنتيجة رابحة."
+        )
+
+    if realized_pct is not None and realized_pct == 0:
+        return (
+            "الصفقة انتهت تقريبًا عند سعر الدخول دون ربح أو خسارة واضحة."
+        )
+
+    return (
+        "لا توجد بيانات كافية لتحديد سبب النتيجة بدقة."
+    )
+    
+def close_active_trade(
+    symbol,
+    item,
+    reason,
+    exit_price=None
+):
+    trade_plan = item.get(
+        "trade_plan",
+        {}
+    )
 
     trade_plan["status"] = "closed"
 
     item["trade_plan"] = trade_plan
 
-    item["closed_at"] = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
+    item["closed_at"] = datetime.now(
+        saudi_tz
+    ).strftime("%Y-%m-%d %H:%M:%S")
 
     item["close_reason"] = reason
 
-    opened_at = item.get("opened_at")
+    entry = safe_float(
+        trade_plan.get("entry")
+    )
+
+    exit_price = safe_float(
+        exit_price
+    )
+
+    if exit_price <= 0:
+        if reason == "stop_hit":
+            exit_price = safe_float(
+                trade_plan.get("stop")
+            )
+
+    item["exit_price"] = exit_price
+
+    if entry > 0 and exit_price > 0:
+        item["realized_pct"] = (
+            (exit_price - entry)
+            / entry
+        ) * 100
+    else:
+        item["realized_pct"] = None
+
+    opened_at = item.get(
+        "opened_at"
+    )
 
     if opened_at:
         try:
             opened_dt = datetime.strptime(
                 opened_at,
                 "%Y-%m-%d %H:%M:%S"
-            ).replace(tzinfo=saudi_tz)
+            ).replace(
+                tzinfo=saudi_tz
+            )
 
             item["holding_minutes"] = int(
-                (datetime.now(saudi_tz) - opened_dt).total_seconds() / 60
+                (
+                    datetime.now(saudi_tz)
+                    - opened_dt
+                ).total_seconds()
+                / 60
             )
 
         except Exception:
             item["holding_minutes"] = None
+
     else:
         item["holding_minutes"] = None
 
-    trade_plan = item.get("trade_plan", {})
+    trade_plan = item.get(
+        "trade_plan",
+        {}
+    )
 
-    item["t1_hit"] = bool(trade_plan.get("hit_t1"))
-    item["t2_hit"] = bool(trade_plan.get("hit_t2"))
-    item["t3_hit"] = bool(trade_plan.get("hit_t3"))
+    item["t1_hit"] = bool(
+        trade_plan.get("hit_t1")
+    )
+
+    item["t2_hit"] = bool(
+        trade_plan.get("hit_t2")
+    )
+
+    item["t3_hit"] = bool(
+        trade_plan.get("hit_t3")
+    )
+
+    item["high_target_hit"] = bool(
+        trade_plan.get("hit_high_target")
+    )
+
+    item["highest_target"] = (
+        get_highest_target_label(
+            trade_plan
+        )
+    )
+
+    item["result_reason"] = (
+        build_trade_outcome_reason(
+            item
+        )
+    )
 
     redis_hset_json(
         KEY_HISTORY,
@@ -4467,14 +4741,19 @@ def close_active_trade(symbol, item, reason):
         item
     )
 
-    redis_hdel(KEY_ACTIVE, symbol)
+    redis_hdel(
+        KEY_ACTIVE,
+        symbol
+    )
 
     with ACTIVE_TRADES_LOCK:
         if symbol in ACTIVE_TRADES:
             del ACTIVE_TRADES[symbol]
 
-        runtime_stats["active_trades"] = len(ACTIVE_TRADES)
-
+        runtime_stats["active_trades"] = len(
+            ACTIVE_TRADES
+        )
+        
 def send_trade_update(symbol, text):
     message = f"""🟢 <b>market radar bot - تحديث صفقة</b>
 
