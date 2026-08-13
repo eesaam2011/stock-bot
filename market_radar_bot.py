@@ -3739,6 +3739,8 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         "day_volume": safe_float(snapshot.get("day_volume")),
         "dollar_volume": safe_float(snapshot.get("dollar_volume")),
         "gap_pct": safe_float(snapshot.get("gap_pct")),
+        "day_high": safe_float(snapshot.get("day_high")),
+        "day_low": safe_float(snapshot.get("day_low")),
         "vwap": vwap,
         "rvol": rvol,
         "volume_accel_ratio": volume_accel_ratio,
