@@ -73,8 +73,27 @@ def get_all_active_paper_trades():
             raw_trade = result[i + 1]
 
             try:
-                trades[symbol] = json.loads(raw_trade)
-            except Exception:
+                parsed_trade = json.loads(raw_trade)
+
+                if isinstance(parsed_trade, str):
+                    parsed_trade = json.loads(parsed_trade)
+
+                if not isinstance(parsed_trade, dict):
+                    print(
+                        f"⚠️ Invalid Paper trade payload: "
+                        f"{symbol} | type={type(parsed_trade).__name__}",
+                        flush=True,
+                    )
+                    continue
+
+                trades[symbol] = parsed_trade
+
+            except Exception as e:
+                print(
+                    f"⚠️ Could not decode Paper trade: "
+                    f"{symbol} | {e}",
+                    flush=True,
+                )
                 continue
 
         return trades
