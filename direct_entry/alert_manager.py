@@ -172,6 +172,21 @@ def build_confirmed_breakout_message(alert):
     entry_price = alert.get("price")
     stop_loss = alert.get("stop_loss")
 
+    entry_price = float(entry_price or 0)
+    stop_loss = float(stop_loss or 0)
+
+    risk = entry_price - stop_loss
+
+    if risk > 0:
+        target_1 = entry_price + (risk * 1.5)
+        target_2 = entry_price + (risk * 2.5)
+    else:
+        target_1 = None
+        target_2 = None
+
+    alert["target1"] = target_1
+    alert["target2"] = target_2
+
     return (
         f"🧱 بوت الدخول المباشر\n\n"
         f"اختراق مؤكد - دخول محافظ\n\n"
@@ -186,6 +201,10 @@ def build_confirmed_breakout_message(alert):
         f"{format_price(entry_price)}\n\n"
         f"وقف الخسارة:\n"
         f"كسر {format_price(stop_loss)}\n\n"
+        f"الهدف الأول:\n"
+        f"{format_price(target_1)}\n\n"
+        f"الهدف الثاني:\n"
+        f"{format_price(target_2)}\n\n"
         f"TradingView:\n"
         f"https://www.tradingview.com/chart/?symbol={symbol}"
     )
