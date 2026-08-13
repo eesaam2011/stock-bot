@@ -4883,7 +4883,8 @@ def monitor_single_trade(symbol, item):
         close_active_trade(
             symbol,
             item,
-            "stop_hit"
+            "stop_hit",
+            exit_price=price
         )
         return
 
@@ -5140,7 +5141,8 @@ def monitor_single_trade(symbol, item):
             close_active_trade(
                 symbol,
                 item,
-                "confirmed_vwap_failure_before_t1"
+                "confirmed_vwap_failure_before_t1",
+                exit_price=price
             )
             return
 
@@ -5212,7 +5214,8 @@ Volume Death مؤكد."""
             close_active_trade(
                 symbol,
                 item,
-                "confirmed_volume_death_before_t1"
+                "confirmed_volume_death_before_t1",
+                exit_price=price
             )
             return
 
@@ -5542,40 +5545,420 @@ def maybe_refresh_universe():
 # ==============================================================================
 # Daily Summary
 # ==============================================================================
-
 def send_daily_summary():
-    active = load_active_trades()
-
-    history = redis_hgetall_json(KEY_HISTORY)
-
     today = today_ksa()
 
-    today_alerts = 0
+    history = redis_hgetall_json(
+        KEY_HISTORY
+    )
+
+    active = load_active_trades()
+
+    sent_alerts = get_sent_alerts()
+
+    today_alerts = sum(
+        1
+        for item in sent_alerts.values()
+        if (
+            isinstance(item, dict)
+            and item.get("date") == today
+        )
+    )
+
+    closed_trades = []
 
     for key, item in history.items():
-        if isinstance(item, dict) and item.get("date") == today:
-            today_alerts += 1
+        if not isinstance(item, dict):
+            continue
 
+        if item.get("date") != today:
+            continue
 
-    message = f"""📊 <b>Market Radar Bot - ملخص اليوم</b>
+        # KEY_HISTORY يحتوي أيضًا سجل التنبيه الأولي،
+        # لذلك لا نحسب إلا السجلات المغلقة فعليًا.
+        if not item.get("closed_at"):
+            continue
+
+        if not item.get("close_reason"):
+            continue
+
+        closed_trades.append(
+            item
+        )
+
+    active_today = []
+
+    for symbol, item in active.items():
+        if (
+            isinstance(item, dict)
+            and item.get("date") == today
+        ):
+            active_today.append(
+                item
+            )
+
+    winners = []
+    losers = []
+    breakeven = []
+    unknown = []
+
+    for item in closed_trades:
+        realized_pct = item.get(
+            "realized_pct"
+        )
+
+        if realized_pct is None:
+            realized_pct = (
+                calculate_trade_realized_pct(
+                    item
+                )
+            )
+
+        if realized_pct is None:
+            unknown.append(
+                item
+            )
+            continue
+
+        realized_pct = safe_float(
+            realized_pct
+        )
+
+        item["realized_pct"] = (
+            realized_pct
+        )
+
+        if realized_pct > 0:
+            winners.append(
+                item
+            )
+
+        elif realized_pct < 0:
+            losers.append(
+                item
+            )
+
+        else:
+            breakeven.append(
+                item
+            )
+
+    resolved_count = (
+        len(winners)
+        + len(losers)
+        + len(breakeven)
+    )
+
+    win_rate = (
+        (
+            len(winners)
+            / (
+                len(winners)
+                + len(losers)
+            )
+        ) * 100
+        if (
+            len(winners)
+            + len(losers)
+        ) > 0
+        else 0
+    )
+
+    realized_results = [
+        safe_float(
+            item.get("realized_pct")
+        )
+        for item in (
+            winners
+            + losers
+            + breakeven
+        )
+    ]
+
+    net_realized_pct = sum(
+        realized_results
+    )
+
+    average_win = (
+        sum(
+            safe_float(
+                item.get("realized_pct")
+            )
+            for item in winners
+        )
+        / len(winners)
+        if winners
+        else 0
+    )
+
+    average_loss = (
+        sum(
+            safe_float(
+                item.get("realized_pct")
+            )
+            for item in losers
+        )
+        / len(losers)
+        if losers
+        else 0
+    )
+
+    best_trade = None
+    worst_trade = None
+
+    if realized_results:
+        resolved_trades = (
+            winners
+            + losers
+            + breakeven
+        )
+
+        best_trade = max(
+            resolved_trades,
+            key=lambda item: safe_float(
+                item.get("realized_pct")
+            )
+        )
+
+        worst_trade = min(
+            resolved_trades,
+            key=lambda item: safe_float(
+                item.get("realized_pct")
+            )
+        )
+
+    unresolved_count = (
+        len(active_today)
+        + len(unknown)
+    )
+
+    best_trade_text = "لا يوجد"
+
+    if best_trade:
+        best_trade_text = (
+            f"{best_trade.get('symbol', 'N/A')} "
+            f"{safe_float(best_trade.get('realized_pct')):+.2f}%"
+        )
+
+    worst_trade_text = "لا يوجد"
+
+    if worst_trade:
+        worst_trade_text = (
+            f"{worst_trade.get('symbol', 'N/A')} "
+            f"{safe_float(worst_trade.get('realized_pct')):+.2f}%"
+        )
+
+    summary_message = f"""📊 <b>Market Radar Bot - ملخص اليوم</b>
 📅 التاريخ: {today}
 
-🔍 عدد جولات الفحص: {runtime_stats.get('total_scans', 0)}
-📈 عدد الأسهم التي تم تقييمها: {runtime_stats.get('symbols_checked', 0)}
-🚀 عدد التنبيهات المرسلة: {runtime_stats.get('alerts_sent', 0)}
-👀 الصفقات النشطة: {len(active)}
+💰 <b>النتيجة اليومية</b>
+
+🚀 عدد التنبيهات: {today_alerts}
+✅ صفقات ناجحة: {len(winners)}
+❌ صفقات فاشلة: {len(losers)}
+➖ تعادل: {len(breakeven)}
+👀 غير محسومة: {unresolved_count}
+
+🎯 نسبة النجاح: {win_rate:.1f}%
+
+💵 صافي أداء الصفقات المغلقة: <b>{net_realized_pct:+.2f}%</b>
+📈 متوسط ربح الصفقة الناجحة: {average_win:+.2f}%
+📉 متوسط خسارة الصفقة الفاشلة: {average_loss:+.2f}%
+
+🏆 أفضل صفقة: {best_trade_text}
+🔻 أسوأ صفقة: {worst_trade_text}
+
+━━━━━━━━━━━━━━
+
+⚙️ <b>إحصائيات التشغيل</b>
+
+🔍 جولات الفحص: {runtime_stats.get('total_scans', 0)}
+📈 الأسهم المقيمة: {runtime_stats.get('symbols_checked', 0)}
 📥 سجلات الفلوت: {runtime_stats.get('float_records', 0)}
-
+👀 الصفقات النشطة: {len(active_today)}
 🕒 آخر فحص: {runtime_stats.get('last_scan')}
-📦 آخر تحديث للـ Universe: {runtime_stats.get('last_universe')}
-
-📌 ملاحظة:
-عدم إرسال تنبيه في يوم ضعيف يعتبر قرارًا صحيحًا وليس فشلًا.
 """
 
-    send_telegram(message)
+    send_telegram(
+        summary_message
+    )
 
+    # ------------------------------------------------------------------
+    # تفاصيل الصفقات المغلقة
+    # ------------------------------------------------------------------
 
+    detail_blocks = []
+
+    sorted_closed_trades = sorted(
+        closed_trades,
+        key=lambda item: str(
+            item.get("closed_at") or ""
+        )
+    )
+
+    for item in sorted_closed_trades:
+        symbol = item.get(
+            "symbol",
+            "N/A"
+        )
+
+        trade_plan = item.get(
+            "trade_plan",
+            {}
+        )
+
+        entry = safe_float(
+            trade_plan.get("entry")
+        )
+
+        exit_price = safe_float(
+            item.get("exit_price")
+        )
+
+        realized_pct = item.get(
+            "realized_pct"
+        )
+
+        highest_target = item.get(
+            "highest_target"
+        )
+
+        if not highest_target:
+            highest_target = (
+                get_highest_target_label(
+                    trade_plan
+                )
+            )
+
+        reason = item.get(
+            "result_reason"
+        )
+
+        if not reason:
+            reason = (
+                build_trade_outcome_reason(
+                    item
+                )
+            )
+
+        if realized_pct is None:
+            result_text = "غير متوفر"
+            icon = "⚪"
+            status_text = "غير محسومة"
+
+        else:
+            realized_pct = safe_float(
+                realized_pct
+            )
+
+            result_text = (
+                f"{realized_pct:+.2f}%"
+            )
+
+            if realized_pct > 0:
+                icon = "✅"
+                status_text = "ناجحة"
+
+            elif realized_pct < 0:
+                icon = "❌"
+                status_text = "فاشلة"
+
+            else:
+                icon = "➖"
+                status_text = "تعادل"
+
+        detail_blocks.append(
+            f"""{icon} <b>{symbol} — {status_text}</b>
+💰 الدخول: {fmt_price(entry)}
+🚪 الخروج: {fmt_price(exit_price) if exit_price > 0 else 'غير متوفر'}
+🎯 أعلى هدف تحقق: {highest_target}
+📊 النتيجة: <b>{result_text}</b>
+📌 السبب: {reason}"""
+        )
+
+    # ------------------------------------------------------------------
+    # الصفقات التي ما زالت مفتوحة
+    # ------------------------------------------------------------------
+
+    for item in active_today:
+        symbol = item.get(
+            "symbol",
+            "N/A"
+        )
+
+        trade_plan = item.get(
+            "trade_plan",
+            {}
+        )
+
+        entry = safe_float(
+            trade_plan.get("entry")
+        )
+
+        highest_price = safe_float(
+            item.get("highest_price")
+        )
+
+        unrealized_pct = 0
+
+        if entry > 0 and highest_price > 0:
+            unrealized_pct = (
+                (
+                    highest_price
+                    - entry
+                )
+                / entry
+            ) * 100
+
+        detail_blocks.append(
+            f"""👀 <b>{symbol} — ما زالت نشطة</b>
+💰 الدخول: {fmt_price(entry)}
+📈 أعلى سعر مسجل: {fmt_price(highest_price)}
+🎯 أعلى هدف تحقق: {get_highest_target_label(trade_plan)}
+📊 أفضل تقدم أثناء المتابعة: {unrealized_pct:+.2f}%
+📌 النتيجة النهائية: لم تُحسم بعد."""
+        )
+
+    if not detail_blocks:
+        send_telegram(
+            """📋 <b>تفاصيل صفقات اليوم</b>
+
+لم توجد صفقات مغلقة أو نشطة لعرض تفاصيلها."""
+        )
+
+        return
+
+    # Telegram له حد لطول الرسالة،
+    # لذلك نقسم تفاصيل الصفقات على عدة رسائل.
+    current_message = (
+        "📋 <b>تفاصيل صفقات اليوم</b>\n\n"
+    )
+
+    for block in detail_blocks:
+        candidate = (
+            current_message
+            + block
+            + "\n\n━━━━━━━━━━━━━━\n\n"
+        )
+
+        if len(candidate) > 3500:
+            send_telegram(
+                current_message
+            )
+
+            current_message = (
+                "📋 <b>تكملة تفاصيل صفقات اليوم</b>\n\n"
+                + block
+                + "\n\n━━━━━━━━━━━━━━\n\n"
+            )
+
+        else:
+            current_message = candidate
+
+    if current_message.strip():
+        send_telegram(
+            current_message
+        )
 
 # ==============================================================================
 # Weekend Analysis
