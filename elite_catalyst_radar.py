@@ -1215,12 +1215,7 @@ def analyze_symbol_news(symbol, force_refresh=False):
     NEWS_CACHE[symbol] = result
     redis_hset_json(KEY_NEWS_CACHE, symbol, result)
 
-    publish_shared_news(
-        symbol,
-        items,
-        classified,
-        now_ts
-    )
+    publish_shared_news(symbol, classified, now_ts)
 
     return result
 
