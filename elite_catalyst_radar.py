@@ -2182,7 +2182,7 @@ def news_discovery_loop():
                     f"watch="
                     f"{len(NEWS_WATCHLIST)} | "
                     f"shared="
-                    f"{runtime_stats['shared_news_published']}"
+                    f"{runtime_stats.get('shared_news_published', 0)}"
                 )
 
             redis_set_json(
