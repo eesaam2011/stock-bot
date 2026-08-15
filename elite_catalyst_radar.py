@@ -1220,7 +1220,7 @@ def analyze_symbol_news(symbol, force_refresh=False):
 
     publish_shared_news(
         symbol,
-        raw_items,
+        items,
         classified,
         now_ts,
     )
