@@ -1443,7 +1443,39 @@ def get_market_radar_news(symbol):
             )
             return None
 
-        if payload.get("status") != "ok":
+        producer = str(
+            payload.get("producer")
+            or ""
+        ).strip().lower()
+
+        if (
+            producer
+            and producer != "elite_catalyst_radar"
+        ):
+            runtime_stats["shared_news_invalid"] = (
+                runtime_stats.get(
+                    "shared_news_invalid",
+                    0,
+                )
+                + 1
+            )
+
+            print(
+                f"⚠️ Unexpected news producer: "
+                f"{symbol} | {producer}"
+            )
+
+            return None
+
+        analysis = payload.get(
+            "analysis",
+            {}
+        )
+
+        if not isinstance(
+            analysis,
+            dict,
+        ):
             runtime_stats["shared_news_invalid"] = (
                 runtime_stats.get(
                     "shared_news_invalid",
@@ -1453,27 +1485,39 @@ def get_market_radar_news(symbol):
             )
             return None
 
-        articles = payload.get("articles", [])
-
-        if not isinstance(articles, list) or not articles:
-            runtime_stats["shared_news_misses"] = (
-                runtime_stats.get(
-                    "shared_news_misses",
-                    0,
-                )
-                + 1
-            )
-            return None
-
-        next_refresh_at = safe_float(
-            payload.get("next_refresh_at")
+        articles = payload.get(
+            "articles",
+            [],
         )
+
+        if not isinstance(
+            articles,
+            list,
+        ):
+            articles = []
 
         now_ts = time.time()
 
+        updated_at = safe_float(
+            payload.get("updated_at")
+        )
+
+        checked_at = safe_float(
+            payload.get("checked_at")
+        )
+
+        reference_ts = (
+            updated_at
+            if updated_at > 0
+            else checked_at
+        )
+
+        # إذا كان السجل المركزي قديمًا جدًا،
+        # نعتبره غير صالح ونسمح لـ Finnhub fallback.
         if (
-            next_refresh_at > 0
-            and now_ts > next_refresh_at
+            reference_ts > 0
+            and now_ts - reference_ts
+            > NEWS_CACHE_TTL
         ):
             runtime_stats["shared_news_expired"] = (
                 runtime_stats.get(
@@ -1484,86 +1528,126 @@ def get_market_radar_news(symbol):
             )
 
             print(
-                f"⌛ Market Radar news expired: "
+                f"⌛ Elite Catalyst news stale: "
                 f"{symbol}"
             )
+
             return None
 
-        news_texts = []
-        first_headline = ""
-        first_source = ""
+        positive = bool(
+            analysis.get("positive")
+        )
+
+        minor_negative = bool(
+            analysis.get(
+                "minor_negative"
+            )
+        )
+
+        serious_negative = bool(
+            analysis.get(
+                "serious_negative"
+            )
+        )
+
+        major_catalyst = bool(
+            analysis.get(
+                "major_catalyst"
+            )
+        )
+
+        category = str(
+            analysis.get("category")
+            or "neutral"
+        ).strip()
+
+        central_bonus = safe_float(
+            analysis.get("bonus")
+        )
+
+        central_score = safe_float(
+            analysis.get("score")
+        )
+
+        headline = str(
+            analysis.get("headline")
+            or ""
+        ).strip()
+
+        if not headline:
+            for article in articles[:5]:
+                if not isinstance(
+                    article,
+                    dict,
+                ):
+                    continue
+
+                article_headline = str(
+                    article.get(
+                        "headline",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                if article_headline:
+                    headline = article_headline
+                    break
+
+        source = "Elite Catalyst Radar"
 
         for article in articles[:5]:
-            if not isinstance(article, dict):
+            if not isinstance(
+                article,
+                dict,
+            ):
                 continue
 
-            headline = str(
-                article.get("headline", "")
-                or ""
-            ).strip()
-
-            summary = str(
-                article.get("summary", "")
-                or ""
-            ).strip()
-
-            source = str(
-                article.get("source", "")
-                or ""
-            ).strip()
-
-            if not first_headline and headline:
-                first_headline = headline
-
-            if not first_source and source:
-                first_source = source
-
-            combined_text = " ".join(
-                part
-                for part in (
-                    headline,
-                    summary,
+            article_source = str(
+                article.get(
+                    "source",
+                    "",
                 )
-                if part
+                or ""
             ).strip()
 
-            if combined_text:
-                news_texts.append(combined_text)
-
-        if not news_texts:
-            runtime_stats["shared_news_invalid"] = (
-                runtime_stats.get(
-                    "shared_news_invalid",
-                    0,
+            if article_source:
+                source = (
+                    f"Elite Catalyst Radar / "
+                    f"{article_source}"
                 )
-                + 1
-            )
-            return None
+                break
 
-        classification = classify_news(
-            news_texts
-        )
+        if serious_negative:
+            sentiment = "negative"
+            risk_level = "serious"
+
+        elif minor_negative:
+            sentiment = "negative"
+            risk_level = "medium"
+
+        elif positive or major_catalyst:
+            sentiment = "positive"
+            risk_level = "none"
+
+        else:
+            sentiment = "neutral"
+            risk_level = "none"
 
         now = now_ksa()
 
-        if next_refresh_at > now_ts:
-            expires_at = datetime.fromtimestamp(
-                next_refresh_at,
-                tz=ZoneInfo(TIMEZONE_KSA),
-            )
-        else:
-            expires_at = now + timedelta(
-                seconds=NEWS_CACHE_TTL
-            )
+        expires_at = now + timedelta(
+            seconds=NEWS_CACHE_TTL
+        )
 
         reject_until = None
 
-        if classification["risk_level"] == "serious":
+        if serious_negative:
             reject_until = now + timedelta(
                 hours=SERIOUS_NEGATIVE_REJECT_HOURS
             )
 
-        elif classification["sentiment"] == "positive":
+        elif positive or major_catalyst:
             positive_expiry = now + timedelta(
                 hours=POSITIVE_NEWS_BONUS_HOURS
             )
@@ -1574,21 +1658,43 @@ def get_market_radar_news(symbol):
         result = {
             "fetched_at": now.isoformat(),
             "expires_at": expires_at.isoformat(),
-            "sentiment": classification["sentiment"],
-            "risk_level": classification["risk_level"],
-            "headline": first_headline,
-            "source": (
-                f"Market Radar / {first_source}"
-                if first_source
-                else "Market Radar"
-            ),
-            "news_score": classification["news_score"],
-            "reason": classification["reason"],
+
+            "sentiment": sentiment,
+            "risk_level": risk_level,
+
+            "headline": headline,
+            "source": source,
+
+            # أهم نقطة:
+            # لا نعيد تصنيف الخبر.
+            # نستخدم Bonus المحسوب مركزيًا من Elite Catalyst.
+            "news_score": central_bonus,
+
+            "reason": category,
+
             "reject_until": (
                 reject_until.isoformat()
                 if reject_until
                 else None
             ),
+
+            "central_news_score": central_score,
+            "central_category": category,
+            "major_catalyst": major_catalyst,
+            "positive": positive,
+            "minor_negative": minor_negative,
+            "serious_negative": serious_negative,
+
+            "producer": (
+                producer
+                or "elite_catalyst_radar"
+            ),
+
+            "articles_count": len(
+                articles[:5]
+            ),
+
+            "shared": True,
         }
 
         news_cache[symbol] = result
@@ -1602,11 +1708,12 @@ def get_market_radar_news(symbol):
         )
 
         print(
-            f"✅ Market Radar news hit: "
+            f"✅ Elite Catalyst news hit: "
             f"{symbol} | "
-            f"Articles: {len(articles[:5])} | "
-            f"Sentiment: "
-            f"{classification['sentiment']}"
+            f"Category={category} | "
+            f"Bonus={central_bonus:+.1f} | "
+            f"Score={central_score:.1f} | "
+            f"Articles={len(articles[:5])}"
         )
 
         return result
@@ -1621,9 +1728,10 @@ def get_market_radar_news(symbol):
         )
 
         print(
-            f"⚠️ Invalid Market Radar news JSON: "
-            f"{symbol}"
+            f"⚠️ Invalid Elite Catalyst "
+            f"news JSON: {symbol}"
         )
+
         return None
 
     except Exception as e:
@@ -1636,9 +1744,10 @@ def get_market_radar_news(symbol):
         )
 
         print(
-            f"⚠️ Market Radar news read failed "
-            f"{symbol}: {e}"
+            f"⚠️ Elite Catalyst news "
+            f"read failed {symbol}: {e}"
         )
+
         return None
         
 def get_cached_news(symbol):
@@ -1708,7 +1817,9 @@ def classify_news(headlines):
     }
 
 def fetch_symbol_news(symbol):
-    symbol = str(symbol or "").strip().upper()
+    symbol = str(
+        symbol or ""
+    ).strip().upper()
 
     if not symbol:
         return {
@@ -1720,6 +1831,9 @@ def fetch_symbol_news(symbol):
             "reject_until": None,
         }
 
+    # =====================================================
+    # 1) LOCAL CACHE FIRST
+    # =====================================================
     cached = get_cached_news(symbol)
 
     if cached:
@@ -1730,8 +1844,13 @@ def fetch_symbol_news(symbol):
             )
             + 1
         )
+
         return cached
 
+    # =====================================================
+    # 2) CENTRAL NEWS HUB
+    #    Elite Catalyst Radar
+    # =====================================================
     shared_news = get_market_radar_news(
         symbol
     )
@@ -1739,20 +1858,28 @@ def fetch_symbol_news(symbol):
     if shared_news:
         return shared_news
 
+    # =====================================================
+    # 3) FINNHUB FALLBACK
+    #    Only if central news is unavailable / stale / invalid
+    # =====================================================
     if not FINNHUB_API_KEY:
         return {
             "sentiment": "neutral",
             "risk_level": "none",
             "headline": "",
-            "source": "none",
+            "source": "central_missing_no_finnhub",
             "news_score": 0,
             "reject_until": None,
         }
 
     try:
         to_date = now_ksa().date()
-        from_date = to_date - timedelta(
-            hours=NEWS_LOOKBACK_HOURS
+
+        from_date = (
+            to_date
+            - timedelta(
+                hours=NEWS_LOOKBACK_HOURS
+            )
         )
 
         url = (
@@ -1779,8 +1906,20 @@ def fetch_symbol_news(symbol):
             + 1
         )
 
+        runtime_stats[
+            "news_finnhub_fallbacks"
+        ] = (
+            runtime_stats.get(
+                "news_finnhub_fallbacks",
+                0,
+            )
+            + 1
+        )
+
         print(
-            f"🌐 Finnhub fallback: {symbol}"
+            f"🌐 Finnhub fallback: "
+            f"{symbol} | "
+            f"Central news unavailable"
         )
 
         r = requests.get(
@@ -1792,7 +1931,8 @@ def fetch_symbol_news(symbol):
         if r.status_code != 200:
             print(
                 f"⚠️ Finnhub news failed "
-                f"{symbol}: {r.status_code}"
+                f"{symbol}: "
+                f"{r.status_code}"
             )
 
             return {
@@ -1805,26 +1945,45 @@ def fetch_symbol_news(symbol):
             }
 
         data = r.json()
+
         news_texts = []
+
         first_headline = ""
 
-        if isinstance(data, list):
+        if isinstance(
+            data,
+            list,
+        ):
             for item in data[:10]:
-                if not isinstance(item, dict):
+                if not isinstance(
+                    item,
+                    dict,
+                ):
                     continue
 
                 headline = str(
-                    item.get("headline", "")
+                    item.get(
+                        "headline",
+                        "",
+                    )
                     or ""
                 ).strip()
 
                 summary = str(
-                    item.get("summary", "")
+                    item.get(
+                        "summary",
+                        "",
+                    )
                     or ""
                 ).strip()
 
-                if not first_headline and headline:
-                    first_headline = headline
+                if (
+                    not first_headline
+                    and headline
+                ):
+                    first_headline = (
+                        headline
+                    )
 
                 combined_text = " ".join(
                     part
@@ -1840,45 +1999,111 @@ def fetch_symbol_news(symbol):
                         combined_text
                     )
 
+        # فقط Finnhub fallback يستخدم
+        # التصنيف المحلي لـ Elite Explosion.
         classification = classify_news(
             news_texts
         )
 
         now = now_ksa()
 
-        expires_at = now + timedelta(
-            seconds=NEWS_CACHE_TTL
+        expires_at = (
+            now
+            + timedelta(
+                seconds=NEWS_CACHE_TTL
+            )
         )
 
         reject_until = None
 
-        if classification["risk_level"] == "serious":
-            reject_until = now + timedelta(
-                hours=SERIOUS_NEGATIVE_REJECT_HOURS
+        if (
+            classification[
+                "risk_level"
+            ]
+            == "serious"
+        ):
+            reject_until = (
+                now
+                + timedelta(
+                    hours=(
+                        SERIOUS_NEGATIVE_REJECT_HOURS
+                    )
+                )
             )
 
-        elif classification["sentiment"] == "positive":
-            expires_at = now + timedelta(
-                hours=POSITIVE_NEWS_BONUS_HOURS
+        elif (
+            classification[
+                "sentiment"
+            ]
+            == "positive"
+        ):
+            expires_at = (
+                now
+                + timedelta(
+                    hours=(
+                        POSITIVE_NEWS_BONUS_HOURS
+                    )
+                )
             )
 
         result = {
-            "fetched_at": now.isoformat(),
-            "expires_at": expires_at.isoformat(),
-            "sentiment": classification["sentiment"],
-            "risk_level": classification["risk_level"],
-            "headline": first_headline,
-            "source": "Finnhub",
-            "news_score": classification["news_score"],
-            "reason": classification["reason"],
+            "fetched_at": (
+                now.isoformat()
+            ),
+
+            "expires_at": (
+                expires_at.isoformat()
+            ),
+
+            "sentiment": (
+                classification[
+                    "sentiment"
+                ]
+            ),
+
+            "risk_level": (
+                classification[
+                    "risk_level"
+                ]
+            ),
+
+            "headline": (
+                first_headline
+            ),
+
+            "source": (
+                "Finnhub Fallback"
+            ),
+
+            "news_score": (
+                classification[
+                    "news_score"
+                ]
+            ),
+
+            "reason": (
+                classification[
+                    "reason"
+                ]
+            ),
+
             "reject_until": (
                 reject_until.isoformat()
                 if reject_until
                 else None
             ),
+
+            "producer": (
+                "elite_explosion_fallback"
+            ),
+
+            "shared": False,
         }
 
+        # نخزن النتيجة محليًا فقط.
+        # لا نكتب شيئًا في market_radar:news.
         news_cache[symbol] = result
+
         return result
 
     except Exception as e:
