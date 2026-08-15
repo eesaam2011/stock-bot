@@ -2016,31 +2016,90 @@ def send_catalyst_alert(metrics):
 
 def load_news_cache():
     global NEWS_CACHE
+
     now_ts = time.time()
-    key_type = redis_type(KEY_NEWS_CACHE)
+
+    log("Loading news cache...")
+
+    key_type = redis_type(
+        KEY_NEWS_CACHE
+    )
+
     raw = {}
 
     if key_type == "hash":
-        raw = redis_hgetall_json(KEY_NEWS_CACHE)
+        raw = redis_hgetall_json(
+            KEY_NEWS_CACHE
+        )
+
     elif key_type == "string":
-        # One-time migration from the old monolithic JSON cache to a Redis hash.
-        old_cache = redis_get_json(KEY_NEWS_CACHE, {}) or {}
-        redis_delete(KEY_NEWS_CACHE)
+        old_cache = (
+            redis_get_json(
+                KEY_NEWS_CACHE,
+                {},
+            )
+            or {}
+        )
+
+        redis_delete(
+            KEY_NEWS_CACHE
+        )
+
         for symbol, item in old_cache.items():
             if isinstance(item, dict):
-                redis_hset_json(KEY_NEWS_CACHE, symbol, item)
+                redis_hset_json(
+                    KEY_NEWS_CACHE,
+                    symbol,
+                    item,
+                )
+
         raw = old_cache
-        log(f"Migrated news cache to Redis hash: {len(raw)} records")
+
+        log(
+            f"Migrated news cache to Redis hash: "
+            f"{len(raw)} records"
+        )
 
     NEWS_CACHE = {}
+
+    stale_symbols = []
+
     for symbol, item in raw.items():
-        checked_at = safe_float(item.get("checked_at")) if isinstance(item, dict) else 0
-        if isinstance(item, dict) and checked_at > 0 and now_ts - checked_at <= NEWS_RECHECK_TTL:
+        checked_at = (
+            safe_float(
+                item.get("checked_at")
+            )
+            if isinstance(item, dict)
+            else 0
+        )
+
+        if (
+            isinstance(item, dict)
+            and checked_at > 0
+            and now_ts - checked_at
+            <= NEWS_RECHECK_TTL
+        ):
             NEWS_CACHE[symbol] = item
         else:
-            redis_hdel(KEY_NEWS_CACHE, symbol)
+            stale_symbols.append(
+                symbol
+            )
 
+    # حذف جميع السجلات القديمة بأمر Redis واحد
+    # بدل REST request منفصل لكل سهم.
+    if stale_symbols:
+        redis_command([
+            "HDEL",
+            KEY_NEWS_CACHE,
+            *stale_symbols,
+        ])
 
+    log(
+        f"News cache loaded | "
+        f"Fresh={len(NEWS_CACHE)} | "
+        f"Stale removed={len(stale_symbols)}"
+    )
+    
 def process_news_symbol(symbol):
     runtime_stats["news_symbols_checked"] += 1
     runtime_stats["last_news_scan"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
