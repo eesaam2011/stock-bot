@@ -1,7 +1,7 @@
 # ==============================================================================
 # Elite Catalyst Radar
-# Version : 2.2.2
-# Build   : VERIFIED-2026-07-24-C
+# Version : 2.3.0
+# Build   : CENTRAL-NEWS-HUB-2026-08-15-B
 # File    : elite_catalyst_radar.py
 # Author  : OpenAI + Essam
 #
@@ -13,9 +13,12 @@
 #
 # Architecture:
 #   1) Finnhub news is the primary discovery trigger.
-#   2) Strong positive catalysts are added to NEWS_WATCHLIST.
-#   3) NEWS_WATCHLIST is monitored with Alpaca market data every 7 seconds.
-#   4) Entry alerts are sent only after technical confirmation.
+#   2) Elite Catalyst Radar is the central news producer.
+#   3) Shared news is published to Redis Hash: market_radar:news.
+#   4) Up to 5 recent articles plus central analysis are stored per symbol.
+#   5) Strong positive catalysts are added to NEWS_WATCHLIST.
+#   6) NEWS_WATCHLIST is monitored with Alpaca market data every 7 seconds.
+#   7) Entry alerts are sent only after technical confirmation.
 # ==============================================================================
 
 import os
@@ -85,6 +88,11 @@ NEWS_LOOKBACK_HOURS = 12
 NEWS_RECHECK_TTL = 60 * 60
 NEWS_WATCH_TTL = 6 * 60 * 60
 SERIOUS_NEGATIVE_TTL = 72 * 60 * 60
+
+# Central shared news hub.
+SHARED_NEWS_HASH_KEY = "market_radar:news"
+MAX_SHARED_NEWS_ARTICLES = 5
+SHARED_NEWS_SCHEMA_VERSION = 2
 
 # News candidates are checked using market data only.
 NEWS_WATCH_MONITOR_INTERVAL = 7
@@ -728,7 +736,7 @@ def phrase_has_negation(text, phrase, words_before=8, words_after=3):
     for exception in NEGATION_EXCEPTIONS:
         if exception in normalized_text:
             normalized_text = normalized_text.replace(exception, "")
-            
+
     text_words = normalized_text.split()
     phrase_words = normalized_phrase.split()
 
@@ -771,7 +779,8 @@ def get_context_aware_phrase_hits(text, phrases):
             valid_hits.append(phrase)
 
     return valid_hits, negated_hits
-    
+
+
 def classify_news_item(item):
     headline = str(item.get("headline", "") or "")
     summary = str(item.get("summary", "") or "")
@@ -845,7 +854,7 @@ def classify_news_item(item):
 
     if headline_negated_major_hits:
         score -= 15
-        
+
     if routine_hits and not major_hits:
         score -= 15
 
@@ -896,7 +905,7 @@ def classify_news_item(item):
 
     if age_minutes < 99999:
         reasons.append(f"عمر الخبر {age_minutes:.0f} دقيقة")
-        
+
     category = "neutral"
 
     if serious_negative or negative_event_hits:
@@ -942,6 +951,167 @@ def classify_news_item(item):
     }
 
 
+# ==============================================================================
+# Central Shared News Publisher
+# ==============================================================================
+
+def build_shared_news_analysis(classified):
+    if not classified:
+        return {
+            "positive": False,
+            "minor_negative": False,
+            "serious_negative": False,
+            "major_catalyst": False,
+            "category": "neutral",
+            "bonus": 0,
+            "score": 0,
+            "news_id": "",
+            "headline": "",
+            "datetime": 0,
+        }
+
+    serious_items = [
+        item
+        for item in classified
+        if item.get("serious_negative")
+    ]
+
+    if serious_items:
+        selected = max(
+            serious_items,
+            key=lambda item: safe_int(item.get("datetime"))
+        )
+    else:
+        selected = max(
+            classified,
+            key=lambda item: (
+                safe_float(item.get("score")),
+                safe_int(item.get("datetime"))
+            )
+        )
+
+    positive = bool(selected.get("positive"))
+    minor_negative = bool(selected.get("minor_negative"))
+    serious_negative = bool(selected.get("serious_negative"))
+    major_catalyst = bool(selected.get("major"))
+
+    bonus = 0
+
+    if positive and not serious_negative:
+        bonus = 5
+
+    if minor_negative:
+        bonus -= 10
+
+    return {
+        "positive": positive,
+        "minor_negative": minor_negative,
+        "serious_negative": serious_negative,
+        "major_catalyst": major_catalyst,
+        "category": str(selected.get("category") or "neutral"),
+        "bonus": bonus,
+        "score": safe_float(selected.get("score")),
+        "news_id": str(selected.get("news_id") or ""),
+        "headline": str(selected.get("headline") or ""),
+        "datetime": safe_int(selected.get("datetime")),
+    }
+
+
+def build_shared_news_articles(raw_items, classified):
+    classified_by_id = {
+        str(item.get("news_id") or ""): item
+        for item in classified
+        if item.get("news_id")
+    }
+
+    articles = []
+
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+
+        published_ts = safe_int(raw_item.get("datetime"))
+
+        if published_ts <= 0:
+            continue
+
+        headline = str(raw_item.get("headline") or "").strip()
+
+        news_id = str(
+            raw_item.get("id")
+            or f"{headline}:{published_ts}"
+        )
+
+        classified_item = classified_by_id.get(news_id)
+
+        if not classified_item:
+            continue
+
+        articles.append(
+            {
+                "id": raw_item.get("id"),
+                "datetime": published_ts,
+                "headline": headline,
+                "summary": str(raw_item.get("summary") or "").strip(),
+                "source": str(raw_item.get("source") or "").strip(),
+                "url": str(raw_item.get("url") or "").strip(),
+                "category": str(raw_item.get("category") or "").strip(),
+                "related": str(raw_item.get("related") or "").strip(),
+                "analysis": {
+                    "score": safe_float(classified_item.get("score")),
+                    "category": str(
+                        classified_item.get("category")
+                        or "neutral"
+                    ),
+                    "positive": bool(
+                        classified_item.get("positive")
+                    ),
+                    "minor_negative": bool(
+                        classified_item.get("minor_negative")
+                    ),
+                    "serious_negative": bool(
+                        classified_item.get("serious_negative")
+                    ),
+                    "major_catalyst": bool(
+                        classified_item.get("major")
+                    ),
+                },
+            }
+        )
+
+    articles.sort(
+        key=lambda item: safe_int(item.get("datetime")),
+        reverse=True
+    )
+
+    return articles[:MAX_SHARED_NEWS_ARTICLES]
+
+
+def publish_shared_news(symbol, raw_items, classified, fetched_at):
+    shared_item = {
+        "schema_version": SHARED_NEWS_SCHEMA_VERSION,
+        "producer": "elite_catalyst_radar",
+        "symbol": symbol,
+        "fetched_at": fetched_at,
+        "next_refresh_at": fetched_at + NEWS_RECHECK_TTL,
+        "lookback_hours": NEWS_LOOKBACK_HOURS,
+        "status": "ok",
+        "analysis": build_shared_news_analysis(classified),
+        "articles": build_shared_news_articles(
+            raw_items,
+            classified
+        ),
+    }
+
+    redis_hset_json(
+        SHARED_NEWS_HASH_KEY,
+        symbol,
+        shared_item
+    )
+
+    return shared_item
+
+
 def finnhub_wait_slot():
     global LAST_FINNHUB_REQUEST_TIME
     with FINNHUB_LOCK:
@@ -984,7 +1154,17 @@ def analyze_symbol_news(symbol, force_refresh=False):
     now_ts = time.time()
     cached = NEWS_CACHE.get(symbol)
     if not force_refresh and cached and now_ts - safe_float(cached.get("checked_at")) < NEWS_RECHECK_TTL:
-        return cached
+        shared_cached = redis_hget_json(
+            SHARED_NEWS_HASH_KEY,
+            symbol,
+            None
+        )
+
+        if (
+            isinstance(shared_cached, dict)
+            and shared_cached.get("producer") == "elite_catalyst_radar"
+        ):
+            return cached
 
     items = fetch_company_news(symbol)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=NEWS_LOOKBACK_HOURS)
@@ -1017,6 +1197,14 @@ def analyze_symbol_news(symbol, force_refresh=False):
     }
     NEWS_CACHE[symbol] = result
     redis_hset_json(KEY_NEWS_CACHE, symbol, result)
+
+    publish_shared_news(
+        symbol,
+        items,
+        classified,
+        now_ts
+    )
+
     return result
 
 # ==============================================================================
