@@ -89,6 +89,10 @@ NEWS_RECHECK_TTL = 60 * 60
 NEWS_WATCH_TTL = 6 * 60 * 60
 SERIOUS_NEGATIVE_TTL = 72 * 60 * 60
 
+# Weekend central-news settings.
+WEEKEND_NEWS_DELAY_SECONDS = 4.0
+WEEKEND_SHARED_NEWS_TTL = 72 * 60 * 60
+
 # Central shared news hub.
 SHARED_NEWS_HASH_KEY = "market_radar:news"
 MAX_SHARED_NEWS_ARTICLES = 5
@@ -1086,31 +1090,44 @@ def build_shared_news_articles(raw_items, classified):
 
     return articles[:MAX_SHARED_NEWS_ARTICLES]
 
+def publish_shared_news(symbol, classified, checked_at):
+    """
+    Single producer for market_radar:news.
+    Market Radar Bot and Elite Explosion Bot should consume this record and
+    should not overwrite it.
+    """
 
-def publish_shared_news(symbol, raw_items, classified, fetched_at):
-    shared_item = {
+    weekend_record = is_weekend()
+
+    if weekend_record:
+        expires_at = (
+            checked_at
+            + WEEKEND_SHARED_NEWS_TTL
+        )
+    else:
+        expires_at = 0
+
+    record = {
         "schema_version": SHARED_NEWS_SCHEMA_VERSION,
         "producer": "elite_catalyst_radar",
         "symbol": symbol,
-        "fetched_at": fetched_at,
-        "next_refresh_at": fetched_at + NEWS_RECHECK_TTL,
-        "lookback_hours": NEWS_LOOKBACK_HOURS,
-        "status": "ok",
+        "checked_at": checked_at,
+        "updated_at": int(time.time()),
+        "expires_at": expires_at,
+        "weekend_record": weekend_record,
+        "articles": build_shared_articles(classified),
         "analysis": build_shared_news_analysis(classified),
-        "articles": build_shared_news_articles(
-            raw_items,
-            classified
-        ),
     }
 
     redis_hset_json(
         SHARED_NEWS_HASH_KEY,
         symbol,
-        shared_item
+        record,
     )
 
-    return shared_item
+    runtime_stats["shared_news_published"] += 1
 
+    return record
 
 def finnhub_wait_slot():
     global LAST_FINNHUB_REQUEST_TIME
