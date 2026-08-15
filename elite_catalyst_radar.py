@@ -1090,7 +1090,7 @@ def build_shared_news_articles(raw_items, classified):
 
     return articles[:MAX_SHARED_NEWS_ARTICLES]
 
-def publish_shared_news(symbol, classified, checked_at):
+def publish_shared_news(symbol, raw_items, classified, checked_at):
     """
     Single producer for market_radar:news.
     Market Radar Bot and Elite Explosion Bot should consume this record and
@@ -1116,8 +1116,9 @@ def publish_shared_news(symbol, classified, checked_at):
         "expires_at": expires_at,
         "weekend_record": weekend_record,
         "articles": build_shared_news_articles(
-            classified
-        ),        
+            raw_items,
+            classified,
+        ),
         "analysis": build_shared_news_analysis(classified),
     }
 
