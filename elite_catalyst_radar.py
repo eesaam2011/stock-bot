@@ -1115,7 +1115,9 @@ def publish_shared_news(symbol, classified, checked_at):
         "updated_at": int(time.time()),
         "expires_at": expires_at,
         "weekend_record": weekend_record,
-        "articles": build_shared_articles(classified),
+        "articles": build_shared_news_articles(
+            classified
+        ),        
         "analysis": build_shared_news_analysis(classified),
     }
 
