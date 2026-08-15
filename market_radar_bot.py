@@ -989,6 +989,17 @@ def normalize_news_article(article):
     if published_ts <= 0:
         return None
 
+    article_analysis = article.get(
+        "analysis",
+        {}
+    )
+
+    if not isinstance(
+        article_analysis,
+        dict
+    ):
+        article_analysis = {}
+
     return {
         "id": article.get("id"),
         "datetime": published_ts,
@@ -1009,7 +1020,40 @@ def normalize_news_article(article):
         ).strip(),
         "related": str(
             article.get("related") or ""
-        ).strip()
+        ).strip(),
+        "analysis": {
+            "score": safe_float(
+                article_analysis.get(
+                    "score"
+                )
+            ),
+            "category": str(
+                article_analysis.get(
+                    "category"
+                )
+                or "neutral"
+            ),
+            "positive": bool(
+                article_analysis.get(
+                    "positive"
+                )
+            ),
+            "minor_negative": bool(
+                article_analysis.get(
+                    "minor_negative"
+                )
+            ),
+            "serious_negative": bool(
+                article_analysis.get(
+                    "serious_negative"
+                )
+            ),
+            "major_catalyst": bool(
+                article_analysis.get(
+                    "major_catalyst"
+                )
+            )
+        }
     }
 
 
@@ -1094,24 +1138,89 @@ def normalize_shared_news_item(
 
     fetched_at = safe_float(
         item.get("fetched_at")
+        or item.get("checked_at")
     )
 
     next_refresh_at = safe_float(
         item.get("next_refresh_at")
     )
 
+    analysis = item.get(
+        "analysis",
+        {}
+    )
+
+    if not isinstance(
+        analysis,
+        dict
+    ):
+        analysis = {}
+
     articles = filter_recent_news_articles(
         item.get("articles", [])
     )
 
     return {
+        "schema_version": safe_int(
+            item.get("schema_version"),
+            1
+        ),
+        "producer": str(
+            item.get("producer") or ""
+        ),
         "symbol": symbol,
         "fetched_at": fetched_at,
         "next_refresh_at": next_refresh_at,
-        "lookback_hours": NEWS_LOOKBACK_HOURS,
+        "lookback_hours": safe_int(
+            item.get(
+                "lookback_hours"
+            ),
+            NEWS_LOOKBACK_HOURS
+        ),
         "status": str(
             item.get("status") or "ok"
         ),
+        "analysis": {
+            "positive": bool(
+                analysis.get("positive")
+            ),
+            "minor_negative": bool(
+                analysis.get(
+                    "minor_negative"
+                )
+            ),
+            "serious_negative": bool(
+                analysis.get(
+                    "serious_negative"
+                )
+            ),
+            "major_catalyst": bool(
+                analysis.get(
+                    "major_catalyst"
+                )
+            ),
+            "category": str(
+                analysis.get("category")
+                or "neutral"
+            ),
+            "bonus": safe_int(
+                analysis.get("bonus")
+            ),
+            "score": safe_float(
+                analysis.get("score")
+            ),
+            "news_id": str(
+                analysis.get("news_id")
+                or ""
+            ),
+            "headline": str(
+                analysis.get("headline")
+                or ""
+            ),
+            "datetime": safe_int(
+                analysis.get("datetime")
+            )
+        },
         "articles": articles
     }
 
@@ -1120,43 +1229,28 @@ def save_symbol_news_cache(
     symbol,
     cache_item
 ):
-    symbol = symbol.upper().strip()
-
-    normalized_item = normalize_shared_news_item(
-        symbol,
-        cache_item
+    """
+    Market Radar is now a READ-ONLY consumer of market_radar:news.
+    Elite Catalyst Radar is the only producer allowed to write this hash.
+    """
+    log(
+        f"Shared news write skipped for {symbol}: "
+        f"Elite Catalyst Radar is the central news producer"
     )
 
-    if not normalized_item:
-        return False
-
-    NEWS_CACHE[symbol] = normalized_item
-
-    redis_hset_json(
-        KEY_NEWS,
-        symbol,
-        normalized_item
-    )
-
-    redis_expire(
-        KEY_NEWS,
-        SHARED_NEWS_HASH_TTL
-    )
-
-    return True
+    return False
 
 
 def remove_symbol_news_cache(symbol):
+    """
+    Remove only Market Radar's local in-memory copy.
+    Never delete the central Redis news record.
+    """
     symbol = symbol.upper().strip()
 
     NEWS_CACHE.pop(
         symbol,
         None
-    )
-
-    redis_hdel(
-        KEY_NEWS,
-        symbol
     )
 
 
@@ -1189,39 +1283,39 @@ def get_cached_symbol_news(symbol):
 
     return normalized_item
 
-
 def load_news_cache():
+    """
+    Read-only loader for the shared central news cache.
+
+    Elite Catalyst Radar owns market_radar:news.
+    Market Radar must not migrate, rewrite, delete, or expire this Redis key.
+    """
     global NEWS_CACHE
 
     key_type = redis_key_type(
         KEY_NEWS
     )
 
-    if key_type == "string":
+    if key_type == "none":
+        NEWS_CACHE = {}
+
         log(
-            "Old news cache format detected. "
-            "Deleting old JSON key before converting "
-            "market_radar:news to Redis Hash..."
+            "Central shared news cache not found yet | "
+            "Producer=Elite Catalyst Radar"
         )
 
-        redis_delete(
-            KEY_NEWS
-        )
+        return NEWS_CACHE
 
-        key_type = "none"
+    if key_type != "hash":
+        NEWS_CACHE = {}
 
-    if key_type not in [
-        "none",
-        "hash"
-    ]:
         log(
-            f"Unexpected Redis news key type: "
-            f"{key_type}. Rebuilding news cache..."
+            f"Central shared news cache has unexpected type: "
+            f"{key_type} | "
+            f"Market Radar will not modify it"
         )
 
-        redis_delete(
-            KEY_NEWS
-        )
+        return NEWS_CACHE
 
     raw_cache = redis_hgetall_json(
         KEY_NEWS
@@ -1229,14 +1323,9 @@ def load_news_cache():
 
     cleaned_cache = {}
 
-    removed_count = 0
-    updated_count = 0
+    skipped_count = 0
 
     now_ts = time.time()
-
-    maximum_entry_age = (
-        SHARED_NEWS_HASH_TTL
-    )
 
     for symbol, item in raw_cache.items():
         try:
@@ -1252,12 +1341,7 @@ def load_news_cache():
             )
 
             if not normalized_item:
-                redis_hdel(
-                    KEY_NEWS,
-                    symbol
-                )
-
-                removed_count += 1
+                skipped_count += 1
                 continue
 
             fetched_at = safe_float(
@@ -1269,50 +1353,26 @@ def load_news_cache():
             if (
                 fetched_at <= 0
                 or now_ts - fetched_at
-                > maximum_entry_age
+                > SHARED_NEWS_HASH_TTL
             ):
-                redis_hdel(
-                    KEY_NEWS,
-                    symbol
-                )
-
-                removed_count += 1
+                skipped_count += 1
                 continue
 
             cleaned_cache[symbol] = (
                 normalized_item
             )
 
-            if normalized_item != item:
-                redis_hset_json(
-                    KEY_NEWS,
-                    symbol,
-                    normalized_item
-                )
-
-                updated_count += 1
-
         except Exception:
-            redis_hdel(
-                KEY_NEWS,
-                symbol
-            )
-
-            removed_count += 1
+            skipped_count += 1
+            continue
 
     NEWS_CACHE = cleaned_cache
 
-    if NEWS_CACHE:
-        redis_expire(
-            KEY_NEWS,
-            SHARED_NEWS_HASH_TTL
-        )
-
     log(
-        f"Shared news cache loaded | "
+        f"Central shared news cache loaded | "
+        f"Producer=Elite Catalyst Radar | "
         f"Symbols={len(NEWS_CACHE)} | "
-        f"Updated={updated_count} | "
-        f"Removed={removed_count}"
+        f"Skipped={skipped_count}"
     )
 
     return NEWS_CACHE
@@ -1435,197 +1495,155 @@ def analyze_news_articles(
 
 
 def get_symbol_news(symbol):
-    if not FINNHUB_API_KEY:
-        return {
-            "status": "no_key",
-            "positive": False,
-            "minor_negative": False,
-            "serious_negative": False,
-            "bonus": 0,
-            "headline": "",
-            "category": "none",
-            "cached": False
-        }
+    """
+    Read news analysis only from the central Redis cache produced by
+    Elite Catalyst Radar.
 
+    No Finnhub request is made here.
+    No local news classification is performed here.
+    """
     symbol = symbol.upper().strip()
-
-    now_ts = time.time()
 
     cached_item = get_cached_symbol_news(
         symbol
     )
 
-    if cached_item:
-        next_refresh_at = safe_float(
-            cached_item.get(
-                "next_refresh_at"
-            )
+    if not cached_item:
+        return {
+            "status": "shared_cache_missing",
+            "positive": False,
+            "minor_negative": False,
+            "serious_negative": False,
+            "major_catalyst": False,
+            "bonus": 0,
+            "headline": "",
+            "category": "none",
+            "score": 0,
+            "cached": False,
+            "producer": "elite_catalyst_radar"
+        }
+
+    analysis = cached_item.get(
+        "analysis",
+        {}
+    )
+
+    if not isinstance(
+        analysis,
+        dict
+    ):
+        analysis = {}
+
+    fetched_at = safe_float(
+        cached_item.get(
+            "fetched_at"
+        )
+    )
+
+    next_refresh_at = safe_float(
+        cached_item.get(
+            "next_refresh_at"
+        )
+    )
+
+    now_ts = time.time()
+
+    stale = False
+
+    if fetched_at <= 0:
+        stale = True
+
+    elif (
+        next_refresh_at > 0
+        and now_ts > next_refresh_at
+    ):
+        stale = True
+
+    elif (
+        now_ts - fetched_at
+        > NEWS_CACHE_TTL
+    ):
+        stale = True
+
+    # A stale positive catalyst must not add score.
+    # A serious negative is still preserved as a safety block while present.
+    bonus = safe_int(
+        analysis.get("bonus")
+    )
+
+    positive = bool(
+        analysis.get("positive")
+    )
+
+    serious_negative = bool(
+        analysis.get(
+            "serious_negative"
+        )
+    )
+
+    if stale and not serious_negative:
+        bonus = 0
+        positive = False
+
+    headline = str(
+        analysis.get("headline")
+        or ""
+    )
+
+    if not headline:
+        articles = cached_item.get(
+            "articles",
+            []
         )
 
-        if now_ts < next_refresh_at:
-            return analyze_news_articles(
-                cached_item.get(
-                    "articles",
-                    []
-                ),
-                status=cached_item.get(
-                    "status",
-                    "ok"
-                ),
-                cached=True
-            )
-
-    previous_articles = []
-
-    if cached_item:
-        previous_articles = (
-            cached_item.get(
-                "articles",
-                []
-            )
-        )
-
-    try:
-        finnhub_wait_slot()
-
-        now_utc = datetime.now(
-            timezone.utc
-        )
-
-        cutoff_utc = (
-            now_utc
-            - timedelta(
-                hours=NEWS_LOOKBACK_HOURS
-            )
-        )
-
-        response = requests.get(
-            "https://finnhub.io/api/v1/company-news",
-            params={
-                "symbol": symbol,
-                "from": cutoff_utc.date().strftime(
-                    "%Y-%m-%d"
-                ),
-                "to": now_utc.date().strftime(
-                    "%Y-%m-%d"
-                ),
-                "token": FINNHUB_API_KEY
-            },
-            timeout=15
-        )
-
-        fetched_at = time.time()
-
-        next_refresh_at = (
-            fetched_at
-            + NEWS_CACHE_TTL
-        )
-
-        if response.status_code != 200:
-            status = (
-                f"error_"
-                f"{response.status_code}"
-            )
-
-            cache_item = {
-                "symbol": symbol,
-                "fetched_at": fetched_at,
-                "next_refresh_at": (
-                    next_refresh_at
-                ),
-                "lookback_hours": (
-                    NEWS_LOOKBACK_HOURS
-                ),
-                "status": status,
-                "articles": (
-                    previous_articles
+        if articles:
+            headline = str(
+                articles[0].get(
+                    "headline",
+                    ""
                 )
-            }
-
-            save_symbol_news_cache(
-                symbol,
-                cache_item
             )
 
-            return analyze_news_articles(
-                previous_articles,
-                status=status,
-                cached=False
+    return {
+        "status": (
+            "shared_cache_stale"
+            if stale
+            else cached_item.get(
+                "status",
+                "ok"
             )
-
-        raw_items = response.json()
-
-        if not isinstance(
-            raw_items,
-            list
-        ):
-            raw_items = []
-
-        articles = (
-            filter_recent_news_articles(
-                raw_items
+        ),
+        "positive": positive,
+        "minor_negative": bool(
+            analysis.get(
+                "minor_negative"
             )
-        )
-
-        cache_item = {
-            "symbol": symbol,
-            "fetched_at": fetched_at,
-            "next_refresh_at": (
-                next_refresh_at
-            ),
-            "lookback_hours": (
-                NEWS_LOOKBACK_HOURS
-            ),
-            "status": "ok",
-            "articles": articles
-        }
-
-        save_symbol_news_cache(
-            symbol,
-            cache_item
-        )
-
-        return analyze_news_articles(
-            articles,
-            status="ok",
-            cached=False
-        )
-
-    except Exception as e:
-        log(
-            f"Finnhub error for "
-            f"{symbol}: {e}"
-        )
-
-        fetched_at = time.time()
-
-        cache_item = {
-            "symbol": symbol,
-            "fetched_at": fetched_at,
-            "next_refresh_at": (
-                fetched_at
-                + NEWS_CACHE_TTL
-            ),
-            "lookback_hours": (
-                NEWS_LOOKBACK_HOURS
-            ),
-            "status": "exception",
-            "articles": (
-                previous_articles
+        ),
+        "serious_negative": (
+            serious_negative
+        ),
+        "major_catalyst": bool(
+            analysis.get(
+                "major_catalyst"
             )
-        }
-
-        save_symbol_news_cache(
-            symbol,
-            cache_item
+        ),
+        "bonus": bonus,
+        "headline": headline,
+        "category": str(
+            analysis.get("category")
+            or "neutral"
+        ),
+        "score": safe_float(
+            analysis.get("score")
+        ),
+        "cached": True,
+        "stale": stale,
+        "producer": str(
+            cached_item.get("producer")
+            or "elite_catalyst_radar"
         )
+    }
 
-        return analyze_news_articles(
-            previous_articles,
-            status="exception",
-            cached=False
-        )
-        
 # ==============================================================================
 # Alpaca Data Helpers
 # ==============================================================================
