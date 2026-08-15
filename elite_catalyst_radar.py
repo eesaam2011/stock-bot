@@ -2066,29 +2066,80 @@ def process_news_symbol(symbol):
 
 def news_discovery_loop():
     global NEWS_CURSOR
+
     while True:
         try:
-            if is_weekend() or not is_scan_window():
+            weekend_mode = is_weekend()
+
+            # في أيام السوق نلتزم بنافذة الفحص المعتادة.
+            # في الويكند يستمر اكتشاف الأخبار فقط.
+            if (
+                not weekend_mode
+                and not is_scan_window()
+            ):
                 time.sleep(30)
                 continue
+
             if not UNIVERSE:
-                time.sleep(10)
+                log(
+                    "News discovery waiting: "
+                    "UNIVERSE is empty"
+                )
+                time.sleep(30)
                 continue
+
             if NEWS_CURSOR >= len(UNIVERSE):
                 NEWS_CURSOR = 0
-            symbol = UNIVERSE[NEWS_CURSOR]
-            NEWS_CURSOR = (NEWS_CURSOR + 1) % len(UNIVERSE)
+
+            symbol = UNIVERSE[
+                NEWS_CURSOR
+            ]
+
+            NEWS_CURSOR = (
+                NEWS_CURSOR + 1
+            ) % len(UNIVERSE)
+
             process_news_symbol(symbol)
-            if runtime_stats["news_symbols_checked"] % 40 == 0:
+
+            if (
+                runtime_stats["news_symbols_checked"]
+                % 40
+                == 0
+            ):
                 log(
-                    f"News rotation | checked={runtime_stats['news_symbols_checked']} | "
-                    f"cursor={NEWS_CURSOR}/{len(UNIVERSE)} | watch={len(NEWS_WATCHLIST)}"
+                    f"News rotation | "
+                    f"mode="
+                    f"{'WEEKEND' if weekend_mode else 'MARKET'} | "
+                    f"checked="
+                    f"{runtime_stats['news_symbols_checked']} | "
+                    f"cursor="
+                    f"{NEWS_CURSOR}/{len(UNIVERSE)} | "
+                    f"watch="
+                    f"{len(NEWS_WATCHLIST)} | "
+                    f"shared="
+                    f"{runtime_stats['shared_news_published']}"
                 )
-            redis_set_json(KEY_RUNTIME, runtime_stats)
+
+            redis_set_json(
+                KEY_RUNTIME,
+                runtime_stats,
+            )
+
+            # الويكند أبطأ لتقليل استهلاك Finnhub.
+            if weekend_mode:
+                time.sleep(
+                    WEEKEND_NEWS_DELAY_SECONDS
+                )
+
         except Exception as exc:
-            log(f"News discovery loop error: {exc}")
-            log(traceback.format_exc())
-            time.sleep(5)
+            log(
+                f"News discovery loop error: "
+                f"{exc}"
+            )
+            log(
+                traceback.format_exc()
+            )
+            time.sleep(5)    
 
 # ==============================================================================
 # News Watch Monitor Loop
@@ -2273,17 +2324,119 @@ def trade_monitor_loop():
 def cleanup_news_redis_and_blocks():
     now_ts = time.time()
 
+    # =====================================================
+    # 1) تنظيف كاش الأخبار الداخلي
+    # =====================================================
     for symbol, item in list(NEWS_CACHE.items()):
-        checked_at = safe_float(item.get("checked_at")) if isinstance(item, dict) else 0
-        if checked_at <= 0 or now_ts - checked_at > 7 * 24 * 60 * 60:
+        checked_at = (
+            safe_float(item.get("checked_at"))
+            if isinstance(item, dict)
+            else 0
+        )
+
+        if (
+            checked_at <= 0
+            or now_ts - checked_at > 7 * 24 * 60 * 60
+        ):
             NEWS_CACHE.pop(symbol, None)
-            redis_hdel(KEY_NEWS_CACHE, symbol)
+            redis_hdel(
+                KEY_NEWS_CACHE,
+                symbol,
+            )
 
-    blocked = redis_hgetall_json(KEY_BLOCKED_NEWS)
+    # =====================================================
+    # 2) تنظيف حظر الأخبار السلبية
+    # =====================================================
+    blocked = redis_hgetall_json(
+        KEY_BLOCKED_NEWS
+    )
+
     for symbol, item in blocked.items():
-        if safe_float(item.get("expires_at")) <= now_ts:
-            redis_hdel(KEY_BLOCKED_NEWS, symbol)
+        if (
+            safe_float(
+                item.get("expires_at")
+            )
+            <= now_ts
+        ):
+            redis_hdel(
+                KEY_BLOCKED_NEWS,
+                symbol,
+            )
 
+    # =====================================================
+    # 3) تنظيف الكاش المركزي market_radar:news
+    #
+    # أخبار الويكند:
+    #   تنتهي حسب expires_at المحدد بـ 72 ساعة.
+    #
+    # الأخبار العادية:
+    #   تبقى على سياسة التنظيف الحالية = 7 أيام.
+    # =====================================================
+    shared = redis_hgetall_json(
+        SHARED_NEWS_HASH_KEY
+    )
+
+    for symbol, item in shared.items():
+        if not isinstance(item, dict):
+            continue
+
+        # لا نحذف أي سجل ليس من إنتاج
+        # Elite Catalyst Radar.
+        if (
+            item.get("producer")
+            != "elite_catalyst_radar"
+        ):
+            continue
+
+        weekend_record = bool(
+            item.get(
+                "weekend_record",
+                False,
+            )
+        )
+
+        expires_at = safe_float(
+            item.get("expires_at")
+        )
+
+        checked_at = safe_float(
+            item.get("checked_at")
+        )
+
+        # ---------------------------------------------
+        # Weekend record:
+        # يحذف عند انتهاء مدة 72 ساعة المحددة له.
+        # ---------------------------------------------
+        if weekend_record:
+            if (
+                expires_at > 0
+                and now_ts >= expires_at
+            ):
+                redis_hdel(
+                    SHARED_NEWS_HASH_KEY,
+                    symbol,
+                )
+
+                log(
+                    f"Weekend shared news expired: "
+                    f"{symbol}"
+                )
+
+            continue
+
+        # ---------------------------------------------
+        # Normal weekday record:
+        # نفس السياسة القديمة = 7 أيام.
+        # ---------------------------------------------
+        if (
+            checked_at > 0
+            and now_ts - checked_at
+            > 7 * 24 * 60 * 60
+        ):
+            redis_hdel(
+                SHARED_NEWS_HASH_KEY,
+                symbol,
+            )
 
 def should_close_end_of_day():
     ny = now_ny()
@@ -2397,10 +2550,17 @@ def main_loop():
     while True:
         try:
             maybe_reload_float()
+
             if not is_weekend():
                 maybe_refresh_universe()
             else:
-                log("Weekend mode. News discovery and entry alerts paused.")
+                log(
+                    "Weekend mode. "
+                    "Central news discovery ACTIVE | "
+                    "Technical scans and entry alerts paused."
+                )
+                
+
             if time.time() - last_redis_cleanup_ts >= REDIS_CLEANUP_INTERVAL:
                 cleanup_news_redis_and_blocks()
                 cleanup_news_watchlist()
