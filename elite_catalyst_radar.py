@@ -1128,8 +1128,11 @@ def publish_shared_news(symbol, raw_items, classified, checked_at):
         record,
     )
 
-    runtime_stats["shared_news_published"] += 1
-
+    runtime_stats["shared_news_published"] = (
+        runtime_stats.get("shared_news_published", 0)
+        + 1
+    )
+    
     return record
 
 def finnhub_wait_slot():
