@@ -4323,6 +4323,8 @@ def run_news_cycle():
 
     print_cycle_header("📰 News Cycle")
 
+    cleanup_expired_news_cache()
+
     before_cache = len(news_cache)
     before_cursor = news_cursor
     before_queue = len(news_queue)
