@@ -146,6 +146,10 @@ def parse_ksa_time(time_str):
 
 def is_work_time():
     now = now_ksa()
+
+    if now.weekday() >= 5:
+        return False
+
     start = parse_ksa_time(WORK_START_KSA)
     end = parse_ksa_time(WORK_END_KSA)
 
