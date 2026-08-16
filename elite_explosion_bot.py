@@ -1210,6 +1210,9 @@ def startup():
     print("====================================")
 
     load_all_state()
+
+    cleanup_expired_news_cache()
+
     load_float_cache()
 
     if is_work_time():
