@@ -1408,6 +1408,97 @@ def sustained_breakout_ok(df, resistance):
 # =========================================================
 # NEWS HELPERS
 # =========================================================
+def cleanup_expired_news_cache():
+    removed_count = 0
+    invalid_count = 0
+
+    now = now_ksa()
+
+    for symbol in list(news_cache.keys()):
+        try:
+            item = news_cache.get(symbol)
+
+            if not isinstance(item, dict):
+                news_cache.pop(symbol, None)
+                removed_count += 1
+                invalid_count += 1
+                continue
+
+            reject_until = item.get(
+                "reject_until"
+            )
+
+            expires_at = item.get(
+                "expires_at"
+            )
+
+            # الخبر السلبي الخطير يبقى محفوظًا
+            # طوال فترة reject_until حتى لو انتهى expires_at.
+            if reject_until:
+                try:
+                    reject_dt = datetime.fromisoformat(
+                        reject_until
+                    )
+
+                    if now <= reject_dt:
+                        continue
+
+                except Exception:
+                    pass
+
+            # إذا كان الكاش نفسه ما زال صالحًا، نبقيه.
+            if expires_at:
+                try:
+                    expiry_dt = datetime.fromisoformat(
+                        expires_at
+                    )
+
+                    if now <= expiry_dt:
+                        continue
+
+                except Exception:
+                    pass
+
+            # وصلنا هنا = السجل منتهي أو غير صالح.
+            news_cache.pop(
+                symbol,
+                None,
+            )
+
+            removed_count += 1
+
+        except Exception:
+            news_cache.pop(
+                symbol,
+                None,
+            )
+
+            removed_count += 1
+            invalid_count += 1
+
+    runtime_stats["news_cache_cleanup_removed"] = (
+        removed_count
+    )
+
+    runtime_stats["news_cache_cleanup_invalid"] = (
+        invalid_count
+    )
+
+    if removed_count > 0:
+        redis_set_json(
+            REDIS_KEYS["news_cache"],
+            news_cache,
+        )
+
+    print(
+        f"🧹 News Cache Cleanup | "
+        f"Removed={removed_count} | "
+        f"Invalid={invalid_count} | "
+        f"Remaining={len(news_cache)}"
+    )
+
+    return removed_count
+    
 def get_market_radar_news(symbol):
     symbol = str(symbol or "").strip().upper()
 
