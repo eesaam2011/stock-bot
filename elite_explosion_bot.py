@@ -1289,7 +1289,17 @@ def startup():
     print("====================================")
 
     load_all_state()
-
+    
+    if active_monitoring:
+        print(
+            f"🔄 Legacy active monitoring restored: "
+            f"{len(active_monitoring)} trade(s)"
+        )
+    else:
+        print(
+            "✅ No legacy active monitoring to restore"
+        )
+        
     cleanup_expired_news_cache()
 
     load_float_cache()
