@@ -571,26 +571,37 @@ def register_incoming_alert(payload: dict):
 
 
 def incoming_listener_loop():
-    print(f"📥 Listening on Redis list: {KEY_INCOMING}", flush=True)
+    print(
+        f"📥 Listening on Upstash REST list: {KEY_INCOMING}",
+        flush=True
+    )
 
     while True:
         try:
-            item = redis_client.blpop(KEY_INCOMING, timeout=2)
-            if not item:
+            raw = redis_client.lpop(KEY_INCOMING)
+
+            if raw is None:
+                time.sleep(1)
                 continue
 
-            _, raw = item
             try:
                 payload = json.loads(raw)
+
             except Exception:
-                print(f"⚠️ Invalid incoming JSON: {raw}", flush=True)
+                print(
+                    f"⚠️ Invalid incoming JSON: {raw}",
+                    flush=True
+                )
                 continue
 
             if isinstance(payload, dict):
                 register_incoming_alert(payload)
 
         except Exception as e:
-            print(f"❌ Incoming listener error: {e}", flush=True)
+            print(
+                f"❌ Incoming listener error: {e}",
+                flush=True
+            )
             time.sleep(2)
 
 
