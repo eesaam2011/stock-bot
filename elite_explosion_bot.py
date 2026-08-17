@@ -50,6 +50,7 @@ UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
 MARKET_RADAR_NEWS_HASH_KEY = "market_radar:news"
 LTM_INCOMING_KEY = "live_trade_manager:incoming"
+LTM_ACTIVE_KEY = "live_trade_manager:active_trades"
 
 # =========================================================
 # CLIENTS
@@ -268,7 +269,16 @@ def send_to_live_trade_manager(metrics, plan):
 
     if not symbol:
         return False
-
+        
+    if is_symbol_already_in_live_manager(
+        symbol
+    ):
+        print(
+            f"ℹ️ {symbol} already active in "
+            f"Unified Live Trade Manager"
+        )
+        return True
+        
     try:
         payload = {
             "source_bot": "elite_explosion",
@@ -331,6 +341,59 @@ def send_to_live_trade_manager(metrics, plan):
     except Exception as e:
         print(
             f"⚠️ Live Trade Manager publish error: "
+            f"{symbol} | {e}"
+        )
+        return False
+
+def is_symbol_already_in_live_manager(symbol):
+    symbol = str(
+        symbol or ""
+    ).strip().upper()
+
+    if not symbol:
+        return False
+
+    try:
+        active_items = redis_request([
+            "HGETALL",
+            LTM_ACTIVE_KEY,
+        ])
+
+        if not active_items:
+            return False
+
+        if isinstance(active_items, list):
+            for i in range(
+                0,
+                len(active_items) - 1,
+                2
+            ):
+                raw_value = active_items[i + 1]
+
+                try:
+                    trade = json.loads(
+                        raw_value
+                    )
+                except Exception:
+                    continue
+
+                if (
+                    str(
+                        trade.get(
+                            "symbol",
+                            ""
+                        )
+                    ).strip().upper()
+                    == symbol
+                ):
+                    return True
+
+        return False
+
+    except Exception as e:
+        print(
+            f"⚠️ Live Trade Manager "
+            f"duplicate check failed: "
             f"{symbol} | {e}"
         )
         return False
