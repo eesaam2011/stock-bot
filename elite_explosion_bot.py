@@ -49,6 +49,7 @@ UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
 MARKET_RADAR_NEWS_HASH_KEY = "market_radar:news"
+LTM_INCOMING_KEY = "live_trade_manager:incoming"
 
 # =========================================================
 # CLIENTS
@@ -259,7 +260,81 @@ def redis_set_json(key, value):
     except Exception as e:
         print(f"⚠️ Redis save failed for {key}: {e}")
 
+def send_to_live_trade_manager(metrics, plan):
+    symbol = str(
+        metrics.get("symbol")
+        or ""
+    ).strip().upper()
 
+    if not symbol:
+        return False
+
+    try:
+        payload = {
+            "source_bot": "elite_explosion",
+
+            "symbol": symbol,
+            "entry_price": plan.get("entry"),
+            "entry_ts": time.time(),
+
+            "score": metrics.get("final_score"),
+            "rvol": metrics.get("rvol"),
+
+            "stop_loss": plan.get("stop"),
+
+            "target1": plan.get("t1"),
+            "target2": plan.get("t2"),
+            "target3": plan.get("t3"),
+
+            "resistance": metrics.get("resistance"),
+
+            "atr": metrics.get("atr"),
+            "change_pct": metrics.get(
+                "price_change_pct"
+            ),
+            "real_float": metrics.get("float"),
+
+            "vol_acceleration": (
+                metrics.get(
+                    "volume_acceleration",
+                    {}
+                ).get("ratio")
+            ),
+
+            "session": get_session_profile_name(),
+        }
+
+        result = redis_request([
+            "RPUSH",
+            LTM_INCOMING_KEY,
+            json.dumps(
+                payload,
+                ensure_ascii=False
+            ),
+        ])
+
+        if result is None:
+            print(
+                f"⚠️ Live Trade Manager publish failed: "
+                f"{symbol}"
+            )
+            return False
+
+        print(
+            f"🧠 Sent to Live Trade Manager: "
+            f"{symbol} | "
+            f"Entry={plan.get('entry')}"
+        )
+
+        return True
+
+    except Exception as e:
+        print(
+            f"⚠️ Live Trade Manager publish error: "
+            f"{symbol} | {e}"
+        )
+        return False
+        
 def load_all_state():
     global state, active_monitoring, sent_alerts, priority_universe
     global score_history, news_cache, daily_statistics
