@@ -42,6 +42,15 @@ TELEGRAM_INVESTMENT_CHAT_ID = os.getenv(
 GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 GIST_ID             = os.getenv("GIST_ID")
+UPSTASH_REDIS_REST_URL = (
+    os.getenv("UPSTASH_REDIS_REST_URL") or ""
+).rstrip("/")
+
+UPSTASH_REDIS_REST_TOKEN = os.getenv(
+    "UPSTASH_REDIS_REST_TOKEN"
+)
+
+LTM_INCOMING_KEY = "live_trade_manager:incoming"
 
 PRICE_MIN          = 0.3
 PRICE_MAX          = 25.0
@@ -129,6 +138,95 @@ ALERT_COOLDOWN_SEC = 3600
 FLOAT_CACHE_FILE = "float_cache.json"
 LIVE_ALERTS_FILE = "early_explosion_live_alerts.json"
 LIVE_RESULTS_FILE = "early_explosion_live_results.json"
+
+def send_to_live_trade_manager(res):
+    if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+        print(
+            f"⚠️ Live Trade Manager Upstash config missing for {res.get('symbol')}",
+            flush=True
+        )
+        return False
+
+    try:
+        import json
+
+        payload = {
+            "source_bot": "early_explosion",
+
+            "symbol": res.get("symbol"),
+            "entry_price": res.get("price"),
+            "entry_ts": time.time(),
+
+            "score": res.get("score"),
+            "rvol": res.get("rvol"),
+
+            "stop_loss": res.get("stop_loss"),
+
+            "target1": res.get("target1"),
+            "target2": res.get("target2"),
+            "target3": res.get("target3"),
+
+            "resistance_20": res.get("resistance_20"),
+
+            "atr_14": res.get("atr_14"),
+            "change_pct": res.get("change_pct"),
+            "real_float": res.get("real_float"),
+
+            "vol_acceleration": res.get("vol_acceleration"),
+            "volume_acceleration_score": res.get(
+                "volume_acceleration_score"
+            ),
+        }
+
+        response = requests.post(
+            UPSTASH_REDIS_REST_URL,
+            headers={
+                "Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json=[
+                "RPUSH",
+                LTM_INCOMING_KEY,
+                json.dumps(payload)
+            ],
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            print(
+                f"⚠️ LTM publish failed {res.get('symbol')} | "
+                f"HTTP={response.status_code} | "
+                f"{response.text[:200]}",
+                flush=True
+            )
+            return False
+
+        data = response.json()
+
+        if isinstance(data, dict) and data.get("error"):
+            print(
+                f"⚠️ LTM publish Redis error {res.get('symbol')}: "
+                f"{data.get('error')}",
+                flush=True
+            )
+            return False
+
+        print(
+            f"🧠 Sent to Live Trade Manager: "
+            f"{res.get('symbol')} | "
+            f"Entry={res.get('price')}",
+            flush=True
+        )
+
+        return True
+
+    except Exception as e:
+        print(
+            f"⚠️ Live Trade Manager publish error "
+            f"{res.get('symbol')}: {e}",
+            flush=True
+        )
+        return False
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_INVESTMENT_CHAT_ID:
@@ -1914,25 +2012,39 @@ def main_scanner():
                             daemon=True
                         ).start()
 
-                        sent_alerts[sym] = now_ts
-                        alerts_sent += 1
+                        manager_started = send_to_live_trade_manager(result)
 
-                        if sym not in active_monitors:
-                            active_monitors[sym] = True
-
-                            t = threading.Thread(
-                                target=dedicated_ticker_tracker,
-                                args=(
-                                    sym,
-                                    result["price"],
-                                    result["target1"],
-                                    result["target2"],
-                                    result["target3"],
-                                    result["stop_loss"]
-                                ),
-                                daemon=True
+                        if manager_started:
+                            print(
+                                f"✅ {sym} handed to Unified Live Trade Manager",
+                                flush=True
                             )
-                            t.start()
+
+                        else:
+                            print(
+                                f"⚠️ Unified Live Trade Manager unavailable — "
+                                f"using legacy tracker for {sym}",
+                                flush=True
+                            )
+
+                            if sym not in active_monitors:
+                                active_monitors[sym] = True
+
+                                t = threading.Thread(
+                                    target=dedicated_ticker_tracker,
+                                    args=(
+                                        sym,
+                                        result["price"],
+                                        result["target1"],
+                                        result["target2"],
+                                        result["target3"],
+                                        result["stop_loss"]
+                                    ),
+                                    daemon=True
+                                )
+
+                                t.start()
+                                
 
                 time.sleep(BATCH_DELAY_SEC)
 
