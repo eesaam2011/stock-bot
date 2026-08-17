@@ -79,7 +79,8 @@ FAST_WATCHLIST_LOCK = threading.RLock()
 ENTRY_EXECUTION_LOCK = threading.RLock()
 TRADING_STATUS = {}
 TRADING_STATUS_LOCK = threading.RLock()
-
+POST_HALT_WATCHLIST = {}
+POST_HALT_WATCHLIST_LOCK = threading.RLock()
 halt_stream_connected = False
 halt_stream_last_message_at = 0.0
 
@@ -792,7 +793,25 @@ def update_trading_status(message):
             current["updated_at"] = now_ts
 
             TRADING_STATUS[symbol] = current
+            
+            if was_halted:
+                with POST_HALT_WATCHLIST_LOCK:
+                    POST_HALT_WATCHLIST[symbol] = {
+                        "symbol": symbol,
+                        "resumed_at": now_ts,
+                        "added_at": now_ts,
+                        "last_check_at": 0.0,
+                        "last_score": 0.0,
+                        "checks": 0,
+                    }
 
+                print(
+                    f"🔥 POST_HALT added: "
+                    f"{symbol} | "
+                    f"Fast check every "
+                    f"{POST_HALT_CHECK_INTERVAL}s"
+                )
+            
             if was_halted:
                 print(
                     f"✅ TRADING RESUMED: {symbol} | "
@@ -1008,7 +1027,214 @@ def trading_status_stream_loop():
         time.sleep(
             HALT_STREAM_RECONNECT_SECONDS
         )
-        
+
+def post_halt_monitor_loop():
+    print(
+        f"🔥 POST_HALT monitor started | "
+        f"Interval={POST_HALT_CHECK_INTERVAL}s | "
+        f"MaxAge="
+        f"{POST_HALT_MAX_AGE_SECONDS // 60}m"
+    )
+
+    while True:
+        try:
+            if not is_work_time():
+                time.sleep(
+                    POST_HALT_CHECK_INTERVAL
+                )
+                continue
+
+            with POST_HALT_WATCHLIST_LOCK:
+                watchlist_snapshot = [
+                    dict(item)
+                    for item in (
+                        POST_HALT_WATCHLIST.values()
+                    )
+                ]
+
+            if not watchlist_snapshot:
+                time.sleep(
+                    POST_HALT_CHECK_INTERVAL
+                )
+                continue
+
+            now_ts = time.time()
+
+            for item in watchlist_snapshot:
+                symbol = item.get("symbol")
+
+                if not symbol:
+                    continue
+
+                with POST_HALT_WATCHLIST_LOCK:
+                    current_item = (
+                        POST_HALT_WATCHLIST.get(
+                            symbol
+                        )
+                    )
+
+                    if current_item is None:
+                        continue
+
+                    added_at = safe_float(
+                        current_item.get(
+                            "added_at"
+                        )
+                    )
+
+                age_seconds = (
+                    now_ts - added_at
+                )
+
+                if (
+                    age_seconds
+                    >= POST_HALT_MAX_AGE_SECONDS
+                ):
+                    with POST_HALT_WATCHLIST_LOCK:
+                        POST_HALT_WATCHLIST.pop(
+                            symbol,
+                            None,
+                        )
+
+                    print(
+                        f"🗑️ POST_HALT expired: "
+                        f"{symbol} | "
+                        f"Age="
+                        f"{age_seconds / 60:.1f}m"
+                    )
+                    continue
+
+                blocked, block_reason = (
+                    get_trading_block_reason(
+                        symbol
+                    )
+                )
+
+                if blocked:
+                    if str(
+                        block_reason
+                    ).startswith(
+                        "trading_halt:"
+                    ):
+                        print(
+                            f"⏸ POST_HALT paused: "
+                            f"{symbol} | "
+                            f"Halted again"
+                        )
+
+                    continue
+
+                metrics = build_symbol_metrics(
+                    symbol
+                )
+
+                if not metrics:
+                    print(
+                        f"⚠️ POST_HALT no metrics: "
+                        f"{symbol}"
+                    )
+                    continue
+
+                final_score, breakdown = (
+                    calculate_final_score(
+                        symbol,
+                        metrics,
+                    )
+                )
+
+                final_score = safe_float(
+                    final_score
+                )
+
+                metrics["final_score"] = (
+                    final_score
+                )
+
+                metrics["score_breakdown"] = (
+                    breakdown
+                )
+
+                required_score = (
+                    get_required_entry_score()
+                )
+
+                with POST_HALT_WATCHLIST_LOCK:
+                    current_item = (
+                        POST_HALT_WATCHLIST.get(
+                            symbol
+                        )
+                    )
+
+                    if current_item is None:
+                        continue
+
+                    current_item[
+                        "last_check_at"
+                    ] = time.time()
+
+                    current_item[
+                        "last_score"
+                    ] = final_score
+
+                    current_item["checks"] = (
+                        int(
+                            current_item.get(
+                                "checks",
+                                0,
+                            )
+                        )
+                        + 1
+                    )
+
+                print(
+                    f"🔥 POST_HALT check: "
+                    f"{symbol} | "
+                    f"Score="
+                    f"{final_score:.1f}/"
+                    f"{required_score:.1f} | "
+                    f"RVOL="
+                    f"{metrics.get('rvol', 0):.2f} | "
+                    f"Accel="
+                    f"{metrics.get('volume_acceleration', {}).get('ratio', 0):.2f}x"
+                )
+
+                if final_score < required_score:
+                    continue
+
+                alert_sent = (
+                    execute_entry_if_any(
+                        [metrics]
+                    )
+                )
+
+                if alert_sent:
+                    with POST_HALT_WATCHLIST_LOCK:
+                        POST_HALT_WATCHLIST.pop(
+                            symbol,
+                            None,
+                        )
+
+                    print(
+                        f"✅ POST_HALT entry sent: "
+                        f"{symbol} | "
+                        f"Score={final_score:.1f}"
+                    )
+
+            time.sleep(
+                POST_HALT_CHECK_INTERVAL
+            )
+
+        except Exception as e:
+            print(
+                f"❌ POST_HALT loop error: "
+                f"{e}"
+            )
+            traceback.print_exc()
+
+            time.sleep(
+                POST_HALT_CHECK_INTERVAL
+            )
+            
 def get_snapshot_price_data(symbol):
     try:
         snap = api.get_snapshot(symbol)
@@ -4520,7 +4746,14 @@ if __name__ == "__main__":
         daemon=True,
     )
     trading_status_thread.start()
-
+    
+    post_halt_thread = threading.Thread(
+        target=post_halt_monitor_loop,
+        name="post-halt-monitor",
+        daemon=True,
+    )
+    post_halt_thread.start()
+    
     fast_watchlist_thread = threading.Thread(
         target=fast_watchlist_monitor_loop,
         name="fast-watchlist-monitor",
