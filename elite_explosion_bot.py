@@ -3491,10 +3491,42 @@ def execute_entry_if_any(scored_candidates):
         )
 
         if alert_ok:
-            register_entry(
+            manager_started = send_to_live_trade_manager(
                 fresh_candidate,
                 plan,
             )
+
+            if manager_started:
+                sent_alerts[symbol] = {
+                    "sent_at": now_ksa().isoformat(),
+                    "price": plan["entry"],
+                    "score": fresh_candidate.get(
+                        "final_score",
+                        0,
+                    ),
+                }
+
+                redis_set_json(
+                    REDIS_KEYS["sent_alerts"],
+                    sent_alerts,
+                )
+
+                print(
+                    f"✅ {symbol} handed to "
+                    f"Unified Live Trade Manager"
+                )
+
+            else:
+                print(
+                    f"⚠️ Unified Live Trade Manager "
+                    f"unavailable — using legacy "
+                    f"monitoring for {symbol}"
+                )
+
+                register_entry(
+                    fresh_candidate,
+                    plan,
+                )
 
             remove_from_fast_watchlist(
                 symbol,
