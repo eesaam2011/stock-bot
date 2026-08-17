@@ -267,7 +267,9 @@ ALPACA_STATUS_STREAM_URL = (
     "wss://stream.data.alpaca.markets/v2/sip"
 )
 
-HALT_RESUME_COOLDOWN_SECONDS = 90
+HALT_RESUME_COOLDOWN_SECONDS = 5
+POST_HALT_CHECK_INTERVAL = 5
+POST_HALT_MAX_AGE_SECONDS = 3 * 60
 HALT_STREAM_RECONNECT_SECONDS = 10
 
 # =========================================================
