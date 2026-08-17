@@ -30,7 +30,6 @@ from flask import Flask
 import pandas as pd
 import pytz
 import requests
-import redis
 import alpaca_trade_api as tradeapi
 
 # ------------------------------------------------------------------------------
@@ -101,15 +100,138 @@ SOURCE_BOTS = [
 # Clients
 # ------------------------------------------------------------------------------
 
-if not REDIS_URL:
-    raise RuntimeError("REDIS_URL (or UPSTASH_REDIS_URL) is required.")
+if not UPSTASH_REDIS_REST_URL or not UPSTASH_REDIS_REST_TOKEN:
+    raise RuntimeError(
+        "UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required."
+    )
 
-redis_client = redis.from_url(
-    REDIS_URL,
-    decode_responses=True,
-    socket_timeout=10,
-    socket_connect_timeout=10,
-    health_check_interval=30,
+
+class UpstashRestRedis:
+    def __init__(self, url, token):
+        self.url = url.rstrip("/")
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+    def command(self, *args):
+        res = requests.post(
+            self.url,
+            headers=self.headers,
+            json=[str(x) for x in args],
+            timeout=10,
+        )
+
+        if res.status_code != 200:
+            raise RuntimeError(
+                f"Upstash REST error {res.status_code}: {res.text[:300]}"
+            )
+
+        data = res.json()
+
+        if isinstance(data, dict) and data.get("error"):
+            raise RuntimeError(data["error"])
+
+        return data.get("result") if isinstance(data, dict) else data
+
+    def ping(self):
+        return self.command("PING")
+
+    def hset(self, key, field, value):
+        return self.command("HSET", key, field, value)
+
+    def hget(self, key, field):
+        return self.command("HGET", key, field)
+
+    def hgetall(self, key):
+        result = self.command("HGETALL", key) or []
+
+        if isinstance(result, dict):
+            return result
+
+        out = {}
+
+        if isinstance(result, list):
+            for i in range(0, len(result) - 1, 2):
+                out[str(result[i])] = result[i + 1]
+
+        return out
+
+    def hdel(self, key, field):
+        return self.command("HDEL", key, field)
+
+    def hlen(self, key):
+        return int(self.command("HLEN", key) or 0)
+
+    def hincrby(self, key, field, amount):
+        return self.command(
+            "HINCRBY",
+            key,
+            field,
+            int(amount)
+        )
+
+    def hincrbyfloat(self, key, field, amount):
+        return self.command(
+            "HINCRBYFLOAT",
+            key,
+            field,
+            float(amount)
+        )
+
+    def rpush(self, key, value):
+        return self.command(
+            "RPUSH",
+            key,
+            value
+        )
+
+    def lpop(self, key):
+        return self.command(
+            "LPOP",
+            key
+        )
+
+    def ltrim(self, key, start, stop):
+        return self.command(
+            "LTRIM",
+            key,
+            start,
+            stop
+        )
+
+    def lrange(self, key, start, stop):
+        return self.command(
+            "LRANGE",
+            key,
+            start,
+            stop
+        ) or []
+
+    def set(self, key, value, nx=False, ex=None):
+        args = [
+            "SET",
+            key,
+            value
+        ]
+
+        if nx:
+            args.append("NX")
+
+        if ex is not None:
+            args.extend([
+                "EX",
+                int(ex)
+            ])
+
+        result = self.command(*args)
+
+        return result == "OK"
+
+
+redis_client = UpstashRestRedis(
+    UPSTASH_REDIS_REST_URL,
+    UPSTASH_REDIS_REST_TOKEN,
 )
 
 api = tradeapi.REST(
