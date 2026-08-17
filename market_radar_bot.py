@@ -5583,6 +5583,10 @@ def send_daily_summary():
         )
     )
 
+    # --------------------------------------------------------------------------
+    # الصفقات المغلقة اليوم
+    # --------------------------------------------------------------------------
+
     closed_trades = []
 
     for key, item in history.items():
@@ -5592,17 +5596,49 @@ def send_daily_summary():
         if item.get("date") != today:
             continue
 
-        # KEY_HISTORY يحتوي أيضًا سجل التنبيه الأولي،
-        # لذلك لا نحسب إلا السجلات المغلقة فعليًا.
         if not item.get("closed_at"):
             continue
 
         if not item.get("close_reason"):
             continue
 
+        trade_plan = item.get(
+            "trade_plan",
+            {}
+        )
+
+        entry = safe_float(
+            trade_plan.get("entry")
+        )
+
+        exit_price = safe_float(
+            item.get("exit_price")
+        )
+
+        realized_pct = item.get(
+            "realized_pct"
+        )
+
+        if realized_pct is None:
+            if entry > 0 and exit_price > 0:
+                realized_pct = (
+                    (exit_price - entry)
+                    / entry
+                ) * 100
+
+        item["realized_pct"] = (
+            realized_pct
+            if realized_pct is not None
+            else None
+        )
+
         closed_trades.append(
             item
         )
+
+    # --------------------------------------------------------------------------
+    # الصفقات النشطة اليوم
+    # --------------------------------------------------------------------------
 
     active_today = []
 
@@ -5615,6 +5651,10 @@ def send_daily_summary():
                 item
             )
 
+    # --------------------------------------------------------------------------
+    # التصنيف
+    # --------------------------------------------------------------------------
+
     winners = []
     losers = []
     breakeven = []
@@ -5626,23 +5666,12 @@ def send_daily_summary():
         )
 
         if realized_pct is None:
-            realized_pct = (
-                calculate_trade_realized_pct(
-                    item
-                )
-            )
-
-        if realized_pct is None:
             unknown.append(
                 item
             )
             continue
 
         realized_pct = safe_float(
-            realized_pct
-        )
-
-        item["realized_pct"] = (
             realized_pct
         )
 
@@ -5661,26 +5690,29 @@ def send_daily_summary():
                 item
             )
 
-    resolved_count = (
+    unresolved_count = (
+        len(active_today)
+        + len(unknown)
+    )
+
+    # --------------------------------------------------------------------------
+    # نسبة النجاح
+    # --------------------------------------------------------------------------
+
+    decisive_trades = (
         len(winners)
         + len(losers)
-        + len(breakeven)
     )
 
     win_rate = (
-        (
-            len(winners)
-            / (
-                len(winners)
-                + len(losers)
-            )
-        ) * 100
-        if (
-            len(winners)
-            + len(losers)
-        ) > 0
+        (len(winners) / decisive_trades) * 100
+        if decisive_trades > 0
         else 0
     )
+
+    # --------------------------------------------------------------------------
+    # الأداء
+    # --------------------------------------------------------------------------
 
     realized_results = [
         safe_float(
@@ -5721,34 +5753,30 @@ def send_daily_summary():
         else 0
     )
 
+    # --------------------------------------------------------------------------
+    # أفضل صفقة = من الناجحة فقط
+    # أسوأ صفقة = من الفاشلة فقط
+    # --------------------------------------------------------------------------
+
     best_trade = None
+
+    if winners:
+        best_trade = max(
+            winners,
+            key=lambda item: safe_float(
+                item.get("realized_pct")
+            )
+        )
+
     worst_trade = None
 
-    if realized_results:
-        resolved_trades = (
-            winners
-            + losers
-            + breakeven
-        )
-
-        best_trade = max(
-            resolved_trades,
-            key=lambda item: safe_float(
-                item.get("realized_pct")
-            )
-        )
-
+    if losers:
         worst_trade = min(
-            resolved_trades,
+            losers,
             key=lambda item: safe_float(
                 item.get("realized_pct")
             )
         )
-
-    unresolved_count = (
-        len(active_today)
-        + len(unknown)
-    )
 
     best_trade_text = "لا يوجد"
 
@@ -5766,25 +5794,41 @@ def send_daily_summary():
             f"{safe_float(worst_trade.get('realized_pct')):+.2f}%"
         )
 
+    # --------------------------------------------------------------------------
+    # الرسالة الرئيسية
+    # --------------------------------------------------------------------------
+
     summary_message = f"""📊 <b>Market Radar Bot - ملخص اليوم</b>
-📅 التاريخ: {today}
+
+📅 <b>التاريخ:</b> {today}
+
+━━━━━━━━━━━━━━
 
 💰 <b>النتيجة اليومية</b>
 
-🚀 عدد التنبيهات: {today_alerts}
-✅ صفقات ناجحة: {len(winners)}
-❌ صفقات فاشلة: {len(losers)}
-➖ تعادل: {len(breakeven)}
-👀 غير محسومة: {unresolved_count}
+🚀 عدد التنبيهات: <b>{today_alerts}</b>
+✅ صفقات ناجحة: <b>{len(winners)}</b>
+❌ صفقات فاشلة: <b>{len(losers)}</b>
+➖ تعادل: <b>{len(breakeven)}</b>
+👀 غير محسومة: <b>{unresolved_count}</b>
 
-🎯 نسبة النجاح: {win_rate:.1f}%
+🎯 نسبة النجاح: <b>{win_rate:.1f}%</b>
 
-💵 صافي أداء الصفقات المغلقة: <b>{net_realized_pct:+.2f}%</b>
-📈 متوسط ربح الصفقة الناجحة: {average_win:+.2f}%
-📉 متوسط خسارة الصفقة الفاشلة: {average_loss:+.2f}%
+━━━━━━━━━━━━━━
 
-🏆 أفضل صفقة: {best_trade_text}
-🔻 أسوأ صفقة: {worst_trade_text}
+💵 صافي أداء الصفقات المغلقة:
+<b>{net_realized_pct:+.2f}%</b>
+
+📈 متوسط ربح الصفقة الناجحة:
+<b>{average_win:+.2f}%</b>
+
+📉 متوسط خسارة الصفقة الفاشلة:
+<b>{average_loss:+.2f}%</b>
+
+━━━━━━━━━━━━━━
+
+🏆 <b>أفضل صفقة:</b> {best_trade_text}
+🔻 <b>أسوأ صفقة:</b> {worst_trade_text}
 
 ━━━━━━━━━━━━━━
 
@@ -5794,16 +5838,18 @@ def send_daily_summary():
 📈 الأسهم المقيمة: {runtime_stats.get('symbols_checked', 0)}
 📥 سجلات الفلوت: {runtime_stats.get('float_records', 0)}
 👀 الصفقات النشطة: {len(active_today)}
-🕒 آخر فحص: {runtime_stats.get('last_scan')}
+
+🕒 آخر فحص:
+{runtime_stats.get('last_scan')}
 """
 
     send_telegram(
         summary_message
     )
 
-    # ------------------------------------------------------------------
-    # تفاصيل الصفقات المغلقة
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------------------
+    # تفاصيل كل صفقة
+    # --------------------------------------------------------------------------
 
     detail_blocks = []
 
@@ -5860,9 +5906,9 @@ def send_daily_summary():
             )
 
         if realized_pct is None:
-            result_text = "غير متوفر"
             icon = "⚪"
             status_text = "غير محسومة"
+            result_text = "غير متوفر"
 
         else:
             realized_pct = safe_float(
@@ -5885,18 +5931,28 @@ def send_daily_summary():
                 icon = "➖"
                 status_text = "تعادل"
 
+        block = f"""📋 <b>تفاصيل صفقة اليوم</b>
+
+{icon} <b>{symbol} — {status_text}</b>
+
+💰 <b>الدخول:</b> {fmt_price(entry) if entry > 0 else 'غير متوفر'}
+🚪 <b>الخروج:</b> {fmt_price(exit_price) if exit_price > 0 else 'غير متوفر'}
+
+🎯 <b>أعلى هدف تحقق:</b> {highest_target}
+📊 <b>النتيجة:</b> {result_text}
+
+📌 <b>السبب الأقرب:</b>
+{reason}
+
+━━━━━━━━━━━━━━"""
+
         detail_blocks.append(
-            f"""{icon} <b>{symbol} — {status_text}</b>
-💰 الدخول: {fmt_price(entry)}
-🚪 الخروج: {fmt_price(exit_price) if exit_price > 0 else 'غير متوفر'}
-🎯 أعلى هدف تحقق: {highest_target}
-📊 النتيجة: <b>{result_text}</b>
-📌 السبب: {reason}"""
+            block
         )
 
-    # ------------------------------------------------------------------
-    # الصفقات التي ما زالت مفتوحة
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------------------
+    # الصفقات النشطة
+    # --------------------------------------------------------------------------
 
     for item in active_today:
         symbol = item.get(
@@ -5917,57 +5973,59 @@ def send_daily_summary():
             item.get("highest_price")
         )
 
-        unrealized_pct = 0
+        max_profit_pct = safe_float(
+            item.get("max_profit_pct")
+        )
 
-        if entry > 0 and highest_price > 0:
-            unrealized_pct = (
-                (
-                    highest_price
-                    - entry
-                )
-                / entry
-            ) * 100
+        block = f"""👀 <b>{symbol} — الصفقة ما زالت نشطة</b>
+
+💰 <b>الدخول:</b> {fmt_price(entry)}
+📈 <b>أعلى سعر:</b> {fmt_price(highest_price)}
+
+🎯 <b>أعلى هدف تحقق:</b> {get_highest_target_label(trade_plan)}
+📊 <b>أفضل تقدم:</b> {max_profit_pct:+.2f}%
+
+📌 النتيجة النهائية لم تُحسم بعد.
+
+━━━━━━━━━━━━━━"""
 
         detail_blocks.append(
-            f"""👀 <b>{symbol} — ما زالت نشطة</b>
-💰 الدخول: {fmt_price(entry)}
-📈 أعلى سعر مسجل: {fmt_price(highest_price)}
-🎯 أعلى هدف تحقق: {get_highest_target_label(trade_plan)}
-📊 أفضل تقدم أثناء المتابعة: {unrealized_pct:+.2f}%
-📌 النتيجة النهائية: لم تُحسم بعد."""
+            block
         )
+
+    # --------------------------------------------------------------------------
+    # إرسال التفاصيل مع حماية حد Telegram
+    # --------------------------------------------------------------------------
 
     if not detail_blocks:
         send_telegram(
             """📋 <b>تفاصيل صفقات اليوم</b>
 
-لم توجد صفقات مغلقة أو نشطة لعرض تفاصيلها."""
+لا توجد صفقات لعرض تفاصيلها اليوم."""
         )
 
         return
 
-    # Telegram له حد لطول الرسالة،
-    # لذلك نقسم تفاصيل الصفقات على عدة رسائل.
-    current_message = (
-        "📋 <b>تفاصيل صفقات اليوم</b>\n\n"
-    )
+    current_message = ""
 
     for block in detail_blocks:
         candidate = (
             current_message
             + block
-            + "\n\n━━━━━━━━━━━━━━\n\n"
+            + "\n\n"
         )
 
-        if len(candidate) > 3500:
+        if (
+            current_message
+            and len(candidate) > 3500
+        ):
             send_telegram(
                 current_message
             )
 
             current_message = (
-                "📋 <b>تكملة تفاصيل صفقات اليوم</b>\n\n"
-                + block
-                + "\n\n━━━━━━━━━━━━━━\n\n"
+                block
+                + "\n\n"
             )
 
         else:
@@ -5977,7 +6035,7 @@ def send_daily_summary():
         send_telegram(
             current_message
         )
-
+    
 # ==============================================================================
 # Weekend Analysis
 # ==============================================================================
