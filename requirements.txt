@@ -3,6 +3,7 @@ pandas
 requests
 pytz 
 flask
+redis
 yfinance
 alpaca-py
 orjson
