@@ -68,7 +68,7 @@ KEY_EVENTS = f"{REDIS_PREFIX}:events"
 # Runtime configuration
 # ------------------------------------------------------------------------------
 
-MONITOR_INTERVAL_SEC = float(os.getenv("LTM_MONITOR_INTERVAL_SEC", "5"))
+MONITOR_INTERVAL_SEC = float(os.getenv("LTM_MONITOR_INTERVAL_SEC", "3"))
 BAR_REFRESH_SEC = float(os.getenv("LTM_BAR_REFRESH_SEC", "15"))
 RECOVERY_WINDOW_SEC = float(os.getenv("LTM_RECOVERY_WINDOW_SEC", "25"))
 POST_EXIT_WATCH_MINUTES = int(os.getenv("LTM_POST_EXIT_WATCH_MINUTES", "20"))
