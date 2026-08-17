@@ -343,13 +343,26 @@ def send_telegram_message(text: str):
 
 def append_json_list(key: str, record: dict, max_records: int):
     try:
-        pipe = redis_client.pipeline()
-        pipe.rpush(key, json.dumps(record, ensure_ascii=False, default=str))
-        pipe.ltrim(key, -max_records, -1)
-        pipe.execute()
-    except Exception as e:
-        print(f"⚠️ Redis append error {key}: {e}", flush=True)
+        redis_client.rpush(
+            key,
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                default=str
+            )
+        )
 
+        redis_client.ltrim(
+            key,
+            -max_records,
+            -1
+        )
+
+    except Exception as e:
+        print(
+            f"⚠️ Redis append error {key}: {e}",
+            flush=True
+        )
 
 def save_event(event_type: str, trade: dict, extra: Optional[dict] = None):
     record = {
