@@ -3901,7 +3901,168 @@ def validate_entry_freshness(metrics, plan):
         return False, result
 
     return True, result
-    
+
+def validate_short_move_exhaustion(symbol):
+    try:
+        df = get_bars_df(
+            symbol,
+            TimeFrame.Minute,
+            limit=10,
+        )
+
+        if df is None or len(df) < 4:
+            return True, {
+                "reason": "insufficient_short_move_data",
+                "move_1m_pct": 0.0,
+                "move_2m_pct": 0.0,
+                "range_2m_pct": 0.0,
+            }
+
+        for col in [
+            "open",
+            "high",
+            "low",
+            "close",
+        ]:
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce",
+            )
+
+        df = df.dropna(
+            subset=[
+                "open",
+                "high",
+                "low",
+                "close",
+            ]
+        )
+
+        if len(df) < 4:
+            return True, {
+                "reason": "insufficient_clean_data",
+                "move_1m_pct": 0.0,
+                "move_2m_pct": 0.0,
+                "range_2m_pct": 0.0,
+            }
+
+        last_close = safe_float(
+            df["close"].iloc[-1]
+        )
+
+        close_1m_ago = safe_float(
+            df["close"].iloc[-2]
+        )
+
+        close_2m_ago = safe_float(
+            df["close"].iloc[-3]
+        )
+
+        if (
+            last_close <= 0
+            or close_1m_ago <= 0
+            or close_2m_ago <= 0
+        ):
+            return True, {
+                "reason": "invalid_short_move_prices",
+                "move_1m_pct": 0.0,
+                "move_2m_pct": 0.0,
+                "range_2m_pct": 0.0,
+            }
+
+        move_1m_pct = (
+            (
+                last_close
+                - close_1m_ago
+            )
+            / close_1m_ago
+        ) * 100
+
+        move_2m_pct = (
+            (
+                last_close
+                - close_2m_ago
+            )
+            / close_2m_ago
+        ) * 100
+
+        recent_2 = df.tail(2)
+
+        recent_high = safe_float(
+            recent_2["high"].max()
+        )
+
+        recent_low = safe_float(
+            recent_2["low"].min()
+        )
+
+        range_2m_pct = 0.0
+
+        if recent_low > 0:
+            range_2m_pct = (
+                (
+                    recent_high
+                    - recent_low
+                )
+                / recent_low
+            ) * 100
+
+        result = {
+            "reason": "ok",
+            "move_1m_pct": round(
+                move_1m_pct,
+                2,
+            ),
+            "move_2m_pct": round(
+                move_2m_pct,
+                2,
+            ),
+            "range_2m_pct": round(
+                range_2m_pct,
+                2,
+            ),
+        }
+
+        # انفجار شديد جدًا خلال دقيقة واحدة.
+        if move_1m_pct >= 5.0:
+            result["reason"] = (
+                "one_minute_move_exhausted"
+            )
+            return False, result
+
+        # السهم قطع حركة كبيرة جدًا خلال دقيقتين.
+        if move_2m_pct >= 8.0:
+            result["reason"] = (
+                "two_minute_move_exhausted"
+            )
+            return False, result
+
+        # نطاق آخر دقيقتين أصبح واسعًا جدًا،
+        # حتى لو كان الإغلاق النهائي لا يظهر
+        # كامل الحركة.
+        if range_2m_pct >= 10.0:
+            result["reason"] = (
+                "two_minute_range_exhausted"
+            )
+            return False, result
+
+        return True, result
+
+    except Exception as e:
+        print(
+            f"⚠️ Short move check failed: "
+            f"{symbol} | {e}"
+        )
+
+        # لا نلغي تنبيهًا بسبب خطأ تقني
+        # في هذا الفلتر وحده.
+        return True, {
+            "reason": "short_move_check_error",
+            "move_1m_pct": 0.0,
+            "move_2m_pct": 0.0,
+            "range_2m_pct": 0.0,
+        }
+        
 # =========================================================
 # TELEGRAM ALERTS
 # =========================================================
@@ -4266,6 +4427,31 @@ def execute_entry_if_any(scored_candidates):
                 f"{freshness.get('extension_atr', 0):.2f}"
             )
             return False        
+
+        short_move_ok, short_move_info = (
+            validate_short_move_exhaustion(
+                symbol
+            )
+        )
+
+        fresh_candidate[
+            "short_move_exhaustion"
+        ] = short_move_info
+
+        if not short_move_ok:
+            print(
+                f"⛔ Entry rejected by "
+                f"short-move gate: {symbol} | "
+                f"Reason="
+                f"{short_move_info.get('reason')} | "
+                f"Move1m="
+                f"{short_move_info.get('move_1m_pct', 0):+.2f}% | "
+                f"Move2m="
+                f"{short_move_info.get('move_2m_pct', 0):+.2f}% | "
+                f"Range2m="
+                f"{short_move_info.get('range_2m_pct', 0):.2f}%"
+            )
+            return False
             
         entry_blocked, block_reason = (
             get_trading_block_reason(symbol)
