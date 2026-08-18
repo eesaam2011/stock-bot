@@ -4009,6 +4009,7 @@ def validate_short_move_exhaustion(symbol):
 
         result = {
             "reason": "ok",
+            "session": get_session_profile_name(),
             "move_1m_pct": round(
                 move_1m_pct,
                 2,
@@ -4740,6 +4741,23 @@ def monitor_active_trades():
             trade = active_monitoring.get(symbol)
             if not trade:
                 continue
+                
+            if is_symbol_already_in_live_manager(
+                symbol
+            ):
+                active_monitoring.pop(
+                    symbol,
+                    None,
+                )
+
+                print(
+                    f"🧠 {symbol} already managed by "
+                    f"Unified Live Trade Manager — "
+                    f"removed from legacy monitoring"
+                )
+
+                continue
+                
             monitor_trade(symbol, trade)
         except Exception as e:
             print(f"⚠️ Monitor error {symbol}: {e}")
@@ -4764,7 +4782,23 @@ def recover_active_monitoring_after_restart():
             trade = active_monitoring.get(symbol)
             if not trade:
                 continue
+                
+            if is_symbol_already_in_live_manager(
+                symbol
+            ):
+                active_monitoring.pop(
+                    symbol,
+                    None,
+                )
 
+                print(
+                    f"🧠 {symbol} already managed by "
+                    f"Unified Live Trade Manager — "
+                    f"removed from legacy recovery"
+                )
+
+                continue
+                
             price = get_current_price(symbol)
             if not price:
                 continue
