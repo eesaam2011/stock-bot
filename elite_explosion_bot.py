@@ -53,6 +53,25 @@ LTM_INCOMING_KEY = "live_trade_manager:incoming"
 LTM_ACTIVE_KEY = "live_trade_manager:active_trades"
 
 # =========================================================
+# FINAL ACTIONABLE ENTRY GATE
+# =========================================================
+
+# Maximum acceptable move between the refreshed candidate
+# price and the final live execution price.
+ACTIONABLE_MAX_CHASE_PCT = 1.50
+
+# Do not send an entry if the live price is already too close
+# to T1. We want enough reward left after the alert arrives.
+ACTIONABLE_MIN_T1_REMAINING_PCT = 2.00
+
+# Protect against a sudden collapse between candidate refresh
+# and the final execution check.
+ACTIONABLE_MAX_DROP_FROM_REFRESH_PCT = 1.50
+
+# Require a valid live quote at the final execution gate.
+ACTIONABLE_REQUIRE_VALID_QUOTE = True
+
+# =========================================================
 # CLIENTS
 # =========================================================
 api = REST(
