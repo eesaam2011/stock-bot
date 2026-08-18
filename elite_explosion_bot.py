@@ -305,8 +305,13 @@ def send_to_live_trade_manager(metrics, plan):
 
             "symbol": symbol,
             "entry_price": plan.get("entry"),
-            "entry_ts": time.time(),
-
+            "entry_ts": safe_float(
+                metrics.get("alert_sent_ts"),
+                time.time(),
+            ),
+            "alert_sent_at": metrics.get(
+                "alert_sent_at"
+            ),
             "score": metrics.get("final_score"),
             "rvol": metrics.get("rvol"),
 
