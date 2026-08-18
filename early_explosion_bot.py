@@ -99,6 +99,9 @@ BAD_NAME_KEYWORDS = [
 active_monitors = {}
 sent_alerts = {}
 radar_watchlist = {}
+premarket_entry_watchlist = {}
+PREMARKET_WATCHLIST_LOCK = threading.RLock()
+PREMARKET_CONFIRM_WINDOW_MINUTES = 30
 float_cache = {}
 news_cache = {}
 NEWS_CACHE_MINUTES = 10
@@ -439,6 +442,29 @@ def is_scan_time_allowed():
 
     return start_time <= now_ny <= end_time
 
+def get_market_session():
+    tz_ny = pytz.timezone("America/New_York")
+    now_ny = datetime.now(tz_ny)
+
+    if now_ny.weekday() >= 5:
+        return "CLOSED"
+
+    minutes = (
+        now_ny.hour * 60
+        + now_ny.minute
+    )
+
+    if 4 * 60 <= minutes < 9 * 60 + 30:
+        return "PREMARKET"
+
+    if 9 * 60 + 30 <= minutes < 16 * 60:
+        return "REGULAR"
+
+    if 16 * 60 <= minutes <= 20 * 60:
+        return "AFTER_HOURS"
+
+    return "CLOSED"
+    
 def get_float_tier(avg_vol_20):
     if avg_vol_20 <= 150_000:
         return "ULTRA_LOW_FLOAT"
@@ -1792,7 +1818,172 @@ def dedicated_ticker_tracker(symbol, entry_price, t1, t2, t3, sl):
 
     if not is_scan_time_allowed():
         send_final_session_report_if_ready()
-        
+
+def add_to_premarket_entry_watchlist(
+    result,
+    asset_name="",
+):
+    symbol = result.get("symbol")
+
+    if not symbol:
+        return False
+
+    with PREMARKET_WATCHLIST_LOCK:
+        premarket_entry_watchlist[symbol] = {
+            "result": dict(result),
+            "asset_name": asset_name,
+            "added_at": time.time(),
+            "added_at_ksa": datetime.now(
+                saudi_tz
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    print(
+        f"🌅 PREMARKET WATCHLIST: "
+        f"{symbol} | "
+        f"Score={result.get('score', 0)} | "
+        f"Price={result.get('price', 0)}"
+    )
+
+    return True
+
+def process_premarket_entry_watchlist(api):
+    if get_market_session() != "REGULAR":
+        return
+
+    with PREMARKET_WATCHLIST_LOCK:
+        symbols = list(
+            premarket_entry_watchlist.keys()
+        )
+
+    for symbol in symbols:
+        with PREMARKET_WATCHLIST_LOCK:
+            item = premarket_entry_watchlist.get(
+                symbol
+            )
+
+        if not item:
+            continue
+            
+        tz_ny = pytz.timezone(
+            "America/New_York"
+        )
+        now_ny = datetime.now(tz_ny)
+
+        market_open_ny = now_ny.replace(
+            hour=9,
+            minute=30,
+            second=0,
+            microsecond=0,
+        )
+
+        minutes_since_open = (
+            now_ny - market_open_ny
+        ).total_seconds() / 60.0
+
+        if (
+            minutes_since_open
+            > PREMARKET_CONFIRM_WINDOW_MINUTES
+        ):
+            with PREMARKET_WATCHLIST_LOCK:
+                premarket_entry_watchlist.pop(
+                    symbol,
+                    None,
+                )
+
+            print(
+                f"⌛ PREMARKET EXPIRED: "
+                f"{symbol} | "
+                f"No confirmation within "
+                f"{PREMARKET_CONFIRM_WINDOW_MINUTES}m "
+                f"after open"
+            )
+            continue
+            
+        asset_name = item.get(
+            "asset_name",
+            "",
+        )
+
+        try:
+            fresh_result = check_explosion(
+                api,
+                symbol,
+                asset_name,
+            )
+
+        except Exception as e:
+            print(
+                f"⚠️ PREMARKET RECHECK ERROR: "
+                f"{symbol} | {e}"
+            )
+            continue
+
+        if (
+            fresh_result
+            and fresh_result.get(
+                "explosion_candidate"
+            ) is True
+        ):
+            send_explosion_alert(
+                fresh_result
+            )
+            threading.Thread(
+                target=send_news_after_alert,
+                args=(fresh_result,),
+                daemon=True,
+            ).start()
+
+            manager_started = (
+                send_to_live_trade_manager(
+                    fresh_result
+                )
+            )
+
+            if manager_started:
+                print(
+                    f"✅ {symbol} handed to "
+                    f"Unified Live Trade Manager",
+                    flush=True,
+                )
+
+            else:
+                print(
+                    f"⚠️ Unified Live Trade Manager "
+                    f"unavailable — using legacy "
+                    f"tracker for {symbol}",
+                    flush=True,
+                )
+
+                if symbol not in active_monitors:
+                    active_monitors[symbol] = True
+
+                    t = threading.Thread(
+                        target=dedicated_ticker_tracker,
+                        args=(
+                            symbol,
+                            fresh_result["price"],
+                            fresh_result["target1"],
+                            fresh_result["target2"],
+                            fresh_result["target3"],
+                            fresh_result["stop_loss"],
+                        ),
+                        daemon=True,
+                    )
+
+                    t.start()
+                    
+            with PREMARKET_WATCHLIST_LOCK:
+                premarket_entry_watchlist.pop(
+                    symbol,
+                    None,
+                )
+
+            print(
+                f"✅ PREMARKET CONFIRMED "
+                f"AT OPEN: {symbol}"
+            )
+            
 def send_explosion_alert(res):
 
     live_alert_record = {
@@ -2004,8 +2195,17 @@ def main_scanner():
                     result = check_explosion(api, sym, asset.name)
 
                     if result and result.get("explosion_candidate") is True:
-                        send_explosion_alert(result)
+                        market_session = get_market_session()
 
+                        if market_session == "PREMARKET":
+                            add_to_premarket_entry_watchlist(
+                                result,
+                                asset.name,
+                            )
+                            continue
+
+                        send_explosion_alert(result)
+                        
                         threading.Thread(
                             target=send_news_after_alert,
                             args=(result,),
@@ -2045,7 +2245,8 @@ def main_scanner():
 
                                 t.start()
                                 
-
+                process_premarket_entry_watchlist(api)
+                
                 time.sleep(BATCH_DELAY_SEC)
 
             total_scans_performed += 1
