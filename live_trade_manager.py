@@ -1260,9 +1260,19 @@ def should_exit(trade: dict, signals: dict) -> Tuple[bool, Optional[str]]:
         "T2_MEDIUM",
         "T3_STRONG",
     )
+    protection_activated_ts = safe_float(
+        trade.get("protection_activated_ts"),
+        0
+    )
 
+    protection_activation_grace = bool(
+        protection_activated_ts > 0
+        and now_ts() - protection_activated_ts < MONITOR_INTERVAL_SEC
+    )
+    
     protection_condition = bool(
         target_protection_active
+        and not protection_activation_grace
         and current_gain > 0
         and weakness >= min_weakness_score
         and (
@@ -1505,11 +1515,9 @@ def update_state_machine(trade: dict, current_price: float, signals: dict):
 
         return
 
-    # ------------------------------------------------------------------
-    # Healthy / strong
-    # ------------------------------------------------------------------
-
-    trade["recovery_started_ts"] = None
+    
+    if weakness < 3:
+        trade["weak_count"] = 0
 
     if strength >= 5:
         transition_state(
@@ -1699,10 +1707,24 @@ def close_trade_to_post_exit(
     if signals:
         reasons = " + ".join(signals.get("weakness_reasons", [])[:5])
 
+    reason_labels = {
+        "HARD_STOP": "ضرب الوقف",
+        "PROFIT_PROTECTION_T1_LIGHT": "حماية ربح خفيفة بعد T1",
+        "PROFIT_PROTECTION_T2_MEDIUM": "حماية ربح متوسطة بعد T2",
+        "PROFIT_PROTECTION_T3_STRONG": "حماية ربح قوية بعد T3",
+        "MOMENTUM_FAILED": "فشل الزخم",
+        "TRUE_REVERSAL": "انعكاس مؤكد",
+    }
+
+    reason_label = reason_labels.get(
+        reason,
+        reason
+    )
+    
     emoji = "🛑" if reason == "HARD_STOP" else "🔴"
 
     send_telegram_message(
-        f"{emoji} *[{trade['symbol']}] خروج مقترح — {reason}*\n"
+        f"{emoji} *[{trade['symbol']}] خروج مقترح — {reason_label}*\n"
         f"• السعر: `${current_price:.4f}`\n"
         f"• نتيجة من Entry: `{exit_gain:+.2f}%`\n"
         f"• أعلى ربح سابق: `{safe_float(trade.get('peak_gain_pct')):+.2f}%`\n"
