@@ -64,7 +64,7 @@ MIN_PRICE_CHANGE   = 4.0
 MOMENTUM_RVOL_MIN             = 1.2
 MOMENTUM_PRICE_CHANGE_MIN     = 3.0
 EXPLOSION_CANDIDATE_MIN_SCORE = 90
-
+PREMARKET_CANDIDATE_MIN_SCORE = 84
 BATCH_SIZE         = 500
 BATCH_DELAY_SEC    = 1.0
 
@@ -103,6 +103,7 @@ premarket_entry_watchlist = {}
 PREMARKET_WATCHLIST_LOCK = threading.RLock()
 PREMARKET_CONFIRM_WINDOW_MINUTES = 30
 PREMARKET_RECHECK_INTERVAL_SEC = 10
+PREMARKET_MIN_CONFIRM_MINUTES_AFTER_OPEN = 2
 float_cache = {}
 news_cache = {}
 NEWS_CACHE_MINUTES = 10
@@ -159,8 +160,17 @@ def send_to_live_trade_manager(res):
 
             "symbol": res.get("symbol"),
             "entry_price": res.get("price"),
-            "entry_ts": time.time(),
-
+            "entry_ts": res.get(
+                "alert_sent_ts",
+                time.time(),
+            ),
+            "alert_sent_at": res.get(
+                "alert_sent_at"
+            ),
+            "entry_source": res.get(
+                "entry_source",
+                "UNKNOWN",
+            ),            
             "score": res.get("score"),
             "rvol": res.get("rvol"),
 
@@ -233,25 +243,65 @@ def send_to_live_trade_manager(res):
         return False
 
 def send_telegram_message(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_INVESTMENT_CHAT_ID:
-        print(f"[Telegram-Sim] {text}", flush=True)
-        return
+    if (
+        not TELEGRAM_TOKEN
+        or not TELEGRAM_INVESTMENT_CHAT_ID
+    ):
+        print(
+            f"[Telegram-Sim] {text}",
+            flush=True,
+        )
+        return True
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{TELEGRAM_TOKEN}/sendMessage"
+    )
 
     try:
-        requests.post(
+        response = requests.post(
             url,
             json={
-                "chat_id": TELEGRAM_INVESTMENT_CHAT_ID,
+                "chat_id": (
+                    TELEGRAM_INVESTMENT_CHAT_ID
+                ),
                 "text": text,
-                "parse_mode": "Markdown"
+                "parse_mode": "Markdown",
             },
-            timeout=10
+            timeout=10,
         )
-    except Exception as e:
-        print(f"❌ Telegram Error: {e}", flush=True)
 
+        if response.status_code != 200:
+            print(
+                f"❌ Telegram HTTP Error: "
+                f"{response.status_code} | "
+                f"{response.text[:300]}",
+                flush=True,
+            )
+            return False
+
+        data = response.json()
+
+        if (
+            not isinstance(data, dict)
+            or not data.get("ok")
+        ):
+            print(
+                f"❌ Telegram API Error: "
+                f"{data}",
+                flush=True,
+            )
+            return False
+
+        return True
+
+    except Exception as e:
+        print(
+            f"❌ Telegram Error: {e}",
+            flush=True,
+        )
+        return False
+        
 def update_gist_state(symbol, data_dict):
     if not GITHUB_TOKEN or not GIST_ID:
         return
@@ -1478,8 +1528,18 @@ def check_explosion(api, symbol, asset_name):
             and dollar_volume >= 10_000_000
             and volume_acceleration_score >= 10
         )
+        market_session = get_market_session()
 
-        if score < EXPLOSION_CANDIDATE_MIN_SCORE and not mega_volume_exception:
+        required_candidate_score = (
+            PREMARKET_CANDIDATE_MIN_SCORE
+            if market_session == "PREMARKET"
+            else EXPLOSION_CANDIDATE_MIN_SCORE
+        )
+
+        if (
+            score < required_candidate_score
+            and not mega_volume_exception
+        ):
             track_rejected_candidate(
                 symbol,
                 score,
@@ -1492,6 +1552,7 @@ def check_explosion(api, symbol, asset_name):
             )
             reject_score += 1
             return None
+
             
         digits = 4 if current_price < 1 else 2
 
@@ -1889,18 +1950,31 @@ def is_premarket_candidate_weak(
     try:
         bars = api.get_bars(
             symbol,
-            tradeapi.TimeFrame.Minute,
+            tradeapi.rest.TimeFrame.Minute,
             limit=10,
             adjustment="raw",
         ).df
 
-        if bars is None or len(bars) < 5:
+        if (
+            bars is None
+            or bars.empty
+            or len(bars) < 5
+        ):
             return False, None
 
-        closes = bars["close"].astype(float)
-        volumes = bars["volume"].astype(float)
+        bars = bars.sort_index()
 
-        live_price = float(closes.iloc[-1])
+        closes = bars[
+            "close"
+        ].astype(float)
+
+        volumes = bars[
+            "volume"
+        ].astype(float)
+
+        live_price = float(
+            closes.iloc[-1]
+        )
 
         original_price = safe_float(
             original.get("price")
@@ -1910,29 +1984,23 @@ def is_premarket_candidate_weak(
             original.get("resistance_20")
         )
 
-        original_rvol = safe_float(
-            original.get("rvol")
+        if original_price <= 0:
+            return False, None
+
+        drop_from_premarket_pct = (
+            (
+                live_price
+                - original_price
+            )
+            / original_price
+        ) * 100.0
+
+        severe_price_failure = (
+            drop_from_premarket_pct <= -5.0
         )
 
-        recent_avg_volume = float(
-            volumes.tail(5).mean()
-        )
-
-        previous_avg_volume = float(
-            volumes.iloc[-10:-5].mean()
-        )
-
-        volume_ratio = (
-            recent_avg_volume
-            / previous_avg_volume
-            if previous_avg_volume > 0
-            else 1.0
-        )
-
-        below_original = (
-            original_price > 0
-            and live_price
-            < original_price * 0.97
+        meaningful_price_failure = (
+            drop_from_premarket_pct <= -3.0
         )
 
         lost_resistance = (
@@ -1942,25 +2010,56 @@ def is_premarket_candidate_weak(
             and closes.iloc[-3] < resistance
         )
 
+        recent_avg_volume = float(
+            volumes.tail(3).mean()
+        )
+
+        previous_avg_volume = float(
+            volumes.iloc[-8:-3].mean()
+        )
+
+        volume_ratio = (
+            recent_avg_volume
+            / previous_avg_volume
+            if previous_avg_volume > 0
+            else 1.0
+        )
+
         volume_fading = (
-            original_rvol >= 2.5
-            and volume_ratio < 0.60
+            volume_ratio < 0.55
         )
 
-        weakness_count = sum(
-            [
-                below_original,
-                lost_resistance,
-                volume_fading,
-            ]
+        recent_downtrend = (
+            closes.iloc[-1]
+            < closes.iloc[-2]
+            < closes.iloc[-3]
         )
 
-        if weakness_count >= 2:
+        weak_structure = (
+            lost_resistance
+            and (
+                volume_fading
+                or recent_downtrend
+            )
+        )
+
+        if severe_price_failure:
             return True, (
                 f"price={live_price:.4f} | "
-                f"below_original={below_original} | "
+                f"drop={drop_from_premarket_pct:.2f}% | "
+                f"severe_price_failure=True"
+            )
+
+        if (
+            meaningful_price_failure
+            and weak_structure
+        ):
+            return True, (
+                f"price={live_price:.4f} | "
+                f"drop={drop_from_premarket_pct:.2f}% | "
                 f"lost_resistance={lost_resistance} | "
-                f"volume_fading={volume_fading}"
+                f"volume_fading={volume_fading} | "
+                f"recent_downtrend={recent_downtrend}"
             )
 
         return False, None
@@ -1972,6 +2071,8 @@ def is_premarket_candidate_weak(
             flush=True,
         )
         return False, None
+
+
         
 def process_premarket_entry_watchlist(api):
     if get_market_session() != "REGULAR":
@@ -2071,7 +2172,11 @@ def process_premarket_entry_watchlist(api):
         minutes_since_open = (
             now_ny - market_open_ny
         ).total_seconds() / 60.0
-
+        if (
+            minutes_since_open
+            < PREMARKET_MIN_CONFIRM_MINUTES_AFTER_OPEN
+        ):
+            continue
         if (
             minutes_since_open
             > PREMARKET_CONFIRM_WINDOW_MINUTES
@@ -2118,7 +2223,14 @@ def process_premarket_entry_watchlist(api):
             "asset_name",
             "",
         )
+        radar_refreshed = quick_radar_check(
+            api,
+            symbol,
+        )
 
+        if not radar_refreshed:
+            continue
+            
         try:
             fresh_result = check_explosion(
                 api,
@@ -2132,7 +2244,14 @@ def process_premarket_entry_watchlist(api):
                 f"{symbol} | {e}"
             )
             continue
-
+        if (
+            fresh_result
+            and safe_float(
+                fresh_result.get("score")
+            ) < EXPLOSION_CANDIDATE_MIN_SCORE
+        ):
+            continue
+            
         if (
             fresh_result
             and fresh_result.get(
@@ -2209,10 +2328,80 @@ def process_premarket_entry_watchlist(api):
             
 def send_explosion_alert(res):
 
+    msg = (
+        f"🌟 *[إشارة انفجار ذهبية نخبة]* 🌟\n\n"
+        f"🎫 *السهم:* `{res['symbol']}`\n"
+        f"🕒 *مصدر الدخول:* "
+        f"`{res.get('entry_source', 'UNKNOWN')}`\n"
+        f"💵 *سعر الدخول:* `${res['price']}`\n"
+        f"📊 *التغير اليومي:* "
+        f"`+{res['change_pct']}%`\n"
+        f"ركائز القوة اللحظية:\n"
+        f"🔥 *قوة الانفجار (Score):* "
+        f"`{res['score']}/100`\n"
+        f"📈 *الـ RVOL الحالي:* "
+        f"`{res['rvol']}x`\n"
+        f"🧬 *تصنيف الفلوت الحقيقي:* "
+        f"`{res['float_tier']}`\n"
+        f"🔢 *Real Float:* "
+        f"`{res.get('real_float')}`\n"
+        f"➕ *Float Bonus:* "
+        f"`+{res.get('float_bonus', 0)}`\n"
+        f"📊 *OBV Status:* "
+        f"`{res.get('obv_tier')}`\n"
+        f"➕ *OBV Bonus:* "
+        f"`+{res.get('obv_bonus', 0)}`\n"
+        f"🧱 *المقاومة 20 يوم:* "
+        f"`${res['resistance_20']}`\n"
+        f"🧱 *المقاومة 50 يوم:* "
+        f"`${res['resistance_50']}`\n"
+        f"📏 *ATR 14:* "
+        f"`${res['atr_14']}`\n"
+        f"⚡ *تسارع الفوليوم:* "
+        f"`{res['vol_acceleration']}x`\n"
+        f"• آخر دقيقة/المتوسط: "
+        f"`{res.get('last_1m_vs_avg')}x`\n"
+        f"• آخر 3 دقائق/السابق: "
+        f"`{res.get('last_3m_vs_prev_7m')}x`\n"
+        f"• الحجم يتصاعد: "
+        f"`{'نعم' if res.get('volume_trend_up') else 'لا'}`\n"
+        f"• قمة الحجم حديثة: "
+        f"`{'نعم' if res.get('volume_peak_recent') else 'لا'}`\n"
+        f"💰 *Dollar Volume:* "
+        f"`${res['dollar_volume']}`\n\n"
+        f"🎯 *الأهداف الفنية المحسوبة:*\n"
+        f" ├─ Target 1 (ATR ×1): "
+        f"`${res['target1']}`\n"
+        f" ├─ Target 2 (ATR ×2): "
+        f"`${res['target2']}`\n"
+        f" └─ Target 3 "
+        f"(ATR ×3 أو مقاومة 50 يوم): "
+        f"`${res['target3']}`\n\n"
+        f"🛑 *وقف الخسارة الصارم (7%-):* "
+        f"`${res['stop_loss']}`\n"
+        f"⏱️ _بدأت الآن مراقبة الزخم "
+        f"كل 10 ثوانٍ._"
+    )
+
+    alert_sent = send_telegram_message(
+        msg
+    )
+
+    if not alert_sent:
+        return False
+
+    alert_sent_ts = time.time()
+    alert_sent_at = datetime.now(
+        saudi_tz
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    res["alert_sent_ts"] = alert_sent_ts
+    res["alert_sent_at"] = alert_sent_at
+
     live_alert_record = {
         "type": "ENTRY_ALERT",
-        "saved_at_ksa": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
-        "saved_at_ts": time.time(),
+        "saved_at_ksa": alert_sent_at,
+        "saved_at_ts": alert_sent_ts,
 
         "symbol": res.get("symbol"),
         "price": res.get("price"),
@@ -2223,70 +2412,75 @@ def send_explosion_alert(res):
             "entry_source",
             "UNKNOWN",
         ),
-        "float_tier": res.get("float_tier"),
-        "real_float": res.get("real_float"),
-        "float_bonus": res.get("float_bonus"),
 
-        "obv_tier": res.get("obv_tier"),
-        "obv_bonus": res.get("obv_bonus"),
+        "float_tier": res.get(
+            "float_tier"
+        ),
+        "real_float": res.get(
+            "real_float"
+        ),
+        "float_bonus": res.get(
+            "float_bonus"
+        ),
 
-        "resistance_20": res.get("resistance_20"),
-        "resistance_50": res.get("resistance_50"),
-        "atr_14": res.get("atr_14"),
+        "obv_tier": res.get(
+            "obv_tier"
+        ),
+        "obv_bonus": res.get(
+            "obv_bonus"
+        ),
 
-        "vol_acceleration": res.get("vol_acceleration"),
-        "volume_acceleration_score": res.get("volume_acceleration_score"),
-        "last_1m_vs_avg": res.get("last_1m_vs_avg"),
-        "last_3m_vs_prev_7m": res.get("last_3m_vs_prev_7m"),
-        "volume_trend_up": res.get("volume_trend_up"),
-        "volume_peak_recent": res.get("volume_peak_recent"),
+        "resistance_20": res.get(
+            "resistance_20"
+        ),
+        "resistance_50": res.get(
+            "resistance_50"
+        ),
+        "atr_14": res.get(
+            "atr_14"
+        ),
 
-        "dollar_volume": res.get("dollar_volume"),
+        "vol_acceleration": res.get(
+            "vol_acceleration"
+        ),
+        "volume_acceleration_score": res.get(
+            "volume_acceleration_score"
+        ),
+        "last_1m_vs_avg": res.get(
+            "last_1m_vs_avg"
+        ),
+        "last_3m_vs_prev_7m": res.get(
+            "last_3m_vs_prev_7m"
+        ),
+        "volume_trend_up": res.get(
+            "volume_trend_up"
+        ),
+        "volume_peak_recent": res.get(
+            "volume_peak_recent"
+        ),
+
+        "dollar_volume": res.get(
+            "dollar_volume"
+        ),
 
         "target1": res.get("target1"),
         "target2": res.get("target2"),
         "target3": res.get("target3"),
-        "stop_loss": res.get("stop_loss"),
+        "stop_loss": res.get(
+            "stop_loss"
+        ),
+
+        "alert_sent_at": alert_sent_at,
+        "alert_sent_ts": alert_sent_ts,
     }
 
     threading.Thread(
         target=append_live_alert_to_gist,
         args=(live_alert_record,),
-        daemon=True
+        daemon=True,
     ).start()
 
-    msg = (
-        f"🌟 *[إشارة انفجار ذهبية نخبة]* 🌟\n\n"
-        f"🎫 *السهم:* `{res['symbol']}`\n"
-        f"💵 *سعر الدخول:* `${res['price']}`\n"
-        f"📊 *التغير اليومي:* `+{res['change_pct']}%`\n"
-        f"ركائز القوة اللحظية:\n"
-        f"🔥 *قوة الانفجار (Score):* `{res['score']}/100`\n"
-        f"📈 *الـ RVOL الحالي:* `{res['rvol']}x`\n"
-        f"🧬 *تصنيف الفلوت الحقيقي:* `{res['float_tier']}`\n"
-        f"🔢 *Real Float:* `{res.get('real_float')}`\n"
-        f"➕ *Float Bonus:* `+{res.get('float_bonus', 0)}`\n"
-        f"📊 *OBV Status:* `{res.get('obv_tier')}`\n"
-        f"➕ *OBV Bonus:* `+{res.get('obv_bonus', 0)}`\n"
-        f"🧱 *المقاومة 20 يوم:* `${res['resistance_20']}`\n"
-        f"🧱 *المقاومة 50 يوم:* `${res['resistance_50']}`\n"
-        f"📏 *ATR 14:* `${res['atr_14']}`\n"
-        f"⚡ *تسارع الفوليوم:* `{res['vol_acceleration']}x`\n"
-        f"• آخر دقيقة/المتوسط: `{res.get('last_1m_vs_avg')}x`\n"
-        f"• آخر 3 دقائق/السابق: `{res.get('last_3m_vs_prev_7m')}x`\n"
-        f"• الحجم يتصاعد: `{'نعم' if res.get('volume_trend_up') else 'لا'}`\n"
-        f"• قمة الحجم حديثة: `{'نعم' if res.get('volume_peak_recent') else 'لا'}`\n"
-        f"💰 *Dollar Volume:* `${res['dollar_volume']}`\n\n"
-        f"🎯 *الأهداف الفنية المحسوبة:*\n"
-        f" ├─ Target 1 (ATR ×1): `${res['target1']}`\n"
-        f" ├─ Target 2 (ATR ×2): `${res['target2']}`\n"
-        f" └─ Target 3 (ATR ×3 أو مقاومة 50 يوم): `${res['target3']}`\n\n"
-        f"🛑 *وقف الخسارة الصارم (7%-):* `${res['stop_loss']}`\n"
-        f"⏱️ _بدأت الآن مراقبة الزخم كل 10 ثوانٍ._"
-    )
-
-    send_telegram_message(msg)
-    return True
+    return True            
     
 def main_scanner():
     global total_scans_performed, last_scan_timestamp
@@ -2424,6 +2618,9 @@ def main_scanner():
                     if result and result.get("explosion_candidate") is True:
                         
                         market_session = get_market_session()
+                        if market_session == "AFTER_HOURS":
+                            continue      
+                            
                         if market_session == "REGULAR":
                             with PREMARKET_WATCHLIST_LOCK:
                                 is_premarket_watched = (
