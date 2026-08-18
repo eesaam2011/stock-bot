@@ -1861,6 +1861,10 @@ def add_to_premarket_entry_watchlist(
             "added_at": added_at,
             "added_at_ksa": added_at_ksa,
             "last_updated_at": time.time(),
+            "last_recheck_at": existing.get(
+                "last_recheck_at",
+                0,
+            ) if existing else 0,
         }
 
     print(
