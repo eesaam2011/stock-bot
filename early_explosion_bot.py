@@ -2280,7 +2280,8 @@ def send_explosion_alert(res):
     )
 
     send_telegram_message(msg)
-
+    return True
+    
 def main_scanner():
     global total_scans_performed, last_scan_timestamp
     global reject_blacklist
@@ -2420,7 +2421,7 @@ def main_scanner():
                         if market_session == "REGULAR":
                             with PREMARKET_WATCHLIST_LOCK:
                                 is_premarket_watched = (
-                                    symbol
+                                    sym
                                     in premarket_entry_watchlist
                                 )
 
