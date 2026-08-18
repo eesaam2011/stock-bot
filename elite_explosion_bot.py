@@ -4462,7 +4462,7 @@ def execute_entry_if_any(scored_candidates):
                 f"{short_move_info.get('range_2m_pct', 0):.2f}%"
             )
             
-             runtime_stats[
+            runtime_stats[
                 "short_move_rejections"
             ] = (
                 runtime_stats.get(
