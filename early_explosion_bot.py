@@ -102,6 +102,7 @@ radar_watchlist = {}
 premarket_entry_watchlist = {}
 PREMARKET_WATCHLIST_LOCK = threading.RLock()
 PREMARKET_CONFIRM_WINDOW_MINUTES = 30
+PREMARKET_RECHECK_INTERVAL_SEC = 10
 float_cache = {}
 news_cache = {}
 NEWS_CACHE_MINUTES = 10
@@ -1829,13 +1830,37 @@ def add_to_premarket_entry_watchlist(
         return False
 
     with PREMARKET_WATCHLIST_LOCK:
+        existing = premarket_entry_watchlist.get(
+            symbol
+        )
+
+        if existing:
+            added_at = existing.get(
+                "added_at",
+                time.time(),
+            )
+            added_at_ksa = existing.get(
+                "added_at_ksa",
+                datetime.now(
+                    saudi_tz
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+            )
+
+        else:
+            added_at = time.time()
+            added_at_ksa = datetime.now(
+                saudi_tz
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
         premarket_entry_watchlist[symbol] = {
             "result": dict(result),
             "asset_name": asset_name,
-            "added_at": time.time(),
-            "added_at_ksa": datetime.now(
-                saudi_tz
-            ).strftime("%Y-%m-%d %H:%M:%S"),
+            "market_date": datetime.now(
+                pytz.timezone("America/New_York")
+            ).strftime("%Y-%m-%d"),
+            "added_at": added_at,
+            "added_at_ksa": added_at_ksa,
+            "last_updated_at": time.time(),
         }
 
     print(
@@ -1847,6 +1872,103 @@ def add_to_premarket_entry_watchlist(
 
     return True
 
+def is_premarket_candidate_weak(
+    api,
+    symbol,
+    item,
+):
+    original = item.get(
+        "result",
+        {},
+    )
+
+    try:
+        bars = api.get_bars(
+            symbol,
+            tradeapi.TimeFrame.Minute,
+            limit=10,
+            adjustment="raw",
+        ).df
+
+        if bars is None or len(bars) < 5:
+            return False, None
+
+        closes = bars["close"].astype(float)
+        volumes = bars["volume"].astype(float)
+
+        live_price = float(closes.iloc[-1])
+
+        original_price = safe_float(
+            original.get("price")
+        )
+
+        resistance = safe_float(
+            original.get("resistance_20")
+        )
+
+        original_rvol = safe_float(
+            original.get("rvol")
+        )
+
+        recent_avg_volume = float(
+            volumes.tail(5).mean()
+        )
+
+        previous_avg_volume = float(
+            volumes.iloc[-10:-5].mean()
+        )
+
+        volume_ratio = (
+            recent_avg_volume
+            / previous_avg_volume
+            if previous_avg_volume > 0
+            else 1.0
+        )
+
+        below_original = (
+            original_price > 0
+            and live_price
+            < original_price * 0.97
+        )
+
+        lost_resistance = (
+            resistance > 0
+            and closes.iloc[-1] < resistance
+            and closes.iloc[-2] < resistance
+            and closes.iloc[-3] < resistance
+        )
+
+        volume_fading = (
+            original_rvol >= 2.5
+            and volume_ratio < 0.60
+        )
+
+        weakness_count = sum(
+            [
+                below_original,
+                lost_resistance,
+                volume_fading,
+            ]
+        )
+
+        if weakness_count >= 2:
+            return True, (
+                f"price={live_price:.4f} | "
+                f"below_original={below_original} | "
+                f"lost_resistance={lost_resistance} | "
+                f"volume_fading={volume_fading}"
+            )
+
+        return False, None
+
+    except Exception as e:
+        print(
+            f"⚠️ PREMARKET WEAKNESS CHECK ERROR: "
+            f"{symbol} | {e}",
+            flush=True,
+        )
+        return False, None
+        
 def process_premarket_entry_watchlist(api):
     if get_market_session() != "REGULAR":
         return
@@ -1863,6 +1985,71 @@ def process_premarket_entry_watchlist(api):
             )
 
         if not item:
+            continue
+            
+        last_recheck_at = safe_float(
+            item.get("last_recheck_at")
+        )
+
+        if (
+            time.time() - last_recheck_at
+            < PREMARKET_RECHECK_INTERVAL_SEC
+        ):
+            continue
+
+        with PREMARKET_WATCHLIST_LOCK:
+            if symbol in premarket_entry_watchlist:
+                premarket_entry_watchlist[
+                    symbol
+                ]["last_recheck_at"] = time.time()
+            
+        now_ts = time.time()
+
+        if (
+            symbol in sent_alerts
+            and (
+                now_ts
+                - sent_alerts[symbol]
+                < ALERT_COOLDOWN_SEC
+            )
+        ):
+            with PREMARKET_WATCHLIST_LOCK:
+                premarket_entry_watchlist.pop(
+                    symbol,
+                    None,
+                )
+
+            print(
+                f"🧹 PREMARKET REMOVED: "
+                f"{symbol} | "
+                f"Already alerted",
+                flush=True,
+            )
+            continue
+            
+        current_market_date = datetime.now(
+            pytz.timezone("America/New_York")
+        ).strftime("%Y-%m-%d")
+
+        if (
+            item.get("market_date")
+            != current_market_date
+        ):
+            with PREMARKET_WATCHLIST_LOCK:
+                premarket_entry_watchlist.pop(
+                    symbol,
+                    None,
+                )
+
+            print(
+                f"🧹 PREMARKET STALE REMOVED: "
+                f"{symbol} | "
+                f"OldDate="
+                f"{item.get('market_date')} | "
+                f"CurrentDate="
+                f"{current_market_date}",
+                flush=True,
+            )
             continue
             
         tz_ny = pytz.timezone(
@@ -1899,6 +2086,29 @@ def process_premarket_entry_watchlist(api):
                 f"after open"
             )
             continue
+
+        weak, weakness_reason = (
+            is_premarket_candidate_weak(
+                api,
+                symbol,
+                item,
+            )
+        )
+
+        if weak:
+            with PREMARKET_WATCHLIST_LOCK:
+                premarket_entry_watchlist.pop(
+                    symbol,
+                    None,
+                )
+
+            print(
+                f"📉 PREMARKET REMOVED: "
+                f"{symbol} | "
+                f"Weakness: {weakness_reason}",
+                flush=True,
+            )
+            continue
             
         asset_name = item.get(
             "asset_name",
@@ -1925,9 +2135,15 @@ def process_premarket_entry_watchlist(api):
                 "explosion_candidate"
             ) is True
         ):
-            send_explosion_alert(
+            alert_sent = send_explosion_alert(
                 fresh_result
             )
+
+            if not alert_sent:
+                continue
+
+            sent_alerts[symbol] = time.time()
+            
             threading.Thread(
                 target=send_news_after_alert,
                 args=(fresh_result,),
@@ -2195,8 +2411,18 @@ def main_scanner():
                     result = check_explosion(api, sym, asset.name)
 
                     if result and result.get("explosion_candidate") is True:
+                        
                         market_session = get_market_session()
+                        if market_session == "REGULAR":
+                            with PREMARKET_WATCHLIST_LOCK:
+                                is_premarket_watched = (
+                                    symbol
+                                    in premarket_entry_watchlist
+                                )
 
+                            if is_premarket_watched:
+                                continue
+                                
                         if market_session == "PREMARKET":
                             add_to_premarket_entry_watchlist(
                                 result,
