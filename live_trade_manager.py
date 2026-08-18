@@ -786,7 +786,67 @@ def calculate_profit_floor(peak_gain_pct: float) -> Optional[float]:
         return max(7.0, peak_gain_pct - 3.5)
     return max(10.0, peak_gain_pct - 4.5)
 
+def get_target_protection_profile(trade: dict) -> dict:
+    """
+    Dynamic protection becomes progressively stronger
+    as the trade reaches T1, T2, and T3.
 
+    BEFORE_T1:
+        Maximum flexibility.
+
+    T1_LIGHT:
+        Light profit protection.
+
+    T2_MEDIUM:
+        Medium profit protection.
+
+    T3_STRONG:
+        Strong profit protection.
+    """
+
+    if trade.get("h3_hit", False):
+        return {
+            "stage": "T3_STRONG",
+            "label": "STRONG",
+            "recovery_window_sec": 6.0,
+            "required_confirmations": 1,
+            "min_weakness_score": 2,
+            "peak_keep_ratio": 0.60,
+            "max_giveback_pp": 2.2,
+        }
+
+    if trade.get("h2_hit", False):
+        return {
+            "stage": "T2_MEDIUM",
+            "label": "MEDIUM",
+            "recovery_window_sec": 9.0,
+            "required_confirmations": 2,
+            "min_weakness_score": 2,
+            "peak_keep_ratio": 0.45,
+            "max_giveback_pp": 3.0,
+        }
+
+    if trade.get("h1_hit", False):
+        return {
+            "stage": "T1_LIGHT",
+            "label": "LIGHT",
+            "recovery_window_sec": 15.0,
+            "required_confirmations": 2,
+            "min_weakness_score": 3,
+            "peak_keep_ratio": 0.30,
+            "max_giveback_pp": 4.0,
+        }
+
+    return {
+        "stage": "BEFORE_T1",
+        "label": "FLEXIBLE",
+        "recovery_window_sec": RECOVERY_WINDOW_SEC,
+        "required_confirmations": FAILED_CONFIRMATIONS,
+        "min_weakness_score": 3,
+        "peak_keep_ratio": 0.0,
+        "max_giveback_pp": 6.0,
+    }
+    
 def evaluate_signals(trade: dict, current_price: float, tech: dict) -> dict:
     entry = safe_float(trade.get("entry_price"))
     peak_price = max(safe_float(trade.get("peak_price"), entry), current_price)
@@ -882,10 +942,68 @@ def evaluate_signals(trade: dict, current_price: float, tech: dict) -> dict:
         strength_score += 1
         strength_reasons.append("قريب من القمة")
 
-    profit_floor = calculate_profit_floor(peak_gain)
+    protection = get_target_protection_profile(
+        trade
+    )
+
+    base_profit_floor = calculate_profit_floor(
+        peak_gain
+    )
+
+    target_stage = protection.get(
+        "stage",
+        "BEFORE_T1"
+    )
+
+    peak_keep_ratio = safe_float(
+        protection.get(
+            "peak_keep_ratio",
+            0.0
+        )
+    )
+
+    stage_profit_floor = None
+
+    if peak_gain > 0 and peak_keep_ratio > 0:
+        stage_profit_floor = (
+            peak_gain
+            * peak_keep_ratio
+        )
+
+    profit_floor_candidates = []
+
+    if base_profit_floor is not None:
+        profit_floor_candidates.append(
+            base_profit_floor
+        )
+
+    if stage_profit_floor is not None:
+        profit_floor_candidates.append(
+            stage_profit_floor
+        )
+
+    if profit_floor_candidates:
+        profit_floor = max(
+            profit_floor_candidates
+        )
+    else:
+        profit_floor = None
+
     profit_floor_breached = bool(
         profit_floor is not None
         and current_gain <= profit_floor
+    )
+
+    max_giveback_pp = safe_float(
+        protection.get(
+            "max_giveback_pp",
+            999.0
+        )
+    )
+
+    excessive_stage_giveback = bool(
+        peak_gain > 0
+        and giveback >= max_giveback_pp
     )
 
     recovered_structure = bool(
@@ -916,6 +1034,31 @@ def evaluate_signals(trade: dict, current_price: float, tech: dict) -> dict:
 
         "profit_floor_pct": profit_floor,
         "profit_floor_breached": profit_floor_breached,
+        "protection_stage": target_stage,
+        "protection_label": protection.get(
+            "label",
+            "FLEXIBLE"
+        ),
+        "protection_recovery_window_sec": safe_float(
+            protection.get(
+                "recovery_window_sec",
+                RECOVERY_WINDOW_SEC
+            )
+        ),
+        "protection_required_confirmations": int(
+            protection.get(
+                "required_confirmations",
+                FAILED_CONFIRMATIONS
+            )
+        ),
+        "protection_min_weakness_score": int(
+            protection.get(
+                "min_weakness_score",
+                3
+            )
+        ),
+        "protection_max_giveback_pp": max_giveback_pp,
+        "excessive_stage_giveback": excessive_stage_giveback,
         "recovered_structure": recovered_structure,
     }
 
@@ -988,34 +1131,152 @@ def hard_stop_hit(trade: dict, current_price: float) -> bool:
 
 def should_exit(trade: dict, signals: dict) -> Tuple[bool, Optional[str]]:
     """
-    Exit requires confirmation. One weak indicator is never enough.
+    Exit logic with target-based progressive protection.
+
+    BEFORE_T1:
+        Flexible management. Do not create an aggressive
+        profit-protection exit merely because price is below entry.
+
+    T1:
+        Light protection.
+
+    T2:
+        Medium protection.
+
+    T3:
+        Strong protection.
+
+    Structural failure remains available independently when
+    several bearish signals confirm a genuine reversal.
     """
-    weakness = int(signals.get("weakness_score", 0))
-    profit_floor_breached = bool(signals.get("profit_floor_breached"))
-    recovery_started = safe_float(trade.get("recovery_started_ts"), 0)
-    recovery_elapsed = (
-        recovery_started > 0
-        and now_ts() - recovery_started >= RECOVERY_WINDOW_SEC
+
+    weakness = int(
+        signals.get(
+            "weakness_score",
+            0
+        )
     )
 
-    if profit_floor_breached and weakness >= 3:
-        trade["profit_risk_count"] = int(trade.get("profit_risk_count", 0)) + 1
+    current_gain = safe_float(
+        signals.get(
+            "current_gain_pct"
+        )
+    )
+
+    profit_floor_breached = bool(
+        signals.get(
+            "profit_floor_breached"
+        )
+    )
+
+    excessive_stage_giveback = bool(
+        signals.get(
+            "excessive_stage_giveback"
+        )
+    )
+
+    protection_stage = signals.get(
+        "protection_stage",
+        "BEFORE_T1"
+    )
+
+    required_confirmations = int(
+        signals.get(
+            "protection_required_confirmations",
+            FAILED_CONFIRMATIONS
+        )
+    )
+
+    min_weakness_score = int(
+        signals.get(
+            "protection_min_weakness_score",
+            3
+        )
+    )
+
+    recovery_window = safe_float(
+        signals.get(
+            "protection_recovery_window_sec",
+            RECOVERY_WINDOW_SEC
+        ),
+        RECOVERY_WINDOW_SEC
+    )
+
+    recovery_started = safe_float(
+        trade.get("recovery_started_ts"),
+        0
+    )
+
+    recovery_elapsed = bool(
+        recovery_started > 0
+        and now_ts() - recovery_started >= recovery_window
+    )
+
+    # ------------------------------------------------------------------
+    # Progressive target protection
+    # ------------------------------------------------------------------
+
+    target_protection_active = protection_stage in (
+        "T1_LIGHT",
+        "T2_MEDIUM",
+        "T3_STRONG",
+    )
+
+    protection_condition = bool(
+        target_protection_active
+        and current_gain > 0
+        and weakness >= min_weakness_score
+        and (
+            profit_floor_breached
+            or excessive_stage_giveback
+        )
+    )
+
+    if protection_condition:
+        trade["profit_risk_count"] = (
+            int(
+                trade.get(
+                    "profit_risk_count",
+                    0
+                )
+            )
+            + 1
+        )
     else:
         trade["profit_risk_count"] = 0
 
+    # ------------------------------------------------------------------
+    # Broad momentum failure
+    # ------------------------------------------------------------------
+
     if weakness >= 6:
-        trade["failed_count"] = int(trade.get("failed_count", 0)) + 1
+        trade["failed_count"] = (
+            int(
+                trade.get(
+                    "failed_count",
+                    0
+                )
+            )
+            + 1
+        )
     else:
         trade["failed_count"] = 0
 
-    # Profit protection exit: breached dynamic floor + multi-signal confirmation.
-    if (
-        trade["profit_risk_count"] >= FAILED_CONFIRMATIONS
-        and weakness >= 3
-    ):
-        return True, "PROFIT_PROTECTION"
+    # ------------------------------------------------------------------
+    # T1 / T2 / T3 profit protection
+    # ------------------------------------------------------------------
 
-    # Momentum failure: recovery window expired and weakness remains broad.
+    if (
+        protection_condition
+        and trade["profit_risk_count"] >= required_confirmations
+        and recovery_elapsed
+    ):
+        return True, f"PROFIT_PROTECTION_{protection_stage}"
+
+    # ------------------------------------------------------------------
+    # Genuine momentum failure
+    # ------------------------------------------------------------------
+
     if (
         recovery_elapsed
         and trade["failed_count"] >= FAILED_CONFIRMATIONS
@@ -1023,20 +1284,27 @@ def should_exit(trade: dict, signals: dict) -> Tuple[bool, Optional[str]]:
     ):
         return True, "MOMENTUM_FAILED"
 
-    # Severe structural break still needs two consecutive confirmations,
-    # but does not wait indefinitely for a long recovery window.
-    severe_break = (
+    # ------------------------------------------------------------------
+    # Severe structural reversal
+    # ------------------------------------------------------------------
+
+    severe_break = bool(
         signals.get("breakout_failed")
         and signals.get("below_ema9")
-        and (signals.get("lower_low") or signals.get("below_vwap"))
+        and (
+            signals.get("lower_low")
+            or signals.get("below_vwap")
+        )
         and weakness >= 6
     )
 
-    if severe_break and trade["failed_count"] >= FAILED_CONFIRMATIONS:
+    if (
+        severe_break
+        and trade["failed_count"] >= FAILED_CONFIRMATIONS
+    ):
         return True, "TRUE_REVERSAL"
 
     return False, None
-
 
 def update_state_machine(trade: dict, current_price: float, signals: dict):
     weakness = int(signals.get("weakness_score", 0))
