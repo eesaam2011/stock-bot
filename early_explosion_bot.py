@@ -2437,6 +2437,8 @@ def main_scanner():
 
                         send_explosion_alert(result)
                         
+                        sent_alerts[sym] = time.time()
+                        
                         threading.Thread(
                             target=send_news_after_alert,
                             args=(result,),
