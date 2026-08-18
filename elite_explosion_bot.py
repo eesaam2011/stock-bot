@@ -4193,7 +4193,16 @@ def execute_entry_if_any(scored_candidates):
 
             if manager_started:
                 sent_alerts[symbol] = {
-                    "sent_at": now_ksa().isoformat(),
+                    "sent_at": fresh_candidate.get(
+                        "alert_sent_at",
+                        now_ksa().isoformat(),
+                    ),
+                    "sent_ts": safe_float(
+                        fresh_candidate.get(
+                            "alert_sent_ts"
+                        ),
+                        time.time(),
+                    ),
                     "price": plan["entry"],
                     "score": fresh_candidate.get(
                         "final_score",
