@@ -251,7 +251,7 @@ def send_telegram_message(text):
             f"[Telegram-Sim] {text}",
             flush=True,
         )
-        return True
+        return False
 
     url = (
         f"https://api.telegram.org/bot"
@@ -2618,8 +2618,11 @@ def main_scanner():
                     if result and result.get("explosion_candidate") is True:
                         
                         market_session = get_market_session()
-                        if market_session == "AFTER_HOURS":
-                            continue      
+                        if market_session not in (
+                            "PREMARKET",
+                            "REGULAR",
+                        ):
+                            continue
                             
                         if market_session == "REGULAR":
                             with PREMARKET_WATCHLIST_LOCK:
