@@ -2139,6 +2139,9 @@ def process_premarket_entry_watchlist(api):
                 "explosion_candidate"
             ) is True
         ):
+            fresh_result["entry_source"] = (
+                "PREMARKET_CONFIRMED_AT_OPEN"
+            )      
             alert_sent = send_explosion_alert(
                 fresh_result
             )
@@ -2216,7 +2219,10 @@ def send_explosion_alert(res):
         "rvol": res.get("rvol"),
         "change_pct": res.get("change_pct"),
         "score": res.get("score"),
-
+        "entry_source": res.get(
+            "entry_source",
+            "UNKNOWN",
+        ),
         "float_tier": res.get("float_tier"),
         "real_float": res.get("real_float"),
         "float_bonus": res.get("float_bonus"),
@@ -2434,7 +2440,9 @@ def main_scanner():
                                 asset.name,
                             )
                             continue
-
+                        result["entry_source"] = (
+                            "REGULAR_DIRECT"
+                        )
                         alert_sent = send_explosion_alert(
                             result
                         )
