@@ -2435,8 +2435,13 @@ def main_scanner():
                             )
                             continue
 
-                        send_explosion_alert(result)
-                        
+                        alert_sent = send_explosion_alert(
+                            result
+                        )
+
+                        if not alert_sent:
+                            continue
+
                         sent_alerts[sym] = time.time()
                         
                         threading.Thread(
