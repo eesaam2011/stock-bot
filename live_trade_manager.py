@@ -1115,12 +1115,51 @@ def transition_state(trade: dict, new_state: str, current_price: float, signals:
         )
 
     elif new_state == "PROFIT_AT_RISK":
+        protection_stage = signals.get(
+            "protection_stage",
+            "BEFORE_T1"
+        )
+
+        protection_label = signals.get(
+            "protection_label",
+            "FLEXIBLE"
+        )
+
+        protection_names = {
+            "T1_LIGHT": "حماية خفيفة",
+            "T2_MEDIUM": "حماية متوسطة",
+            "T3_STRONG": "حماية قوية",
+        }
+
+        protection_ar = protection_names.get(
+            protection_stage,
+            "حماية مرنة"
+        )
+
+        recovery_window = safe_float(
+            signals.get(
+                "protection_recovery_window_sec",
+                RECOVERY_WINDOW_SEC
+            )
+        )
+
+        required_confirmations = int(
+            signals.get(
+                "protection_required_confirmations",
+                FAILED_CONFIRMATIONS
+            )
+        )
+
         send_telegram_message(
             f"🟠 *[{trade['symbol']}] الربح أصبح معرضًا للخطر*\n"
             f"• الحالي: `{signals['current_gain_pct']:+.2f}%`\n"
             f"• Peak: `{signals['peak_gain_pct']:+.2f}%`\n"
             f"• Profit Floor: `{safe_float(signals.get('profit_floor_pct')):+.2f}%`\n"
-            f"• ننتظر تأكيدًا إضافيًا قبل الخروج."
+            f"• المرحلة: `{protection_stage}`\n"
+            f"• الحماية: `{protection_label}` — {protection_ar}\n"
+            f"• Recovery: `{recovery_window:g}` ثانية\n"
+            f"• التأكيدات المطلوبة: `{required_confirmations}`\n"
+            f"• لا يوجد خروج فوري؛ ننتظر تأكيد شروط الحماية."
         )
 
 
@@ -1307,9 +1346,59 @@ def should_exit(trade: dict, signals: dict) -> Tuple[bool, Optional[str]]:
     return False, None
 
 def update_state_machine(trade: dict, current_price: float, signals: dict):
-    weakness = int(signals.get("weakness_score", 0))
-    strength = int(signals.get("strength_score", 0))
-    recovered = bool(signals.get("recovered_structure"))
+    weakness = int(
+        signals.get(
+            "weakness_score",
+            0
+        )
+    )
+
+    strength = int(
+        signals.get(
+            "strength_score",
+            0
+        )
+    )
+
+    recovered = bool(
+        signals.get(
+            "recovered_structure"
+        )
+    )
+
+    protection_stage = signals.get(
+        "protection_stage",
+        "BEFORE_T1"
+    )
+
+    target_protection_active = protection_stage in (
+        "T1_LIGHT",
+        "T2_MEDIUM",
+        "T3_STRONG",
+    )
+
+    min_weakness_score = int(
+        signals.get(
+            "protection_min_weakness_score",
+            3
+        )
+    )
+
+    profit_floor_breached = bool(
+        signals.get(
+            "profit_floor_breached"
+        )
+    )
+
+    excessive_stage_giveback = bool(
+        signals.get(
+            "excessive_stage_giveback"
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Full structural recovery
+    # ------------------------------------------------------------------
 
     if recovered:
         trade["weak_count"] = 0
@@ -1318,37 +1407,124 @@ def update_state_machine(trade: dict, current_price: float, signals: dict):
         trade["recovery_started_ts"] = None
 
         if strength >= 5:
-            transition_state(trade, "STRONG", current_price, signals)
+            transition_state(
+                trade,
+                "STRONG",
+                current_price,
+                signals
+            )
         else:
-            transition_state(trade, "HEALTHY", current_price, signals)
+            transition_state(
+                trade,
+                "HEALTHY",
+                current_price,
+                signals
+            )
+
         return
 
+    # ------------------------------------------------------------------
+    # Weakness confirmation counter
+    # ------------------------------------------------------------------
+
     if weakness >= 3:
-        trade["weak_count"] = int(trade.get("weak_count", 0)) + 1
+        trade["weak_count"] = (
+            int(
+                trade.get(
+                    "weak_count",
+                    0
+                )
+            )
+            + 1
+        )
     else:
         trade["weak_count"] = 0
 
-    if signals.get("profit_floor_breached") and weakness >= 3:
-        transition_state(trade, "PROFIT_AT_RISK", current_price, signals)
+    # ------------------------------------------------------------------
+    # Target-based profit protection
+    #
+    # IMPORTANT:
+    # Before T1, ordinary profit-floor logic must NOT activate
+    # PROFIT_AT_RISK.
+    # ------------------------------------------------------------------
+
+    target_profit_at_risk = bool(
+        target_protection_active
+        and signals.get("current_gain_pct", 0) > 0
+        and weakness >= min_weakness_score
+        and (
+            profit_floor_breached
+            or excessive_stage_giveback
+        )
+    )
+
+    if target_profit_at_risk:
         if not trade.get("recovery_started_ts"):
             trade["recovery_started_ts"] = now_ts()
+
+        transition_state(
+            trade,
+            "PROFIT_AT_RISK",
+            current_price,
+            signals
+        )
+
         return
 
-    if weakness >= 5 and trade["weak_count"] >= WEAKENING_CONFIRMATIONS:
+    # ------------------------------------------------------------------
+    # Confirmed structural weakness
+    # ------------------------------------------------------------------
+
+    if (
+        weakness >= 5
+        and trade["weak_count"] >= WEAKENING_CONFIRMATIONS
+    ):
         if not trade.get("recovery_started_ts"):
             trade["recovery_started_ts"] = now_ts()
-        transition_state(trade, "CONFIRMED_WEAKNESS", current_price, signals)
+
+        transition_state(
+            trade,
+            "CONFIRMED_WEAKNESS",
+            current_price,
+            signals
+        )
+
         return
+
+    # ------------------------------------------------------------------
+    # Initial weakness only
+    # ------------------------------------------------------------------
 
     if weakness >= 3:
-        transition_state(trade, "WEAKENING", current_price, signals)
+        transition_state(
+            trade,
+            "WEAKENING",
+            current_price,
+            signals
+        )
+
         return
 
-    if strength >= 5:
-        transition_state(trade, "STRONG", current_price, signals)
-    else:
-        transition_state(trade, "HEALTHY", current_price, signals)
+    # ------------------------------------------------------------------
+    # Healthy / strong
+    # ------------------------------------------------------------------
 
+    trade["recovery_started_ts"] = None
+
+    if strength >= 5:
+        transition_state(
+            trade,
+            "STRONG",
+            current_price,
+            signals
+        )
+    else:
+        transition_state(
+            trade,
+            "HEALTHY",
+            current_price,
+            signals
+        )
 
 # ------------------------------------------------------------------------------
 # Targets / closing / post-exit
@@ -1357,31 +1533,87 @@ def update_state_machine(trade: dict, current_price: float, signals: dict):
 def check_targets(trade: dict, current_price: float):
     changed = False
 
+    target_configs = {
+        1: {
+            "hit_key": "h1_hit",
+            "stage": "T1_LIGHT",
+            "protection_label": "LIGHT",
+            "protection_ar": "حماية خفيفة",
+        },
+        2: {
+            "hit_key": "h2_hit",
+            "stage": "T2_MEDIUM",
+            "protection_label": "MEDIUM",
+            "protection_ar": "حماية متوسطة",
+        },
+        3: {
+            "hit_key": "h3_hit",
+            "stage": "T3_STRONG",
+            "protection_label": "STRONG",
+            "protection_ar": "حماية قوية",
+        },
+    }
+
     for idx in (1, 2, 3):
         key = f"t{idx}"
-        hit_key = f"h{idx}_hit"
-        target = safe_float(trade.get(key))
 
-        if target > 0 and current_price >= target and not trade.get(hit_key):
+        config = target_configs[idx]
+
+        hit_key = config["hit_key"]
+
+        target = safe_float(
+            trade.get(key)
+        )
+
+        if (
+            target > 0
+            and current_price >= target
+            and not trade.get(hit_key)
+        ):
             trade[hit_key] = True
             changed = True
 
-            hincr(trade["source_bot"], f"t{idx}_hit", 1, trade["week_key"])
+            trade["protection_stage"] = (
+                config["stage"]
+            )
+
+            trade["protection_activated_ts"] = (
+                now_ts()
+            )
+
+            trade["recovery_started_ts"] = None
+            trade["profit_risk_count"] = 0
+            trade["weak_count"] = 0
+            trade["failed_count"] = 0
+
+            hincr(
+                trade["source_bot"],
+                f"t{idx}_hit",
+                1,
+                trade["week_key"],
+            )
+
             save_event(
                 f"T{idx}_HIT",
                 trade,
-                {"price": current_price, "target": target},
+                {
+                    "price": current_price,
+                    "target": target,
+                    "protection_stage": config["stage"],
+                },
             )
 
             send_telegram_message(
                 f"🎯 *[{trade['symbol']}] تحقق T{idx}*\n"
                 f"• السعر: `${current_price:.4f}`\n"
                 f"• المصدر: `{trade['source_bot']}`\n"
+                f"• مستوى الحماية: "
+                f"`{config['protection_label']}` "
+                f"— {config['protection_ar']}\n"
                 f"• المراقبة اللحظية مستمرة."
             )
 
-    return changed
-
+    return changed    
 
 def close_trade_to_post_exit(
     trade: dict,
@@ -1408,13 +1640,60 @@ def close_trade_to_post_exit(
     persist_post_exit(trade)
 
     if reason == "HARD_STOP":
-        hincr(trade["source_bot"], "hard_stop", 1, trade["week_key"])
-    elif reason == "PROFIT_PROTECTION":
-        hincr(trade["source_bot"], "profit_protection_exit", 1, trade["week_key"])
+        hincr(
+            trade["source_bot"],
+            "hard_stop",
+            1,
+            trade["week_key"],
+        )
+
+    elif reason.startswith("PROFIT_PROTECTION_"):
+        hincr(
+            trade["source_bot"],
+            "profit_protection_exit",
+            1,
+            trade["week_key"],
+        )
+
+        if reason == "PROFIT_PROTECTION_T1_LIGHT":
+            hincr(
+                trade["source_bot"],
+                "profit_protection_t1",
+                1,
+                trade["week_key"],
+            )
+
+        elif reason == "PROFIT_PROTECTION_T2_MEDIUM":
+            hincr(
+                trade["source_bot"],
+                "profit_protection_t2",
+                1,
+                trade["week_key"],
+            )
+
+        elif reason == "PROFIT_PROTECTION_T3_STRONG":
+            hincr(
+                trade["source_bot"],
+                "profit_protection_t3",
+                1,
+                trade["week_key"],
+            )
+
     elif reason == "MOMENTUM_FAILED":
-        hincr(trade["source_bot"], "momentum_failed", 1, trade["week_key"])
+        hincr(
+            trade["source_bot"],
+            "momentum_failed",
+            1,
+            trade["week_key"],
+        )
+
     elif reason == "TRUE_REVERSAL":
-        hincr(trade["source_bot"], "true_reversal_exit", 1, trade["week_key"])
+        hincr(
+            trade["source_bot"],
+            "true_reversal_exit",
+            1,
+            trade["week_key"],
+        )
 
     reasons = ""
     if signals:
