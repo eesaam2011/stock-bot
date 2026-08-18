@@ -1105,13 +1105,31 @@ def transition_state(trade: dict, new_state: str, current_price: float, signals:
         )
 
     elif new_state == "CONFIRMED_WEAKNESS":
-        reasons = " + ".join(signals.get("weakness_reasons", [])[:4]) or "ضعف متعدد الإشارات"
+        reasons = (
+            " + ".join(
+                signals.get(
+                    "weakness_reasons",
+                    []
+                )[:4]
+            )
+            or "ضعف متعدد الإشارات"
+        )
+
+        recovery_window = safe_float(
+            signals.get(
+                "protection_recovery_window_sec",
+                RECOVERY_WINDOW_SEC
+            ),
+            RECOVERY_WINDOW_SEC
+        )
+
         send_telegram_message(
             f"🟠 *[{trade['symbol']}] ضعف مؤكد — نافذة استعادة مفعلة*\n"
             f"• الحالي: `{signals['current_gain_pct']:+.2f}%`\n"
             f"• Peak: `{signals['peak_gain_pct']:+.2f}%`\n"
             f"• الأسباب: `{reasons}`\n"
-            f"• لا يوجد خروج الآن؛ نعطي السهم `{RECOVERY_WINDOW_SEC:g}` ثانية للاستعادة."
+            f"• لا يوجد خروج الآن؛ نعطي السهم "
+            f"`{recovery_window:g}` ثانية للاستعادة."
         )
 
     elif new_state == "PROFIT_AT_RISK":
