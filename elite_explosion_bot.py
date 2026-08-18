@@ -3885,10 +3885,17 @@ News: {breakdown.get("news_score", 0)}
     ok = send_telegram(msg.strip())
 
     if ok:
+        alert_sent_ts = time.time()
+        alert_sent_at = now_ksa().isoformat()
+
+        metrics["alert_sent_ts"] = alert_sent_ts
+        metrics["alert_sent_at"] = alert_sent_at
+
         runtime_stats["alerts_sent"] += 1
         runtime_stats["last_alert"] = {
             "symbol": symbol,
-            "sent_at": now_ksa().isoformat(),
+            "sent_at": alert_sent_at,
+            "sent_ts": alert_sent_ts,
             "price": plan["entry"],
             "score": metrics.get("final_score", 0),
         }
