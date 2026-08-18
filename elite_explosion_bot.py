@@ -4216,16 +4216,9 @@ def register_entry(metrics, plan):
         "session": get_session_profile_name(),
     }
 
-    sent_alerts[symbol] = {
-        "sent_at": now_ksa().isoformat(),
-        "price": plan["entry"],
-        "score": metrics.get("final_score", 0),
-    }
-
     runtime_stats["active_monitoring_count"] = len(active_monitoring)
 
     redis_set_json(REDIS_KEYS["active_monitoring"], active_monitoring)
-    redis_set_json(REDIS_KEYS["sent_alerts"], sent_alerts)
 
 def execute_entry_if_any(scored_candidates):
     with ENTRY_EXECUTION_LOCK:
