@@ -4471,7 +4471,7 @@ def execute_entry_if_any(scored_candidates):
                 )
                 + 1
             )
-            
+
             return False
             
         entry_blocked, block_reason = (
