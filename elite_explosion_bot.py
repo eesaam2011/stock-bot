@@ -4426,6 +4426,16 @@ def execute_entry_if_any(scored_candidates):
                 f"ATR Extension="
                 f"{freshness.get('extension_atr', 0):.2f}"
             )
+            runtime_stats[
+                "freshness_rejections"
+            ] = (
+                runtime_stats.get(
+                    "freshness_rejections",
+                    0,
+                )
+                + 1
+            )
+            
             return False        
 
         short_move_ok, short_move_info = (
@@ -4451,6 +4461,17 @@ def execute_entry_if_any(scored_candidates):
                 f"Range2m="
                 f"{short_move_info.get('range_2m_pct', 0):.2f}%"
             )
+            
+             runtime_stats[
+                "short_move_rejections"
+            ] = (
+                runtime_stats.get(
+                    "short_move_rejections",
+                    0,
+                )
+                + 1
+            )
+            
             return False
             
         entry_blocked, block_reason = (
@@ -4471,35 +4492,35 @@ def execute_entry_if_any(scored_candidates):
         )
 
         if alert_ok:
+            sent_alerts[symbol] = {
+                "sent_at": fresh_candidate.get(
+                    "alert_sent_at",
+                    now_ksa().isoformat(),
+                ),
+                "sent_ts": safe_float(
+                    fresh_candidate.get(
+                        "alert_sent_ts"
+                    ),
+                    time.time(),
+                ),
+                "price": plan["entry"],
+                "score": fresh_candidate.get(
+                    "final_score",
+                    0,
+                ),
+            }
+
+            redis_set_json(
+                REDIS_KEYS["sent_alerts"],
+                sent_alerts,
+            )
+
             manager_started = send_to_live_trade_manager(
                 fresh_candidate,
                 plan,
             )
 
             if manager_started:
-                sent_alerts[symbol] = {
-                    "sent_at": fresh_candidate.get(
-                        "alert_sent_at",
-                        now_ksa().isoformat(),
-                    ),
-                    "sent_ts": safe_float(
-                        fresh_candidate.get(
-                            "alert_sent_ts"
-                        ),
-                        time.time(),
-                    ),
-                    "price": plan["entry"],
-                    "score": fresh_candidate.get(
-                        "final_score",
-                        0,
-                    ),
-                }
-
-                redis_set_json(
-                    REDIS_KEYS["sent_alerts"],
-                    sent_alerts,
-                )
-
                 print(
                     f"✅ {symbol} handed to "
                     f"Unified Live Trade Manager"
@@ -5149,6 +5170,18 @@ def run_scan_cycle():
     print(f"   Reached Score Engine: {runtime_stats.get('reached_score_engine', 0)}")
     print(f"   Reached Decision Engine: {runtime_stats.get('reached_decision_engine', 0)}")
     print(f"   Alert Sent This Cycle: {alert_sent}")
+    print(
+        f"   Non-Actionable Rejections: "
+        f"{runtime_stats.get('non_actionable_entries', 0)}"
+    )
+    print(
+        f"   Freshness Rejections: "
+        f"{runtime_stats.get('freshness_rejections', 0)}"
+    )
+    print(
+        f"   Short-Move Rejections: "
+        f"{runtime_stats.get('short_move_rejections', 0)}"
+    )   
     print(f"   Total Alerts Sent: {runtime_stats.get('alerts_sent', 0)}")
     print(f"   News Queue Count: {runtime_stats.get('news_queue_count', 0)}")
     print(f"   Active Monitoring: {len(active_monitoring)}")
