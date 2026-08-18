@@ -3826,6 +3826,81 @@ def validate_actionable_entry(
         final_metrics,
         final_plan,
     ), result
+
+def validate_entry_freshness(metrics, plan):
+    price = safe_float(
+        metrics.get("price")
+    )
+
+    resistance = safe_float(
+        metrics.get("resistance")
+    )
+
+    atr = safe_float(
+        metrics.get("atr")
+    )
+
+    if price <= 0:
+        return False, {
+            "reason": "invalid_price",
+        }
+
+    if resistance <= 0:
+        return False, {
+            "reason": "invalid_resistance",
+        }
+
+    extension_pct = (
+        (price - resistance)
+        / resistance
+    ) * 100
+
+    extension_atr = 0.0
+
+    if atr > 0:
+        extension_atr = (
+            price - resistance
+        ) / atr
+
+    result = {
+        "reason": "ok",
+        "extension_pct": round(
+            extension_pct,
+            2,
+        ),
+        "extension_atr": round(
+            extension_atr,
+            2,
+        ),
+    }
+
+    # السعر لا يزال قبل المقاومة أو قريبًا جدًا منها:
+    # لا نعتبره Chase.
+    if extension_pct <= 0:
+        return True, result
+
+    # منع الدخول إذا تحرك السهم أكثر من
+    # 2.0% فوق المقاومة قبل وصول التنبيه.
+    if extension_pct > 2.0:
+        result["reason"] = (
+            "price_extended_above_resistance"
+        )
+        return False, result
+
+    # حماية إضافية حسب ATR:
+    # حتى لو كانت النسبة أقل من 2%،
+    # لا ندخل إذا قطع السهم بالفعل
+    # أكثر من 0.75 ATR فوق المقاومة.
+    if (
+        atr > 0
+        and extension_atr > 0.75
+    ):
+        result["reason"] = (
+            "price_extended_by_atr"
+        )
+        return False, result
+
+    return True, result
     
 # =========================================================
 # TELEGRAM ALERTS
