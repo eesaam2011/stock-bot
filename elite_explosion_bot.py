@@ -3511,6 +3511,316 @@ def validate_entry_cost_reward(
         return False, result
 
     return True, result
+
+def validate_actionable_entry(
+    metrics,
+    plan,
+):
+    """
+    Final execution-quality gate.
+
+    This runs immediately before the Telegram entry alert.
+    Its job is NOT to re-score the setup.
+
+    Its job is to answer one question:
+
+        Is this trade still realistically actionable NOW?
+
+    It prevents alerts after the explosive move has already
+    happened or after price has materially changed while the
+    candidate was being processed.
+    """
+
+    symbol = str(
+        metrics.get("symbol")
+        or ""
+    ).strip().upper()
+
+    if not symbol:
+        return False, None, {
+            "reason": "invalid_symbol",
+        }
+
+    refresh_price = safe_float(
+        metrics.get("price")
+    )
+
+    original_t1 = safe_float(
+        plan.get("t1")
+    )
+
+    if refresh_price <= 0:
+        return False, None, {
+            "reason": "invalid_refresh_price",
+        }
+
+    # -----------------------------------------------------
+    # FINAL LIVE SNAPSHOT
+    # -----------------------------------------------------
+    final_snap = get_snapshot_price_data(
+        symbol
+    )
+
+    if not final_snap:
+        return False, None, {
+            "reason": "final_snapshot_unavailable",
+        }
+
+    live_price = safe_float(
+        final_snap.get("price")
+    )
+
+    bid = safe_float(
+        final_snap.get("bid")
+    )
+
+    ask = safe_float(
+        final_snap.get("ask")
+    )
+
+    spread_pct = safe_float(
+        final_snap.get("spread_pct"),
+        999,
+    )
+
+    if live_price <= 0:
+        return False, None, {
+            "reason": "invalid_live_price",
+        }
+
+    # -----------------------------------------------------
+    # VALID QUOTE
+    # -----------------------------------------------------
+    if ACTIONABLE_REQUIRE_VALID_QUOTE:
+        if (
+            bid <= 0
+            or ask <= 0
+            or ask < bid
+        ):
+            return False, None, {
+                "reason": "invalid_live_quote",
+                "live_price": live_price,
+                "bid": bid,
+                "ask": ask,
+            }
+
+    # -----------------------------------------------------
+    # SESSION SPREAD
+    # -----------------------------------------------------
+    profile = get_session_profile()
+
+    max_spread_pct = safe_float(
+        profile.get(
+            "max_spread_pct",
+            MAX_SPREAD_PCT,
+        ),
+        MAX_SPREAD_PCT,
+    )
+
+    if spread_pct > max_spread_pct:
+        return False, None, {
+            "reason": "final_wide_spread",
+            "live_price": live_price,
+            "spread_pct": spread_pct,
+            "max_spread_pct": max_spread_pct,
+        }
+
+    # -----------------------------------------------------
+    # PRICE MOVEMENT SINCE REFRESH
+    # -----------------------------------------------------
+    move_from_refresh_pct = (
+        (live_price - refresh_price)
+        / refresh_price
+    ) * 100
+
+    # Price ran away before we could send the alert.
+    if (
+        move_from_refresh_pct
+        > ACTIONABLE_MAX_CHASE_PCT
+    ):
+        return False, None, {
+            "reason": "price_ran_away",
+            "live_price": live_price,
+            "refresh_price": refresh_price,
+            "move_from_refresh_pct": (
+                move_from_refresh_pct
+            ),
+        }
+
+    # Price collapsed while we were processing the entry.
+    if (
+        move_from_refresh_pct
+        < -ACTIONABLE_MAX_DROP_FROM_REFRESH_PCT
+    ):
+        return False, None, {
+            "reason": "price_collapsed_before_alert",
+            "live_price": live_price,
+            "refresh_price": refresh_price,
+            "move_from_refresh_pct": (
+                move_from_refresh_pct
+            ),
+        }
+
+    # -----------------------------------------------------
+    # OLD T1 ALREADY REACHED
+    # -----------------------------------------------------
+    if (
+        original_t1 > 0
+        and live_price >= original_t1
+    ):
+        return False, None, {
+            "reason": "t1_already_reached",
+            "live_price": live_price,
+            "old_t1": original_t1,
+        }
+
+    # -----------------------------------------------------
+    # REBUILD PLAN FROM THE FINAL LIVE PRICE
+    # -----------------------------------------------------
+    final_metrics = dict(metrics)
+
+    final_metrics["price"] = live_price
+    final_metrics["bid"] = bid
+    final_metrics["ask"] = ask
+    final_metrics["spread_pct"] = (
+        spread_pct
+    )
+
+    final_metrics["day_volume"] = (
+        final_snap.get(
+            "day_volume",
+            metrics.get("day_volume", 0),
+        )
+    )
+
+    final_metrics["dollar_volume"] = (
+        final_snap.get(
+            "dollar_volume",
+            metrics.get(
+                "dollar_volume",
+                0,
+            ),
+        )
+    )
+
+    final_metrics["price_change_pct"] = (
+        final_snap.get(
+            "price_change_pct",
+            metrics.get(
+                "price_change_pct",
+                0,
+            ),
+        )
+    )
+
+    final_metrics["day_high"] = (
+        final_snap.get(
+            "day_high",
+            metrics.get("day_high", 0),
+        )
+    )
+
+    day_high = safe_float(
+        final_metrics.get("day_high")
+    )
+
+    if day_high > 0:
+        final_metrics["near_high_pct"] = (
+            (day_high - live_price)
+            / day_high
+        ) * 100
+
+    final_plan = calculate_trade_plan(
+        final_metrics
+    )
+
+    if not final_plan:
+        return False, None, {
+            "reason": "final_trade_plan_failed",
+        }
+
+    # -----------------------------------------------------
+    # ENOUGH REWARD MUST STILL REMAIN
+    # -----------------------------------------------------
+    final_t1 = safe_float(
+        final_plan.get("t1")
+    )
+
+    if final_t1 <= live_price:
+        return False, None, {
+            "reason": "invalid_final_t1",
+            "live_price": live_price,
+            "final_t1": final_t1,
+        }
+
+    remaining_to_t1_pct = (
+        (final_t1 - live_price)
+        / live_price
+    ) * 100
+
+    if (
+        remaining_to_t1_pct
+        < ACTIONABLE_MIN_T1_REMAINING_PCT
+    ):
+        return False, None, {
+            "reason": "insufficient_t1_room",
+            "live_price": live_price,
+            "final_t1": final_t1,
+            "remaining_to_t1_pct": (
+                remaining_to_t1_pct
+            ),
+        }
+
+    # -----------------------------------------------------
+    # RECHECK COST / REWARD USING FINAL QUOTE
+    # -----------------------------------------------------
+    cost_reward_ok, cost_reward = (
+        validate_entry_cost_reward(
+            final_metrics,
+            final_plan,
+        )
+    )
+
+    final_metrics["cost_reward"] = (
+        cost_reward
+    )
+
+    if not cost_reward_ok:
+        return False, None, {
+            "reason": "final_cost_reward_failed",
+            "live_price": live_price,
+            "cost_reward": cost_reward,
+        }
+
+    result = {
+        "reason": "ok",
+        "refresh_price": refresh_price,
+        "live_price": live_price,
+        "move_from_refresh_pct": round(
+            move_from_refresh_pct,
+            3,
+        ),
+        "spread_pct": round(
+            spread_pct,
+            3,
+        ),
+        "remaining_to_t1_pct": round(
+            remaining_to_t1_pct,
+            3,
+        ),
+        "checked_at": (
+            now_ksa().isoformat()
+        ),
+    }
+
+    final_metrics[
+        "actionable_entry"
+    ] = result
+
+    return True, (
+        final_metrics,
+        final_plan,
+    ), result
     
 # =========================================================
 # TELEGRAM ALERTS
@@ -3790,7 +4100,62 @@ def execute_entry_if_any(scored_candidates):
                 f"{MIN_T1_NET_REWARD_PCT:.2f}%"
             )
             return False
-            
+
+        # =================================================
+        # FINAL ACTIONABLE ENTRY GATE
+        # =================================================
+        actionable_ok, actionable_payload, actionable_info = (
+            validate_actionable_entry(
+                fresh_candidate,
+                plan,
+            )
+        )
+
+        if not actionable_ok:
+            print(
+                f"⛔ NON-ACTIONABLE ENTRY: "
+                f"{symbol} | "
+                f"Reason="
+                f"{actionable_info.get('reason')} | "
+                f"Refresh="
+                f"{actionable_info.get('refresh_price', 0)} | "
+                f"Live="
+                f"{actionable_info.get('live_price', 0)} | "
+                f"Move="
+                f"{safe_float(actionable_info.get('move_from_refresh_pct')):.2f}%"
+            )
+
+            runtime_stats[
+                "non_actionable_entries"
+            ] = (
+                runtime_stats.get(
+                    "non_actionable_entries",
+                    0,
+                )
+                + 1
+            )
+
+            return False
+
+        fresh_candidate, plan = (
+            actionable_payload
+        )
+
+        print(
+            f"✅ ACTIONABLE ENTRY: "
+            f"{symbol} | "
+            f"Refresh="
+            f"{actionable_info.get('refresh_price', 0):.4f} | "
+            f"Live="
+            f"{actionable_info.get('live_price', 0):.4f} | "
+            f"Move="
+            f"{actionable_info.get('move_from_refresh_pct', 0):+.2f}% | "
+            f"Spread="
+            f"{actionable_info.get('spread_pct', 0):.2f}% | "
+            f"T1Room="
+            f"{actionable_info.get('remaining_to_t1_pct', 0):.2f}%"
+        )
+        
         entry_blocked, block_reason = (
             get_trading_block_reason(symbol)
         )
