@@ -4242,7 +4242,31 @@ def execute_entry_if_any(scored_candidates):
             f"T1Room="
             f"{actionable_info.get('remaining_to_t1_pct', 0):.2f}%"
         )
-        
+
+        freshness_ok, freshness = (
+            validate_entry_freshness(
+                fresh_candidate,
+                plan,
+            )
+        )
+
+        fresh_candidate[
+            "entry_freshness"
+        ] = freshness
+
+        if not freshness_ok:
+            print(
+                f"⛔ Entry rejected by "
+                f"freshness gate: {symbol} | "
+                f"Reason="
+                f"{freshness.get('reason')} | "
+                f"Extension="
+                f"{freshness.get('extension_pct', 0):.2f}% | "
+                f"ATR Extension="
+                f"{freshness.get('extension_atr', 0):.2f}"
+            )
+            return False        
+            
         entry_blocked, block_reason = (
             get_trading_block_reason(symbol)
         )
