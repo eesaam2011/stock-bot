@@ -1068,14 +1068,13 @@ def telegram_send(text: str) -> bool:
     except Exception:
         return False
 
-
 def state_emoji(state: CandidateState) -> str:
     return {
         CandidateState.STEALTH: "🕵️",
         CandidateState.AWAKENING: "👀",
         CandidateState.ACCEPTED: "🔥",
         CandidateState.BUILDING: "🚀",
-        CandidateState.BREAKOUT_READY: "🎯",
+        CandidateState.BREAKOUT_READY: "🔥",
         CandidateState.ELITE_CONTINUATION: "💎",
         CandidateState.CROWDED: "⚠️",
         CandidateState.EXHAUSTED: "🧯",
@@ -1083,24 +1082,38 @@ def state_emoji(state: CandidateState) -> str:
     }.get(state, "📡")
 
 
+def structural_risk_ar(risk: StructuralRisk) -> str:
+    return {
+        StructuralRisk.LOW: "منخفضة",
+        StructuralRisk.MODERATE: "متوسطة",
+        StructuralRisk.HIGH: "مرتفعة",
+        StructuralRisk.CRITICAL: "حرجة",
+    }.get(risk, "غير معروفة")
+
+
 def discovery_alert(c: Candidate) -> str:
-    risk = c.structural_risk.value
-    ev = " • ".join(c.evidence[:4]) if c.evidence else "تجميع أدلة جارٍ"
+    risk_ar = structural_risk_ar(c.structural_risk)
+
+    ev = " • ".join(c.evidence[:4]) if c.evidence else "الأدلة الإيجابية تتجمع"
     warns = " • ".join(c.warnings[:3]) if c.warnings else "لا توجد تحذيرات بارزة"
+
     return (
-        f"{state_emoji(c.state)} <b>{BOT_NAME_AR}</b>\n\n"
-        f"<b>{html.escape(c.symbol)}</b> | {c.state.value}\n"
-        f"💵 السعر: ${c.price:.4f} ({c.change_pct:+.1f}%)\n"
-        f"🧠 Opportunity: <b>{c.opportunity_score:.1f}/100</b>\n"
-        f"🏗 Structural Risk: <b>{risk}</b>\n"
-        f"⚠️ Failure Pressure: <b>{c.failure_pressure:.1f}/100</b>\n"
-        f"📦 Float: {format_float(c.float_shares)} | Rotation: {c.float_rotation:.2f}x\n"
-        f"📈 RVOL: {c.rvol:.2f}x | Vol Accel: {c.volume_acceleration:.2f}x\n"
-        f"💧 Spread: {c.spread_pct:.2f}%\n"
-        f"📰 {html.escape(c.catalyst_headline[:180] or 'لا يوجد محفز مركزي حديث')}\n\n"
+        f"🔥 <b>جاهز للاختراق — {BOT_NAME_AR}</b>\n\n"
+        f"<b>{html.escape(c.symbol)}</b>\n"
+        f"💵 السعر: <b>${c.price:.4f}</b> ({c.change_pct:+.1f}%)\n"
+        f"🧠 قوة الفرصة: <b>{c.opportunity_score:.1f}/100</b>\n"
+        f"🏗️ المخاطر الهيكلية: <b>{risk_ar}</b>\n"
+        f"⚠️ ضغط الفشل: <b>{c.failure_pressure:.1f}/100</b>\n"
+        f"📦 الفلوت: {format_float(c.float_shares)} | دوران الفلوت: {c.float_rotation:.2f}x\n"
+        f"📈 RVOL: {c.rvol:.2f}x | تسارع الحجم: {c.volume_acceleration:.2f}x\n"
+        f"💧 السبريد: {c.spread_pct:.2f}%\n"
+        f"⚡ كفاءة الطلب: {c.demand_efficiency:.0f}/100\n"
+        f"✅ القبول السعري: {c.price_acceptance:.0f}/100\n\n"
+        f"📰 {html.escape(c.catalyst_headline[:180] or 'لا يوجد محفز إخباري مركزي حديث')}\n\n"
         f"✅ {html.escape(ev)}\n"
         f"⚠️ {html.escape(warns)}\n\n"
-        f"ℹ️ <b>مراقبة فقط — ليست إشارة دخول.</b>"
+        f"🔥 <b>الحالة: جاهز للاختراق</b>\n"
+        f"ℹ️ <b>مراقبة نهائية — ليست إشارة دخول بعد.</b>"
     )
 
 
