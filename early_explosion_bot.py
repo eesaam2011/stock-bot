@@ -1937,6 +1937,14 @@ def add_to_premarket_entry_watchlist(
 
     return True
 
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 def is_premarket_candidate_weak(
     api,
     symbol,
