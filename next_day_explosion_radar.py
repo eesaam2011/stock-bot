@@ -2756,7 +2756,218 @@ def confirm_entry(c: Candidate) -> bool:
         return True
     return False
 
+# ==============================================================================
+# Smart Candidate Persistence / Pruning
+# ==============================================================================
 
+PERSISTENCE_STATE_ORDER = {
+    "STEALTH": 0,
+    "AWAKENING": 1,
+    "ACCEPTED": 2,
+    "BUILDING": 3,
+    "CROWDED": 3,
+    "BREAKOUT_READY": 4,
+    "EXHAUSTED": 4,
+    "ELITE_CONTINUATION": 5,
+    "FAILED": 0,
+}
+
+
+def candidate_age_hours(c: Candidate) -> float:
+    dt = parse_ts(c.created_at)
+    if not dt:
+        return 0.0
+
+    return max(
+        0.0,
+        (now_utc() - dt.astimezone(UTC_TZ)).total_seconds() / 3600.0,
+    )
+
+
+def minutes_since(value: str) -> float:
+    dt = parse_ts(value)
+    if not dt:
+        return 0.0
+
+    return max(
+        0.0,
+        (now_utc() - dt.astimezone(UTC_TZ)).total_seconds() / 60.0,
+    )
+
+
+def candidate_weak_reason(c: Candidate) -> str:
+    if c.failure_pressure >= SMART_PRUNE_HIGH_FAILURE_PRESSURE:
+        return "high_failure_pressure"
+
+    if (
+        c.opportunity_score < SMART_PRUNE_HARD_WEAK_OPPORTUNITY
+        and c.price_acceptance < 45
+    ):
+        return "opportunity_and_acceptance_weak"
+
+    if (
+        c.demand_efficiency < 35
+        and c.price_acceptance < 40
+        and c.volume_acceleration < 0.85
+    ):
+        return "demand_and_activity_died"
+
+    if (
+        c.spread_pct > 4.0
+        and c.trade_continuity < 30
+        and c.volume_acceleration < 0.90
+    ):
+        return "liquidity_died"
+
+    return ""
+
+
+def update_state_peak(c: Candidate) -> None:
+    current = c.state.value
+    previous_peak = (
+        c.state_peak
+        if c.state_peak in PERSISTENCE_STATE_ORDER
+        else "STEALTH"
+    )
+
+    if (
+        PERSISTENCE_STATE_ORDER.get(current, 0)
+        > PERSISTENCE_STATE_ORDER.get(previous_peak, 0)
+    ):
+        c.state_peak = current
+
+
+def required_weak_confirmations(c: Candidate) -> int:
+    protected_state = (
+        c.state_peak
+        if c.state_peak in SMART_PRUNE_STATE_CONFIRMATIONS
+        else c.state.value
+    )
+
+    return max(
+        1,
+        SMART_PRUNE_STATE_CONFIRMATIONS.get(protected_state, 4),
+    )
+
+
+def persistence_priority_score(c: Candidate) -> float:
+    anchor = c.last_good_at or c.last_healthy_at or c.created_at
+
+    if anchor:
+        decay_hours = minutes_since(anchor) / 60.0
+    else:
+        decay_hours = candidate_age_hours(c)
+
+    remembered_score = max(
+        0.0,
+        c.peak_score - decay_hours * SMART_PRUNE_PEAK_DECAY_PER_HOUR,
+    )
+
+    return round(
+        max(c.opportunity_score, remembered_score),
+        2,
+    )
+
+
+def candidate_hard_kill_reason(c: Candidate) -> str:
+    if c.entry_confirmed:
+        return "entry_confirmed"
+
+    if c.structural_risk == StructuralRisk.CRITICAL:
+        if "serious_negative_news" in c.risk_reasons:
+            return "serious_negative_news"
+
+        if "hard_negative_language" in c.risk_reasons:
+            return "hard_negative_language"
+
+        return "critical_structural_risk"
+
+    return ""
+
+
+def update_candidate_health(c: Candidate) -> None:
+    current_time = iso()
+
+    update_state_peak(c)
+    c.peak_score = max(c.peak_score, c.opportunity_score)
+
+    if c.state == CandidateState.CROWDED:
+        if not c.crowded_since:
+            c.crowded_since = current_time
+    else:
+        c.crowded_since = ""
+
+    healthy = (
+        c.opportunity_score >= SMART_PRUNE_MIN_HEALTHY_OPPORTUNITY
+        and c.failure_pressure < 50
+        and c.price_acceptance >= 45
+    )
+
+    if healthy:
+        if c.weak_cycles > 0:
+            c.recovery_count += 1
+
+        c.weak_cycles = 0
+        c.weak_reason = ""
+        c.weak_since = ""
+
+        c.last_healthy_at = current_time
+        c.last_good_at = current_time
+        c.last_good_score = c.opportunity_score
+        return
+
+    weak_reason = candidate_weak_reason(c)
+
+    if weak_reason:
+        # لا نجمع أسباب ضعف مختلفة في عداد واحد.
+        if weak_reason == c.weak_reason:
+            c.weak_cycles += 1
+        else:
+            c.weak_cycles = 1
+            c.weak_reason = weak_reason
+            c.weak_since = current_time
+
+        c.soft_failure_total += 1
+        return
+
+    # ضعف غير مؤكد: خفض العداد تدريجيًا بدل الحذف.
+    if c.weak_cycles > 0:
+        c.weak_cycles -= 1
+
+    if c.weak_cycles == 0:
+        c.weak_reason = ""
+        c.weak_since = ""
+
+
+def smart_prune_decision(c: Candidate) -> Tuple[bool, str]:
+    hard_reason = candidate_hard_kill_reason(c)
+
+    if hard_reason:
+        c.hard_kill_reason = hard_reason
+        return True, f"hard_kill:{hard_reason}"
+
+    required_cycles = required_weak_confirmations(c)
+
+    if c.state == CandidateState.CROWDED:
+        crowded_minutes = minutes_since(c.crowded_since)
+
+        if (
+            crowded_minutes >= SMART_PRUNE_CROWDED_GRACE_MINUTES
+            and c.weak_cycles >= required_cycles
+        ):
+            return True, "crowded_no_recovery"
+
+    if c.weak_cycles >= required_cycles:
+        return True, (
+            f"confirmed_weakness:"
+            f"{c.weak_reason or 'unknown'}"
+        )
+
+    if candidate_age_hours(c) >= SMART_PRUNE_MAX_AGE_HOURS:
+        return True, "max_age"
+
+    return False, ""
+    
 # ==============================================================================
 # Persistence
 # ==============================================================================
@@ -2840,33 +3051,51 @@ def restore_state() -> None:
 
 
 def prune_candidates() -> None:
-    cutoff = now_utc() - timedelta(hours=CANDIDATE_MAX_AGE_HOURS)
-    remove = []
-    with candidate_lock:
-        for s, c in candidates.items():
-            dt = parse_ts(c.updated_at)
-            if dt and dt < cutoff:
-                remove.append(s)
-        for s in remove:
-            c = candidates.get(s)
-            if c is not None:
-                finalize_research_candidate(c, "candidate_expired")
-            candidates.pop(s, None)
+    remove: List[Tuple[str, str]] = []
 
-    # Keep only today's and yesterday's sent-state records.
+    with candidate_lock:
+        for symbol, c in candidates.items():
+            should_remove, reason = smart_prune_decision(c)
+
+            if should_remove:
+                c.prune_reason = reason
+                remove.append((symbol, reason))
+
+        for symbol, reason in remove:
+            c = candidates.get(symbol)
+            if c is None:
+                continue
+
+            finalize_research_candidate(c, reason)
+            candidates.pop(symbol, None)
+
+            print(
+                f"[SMART PRUNE] {symbol} removed | "
+                f"reason={reason} | "
+                f"state={c.state.value} | "
+                f"state_peak={c.state_peak} | "
+                f"weak_cycles={c.weak_cycles}/"
+                f"{required_weak_confirmations(c)} | "
+                f"score={c.opportunity_score:.1f} | "
+                f"peak_score={c.peak_score:.1f} | "
+                f"failure={c.failure_pressure:.1f}",
+                flush=True,
+            )
+
     valid_dates = {
         now_ny().date().isoformat(),
         (now_ny().date() - timedelta(days=1)).isoformat(),
     }
+
     with sent_lock:
         for key in list(sent_state_alerts):
             if key.split(":", 1)[0] not in valid_dates:
                 sent_state_alerts.pop(key, None)
+
         for key in list(sent_entry_alerts):
             if key.split(":", 1)[0] not in valid_dates:
                 sent_entry_alerts.pop(key, None)
-
-
+                
 # ==============================================================================
 # Runtime loops
 # ==============================================================================
@@ -2894,13 +3123,14 @@ def watch_cycle() -> None:
     with candidate_lock:
         items = sorted(
             candidates.values(),
-            key=lambda c: c.opportunity_score,
+            key=persistence_priority_score,
             reverse=True,
         )
 
     for c in items[:60]:
-        if c.state in (CandidateState.FAILED, CandidateState.EXHAUSTED):
+        if c.state == CandidateState.FAILED:
             continue
+            
         try:
             deep_evaluate(c.symbol)
         except Exception as e:
@@ -3292,6 +3522,28 @@ def candidate_diagnostic(c: Candidate) -> Dict[str, Any]:
         "age_minutes": round(age_min, 1),
         "entry_eligible": c.entry_eligible,
         "entry_block_reasons": list(c.entry_block_reasons),
+        "smart_persistence": {
+            "weak_cycles": c.weak_cycles,
+            "required_confirmations": required_weak_confirmations(c),
+            "weak_reason": c.weak_reason,
+            "weak_since": c.weak_since,
+
+            "last_healthy_at": c.last_healthy_at,
+            "last_good_at": c.last_good_at,
+            "last_good_score": c.last_good_score,
+
+            "peak_score": c.peak_score,
+            "state_peak": c.state_peak,
+            "priority_score": persistence_priority_score(c),
+
+            "soft_failure_total": c.soft_failure_total,
+            "recovery_count": c.recovery_count,
+
+            "crowded_since": c.crowded_since,
+            "prune_reason": c.prune_reason,
+            "hard_kill_reason": c.hard_kill_reason,
+            "candidate_age_hours": round(candidate_age_hours(c), 2),
+        },
         "evidence": list(c.evidence),
         "warnings": list(c.warnings),
         "research": {
