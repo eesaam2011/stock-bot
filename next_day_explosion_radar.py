@@ -2383,7 +2383,7 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
     )
     c.failure_pressure = fp
     c.state = infer_state(c)
-
+    update_candidate_health(c)
     update_live_research_metrics(c)
     record_first_state_time(c)
 
