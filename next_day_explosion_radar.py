@@ -53,7 +53,7 @@ from enum import Enum
 from statistics import median, pstdev
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
-
+import logging
 import requests
 from flask import Flask, jsonify
 
@@ -3247,7 +3247,36 @@ def coordinator_loop() -> None:
 # ==============================================================================
 
 app = Flask(__name__)
+class HealthCheckLogFilter(logging.Filter):
+    def __init__(self, interval_seconds: int = 3600):
+        super().__init__()
+        self.interval_seconds = interval_seconds
+        self.last_health_log_at = 0.0
+        self.lock = threading.Lock()
 
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+
+        # لا نؤثر في بقية السجلات أو الأخطاء.
+        if '"GET /health ' not in message:
+            return True
+
+        current_time = time.monotonic()
+
+        with self.lock:
+            if (
+                current_time - self.last_health_log_at
+                >= self.interval_seconds
+            ):
+                self.last_health_log_at = current_time
+                return True
+
+        return False
+
+
+logging.getLogger("werkzeug").addFilter(
+    HealthCheckLogFilter(interval_seconds=7200)
+)
 
 @app.route("/")
 def home():
