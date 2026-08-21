@@ -225,6 +225,40 @@ ENABLE_LIVE_ENTRY_ALERTS = os.getenv("NDR_ENABLE_LIVE_ENTRY_ALERTS", "false").lo
     "1", "true", "yes", "y",
 }
 SESSION_HANDOFF_GRACE_MINUTES = int(os.getenv("NDR_SESSION_HANDOFF_GRACE_MINUTES", "20"))
+SMART_PRUNE_MAX_AGE_HOURS = float(
+    os.getenv("NDR_SMART_PRUNE_MAX_AGE_HOURS", str(CANDIDATE_MAX_AGE_HOURS))
+)
+SMART_PRUNE_MIN_HEALTHY_OPPORTUNITY = float(
+    os.getenv("NDR_SMART_PRUNE_MIN_HEALTHY_OPPORTUNITY", "58")
+)
+SMART_PRUNE_HARD_WEAK_OPPORTUNITY = float(
+    os.getenv("NDR_SMART_PRUNE_HARD_WEAK_OPPORTUNITY", "48")
+)
+SMART_PRUNE_HIGH_FAILURE_PRESSURE = float(
+    os.getenv("NDR_SMART_PRUNE_HIGH_FAILURE_PRESSURE", "65")
+)
+SMART_PRUNE_CROWDED_GRACE_MINUTES = int(
+    os.getenv("NDR_SMART_PRUNE_CROWDED_GRACE_MINUTES", "20")
+)
+SMART_PRUNE_PEAK_DECAY_PER_HOUR = float(
+    os.getenv("NDR_SMART_PRUNE_PEAK_DECAY_PER_HOUR", "3.0")
+)
+
+SMART_PRUNE_STATE_CONFIRMATIONS = {
+    "STEALTH": int(os.getenv("NDR_SMART_PRUNE_STEALTH_CONFIRMATIONS", "3")),
+    "AWAKENING": int(os.getenv("NDR_SMART_PRUNE_AWAKENING_CONFIRMATIONS", "3")),
+    "ACCEPTED": int(os.getenv("NDR_SMART_PRUNE_ACCEPTED_CONFIRMATIONS", "5")),
+    "BUILDING": int(os.getenv("NDR_SMART_PRUNE_BUILDING_CONFIRMATIONS", "6")),
+    "BREAKOUT_READY": int(
+        os.getenv("NDR_SMART_PRUNE_BREAKOUT_CONFIRMATIONS", "7")
+    ),
+    "ELITE_CONTINUATION": int(
+        os.getenv("NDR_SMART_PRUNE_ELITE_CONFIRMATIONS", "7")
+    ),
+    "CROWDED": int(os.getenv("NDR_SMART_PRUNE_CROWDED_CONFIRMATIONS", "4")),
+    "EXHAUSTED": int(os.getenv("NDR_SMART_PRUNE_EXHAUSTED_CONFIRMATIONS", "2")),
+    "FAILED": 1,
+}
 
 # Historical feature lookbacks.
 RVOL_LOOKBACK_DAYS = int(os.getenv("NDR_RVOL_LOOKBACK_DAYS", "10"))
@@ -519,7 +553,25 @@ class Candidate:
     first_breakout_ready_at: str = ""
     first_elite_at: str = ""
     research_finalized: bool = False
+    # Smart Candidate Persistence / Pruning.
+    weak_cycles: int = 0
+    weak_reason: str = ""
+    weak_since: str = ""
 
+    last_healthy_at: str = ""
+    last_good_at: str = ""
+    last_good_score: float = 0.0
+
+    peak_score: float = 0.0
+    state_peak: str = "STEALTH"
+
+    recovery_count: int = 0
+    soft_failure_total: int = 0
+
+    crowded_since: str = ""
+    prune_reason: str = ""
+    hard_kill_reason: str = ""
+    
     evidence: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     risk_reasons: List[str] = field(default_factory=list)
