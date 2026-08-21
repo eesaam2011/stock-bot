@@ -1,7 +1,7 @@
 # ==============================================================================
 # Next-Day Explosion Radar
-# Version : 0.5.0
-# Build   : DRYRUN-READY-2026-08-21-D
+# Version : 0.6.0
+# Build   : SMART-PERSISTENCE-2026-08-21-E
 # File    : next_day_explosion_radar.py
 #
 # Deployment:
@@ -63,8 +63,8 @@ from flask import Flask, jsonify
 
 BOT_NAME = "Next-Day Explosion Radar"
 BOT_NAME_AR = "رادار انفجار اليوم التالي"
-VERSION = "0.5.0"
-BUILD = "DRYRUN-READY-2026-08-21-D"
+VERSION = "0.6.0"
+BUILD = "SMART-PERSISTENCE-2026-08-21-E"
 
 NY_TZ = ZoneInfo("America/New_York")
 KSA_TZ = ZoneInfo("Asia/Riyadh")
