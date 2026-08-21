@@ -365,7 +365,49 @@ def redis_hdel(key, field):
 def is_weekend():
     return now_ny().weekday() >= 5
 
+def should_pause_news_for_float_update():
+    now = now_ksa()
 
+    weekday = now.weekday()
+    current_minutes = (
+        now.hour * 60
+        + now.minute
+    )
+
+    pause_start = (
+        7 * 60
+        + 45
+    )
+
+    # Monday
+    if weekday == 0:
+        pause_end = (
+            10 * 60
+            + 45
+        )
+
+        return (
+            pause_start
+            <= current_minutes
+            < pause_end
+        )
+
+    # Tuesday-Friday
+    if weekday in (1, 2, 3, 4):
+        pause_end = (
+            8 * 60
+            + 30
+        )
+
+        return (
+            pause_start
+            <= current_minutes
+            < pause_end
+        )
+
+    # Saturday-Sunday
+    return False
+    
 def is_scan_window():
     if is_weekend():
         return False
@@ -2135,6 +2177,14 @@ def news_discovery_loop():
     while True:
         try:
             weekend_mode = is_weekend()
+
+            if should_pause_news_for_float_update():
+                log(
+                    "Finnhub news discovery paused "
+                    "for morning float update."
+                )
+                time.sleep(60)
+                continue
 
             # في أيام السوق نلتزم بنافذة الفحص المعتادة.
             # في الويكند يستمر اكتشاف الأخبار فقط.
