@@ -2443,10 +2443,8 @@ def build_warnings(c: Candidate, failure_reasons: List[str]) -> List[str]:
 # ==============================================================================
 
 DISCOVERY_ALERT_STATES = {
-    CandidateState.AWAKENING,
-    CandidateState.ACCEPTED,
-    CandidateState.BUILDING,
     CandidateState.BREAKOUT_READY,
+    CandidateState.ELITE_CONTINUATION,
 }
 
 
@@ -2457,23 +2455,25 @@ def state_alert_key(c: Candidate) -> str:
 def maybe_send_state_transition(c: Candidate) -> None:
     if not SEND_DISCOVERY_ALERTS:
         return
+
     if c.state not in DISCOVERY_ALERT_STATES:
-        return
-    if c.state == c.previous_state:
         return
 
     key = state_alert_key(c)
+    alert_token = "BREAKOUT_READY"
+
     with sent_lock:
         states = sent_state_alerts.setdefault(key, [])
-        if c.state.value in states:
+
+        if alert_token in states:
             return
-        states.append(c.state.value)
+
+        states.append(alert_token)
 
     if telegram_send(discovery_alert(c)):
         with stats_lock:
             runtime_stats["alerts_sent"] += 1
-
-
+            
 # ==============================================================================
 # Entry Confirmation Engine
 # ==============================================================================
@@ -2572,25 +2572,29 @@ def build_entry_plan(c: Candidate, bars: List[Dict[str, Any]]) -> Optional[Dict[
 
 
 def entry_alert_message(c: Candidate, plan: Dict[str, Any]) -> str:
+    risk_ar = structural_risk_ar(c.structural_risk)
+
     return (
-        f"🎯 <b>دخول مؤكد — {BOT_NAME_AR}</b>\n\n"
+        f"🚨🔥 <b>دخول مؤكد — {BOT_NAME_AR}</b>\n\n"
         f"<b>{html.escape(c.symbol)}</b>\n"
-        f"💵 الدخول: <b>${plan['entry']:.4f}</b>\n"
-        f"🛑 الوقف: <b>${plan['stop']:.4f}</b> ({plan['stop_pct']:.1f}%)\n"
-        f"🎯 T1: ${plan['t1']:.4f}\n"
-        f"🎯 T2: ${plan['t2']:.4f}\n"
-        f"🎯 T3: ${plan['t3']:.4f}\n\n"
-        f"🧠 Opportunity: <b>{c.opportunity_score:.1f}/100</b>\n"
-        f"🏗 Structural Risk: <b>{c.structural_risk.value}</b>\n"
-        f"⚠️ Failure Pressure: <b>{c.failure_pressure:.1f}/100</b>\n"
-        f"📈 Demand Efficiency: {c.demand_efficiency:.0f}/100\n"
-        f"✅ Price Acceptance: {c.price_acceptance:.0f}/100\n"
-        f"📦 Float Rotation: {c.float_rotation:.2f}x\n"
-        f"💧 Spread: {c.spread_pct:.2f}%\n\n"
-        f"📰 {html.escape(c.catalyst_headline[:180] or 'بدون محفز مركزي واضح')}\n\n"
+        f"💵 سعر الدخول: <b>${plan['entry']:.4f}</b>\n"
+        f"🛑 وقف الخسارة: <b>${plan['stop']:.4f}</b> ({plan['stop_pct']:.1f}%)\n"
+        f"🎯 الهدف الأول: <b>${plan['t1']:.4f}</b>\n"
+        f"🎯 الهدف الثاني: <b>${plan['t2']:.4f}</b>\n"
+        f"🎯 الهدف الثالث: <b>${plan['t3']:.4f}</b>\n\n"
+        f"🧠 قوة الفرصة: <b>{c.opportunity_score:.1f}/100</b>\n"
+        f"🏗️ المخاطر الهيكلية: <b>{risk_ar}</b>\n"
+        f"⚠️ ضغط الفشل: <b>{c.failure_pressure:.1f}/100</b>\n"
+        f"⚡ كفاءة الطلب: <b>{c.demand_efficiency:.0f}/100</b>\n"
+        f"✅ القبول السعري: <b>{c.price_acceptance:.0f}/100</b>\n"
+        f"📦 دوران الفلوت: {c.float_rotation:.2f}x\n"
+        f"📈 RVOL: {c.rvol:.2f}x\n"
+        f"💧 السبريد: {c.spread_pct:.2f}%\n\n"
+        f"📰 {html.escape(c.catalyst_headline[:180] or 'لا يوجد محفز إخباري مركزي حديث')}\n\n"
+        f"✅ <b>تم تأكيد شروط الدخول النهائية</b>\n"
+        f"🚨 <b>هذه إشارة دخول مؤكدة وليست تنبيه مراقبة.</b>\n\n"
         f"⚠️ ليست توصية مالية. التزم بإدارة رأس المال."
     )
-
 
 def entry_alerted_today(symbol: str) -> bool:
     key = f"{now_ny().date().isoformat()}:{symbol.upper()}"
