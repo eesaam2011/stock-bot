@@ -2168,6 +2168,14 @@ def process_news_symbol(symbol):
         return
 
     if best.get("positive") and safe_float(best.get("score")) >= MIN_CATALYST_SCORE:
+        log(
+            f"📰 Positive catalyst found: "
+            f"{symbol} | "
+            f"Score={safe_float(best.get('score')):.1f} | "
+            f"Category={best.get('category', 'unknown')} | "
+            f"Headline={best.get('headline', '')[:120]}"
+        )
+
         add_to_news_watchlist(symbol, result)
 
 
