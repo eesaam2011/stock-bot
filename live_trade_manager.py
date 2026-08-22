@@ -729,7 +729,19 @@ def calculate_technical_state(df: Optional[pd.DataFrame], current_price: float) 
         highs = df["high"].astype(float)
         lows = df["low"].astype(float)
         volumes = df["volume"].astype(float)
+        ema9 = float(
+            closes.ewm(
+                span=9,
+                adjust=False
+            ).mean().iloc[-1]
+        )
 
+        ema20 = float(
+            closes.ewm(
+                span=20,
+                adjust=False
+            ).mean().iloc[-1]
+        )
         prev_close = closes.shift(1)
 
         true_range = pd.concat(
