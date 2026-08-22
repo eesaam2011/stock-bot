@@ -2452,6 +2452,10 @@ def get_week_stats(source_bot: str, week_key: str) -> dict:
     momentum_failed = iv("momentum_failed")
     true_reversal_exit = iv("true_reversal_exit")
     profit_exit = iv("profit_protection_exit")
+    protective_stop_exit = iv("protective_stop_exit")
+    protective_stop_t1 = iv("protective_stop_t1")
+    protective_stop_t2 = iv("protective_stop_t2")
+    protective_stop_t3 = iv("protective_stop_t3")
     false_exit = iv("false_exit")
     reentry_possible = iv("reentry_possible")
     reentry_success = iv("reentry_success")
@@ -2481,6 +2485,10 @@ def get_week_stats(source_bot: str, week_key: str) -> dict:
         "t1": t1,
         "t2": t2,
         "t3": t3,
+        "protective_stop_exit": protective_stop_exit,
+        "protective_stop_t1": protective_stop_t1,
+        "protective_stop_t2": protective_stop_t2,
+        "protective_stop_t3": protective_stop_t3,
         "hard_stop": hard_stop,
         "momentum_failed": momentum_failed,
         "true_reversal_exit": true_reversal_exit,
@@ -2533,7 +2541,12 @@ def build_weekly_report(week_key: str) -> str:
             f"• متوسط نتيجة الخروج: `{s['avg_return']:+.2f}%` | نجاح: `{s['success_rate']:.1f}%`",
             f"• Hard Stop: `{s['hard_stop']}` | Momentum Failed: `{s['momentum_failed']}` | "
             f"True Reversal Exit: `{s['true_reversal_exit']}`",
-            f"• Profit Protection: `{s['profit_exit']}` | False Exit: `{s['false_exit']}`",
+            f"• Protective Stop: `{s['protective_stop_exit']}` "
+            f"(T1: `{s['protective_stop_t1']}` | "
+            f"T2: `{s['protective_stop_t2']}` | "
+            f"T3: `{s['protective_stop_t3']}`)\n"
+            f"• Profit Protection: `{s['profit_exit']}` | "
+            f"False Exit: `{s['false_exit']}`",
             f"• Re-entry Possible: `{s['reentry_possible']}` | ناجحة لاحقًا: `{s['reentry_success']}`",
             f"• أفضل نتيجة: `{s['best_return']:+.2f}%` | أسوأ نتيجة: `{s['worst_return']:+.2f}%`",
             "",
