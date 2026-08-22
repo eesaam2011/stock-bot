@@ -2643,6 +2643,7 @@ def startup():
     load_float_cache()
     load_news_cache()
     load_universe()
+    build_clean_universe()
     load_news_watchlist()
     load_active_trades()
     cleanup_news_redis_and_blocks()
