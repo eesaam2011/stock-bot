@@ -801,7 +801,202 @@ def calculate_technical_state(df: Optional[pd.DataFrame], current_price: float) 
 
     return result
 
+def calculate_dynamic_protective_stop(
+    trade: dict,
+    current_price: float,
+    tech: dict,
+) -> dict:
+    """
+    Volatility-aware protective stop.
 
+    BEFORE_T1:
+        Keep the original stop.
+
+    T1_LIGHT:
+        Light protection with wider room for volatile stocks.
+
+    T2_MEDIUM:
+        Protect a meaningful part of the profit.
+
+    T3_STRONG:
+        Stronger trailing protection from the peak.
+
+    The protective stop must never move downward.
+    """
+
+    entry = safe_float(
+        trade.get("entry_price")
+    )
+
+    initial_stop = safe_float(
+        trade.get("initial_stop")
+    )
+
+    peak_price = max(
+        safe_float(
+            trade.get("peak_price"),
+            entry
+        ),
+        current_price
+    )
+
+    t1 = safe_float(
+        trade.get("t1")
+    )
+
+    t2 = safe_float(
+        trade.get("t2")
+    )
+
+    atr_1m_pct = safe_float(
+        tech.get("atr_1m_pct")
+    )
+
+    avg_range_1m_pct = safe_float(
+        tech.get("avg_range_1m_pct")
+    )
+
+    volatility_pct = max(
+        atr_1m_pct,
+        avg_range_1m_pct,
+        0.40
+    )
+
+    protection = get_target_protection_profile(
+        trade
+    )
+
+    stage = protection.get(
+        "stage",
+        "BEFORE_T1"
+    )
+
+    # ------------------------------------------------------
+    # BEFORE T1
+    # ------------------------------------------------------
+
+    if stage == "BEFORE_T1":
+        return {
+            "stage": stage,
+            "protective_stop": initial_stop,
+            "previous_stop": safe_float(
+                trade.get(
+                    "protective_stop",
+                    initial_stop
+                )
+            ),
+            "trail_distance_pct": 0.0,
+            "volatility_pct": volatility_pct,
+            "raised": False,
+        }
+
+    # ------------------------------------------------------
+    # Stage-specific trailing distance
+    # ------------------------------------------------------
+
+    if stage == "T1_LIGHT":
+        trail_distance_pct = min(
+            6.0,
+            max(
+                2.0,
+                volatility_pct * 2.20
+            )
+        )
+
+    elif stage == "T2_MEDIUM":
+        trail_distance_pct = min(
+            4.5,
+            max(
+                1.5,
+                volatility_pct * 1.70
+            )
+        )
+
+    else:
+        # T3_STRONG
+        trail_distance_pct = min(
+            3.5,
+            max(
+                1.0,
+                volatility_pct * 1.30
+            )
+        )
+
+    trailing_stop = (
+        peak_price
+        * (
+            1.0
+            - trail_distance_pct / 100.0
+        )
+    )
+
+    # ------------------------------------------------------
+    # Minimum stop floor by target stage
+    # ------------------------------------------------------
+
+    if stage == "T1_LIGHT":
+        # Give volatile stocks a little room around breakeven.
+        stage_floor = (
+            entry * 0.995
+            if entry > 0
+            else initial_stop
+        )
+
+    elif stage == "T2_MEDIUM":
+        # After T2, try to preserve at least most of T1.
+        if t1 > 0:
+            stage_floor = t1 * 0.995
+        else:
+            stage_floor = entry * 1.005
+
+    else:
+        # After T3, protect approximately the T2 area.
+        if t2 > 0:
+            stage_floor = t2 * 0.995
+
+        elif t1 > 0:
+            stage_floor = t1
+
+        else:
+            stage_floor = entry * 1.01
+
+    proposed_stop = max(
+        initial_stop,
+        stage_floor,
+        trailing_stop
+    )
+
+    previous_stop = safe_float(
+        trade.get(
+            "protective_stop",
+            initial_stop
+        )
+    )
+
+    # The stop is one-way only: it may rise, never fall.
+    final_stop = max(
+        proposed_stop,
+        previous_stop
+    )
+
+    raised = bool(
+        final_stop > previous_stop + 0.0000001
+    )
+
+    return {
+        "stage": stage,
+        "protective_stop": final_stop,
+        "previous_stop": previous_stop,
+        "trail_distance_pct": trail_distance_pct,
+        "volatility_pct": volatility_pct,
+        "atr_1m_pct": atr_1m_pct,
+        "avg_range_1m_pct": avg_range_1m_pct,
+        "peak_price": peak_price,
+        "stage_floor": stage_floor,
+        "trailing_stop": trailing_stop,
+        "raised": raised,
+    }
+    
 # ------------------------------------------------------------------------------
 # Core state machine
 # ------------------------------------------------------------------------------
