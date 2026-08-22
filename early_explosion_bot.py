@@ -61,8 +61,6 @@ MIN_DOLLAR_VOLUME  = 300_000
 RVOL_MIN           = 1.8
 MIN_PRICE_CHANGE   = 4.0
 
-MOMENTUM_RVOL_MIN             = 1.2
-MOMENTUM_PRICE_CHANGE_MIN     = 3.0
 EXPLOSION_CANDIDATE_MIN_SCORE = 90
 PREMARKET_CANDIDATE_MIN_SCORE = 84
 BATCH_SIZE         = 500
@@ -1379,7 +1377,7 @@ def check_explosion(api, symbol, asset_name):
         )
 
         if avg_vol_20 > effective_max_avg_vol:
-            if real_float is None or real_float > 30_000_000:
+            if real_float is not None and real_float > 30_000_000:
                 reject_avg_vol += 1
                 return None
                 
