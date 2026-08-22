@@ -482,6 +482,29 @@ class FeatureGroups:
         )
         return round(clamp(total), 2)
 
+    def technical_opportunity(self) -> float:
+        """Opportunity score with the catalyst weight redistributed."""
+        n = self.normalized()
+
+        technical_weight = sum(
+            weight
+            for key, weight in GROUP_WEIGHTS.items()
+            if key != "catalyst"
+        )
+
+        if technical_weight <= 0:
+            return 0.0
+
+        total = sum(
+            getattr(n, key) * weight
+            for key, weight in GROUP_WEIGHTS.items()
+            if key != "catalyst"
+        )
+
+        return round(
+            clamp(total / technical_weight),
+            2,
+        )
 
 @dataclass
 class RiskSnapshot:
@@ -1246,6 +1269,22 @@ def asset_allowed(asset: Dict[str, Any]) -> bool:
         return False
     if any(k in name for k in BAD_NAME_KEYWORDS):
         return False
+        
+    normalized_name = re.sub(
+        r"[^A-Z0-9]+",
+        " ",
+        name,
+    ).strip()
+
+    if any(
+        re.search(
+            rf"\b{re.escape(keyword)}\b",
+            normalized_name,
+        )
+        for keyword in BAD_BUSINESS_NAME_KEYWORDS
+    ):
+        return False
+        
     return True
 
 
@@ -2369,8 +2408,12 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
         liquidity=liquidity_group,
         historical_context=context_group,
     )
-    c.opportunity_score = c.feature_groups.opportunity()
-
+    # الخبر ميزة إضافية وليس شرطًا إلزاميًا.
+    # الخبر السلبي الخطير يبقى مستبعدًا عبر structural_risk.
+    c.opportunity_score = max(
+        c.feature_groups.opportunity(),
+        c.feature_groups.technical_opportunity(),
+    )
     s_risk, risk_reasons = structural_risk(
         symbol, news, f, spread_pct, extension
     )
