@@ -2466,7 +2466,20 @@ def get_week_stats(source_bot: str, week_key: str) -> dict:
 def pct_rate(num, den):
     return (num / den * 100.0) if den else 0.0
 
+def get_quality_label(quality: float) -> str:
+    quality = safe_float(quality)
 
+    if quality >= 75:
+        return "🟢 ممتاز"
+
+    if quality >= 60:
+        return "🔵 جيد"
+
+    if quality >= 45:
+        return "🟡 متوسط"
+
+    return "🔴 ضعيف"
+    
 def build_weekly_report(week_key: str) -> str:
     stats = [get_week_stats(bot, week_key) for bot in SOURCE_BOTS]
     stats = [s for s in stats if s["alerts"] > 0 or s["managed"] > 0 or s["completed"] > 0]
@@ -2480,64 +2493,171 @@ def build_weekly_report(week_key: str) -> str:
 
     lines = [
         "📊 *تقرير Live Trade Manager الأسبوعي*",
-        f"الأسبوع: `{week_key}`",
+        f"📅 الأسبوع: `{week_key}`",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
         "",
     ]
 
     for s in stats:
         c = s["completed"]
+        
+        quality_label = get_quality_label(
+            s["quality"]
+        )
+        
         lines.extend([
             f"🤖 *{s['source_bot']}*",
-            f"• التنبيهات المستلمة: `{s['alerts']}` | تمت إدارتها: `{s['managed']}` | المكتملة: `{c}`",
-            f"• T1: `{s['t1']}` ({pct_rate(s['t1'], c):.1f}%) | "
-            f"T2: `{s['t2']}` ({pct_rate(s['t2'], c):.1f}%) | "
-            f"T3: `{s['t3']}` ({pct_rate(s['t3'], c):.1f}%)",
-            f"• متوسط أعلى ارتفاع MFE: `{s['avg_mfe']:+.2f}%` | الأعلى: `{s['max_mfe']:+.2f}%`",
-            f"• متوسط نتيجة الخروج: `{s['avg_return']:+.2f}%` | نجاح: `{s['success_rate']:.1f}%`",
-            f"• Hard Stop: `{s['hard_stop']}` | Momentum Failed: `{s['momentum_failed']}` | "
-            f"True Reversal Exit: `{s['true_reversal_exit']}`",
-            f"• Protective Stop: `{s['protective_stop_exit']}` "
-            f"(T1: `{s['protective_stop_t1']}` | "
-            f"T2: `{s['protective_stop_t2']}` | "
-            f"T3: `{s['protective_stop_t3']}`)\n"
-            f"• Profit Protection: `{s['profit_exit']}` | "
-            f"False Exit: `{s['false_exit']}`",
-            f"• Re-entry Possible: `{s['reentry_possible']}` | ناجحة لاحقًا: `{s['reentry_success']}`",
-            f"• أفضل نتيجة: `{s['best_return']:+.2f}%` | أسوأ نتيجة: `{s['worst_return']:+.2f}%`",
+            "",
+            f"📥 التنبيهات: `{s['alerts']}`",
+            f"✅ الصفقات المكتملة: `{c}`",
+            f"🏁 التقييم: *{quality_label}* "
+            f"(`{s['quality']:.1f}`)",
+            "",
+            "🎯 *الوصول للأهداف*",
+            f"• T1: `{s['t1']}` من `{c}` "
+            f"({pct_rate(s['t1'], c):.1f}%)",
+            f"• T2: `{s['t2']}` من `{c}` "
+            f"({pct_rate(s['t2'], c):.1f}%)",
+            f"• T3: `{s['t3']}` من `{c}` "
+            f"({pct_rate(s['t3'], c):.1f}%)",
+            "",
+            "📈 *الأداء*",
+            f"• متوسط أعلى صعود: `{s['avg_mfe']:+.2f}%`",
+            f"• أعلى صعود: `{s['max_mfe']:+.2f}%`",
+            f"• متوسط نتيجة الخروج: `{s['avg_return']:+.2f}%`",
+            f"• صفقات رابحة: `{s['wins']}`",
+            f"• صفقات خاسرة: `{s['losses']}`",
+            "",
+            "🛡️ *الحماية والخروج*",
+            f"• Hard Stop: `{s['hard_stop']}`",
+            f"• Protective Stop: `{s['protective_stop_exit']}`",
+            f"   ↳ بعد T1: `{s['protective_stop_t1']}`",
+            f"   ↳ بعد T2: `{s['protective_stop_t2']}`",
+            f"   ↳ بعد T3: `{s['protective_stop_t3']}`",
+            f"• Profit Protection: `{s['profit_exit']}`",
+            f"• Momentum Failed: `{s['momentum_failed']}`",
+            f"• True Reversal Exit: `{s['true_reversal_exit']}`",
+            "",
+            "🔄 *بعد الخروج*",
+            f"• False Exit: `{s['false_exit']}`",
+            f"• Re-entry Possible: `{s['reentry_possible']}`",
+            f"• Re-entry Success: `{s['reentry_success']}`",
+            "",
+            f"• أفضل نتيجة خروج: `{s['best_return']:+.2f}%`",
+            f"• أسوأ نتيجة خروج: `{s['worst_return']:+.2f}%`",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
             "",
         ])
 
-    best_overall = max(stats, key=lambda x: x["quality"])
-    best_targets = max(
+    best_overall = max(
         stats,
-        key=lambda x: (
-            pct_rate(x["t1"], x["completed"])
-            + pct_rate(x["t2"], x["completed"])
-            + pct_rate(x["t3"], x["completed"])
-        ),
+        key=lambda x: x["quality"],
     )
-    best_mfe = max(stats, key=lambda x: x["avg_mfe"])
-    least_stops = min(
-        stats,
-        key=lambda x: pct_rate(x["hard_stop"], x["completed"]) if x["completed"] else 999,
-    )
-    most_failures = max(
+
+    best_t1 = max(
         stats,
         key=lambda x: pct_rate(
-            x["momentum_failed"] + x["true_reversal_exit"],
+            x["t1"],
             x["completed"],
         ),
     )
 
+    best_t2_t3 = max(
+        stats,
+        key=lambda x: (
+            pct_rate(
+                x["t2"],
+                x["completed"],
+            )
+            +
+            pct_rate(
+                x["t3"],
+                x["completed"],
+            )
+        ),
+    )
+
+    best_mfe = max(
+        stats,
+        key=lambda x: x["avg_mfe"],
+    )
+
+    least_losses = min(
+        stats,
+        key=lambda x: pct_rate(
+            x["losses"],
+            x["completed"],
+        )
+        if x["completed"]
+        else 999.0,
+    )
+
+    best_profit_protection = max(
+        stats,
+        key=lambda x: (
+            pct_rate(
+                x["protective_stop_exit"],
+                x["completed"],
+            )
+            +
+            pct_rate(
+                x["profit_exit"],
+                x["completed"],
+            )
+        ),
+    )
+
+    ranked_stats = sorted(
+        stats,
+        key=lambda x: x["quality"],
+        reverse=True,
+    )
+
     lines.extend([
-        "🏆 *الخلاصة الأسبوعية*",
-        f"• الأفضل إجمالًا: `{best_overall['source_bot']}`",
-        f"• الأفضل في الوصول للأهداف: `{best_targets['source_bot']}`",
-        f"• الأعلى بمتوسط MFE: `{best_mfe['source_bot']}` ({best_mfe['avg_mfe']:+.2f}%)",
-        f"• الأقل ضربًا للوقف: `{least_stops['source_bot']}`",
-        f"• الأكثر فشل زخم/انعكاس: `{most_failures['source_bot']}`",
         "",
-        "_التقييم الإجمالي يراعي الربح والمخاطرة والـMFE والوقف والـFalse Exit، وليس عدد التنبيهات فقط._",
+        "🏆 *ملخص الأسبوع*",
+        "",
+        f"🥇 الأفضل إجمالًا: `{best_overall['source_bot']}`",
+        f"🎯 الأعلى وصولًا إلى T1: `{best_t1['source_bot']}`",
+        f"🚀 الأفضل في T2 / T3: `{best_t2_t3['source_bot']}`",
+        f"📈 أعلى متوسط MFE: `{best_mfe['source_bot']}` "
+        f"(`{best_mfe['avg_mfe']:+.2f}%`)",
+        f"🟢 الأقل خسائر: `{least_losses['source_bot']}`",
+        f"🛡️ الأكثر استخدامًا لحماية الأرباح: "
+        f"`{best_profit_protection['source_bot']}`",
+        "",
+        "🏁 *ترتيب الأسبوع*",
+    ])
+
+    medals = [
+        "🥇",
+        "🥈",
+        "🥉",
+    ]
+
+    for index, s in enumerate(
+        ranked_stats,
+        start=1,
+    ):
+        medal = (
+            medals[index - 1]
+            if index <= len(medals)
+            else f"{index}."
+        )
+
+        lines.append(
+            f"{medal} `{s['source_bot']}` "
+            f"— تقييم: `{s['quality']:.1f}`"
+        )
+
+    lines.extend([
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "_الترتيب يعتمد على الوصول للأهداف، "
+        "النتيجة النهائية، MFE، الوقف، "
+        "وحالات الخروج المبكر._",
     ])
 
     return "\n".join(lines)
