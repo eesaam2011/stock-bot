@@ -1319,9 +1319,14 @@ def evaluate_signals(trade: dict, current_price: float, tech: dict) -> dict:
         "recovered_structure": recovered_structure,
     }
 
-
-def transition_state(trade: dict, new_state: str, current_price: float, signals: dict):
+def transition_state(
+    trade: dict,
+    new_state: str,
+    current_price: float,
+    signals: dict,
+):
     old_state = trade.get("state")
+
     if old_state == new_state:
         return
 
@@ -1336,107 +1341,45 @@ def transition_state(trade: dict, new_state: str, current_price: float, signals:
             "from": old_state,
             "to": new_state,
             "price": current_price,
-            "gain_pct": signals.get("current_gain_pct"),
-            "peak_gain_pct": signals.get("peak_gain_pct"),
-            "weakness_score": signals.get("weakness_score"),
-            "reasons": signals.get("weakness_reasons"),
+            "gain_pct": signals.get(
+                "current_gain_pct"
+            ),
+            "peak_gain_pct": signals.get(
+                "peak_gain_pct"
+            ),
+            "weakness_score": signals.get(
+                "weakness_score"
+            ),
+            "reasons": signals.get(
+                "weakness_reasons"
+            ),
         },
     )
 
-    # Only meaningful transitions are sent.
-    if new_state == "STRONG":
-        send_telegram_message(
-            f"🟢 *[{trade['symbol']}] الزخم قوي*\n"
-            f"• الحالي: `${current_price:.4f}` ({signals['current_gain_pct']:+.2f}%)\n"
-            f"• أعلى ربح: `{signals['peak_gain_pct']:+.2f}%`\n"
-            f"• الحالة: `STRONG / HOLD`"
-        )
+    # ------------------------------------------------------
+    # Routine state transitions are logged only.
+    #
+    # Telegram remains reserved for meaningful actions:
+    # - Trade registration
+    # - T1 / T2 / T3
+    # - Protective Stop / Exit
+    # - Re-entry
+    # - Weekly report
+    # ------------------------------------------------------
 
-    elif new_state == "WEAKENING":
-        send_telegram_message(
-            f"🟡 *[{trade['symbol']}] ضعف أولي — لا يوجد خروج*\n"
-            f"• الحالي: `{signals['current_gain_pct']:+.2f}%`\n"
-            f"• أعلى ربح: `{signals['peak_gain_pct']:+.2f}%`\n"
-            f"• التراجع من القمة: `{signals['giveback_pct_points']:.2f}` نقطة\n"
-            f"• القرار: `مراقبة فقط + انتظار Recovery`"
-        )
-
-    elif new_state == "CONFIRMED_WEAKNESS":
-        reasons = (
-            " + ".join(
-                signals.get(
-                    "weakness_reasons",
-                    []
-                )[:4]
-            )
-            or "ضعف متعدد الإشارات"
-        )
-
-        recovery_window = safe_float(
-            signals.get(
-                "protection_recovery_window_sec",
-                RECOVERY_WINDOW_SEC
-            ),
-            RECOVERY_WINDOW_SEC
-        )
-
-        send_telegram_message(
-            f"🟠 *[{trade['symbol']}] ضعف مؤكد — نافذة استعادة مفعلة*\n"
-            f"• الحالي: `{signals['current_gain_pct']:+.2f}%`\n"
-            f"• Peak: `{signals['peak_gain_pct']:+.2f}%`\n"
-            f"• الأسباب: `{reasons}`\n"
-            f"• لا يوجد خروج الآن؛ نعطي السهم "
-            f"`{recovery_window:g}` ثانية للاستعادة."
-        )
-
-    elif new_state == "PROFIT_AT_RISK":
-        protection_stage = signals.get(
-            "protection_stage",
-            "BEFORE_T1"
-        )
-
-        protection_label = signals.get(
-            "protection_label",
-            "FLEXIBLE"
-        )
-
-        protection_names = {
-            "T1_LIGHT": "حماية خفيفة",
-            "T2_MEDIUM": "حماية متوسطة",
-            "T3_STRONG": "حماية قوية",
-        }
-
-        protection_ar = protection_names.get(
-            protection_stage,
-            "حماية مرنة"
-        )
-
-        recovery_window = safe_float(
-            signals.get(
-                "protection_recovery_window_sec",
-                RECOVERY_WINDOW_SEC
-            )
-        )
-
-        required_confirmations = int(
-            signals.get(
-                "protection_required_confirmations",
-                FAILED_CONFIRMATIONS
-            )
-        )
-
-        send_telegram_message(
-            f"🟠 *[{trade['symbol']}] الربح أصبح معرضًا للخطر*\n"
-            f"• الحالي: `{signals['current_gain_pct']:+.2f}%`\n"
-            f"• Peak: `{signals['peak_gain_pct']:+.2f}%`\n"
-            f"• Profit Floor: `{safe_float(signals.get('profit_floor_pct')):+.2f}%`\n"
-            f"• المرحلة: `{protection_stage}`\n"
-            f"• الحماية: `{protection_label}` — {protection_ar}\n"
-            f"• Recovery: `{recovery_window:g}` ثانية\n"
-            f"• التأكيدات المطلوبة: `{required_confirmations}`\n"
-            f"• لا يوجد خروج فوري؛ ننتظر تأكيد شروط الحماية."
-        )
-
+    print(
+        f"🧠 STATE | "
+        f"{trade.get('symbol')} | "
+        f"{old_state} -> {new_state} | "
+        f"Price={current_price:.4f} | "
+        f"Gain="
+        f"{safe_float(signals.get('current_gain_pct')):+.2f}% | "
+        f"Peak="
+        f"{safe_float(signals.get('peak_gain_pct')):+.2f}% | "
+        f"Weakness="
+        f"{int(signals.get('weakness_score', 0))}",
+        flush=True,
+    )    
 
 def hard_stop_hit(trade: dict, current_price: float) -> bool:
     stop = safe_float(trade.get("initial_stop"))
