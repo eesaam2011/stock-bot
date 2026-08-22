@@ -1918,6 +1918,38 @@ def close_trade_to_post_exit(
             trade["week_key"],
         )
 
+    elif reason.startswith("PROTECTIVE_STOP_"):
+        hincr(
+            trade["source_bot"],
+            "protective_stop_exit",
+            1,
+            trade["week_key"],
+        )
+
+        if reason == "PROTECTIVE_STOP_T1_LIGHT":
+            hincr(
+                trade["source_bot"],
+                "protective_stop_t1",
+                1,
+                trade["week_key"],
+            )
+
+        elif reason == "PROTECTIVE_STOP_T2_MEDIUM":
+            hincr(
+                trade["source_bot"],
+                "protective_stop_t2",
+                1,
+                trade["week_key"],
+            )
+
+        elif reason == "PROTECTIVE_STOP_T3_STRONG":
+            hincr(
+                trade["source_bot"],
+                "protective_stop_t3",
+                1,
+                trade["week_key"],
+            )
+            
     elif reason.startswith("PROFIT_PROTECTION_"):
         hincr(
             trade["source_bot"],
@@ -1972,6 +2004,9 @@ def close_trade_to_post_exit(
 
     reason_labels = {
         "HARD_STOP": "ضرب الوقف",
+        "PROTECTIVE_STOP_T1_LIGHT": "كسر وقف الحماية الخفيف بعد T1",
+        "PROTECTIVE_STOP_T2_MEDIUM": "كسر وقف الحماية المتوسط بعد T2",
+        "PROTECTIVE_STOP_T3_STRONG": "كسر وقف الحماية القوي بعد T3",
         "PROFIT_PROTECTION_T1_LIGHT": "حماية ربح خفيفة بعد T1",
         "PROFIT_PROTECTION_T2_MEDIUM": "حماية ربح متوسطة بعد T2",
         "PROFIT_PROTECTION_T3_STRONG": "حماية ربح قوية بعد T3",
@@ -2184,6 +2219,40 @@ def evaluate_active_trade(trade: dict):
             )
             + 1
         )
+    active_protective_stop = safe_float(
+        trade.get(
+            "protective_stop",
+            trade.get("initial_stop")
+        )
+    )
+
+    protective_stage = str(
+        trade.get(
+            "protective_stop_stage",
+            "BEFORE_T1"
+        )
+    )
+
+    protective_stop_active = (
+        protective_stage in (
+            "T1_LIGHT",
+            "T2_MEDIUM",
+            "T3_STRONG",
+        )
+        and active_protective_stop > 0
+    )
+
+    if (
+        protective_stop_active
+        and current_price <= active_protective_stop
+    ):
+        close_trade_to_post_exit(
+            trade,
+            current_price,
+            f"PROTECTIVE_STOP_{protective_stage}",
+        )
+        return
+        
     signals = evaluate_signals(trade, current_price, tech)
 
     trade["peak_price"] = signals["peak_price"]
