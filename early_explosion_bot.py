@@ -53,7 +53,7 @@ UPSTASH_REDIS_REST_TOKEN = os.getenv(
 LTM_INCOMING_KEY = "live_trade_manager:incoming"
 
 PRICE_MIN          = 0.3
-PRICE_MAX          = 25.0
+PRICE_MAX          = 50.0
 MIN_AVG_VOL        = 50_000
 MAX_AVG_VOL        = 5_000_000
 MIN_DOLLAR_VOLUME  = 300_000
@@ -1372,7 +1372,13 @@ def check_explosion(api, symbol, asset_name):
             reject_avg_vol += 1
             return None
 
-        if avg_vol_20 > MAX_AVG_VOL:
+        effective_max_avg_vol = (
+            10_000_000
+            if current_price > 30.0
+            else MAX_AVG_VOL
+        )
+
+        if avg_vol_20 > effective_max_avg_vol:
             if real_float is None or real_float > 30_000_000:
                 reject_avg_vol += 1
                 return None
