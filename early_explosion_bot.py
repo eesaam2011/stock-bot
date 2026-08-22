@@ -617,16 +617,16 @@ def get_float_bonus(real_float):
         return 0, "UNKNOWN_FLOAT"
 
     if real_float <= 5_000_000:
-        return 20, "ULTRA_LOW_FLOAT"
+        return 10, "ULTRA_LOW_FLOAT"
 
     if real_float <= 15_000_000:
-        return 15, "VERY_LOW_FLOAT"
+        return 8, "VERY_LOW_FLOAT"
 
     if real_float <= 30_000_000:
-        return 10, "LOW_FLOAT"
+        return 5, "LOW_FLOAT"
 
     if real_float <= 60_000_000:
-        return 5, "MEDIUM_FLOAT"
+        return 2, "MEDIUM_FLOAT"
 
     return 0, "HIGH_FLOAT"
 
@@ -1364,7 +1364,7 @@ def check_explosion(api, symbol, asset_name):
             real_float = float_info.get("float")
 
         float_bonus_raw, float_tier = get_float_bonus(real_float)
-        float_bonus = min(float_bonus_raw, 5)
+        float_bonus = float_bonus_raw
 
         if avg_vol_20 < MIN_AVG_VOL:
             reject_avg_vol += 1
@@ -1491,7 +1491,7 @@ def check_explosion(api, symbol, asset_name):
         # OBV: max 10
         score += obv_bonus
 
-        # Float: max 5
+        # Float: max 10
         score += float_bonus
 
         if gain_trend <= 0:
@@ -1518,12 +1518,13 @@ def check_explosion(api, symbol, asset_name):
         score_breakdown = {
             "RVOL": 25 if rvol >= 10 else 20 if rvol >= 5 else 15 if rvol >= RVOL_MIN else 0,
             "Accel": volume_acceleration_score,
-            "Price": 20 if price_change_pct >= 20 else 15 if price_change_pct >= 10 else 10 if price_change_pct >= MIN_PRICE_CHANGE else 0,
+            "Price": 20 if price_change_pct >= 20 else 12 if price_change_pct >= 10 else 8 if price_change_pct >= MIN_PRICE_CHANGE else 0,
             "Breakout": 15 if current_price >= resistance_20 else 8 if current_price >= resistance_20 * 0.99 else 0,
             "OBV": obv_bonus,
             "Float": float_bonus,
             "Liquidity": 10 if dollar_volume >= 10_000_000 else 7 if dollar_volume >= 2_000_000 else 5 if dollar_volume >= MIN_DOLLAR_VOLUME else 0,
             "GainTrend": 5 if gain_trend >= 1.0 else 3 if gain_trend >= 0.5 else 1 if gain_trend > 0 else 0,
+            "CoolingPenalty": -8 if not volume_trend_up and volume_peak_recent else 0,
         }
         
         mega_volume_exception = (
