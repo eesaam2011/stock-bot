@@ -693,11 +693,18 @@ def calculate_technical_state(df: Optional[pd.DataFrame], current_price: float) 
         "ema9": None,
         "ema20": None,
         "vwap": None,
+
+        "atr_1m": 0.0,
+        "atr_1m_pct": 0.0,
+        "avg_range_1m_pct": 0.0,
+
         "volume_accel": 0.0,
         "last_1m_vs_avg": 0.0,
+
         "lower_high": False,
         "lower_low": False,
         "sell_volume_pressure": False,
+
         "bar_count": 0,
     }
 
@@ -710,8 +717,35 @@ def calculate_technical_state(df: Optional[pd.DataFrame], current_price: float) 
         lows = df["low"].astype(float)
         volumes = df["volume"].astype(float)
 
-        ema9 = float(closes.ewm(span=9, adjust=False).mean().iloc[-1])
-        ema20 = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
+        prev_close = closes.shift(1)
+
+        true_range = pd.concat(
+            [
+                highs - lows,
+                (highs - prev_close).abs(),
+                (lows - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+
+        atr_1m = safe_float(
+            true_range.tail(14).mean()
+        )
+
+        atr_1m_pct = (
+            (atr_1m / current_price) * 100.0
+            if current_price > 0
+            else 0.0
+        )
+
+        recent_ranges_pct = (
+            ((highs - lows) / closes.replace(0, float("nan")))
+            * 100.0
+        )
+
+        avg_range_1m_pct = safe_float(
+            recent_ranges_pct.tail(10).mean()
+        )
 
         typical = (df["high"].astype(float) + df["low"].astype(float) + closes) / 3.0
         cum_vol = volumes.cumsum()
@@ -751,6 +785,9 @@ def calculate_technical_state(df: Optional[pd.DataFrame], current_price: float) 
             "ema9": ema9,
             "ema20": ema20,
             "vwap": vwap,
+            "atr_1m": atr_1m,
+            "atr_1m_pct": atr_1m_pct,
+            "avg_range_1m_pct": avg_range_1m_pct,
             "volume_accel": volume_accel,
             "last_1m_vs_avg": last_1m_vs_avg,
             "lower_high": bool(lower_high),
