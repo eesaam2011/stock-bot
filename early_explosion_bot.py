@@ -2742,7 +2742,8 @@ def main_scanner():
                             f"OBV={breakdown.get('OBV', 0)} | "
                             f"Float={breakdown.get('Float', 0)} | "
                             f"Liquidity={breakdown.get('Liquidity', 0)} | "
-                            f"GainTrend={breakdown.get('GainTrend', 0)}",
+                            f"GainTrend={breakdown.get('GainTrend', 0)} | "
+                            f"CoolingPenalty={breakdown.get('CoolingPenalty', 0)}",
                             flush=True
                         )
                         
