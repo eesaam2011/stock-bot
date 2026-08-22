@@ -121,7 +121,6 @@ report_lock = threading.Lock()
 final_session_report_sent = False
 last_session_date = None
 reject_rvol = 0
-reject_resistance = 0
 reject_score = 0
 reject_price_change = 0
 reject_history = 0
@@ -1244,7 +1243,6 @@ def track_rejected_candidate(symbol, score, reason, rvol, price_change_pct, vol_
 def check_explosion(api, symbol, asset_name):
     global reject_price_change
     global reject_rvol
-    global reject_resistance
     global reject_score
     global reject_history
     global reject_price
@@ -1377,7 +1375,11 @@ def check_explosion(api, symbol, asset_name):
         )
 
         if avg_vol_20 > effective_max_avg_vol:
-            if real_float is not None and real_float > 30_000_000:
+            if real_float is not None:
+                if real_float > 30_000_000:
+                    reject_avg_vol += 1
+                    return None
+            elif avg_vol_20 > effective_max_avg_vol * 2:
                 reject_avg_vol += 1
                 return None
                 
@@ -2507,7 +2509,6 @@ def main_scanner():
     global reject_dollar_volume
     global reject_price_change
     global reject_rvol
-    global reject_resistance
     global reject_score
 
     print("🚀 [رادار النخبة] بدأ العمل بكامل الفلاتر المحدثة والقائمة السوداء الحقيقية...", flush=True)
@@ -2774,7 +2775,6 @@ def main_scanner():
                 f"DollarVol={reject_dollar_volume} | "
                 f"Change={reject_price_change} | "
                 f"RVOL={reject_rvol} | "
-                f"Resistance={reject_resistance} | "
                 f"Score={reject_score}",
                 flush=True
             )
@@ -2785,7 +2785,6 @@ def main_scanner():
             reject_dollar_volume = 0
             reject_price_change = 0
             reject_rvol = 0
-            reject_resistance = 0
             reject_score = 0
             reject_blacklist = 0
             reject_bad_name = 0
