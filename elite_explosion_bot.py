@@ -1654,7 +1654,7 @@ def calculate_vwap(df):
         typical_price = (df["high"] + df["low"] + df["close"]) / 3
         volume = df["volume"].replace(0, np.nan)
         vwap = (typical_price * volume).cumsum() / volume.cumsum()
-        return vwap.fillna(method="ffill").fillna(df["close"])
+        return vwap.ffill().fillna(df["close"])
     except Exception:
         return pd.Series([np.nan] * len(df))
 
