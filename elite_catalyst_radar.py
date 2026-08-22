@@ -77,7 +77,7 @@ BOT_NAME = "Elite Catalyst Radar"
 BOT_NAME_AR = "رادار محفزات النخبة"
 
 PRICE_MIN = 0.50
-PRICE_MAX = 25.00
+PRICE_MAX = 50.00
 MAX_SPREAD = 2.0
 MAX_STOP = 6.0
 
