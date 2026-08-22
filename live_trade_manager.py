@@ -520,7 +520,20 @@ def register_incoming_alert(payload: dict):
         "entry_ts": alert_ts,
         "entry_time_ksa": datetime.fromtimestamp(alert_ts, TZ_KSA).strftime("%Y-%m-%d %H:%M:%S"),
 
-        "initial_stop": safe_float(payload.get("stop") or payload.get("stop_loss")),
+        "initial_stop": safe_float(
+            payload.get("stop")
+            or payload.get("stop_loss")
+        ),
+
+        "protective_stop": safe_float(
+            payload.get("stop")
+            or payload.get("stop_loss")
+        ),
+
+        "protective_stop_stage": "BEFORE_T1",
+        "protective_stop_updated_ts": None,
+        "protective_stop_raise_count": 0,
+
         "t1": safe_float(payload.get("t1") or payload.get("target1")),
         "t2": safe_float(payload.get("t2") or payload.get("target2")),
         "t3": safe_float(payload.get("t3") or payload.get("target3")),
@@ -2101,6 +2114,76 @@ def evaluate_active_trade(trade: dict):
 
     df = get_intraday_bars(symbol)
     tech = calculate_technical_state(df, current_price)
+    protective = calculate_dynamic_protective_stop(
+        trade,
+        current_price,
+        tech,
+    )
+
+    previous_protective_stop = safe_float(
+        trade.get(
+            "protective_stop",
+            trade.get("initial_stop")
+        )
+    )
+
+    new_protective_stop = safe_float(
+        protective.get(
+            "protective_stop",
+            previous_protective_stop
+        )
+    )
+
+    trade["protective_stop"] = (
+        new_protective_stop
+    )
+
+    trade["protective_stop_stage"] = (
+        protective.get(
+            "stage",
+            "BEFORE_T1"
+        )
+    )
+
+    trade["protective_stop_volatility_pct"] = (
+        round(
+            safe_float(
+                protective.get(
+                    "volatility_pct"
+                )
+            ),
+            3
+        )
+    )
+
+    trade["protective_stop_trail_pct"] = (
+        round(
+            safe_float(
+                protective.get(
+                    "trail_distance_pct"
+                )
+            ),
+            3
+        )
+    )
+
+    if new_protective_stop > (
+        previous_protective_stop
+        + 0.0000001
+    ):
+        trade["protective_stop_updated_ts"] = (
+            now_ts()
+        )
+
+        trade["protective_stop_raise_count"] = (
+            int(
+                trade.get(
+                    "protective_stop_raise_count",
+                    0
+                )
+            )
+            + 1
+        )
     signals = evaluate_signals(trade, current_price, tech)
 
     trade["peak_price"] = signals["peak_price"]
