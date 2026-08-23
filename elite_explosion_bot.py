@@ -3216,6 +3216,7 @@ def scan_market_batch():
             if passes_activity_filter(metrics):
                 runtime_stats["passed_activity_filter"] += 1
                 active_candidates.append(metrics)
+                fetch_symbol_news(symbol)    
                 
             session_profile = get_session_profile()
 
