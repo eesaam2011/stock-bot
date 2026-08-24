@@ -2544,7 +2544,110 @@ def save_sent_alert(symbol, metrics):
     }
     redis_set_json(KEY_ALERTS, alerts)
 
+def was_news_id_alerted(
+    symbol,
+    news_id,
+):
+    symbol = str(symbol or "").strip().upper()
+    news_id = str(news_id or "").strip()
 
+    if not symbol or not news_id:
+        return False
+
+    # Check alerts created by the original path.
+    alerts = redis_get_json(
+        KEY_ALERTS,
+        {},
+    ) or {}
+
+    original_alert = alerts.get(
+        symbol,
+        {},
+    )
+
+    if (
+        isinstance(original_alert, dict)
+        and str(
+            original_alert.get(
+                "news_id",
+                "",
+            )
+        )
+        == news_id
+    ):
+        return True
+
+    # Check alerts created by the deferred path.
+    deferred_key = (
+        f"{symbol}|{news_id}"
+    )
+
+    deferred_alert = redis_hget_json(
+        KEY_DEFERRED_ALERTS,
+        deferred_key,
+        None,
+    )
+
+    return isinstance(
+        deferred_alert,
+        dict,
+    )
+
+
+def save_deferred_sent_alert(
+    symbol,
+    news_id,
+    metrics,
+):
+    symbol = str(symbol or "").strip().upper()
+    news_id = str(news_id or "").strip()
+
+    record = {
+        "symbol": symbol,
+        "news_id": news_id,
+        "date": today_ksa(),
+        "time": now_ksa().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "score": safe_float(
+            metrics.get("final_score")
+        ),
+        "path": (
+            "DEFERRED_CATALYST_ENTRY_PATH"
+        ),
+    }
+
+    deferred_key = (
+        f"{symbol}|{news_id}"
+    )
+
+    redis_hset_json(
+        KEY_DEFERRED_ALERTS,
+        deferred_key,
+        record,
+    )
+
+    # Mirror the alert into the original global alert registry.
+    # This prevents the original path from sending another
+    # same-day alert after the deferred path already alerted.
+    alerts = redis_get_json(
+        KEY_ALERTS,
+        {},
+    ) or {}
+
+    alerts[symbol] = {
+        "date": record["date"],
+        "time": record["time"],
+        "score": record["score"],
+        "news_id": news_id,
+        "path": "deferred",
+    }
+
+    redis_set_json(
+        KEY_ALERTS,
+        alerts,
+    )
+    
 def build_trade_plan(metrics):
     price = safe_float(metrics.get("price"))
     atr = safe_float(metrics.get("atr"))
@@ -2630,7 +2733,195 @@ def final_safety_check(metrics, watch_item):
         return False, reason, None, None
     return True, "OK", refreshed_metrics, refreshed_plan
 
+def final_deferred_catalyst_check(
+    symbol,
+    watch_item,
+):
+    symbol = str(symbol or "").strip().upper()
 
+    news_id = str(
+        watch_item.get(
+            "news_id",
+            "",
+        )
+        or ""
+    )
+
+    if not symbol or not news_id:
+        return (
+            False,
+            "invalid deferred candidate",
+            None,
+            None,
+        )
+
+    if was_news_id_alerted(
+        symbol,
+        news_id,
+    ):
+        return (
+            False,
+            "same news already alerted",
+            None,
+            None,
+        )
+
+    with ACTIVE_TRADES_LOCK:
+        if symbol in ACTIVE_TRADES:
+            return (
+                False,
+                "symbol already has active trade",
+                None,
+                None,
+            )
+
+    shared, shared_status = (
+        get_shared_catalyst_record(
+            symbol,
+            expected_news_id=news_id,
+        )
+    )
+
+    if not shared:
+        return (
+            False,
+            f"shared news invalid: "
+            f"{shared_status}",
+            None,
+            None,
+        )
+
+    snapshot = get_snapshots_batch(
+        [symbol]
+    ).get(symbol)
+
+    if not snapshot:
+        return (
+            False,
+            "final snapshot unavailable",
+            None,
+            None,
+        )
+
+    refreshed_metrics, status = (
+        evaluate_deferred_catalyst_entry(
+            symbol,
+            watch_item,
+            snapshot=snapshot,
+        )
+    )
+
+    if not refreshed_metrics:
+        return (
+            False,
+            f"final deferred metrics failed: "
+            f"{status}",
+            None,
+            None,
+        )
+
+    if not refreshed_metrics.get(
+        "deferred_ready",
+        False,
+    ):
+        return (
+            False,
+            f"deferred entry no longer ready: "
+            f"{status}",
+            None,
+            None,
+        )
+
+    price = safe_float(
+        refreshed_metrics.get("price")
+    )
+
+    vwap = safe_float(
+        refreshed_metrics.get("vwap")
+    )
+
+    spread = safe_float(
+        refreshed_metrics.get(
+            "spread_pct"
+        ),
+        999,
+    )
+
+    if spread > MAX_SPREAD:
+        return (
+            False,
+            "final spread too wide",
+            None,
+            None,
+        )
+
+    if (
+        vwap <= 0
+        or price < vwap
+    ):
+        return (
+            False,
+            "final VWAP confirmation lost",
+            None,
+            None,
+        )
+
+    extension_pct = safe_float(
+        refreshed_metrics.get(
+            "deferred_extension_pct"
+        )
+    )
+
+    if (
+        extension_pct
+        > DEFERRED_MAX_EXTENSION_ABOVE_RESISTANCE_PCT
+    ):
+        return (
+            False,
+            "entry became overextended",
+            None,
+            None,
+        )
+
+    close_position = safe_float(
+        refreshed_metrics.get(
+            "deferred_close_position"
+        )
+    )
+
+    if (
+        close_position
+        < DEFERRED_MIN_CLOSE_POSITION
+    ):
+        return (
+            False,
+            "final candle quality weakened",
+            None,
+            None,
+        )
+
+    plan, plan_status = (
+        build_trade_plan(
+            refreshed_metrics
+        )
+    )
+
+    if not plan:
+        return (
+            False,
+            f"trade plan rejected: "
+            f"{plan_status}",
+            None,
+            None,
+        )
+
+    return (
+        True,
+        "OK",
+        refreshed_metrics,
+        plan,
+    )
+    
 def build_alert_message(metrics, plan):
     reasons = "\n".join(f"• {html.escape(str(x))}" for x in metrics.get("reasons", [])[:7])
     warnings = ""
@@ -2678,7 +2969,247 @@ ATR: {safe_float(metrics.get('atr_pct')):.2f}%
 السبريد: {safe_float(metrics.get('spread_pct')):.2f}%
 """
 
+def build_deferred_catalyst_alert_message(
+    metrics,
+    plan,
+    watch_item,
+):
+    symbol = metrics["symbol"]
 
+    headline = html.escape(
+        str(
+            watch_item.get(
+                "headline",
+                "",
+            )
+            or "خبر إيجابي مؤهل"
+        )
+    )
+
+    source = html.escape(
+        str(
+            watch_item.get(
+                "source",
+                "",
+            )
+            or "Elite Catalyst Central News"
+        )
+    )
+
+    reasons_list = metrics.get(
+        "deferred_confirmation_reasons",
+        [],
+    )
+
+    reasons = "\n".join(
+        f"• {html.escape(str(reason))}"
+        for reason in reasons_list[:7]
+    )
+
+    if not reasons:
+        reasons = (
+            "• اكتملت شروط "
+            "التأكيد الفني المؤجل"
+        )
+
+    added_ts = safe_float(
+        watch_item.get("added_ts")
+    )
+
+    waited_minutes = 0.0
+
+    if added_ts > 0:
+        waited_minutes = max(
+            0.0,
+            (
+                time.time()
+                - added_ts
+            )
+            / 60,
+        )
+
+    return f"""🚨 <b>دخول مؤكد — محفز خبري مؤجل</b>
+
+📈 <b>السهم:</b> {symbol}
+⭐ <b>درجة الدخول:</b> {safe_float(metrics.get('final_score')):.1f}/100
+🧨 <b>قوة المحفز:</b> {safe_float(metrics.get('catalyst_score')):.0f}/100
+⏳ <b>مدة انتظار التأكيد:</b> {waited_minutes:.1f} دقيقة
+
+━━━━━━━━━━━━━━
+
+📰 <b>الخبر المحفز:</b>
+{headline}
+
+🏷 <b>المصدر:</b> {source}
+
+━━━━━━━━━━━━━━
+
+✅ <b>سبب التأكيد:</b>
+{reasons}
+
+━━━━━━━━━━━━━━
+
+📊 <b>الحركة الحالية:</b>
+• RVOL: {safe_float(metrics.get('rvol')):.2f}
+• تسارع الحجم: {safe_float(metrics.get('volume_accel_ratio')):.2f}x
+• زخم 3 دقائق: {safe_float(metrics.get('deferred_momentum_3m_pct')):.2f}%
+• موقع الإغلاق: {safe_float(metrics.get('deferred_close_position')) * 100:.0f}%
+• السبريد: {safe_float(metrics.get('spread_pct')):.2f}%
+
+━━━━━━━━━━━━━━
+
+💰 <b>الدخول:</b> {fmt_price(plan.get('entry'))}
+🛑 <b>وقف الخسارة:</b> {fmt_price(plan.get('stop'))} ({safe_float(plan.get('stop_distance_pct')):.2f}%)
+
+🎯 <b>T1:</b> {fmt_price(plan.get('t1'))}
+🎯 <b>T2:</b> {fmt_price(plan.get('t2'))}
+🎯 <b>T3:</b> {fmt_price(plan.get('t3'))}
+
+📊 <b>العائد/المخاطرة:</b> {safe_float(plan.get('reward_risk')):.2f}
+"""
+
+def send_deferred_catalyst_alert(
+    metrics,
+    watch_item,
+):
+    symbol = str(
+        metrics.get(
+            "symbol",
+            "",
+        )
+    ).strip().upper()
+
+    news_id = str(
+        watch_item.get(
+            "news_id",
+            "",
+        )
+        or ""
+    )
+
+    if not symbol or not news_id:
+        return False
+
+    if was_news_id_alerted(
+        symbol,
+        news_id,
+    ):
+        remove_from_catalyst_entry_watchlist(
+            symbol,
+            reason="same news already alerted",
+        )
+        return False
+
+    ok, reason, fresh_metrics, plan = (
+        final_deferred_catalyst_check(
+            symbol,
+            watch_item,
+        )
+    )
+
+    if not ok:
+        log(
+            f"[DEFERRED] final check rejected: "
+            f"{symbol} | "
+            f"Reason={reason}"
+        )
+
+        if reason in {
+            "same news already alerted",
+            "symbol already has active trade",
+        }:
+            remove_from_catalyst_entry_watchlist(
+                symbol,
+                reason=reason,
+            )
+
+        return False
+
+    message = (
+        build_deferred_catalyst_alert_message(
+            fresh_metrics,
+            plan,
+            watch_item,
+        )
+    )
+
+    if not send_telegram(
+        message
+    ):
+        log(
+            f"[DEFERRED] Telegram failed: "
+            f"{symbol}"
+        )
+        return False
+
+    save_deferred_sent_alert(
+        symbol,
+        news_id,
+        fresh_metrics,
+    )
+
+    redis_hset_json(
+        KEY_HISTORY,
+        (
+            f"{symbol}:deferred_open:"
+            f"{int(time.time())}"
+        ),
+        {
+            "symbol": symbol,
+            "news_id": news_id,
+            "path": (
+                "DEFERRED_CATALYST_ENTRY_PATH"
+            ),
+            "metrics": fresh_metrics,
+            "trade_plan": plan,
+            "date": today_ksa(),
+            "time": now_ksa().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+        },
+    )
+
+    activate_trade(
+        fresh_metrics,
+        plan,
+    )
+
+    runtime_stats[
+        "deferred_alerts_sent"
+    ] = (
+        runtime_stats.get(
+            "deferred_alerts_sent",
+            0,
+        )
+        + 1
+    )
+
+    runtime_stats[
+        "alerts_sent"
+    ] = (
+        runtime_stats.get(
+            "alerts_sent",
+            0,
+        )
+        + 1
+    )
+
+    remove_from_catalyst_entry_watchlist(
+        symbol,
+        reason=(
+            "deferred entry alert sent"
+        ),
+    )
+
+    log(
+        f"[DEFERRED] ALERT SENT: "
+        f"{symbol} | "
+        f"Score="
+        f"{safe_float(fresh_metrics.get('final_score')):.1f}"
+    )
+
+    return True
+    
 def activate_trade(metrics, plan):
     symbol = metrics["symbol"]
     item = {
