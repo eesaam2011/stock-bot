@@ -2420,9 +2420,6 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
     runner_personality, fatigue = cached_runner_personality_scores(symbol)
     extension = extension_saturation_score(change, rotation, price, vwap)
 
-    with candidate_lock:
-        existing = candidates.get(symbol)
-
     if existing is None:
         c = Candidate(
             symbol=symbol,
@@ -2459,7 +2456,8 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
 
     c.spread_quality = spread_quality
     c.raw_liquidity_evolution = raw_liquidity_evolution
-    c.liquidity_evolution = liquidity_evolution    c.runner_personality = runner_personality
+    c.liquidity_evolution = liquidity_evolution
+    c.runner_personality = runner_personality
     c.runner_fatigue = fatigue
     c.extension_risk = extension
 
@@ -3375,13 +3373,18 @@ def entry_cycle() -> None:
 
     with candidate_lock:
         items = [
-            c for c in candidates.values()
-            if c.entry_eligible
-            or c.state in (
-                CandidateState.BREAKOUT_READY,
-                CandidateState.ELITE_CONTINUATION,
+            c
+            for c in candidates.values()
+            if (
+                c.entry_eligible
+                or early_entry_setup(c)[0]
+                or c.state in (
+                    CandidateState.BREAKOUT_READY,
+                    CandidateState.ELITE_CONTINUATION,
+                )
             )
         ]
+        
     items.sort(key=lambda c: c.opportunity_score, reverse=True)
 
     for c in items[:30]:
@@ -3754,8 +3757,17 @@ def config_snapshot() -> Dict[str, Any]:
         "enable_live_entry_alerts": ENABLE_LIVE_ENTRY_ALERTS,
         "state_thresholds": dict(STATE_THRESHOLDS),
         "entry_min_opportunity": ENTRY_MIN_OPPORTUNITY,
+        "early_entry_min_opportunity": EARLY_ENTRY_MIN_OPPORTUNITY,
         "entry_max_failure_pressure": ENTRY_MAX_FAILURE_PRESSURE,
+        "early_entry_max_failure_pressure": (
+            EARLY_ENTRY_MAX_FAILURE_PRESSURE
+        ),
         "entry_max_spread_pct": ENTRY_MAX_SPREAD_PCT,
+        "entry_max_extension_risk": ENTRY_MAX_EXTENSION_RISK,
+        "early_entry_rotation_range": [
+            EARLY_ENTRY_MIN_ROTATION,
+            EARLY_ENTRY_MAX_ROTATION,
+        ],
         "group_weights": dict(GROUP_WEIGHTS),
         "shared_news_hash_key": SHARED_NEWS_HASH_KEY,
         "float_cache_filename": FLOAT_CACHE_FILENAME,
@@ -3788,6 +3800,7 @@ def candidate_diagnostic(c: Candidate) -> Dict[str, Any]:
             "last_good_score": c.last_good_score,
 
             "peak_score": c.peak_score,
+            "peak_snapshot": dict(c.peak_snapshot),
             "state_peak": c.state_peak,
             "priority_score": persistence_priority_score(c),
 
@@ -3825,6 +3838,7 @@ def candidate_diagnostic(c: Candidate) -> Dict[str, Any]:
             "cross_session_persistence": c.cross_session_persistence,
             "trajectory_score": c.trajectory_score,
             "spread_pct": c.spread_pct,
+            "raw_liquidity_evolution": c.raw_liquidity_evolution,
             "liquidity_evolution": c.liquidity_evolution,
             "runner_personality": c.runner_personality,
             "runner_fatigue": c.runner_fatigue,
