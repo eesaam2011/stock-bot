@@ -3403,7 +3403,27 @@ def process_news_symbol(symbol):
             "expires_at": time.time() + SERIOUS_NEGATIVE_TTL,
         })
         if symbol in NEWS_WATCHLIST:
-            remove_from_news_watchlist(symbol, "serious negative news")
+            remove_from_news_watchlist(
+                symbol,
+                "serious negative news",
+            )
+
+        if symbol in CATALYST_ENTRY_WATCHLIST:
+            runtime_stats[
+                "deferred_removed_negative"
+            ] = (
+                runtime_stats.get(
+                    "deferred_removed_negative",
+                    0,
+                )
+                + 1
+            )
+
+            remove_from_catalyst_entry_watchlist(
+                symbol,
+                reason="serious negative news",
+            )
+
         return
 
     if best.get("positive") and safe_float(best.get("score")) >= MIN_CATALYST_SCORE:
@@ -3414,7 +3434,24 @@ def process_news_symbol(symbol):
             f"Category={best.get('category', 'unknown')} | "
             f"Headline={best.get('headline', '')[:120]}"
         )
+        
+        if is_weekend():
+            log(
+                f"⏳ Weekend catalyst queued for "
+                f"deferred confirmation: {symbol}"
+            )
 
+            add_to_catalyst_entry_watchlist(
+                symbol,
+                result,
+                initial_metrics=None,
+                initial_status=(
+                    "weekend_waiting_for_market"
+                ),
+            )
+
+            return
+            
         routing_item = {
             "symbol": symbol,
             "news_id": str(best.get("news_id", "")),
@@ -3463,14 +3500,68 @@ def process_news_symbol(symbol):
                 symbol,
                 result,
             )
+            with CATALYST_ENTRY_WATCHLIST_LOCK:
+                deferred_item = (
+                    CATALYST_ENTRY_WATCHLIST.get(
+                        symbol
+                    )
+                )
 
+            if (
+                deferred_item
+                and str(
+                    deferred_item.get(
+                        "news_id",
+                        "",
+                    )
+                )
+                == str(
+                    best.get(
+                        "news_id",
+                        "",
+                    )
+                )
+            ):
+                remove_from_catalyst_entry_watchlist(
+                    symbol,
+                    reason=(
+                        "migrated to immediate path"
+                    ),
+                )
+                
         else:
             log(
                 f"⏳ Deferred catalyst route: "
                 f"{symbol} | "
                 f"Reason={status}"
             )
+            with WATCHLIST_LOCK:
+                immediate_item = (
+                    NEWS_WATCHLIST.get(
+                        symbol
+                    )
+                )
 
+            if (
+                immediate_item
+                and str(
+                    immediate_item.get(
+                        "news_id",
+                        "",
+                    )
+                )
+                == str(
+                    best.get(
+                        "news_id",
+                        "",
+                    )
+                )
+            ):
+                remove_from_news_watchlist(
+                    symbol,
+                    "migrated to deferred path",
+                )
+                
             add_to_catalyst_entry_watchlist(
                 symbol,
                 result,
