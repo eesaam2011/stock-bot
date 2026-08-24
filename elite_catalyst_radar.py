@@ -4436,7 +4436,7 @@ def startup_message():
 📥 سجلات الفلوت: {len(FLOAT_CACHE)}
 📦 Universe: {len(UNIVERSE)}
 📰 NEWS_WATCHLIST: {len(NEWS_WATCHLIST)}
-
+⏳ DEFERRED WATCHLIST: {len(CATALYST_ENTRY_WATCHLIST)}
 🕒 الوقت: {now_ksa().strftime('%Y-%m-%d %H:%M:%S')}
 """)
 
