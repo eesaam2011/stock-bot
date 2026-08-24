@@ -123,6 +123,12 @@ END_OF_DAY_CLOSE_HOUR_NY = 18
 END_OF_DAY_CLOSE_MINUTE_NY = 5
 
 FULL_UNIVERSE_REFRESH_TIMES_KSA = {"10:45", "16:20"}
+# Deferred Catalyst Entry Path.
+DEFERRED_CATALYST_MONITOR_INTERVAL = 6
+DEFERRED_CATALYST_MAX_AGE = 90 * 60
+DEFERRED_CATALYST_MAX_WEAK_CYCLES = 4
+DEFERRED_VWAP_FAILURE_CONFIRMATIONS = 2
+DEFERRED_BREAKOUT_FAILURE_CONFIRMATIONS = 2
 
 # ==============================================================================
 # Redis Keys - new namespace to avoid mixing with old Elite Radar state
@@ -139,7 +145,13 @@ KEY_HISTORY = f"{REDIS_PREFIX}:history"
 KEY_ALERTS = f"{REDIS_PREFIX}:alerts"
 KEY_RUNTIME = f"{REDIS_PREFIX}:runtime"
 KEY_BLOCKED_NEWS = f"{REDIS_PREFIX}:blocked_news"
+KEY_CATALYST_ENTRY_WATCHLIST = (
+    f"{REDIS_PREFIX}:catalyst_entry_watchlist"
+)
 
+KEY_DEFERRED_ALERTS = (
+    f"{REDIS_PREFIX}:deferred_alerts"
+)
 # ==============================================================================
 # Runtime State
 # ==============================================================================
@@ -154,6 +166,16 @@ runtime_stats = {
     "active_trades": 0,
     "float_records": 0,
     "universe_size": 0,
+    "deferred_watchlist_size": 0,
+    "deferred_added": 0,
+    "deferred_checks": 0,
+    "deferred_ready": 0,
+    "deferred_alerts_sent": 0,
+    "deferred_removed_expired": 0,
+    "deferred_removed_negative": 0,
+    "deferred_removed_weak": 0,
+    "deferred_removed_vwap": 0,
+    "deferred_errors": 0,
     "news_watchlist_size": 0,
     "last_news_scan": "Never",
     "last_watch_scan": "Never",
@@ -163,12 +185,14 @@ runtime_stats = {
 FLOAT_CACHE: Dict[str, float] = {}
 NEWS_CACHE: Dict[str, dict] = {}
 NEWS_WATCHLIST: Dict[str, dict] = {}
+CATALYST_ENTRY_WATCHLIST: Dict[str, dict] = {}
 ACTIVE_TRADES: Dict[str, dict] = {}
 UNIVERSE: List[str] = []
 NEWS_CURSOR = 0
 
 ACTIVE_TRADES_LOCK = threading.Lock()
 WATCHLIST_LOCK = threading.Lock()
+CATALYST_ENTRY_WATCHLIST_LOCK = threading.Lock()
 FINNHUB_LOCK = threading.Lock()
 LAST_FINNHUB_REQUEST_TIME = 0.0
 BAR_CACHE: Dict[str, tuple] = {}
@@ -1361,7 +1385,255 @@ def cleanup_news_watchlist():
         added_ts = safe_float(item.get("added_ts"))
         if added_ts <= 0 or now_ts - added_ts > NEWS_WATCH_TTL:
             remove_from_news_watchlist(symbol, "catalyst TTL expired")
+# ==============================================================================
+# DEFERRED_CATALYST_ENTRY_PATH
+# ==============================================================================
 
+def load_catalyst_entry_watchlist():
+    global CATALYST_ENTRY_WATCHLIST
+
+    CATALYST_ENTRY_WATCHLIST = redis_hgetall_json(
+        KEY_CATALYST_ENTRY_WATCHLIST
+    )
+
+    cleanup_catalyst_entry_watchlist()
+
+    runtime_stats["deferred_watchlist_size"] = len(
+        CATALYST_ENTRY_WATCHLIST
+    )
+
+    log(
+        f"[DEFERRED] watchlist loaded | "
+        f"Count={len(CATALYST_ENTRY_WATCHLIST)}"
+    )
+
+
+def add_to_catalyst_entry_watchlist(
+    symbol,
+    news_data,
+    initial_metrics=None,
+    initial_status="waiting",
+):
+    symbol = str(symbol or "").strip().upper()
+
+    if not symbol:
+        return False
+
+    if is_symbol_news_blocked(symbol):
+        log(
+            f"[DEFERRED] rejected blocked symbol: "
+            f"{symbol}"
+        )
+        return False
+
+    best = news_data.get("best", {})
+    news_id = str(
+        best.get("news_id", "")
+        or ""
+    )
+
+    if not news_id:
+        return False
+
+    now_ts = time.time()
+
+    with CATALYST_ENTRY_WATCHLIST_LOCK:
+        existing = CATALYST_ENTRY_WATCHLIST.get(
+            symbol
+        )
+
+        if (
+            existing
+            and str(existing.get("news_id", ""))
+            == news_id
+        ):
+            existing["last_seen_ts"] = now_ts
+            existing["catalyst_score"] = safe_float(
+                best.get("score")
+            )
+            existing["headline"] = best.get(
+                "headline",
+                "",
+            )
+            existing["last_status"] = initial_status
+
+            redis_hset_json(
+                KEY_CATALYST_ENTRY_WATCHLIST,
+                symbol,
+                existing,
+            )
+
+            return False
+
+        item = {
+            "symbol": symbol,
+            "news_id": news_id,
+            "headline": best.get(
+                "headline",
+                "",
+            ),
+            "summary": best.get(
+                "summary",
+                "",
+            ),
+            "source": best.get(
+                "source",
+                "",
+            ),
+            "url": best.get(
+                "url",
+                "",
+            ),
+            "news_timestamp": safe_int(
+                best.get("datetime")
+            ),
+            "news_age_minutes": safe_float(
+                best.get("age_minutes")
+            ),
+            "catalyst_score": safe_float(
+                best.get("score")
+            ),
+            "catalyst_category": best.get(
+                "category",
+                "positive_catalyst",
+            ),
+            "catalyst_reasons": best.get(
+                "reasons",
+                [],
+            ),
+            "major_catalyst": bool(
+                best.get("major")
+            ),
+            "added_ts": now_ts,
+            "added_at": now_ksa().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+            "last_seen_ts": now_ts,
+            "last_checked_ts": 0.0,
+            "last_status": initial_status,
+            "best_entry_score": safe_float(
+                (initial_metrics or {}).get(
+                    "final_score"
+                )
+            ),
+            "peak_price": safe_float(
+                (initial_metrics or {}).get(
+                    "price"
+                )
+            ),
+            "weak_cycles": 0,
+            "vwap_fail_cycles": 0,
+            "breakout_fail_cycles": 0,
+            "last_metrics": {},
+            "alert_sent": False,
+        }
+
+        CATALYST_ENTRY_WATCHLIST[
+            symbol
+        ] = item
+
+    redis_hset_json(
+        KEY_CATALYST_ENTRY_WATCHLIST,
+        symbol,
+        item,
+    )
+
+    runtime_stats["deferred_added"] = (
+        runtime_stats.get(
+            "deferred_added",
+            0,
+        )
+        + 1
+    )
+
+    runtime_stats["deferred_watchlist_size"] = len(
+        CATALYST_ENTRY_WATCHLIST
+    )
+
+    log(
+        f"[DEFERRED] added: "
+        f"{symbol} | "
+        f"NewsScore={safe_float(best.get('score')):.1f} | "
+        f"Reason={initial_status}"
+    )
+
+    return True
+
+
+def remove_from_catalyst_entry_watchlist(
+    symbol,
+    reason="removed",
+):
+    symbol = str(symbol or "").strip().upper()
+
+    if not symbol:
+        return False
+
+    with CATALYST_ENTRY_WATCHLIST_LOCK:
+        removed = CATALYST_ENTRY_WATCHLIST.pop(
+            symbol,
+            None,
+        )
+
+    if removed is None:
+        return False
+
+    redis_hdel(
+        KEY_CATALYST_ENTRY_WATCHLIST,
+        symbol,
+    )
+
+    runtime_stats["deferred_watchlist_size"] = len(
+        CATALYST_ENTRY_WATCHLIST
+    )
+
+    log(
+        f"[DEFERRED] removed: "
+        f"{symbol} | "
+        f"Reason={reason}"
+    )
+
+    return True
+
+
+def cleanup_catalyst_entry_watchlist():
+    now_ts = time.time()
+
+    with CATALYST_ENTRY_WATCHLIST_LOCK:
+        items = [
+            (
+                symbol,
+                dict(item),
+            )
+            for symbol, item
+            in CATALYST_ENTRY_WATCHLIST.items()
+        ]
+
+    for symbol, item in items:
+        added_ts = safe_float(
+            item.get("added_ts")
+        )
+
+        if (
+            added_ts <= 0
+            or now_ts - added_ts
+            > DEFERRED_CATALYST_MAX_AGE
+        ):
+            runtime_stats[
+                "deferred_removed_expired"
+            ] = (
+                runtime_stats.get(
+                    "deferred_removed_expired",
+                    0,
+                )
+                + 1
+            )
+
+            remove_from_catalyst_entry_watchlist(
+                symbol,
+                reason="maximum monitoring age reached",
+            )
+            
 # ==============================================================================
 # Alpaca Data
 # ==============================================================================
@@ -2176,8 +2448,68 @@ def process_news_symbol(symbol):
             f"Headline={best.get('headline', '')[:120]}"
         )
 
-        add_to_news_watchlist(symbol, result)
+        routing_item = {
+            "symbol": symbol,
+            "news_id": str(best.get("news_id", "")),
+            "headline": best.get("headline", ""),
+            "summary": best.get("summary", ""),
+            "source": best.get("source", ""),
+            "url": best.get("url", ""),
+            "news_timestamp": best.get("datetime", 0),
+            "news_age_minutes": best.get("age_minutes", 0),
+            "catalyst_score": best.get("score", 0),
+            "catalyst_category": best.get(
+                "category",
+                "positive_catalyst",
+            ),
+            "catalyst_reasons": best.get(
+                "reasons",
+                [],
+            ),
+            "major_catalyst": bool(
+                best.get("major")
+            ),
+        }
 
+        snapshot = get_snapshots_batch(
+            [symbol]
+        ).get(symbol)
+
+        metrics, status = evaluate_news_entry(
+            symbol,
+            routing_item,
+            snapshot=snapshot,
+        )
+
+        if (
+            metrics
+            and metrics.get("entry_ready")
+        ):
+            log(
+                f"⚡ Immediate catalyst route: "
+                f"{symbol} | "
+                f"Score="
+                f"{safe_float(metrics.get('final_score')):.1f}"
+            )
+
+            add_to_news_watchlist(
+                symbol,
+                result,
+            )
+
+        else:
+            log(
+                f"⏳ Deferred catalyst route: "
+                f"{symbol} | "
+                f"Reason={status}"
+            )
+
+            add_to_catalyst_entry_watchlist(
+                symbol,
+                result,
+                initial_metrics=metrics,
+                initial_status=status,
+            )
 
 def news_discovery_loop():
     global NEWS_CURSOR
@@ -2652,6 +2984,7 @@ def startup():
     load_news_cache()
     load_universe()
     load_news_watchlist()
+    load_catalyst_entry_watchlist()
     load_active_trades()
     cleanup_news_redis_and_blocks()
     cleanup_stale_active_trades()
