@@ -1,7 +1,7 @@
 # ==============================================================================
 # Next-Day Explosion Radar
-# VERSION = "0.8.0"
-# BUILD = "EARLY-ENTRY-FLOAT-LIQUIDITY-2026-08-24-G"
+# VERSION = "0.9.0"
+# BUILD = "SESSION-AWARE-ENTRY-2026-08-24-H"
 # File    : next_day_explosion_radar.py
 #
 # Deployment:
@@ -63,8 +63,8 @@ from flask import Flask, jsonify
 
 BOT_NAME = "Next-Day Explosion Radar"
 BOT_NAME_AR = "رادار انفجار اليوم التالي"
-VERSION = "0.8.0"
-BUILD = "EARLY-ENTRY-FLOAT-LIQUIDITY-2026-08-24-G"
+VERSION = "0.9.0"
+BUILD = "SESSION-AWARE-ENTRY-2026-08-24-H"
 NY_TZ = ZoneInfo("America/New_York")
 KSA_TZ = ZoneInfo("Asia/Riyadh")
 UTC_TZ = timezone.utc
@@ -232,7 +232,51 @@ FLOAT_ADJUSTED_LOW_MAX = float(
 FLOAT_ADJUSTED_MIN_CONTINUITY = float(
     os.getenv("NDR_FLOAT_ADJUSTED_MIN_CONTINUITY", "40")
 )
+ALLOW_EXCEPTIONAL_NIGHT_ENTRY = os.getenv(
+    "NDR_ALLOW_EXCEPTIONAL_NIGHT_ENTRY",
+    "true",
+).lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
 
+NIGHT_ENTRY_MIN_OPPORTUNITY = float(
+    os.getenv("NDR_NIGHT_ENTRY_MIN_OPPORTUNITY", "88")
+)
+
+NIGHT_ENTRY_MAX_FAILURE_PRESSURE = float(
+    os.getenv("NDR_NIGHT_ENTRY_MAX_FAILURE_PRESSURE", "15")
+)
+
+NIGHT_ENTRY_MIN_DEMAND_EFFICIENCY = float(
+    os.getenv("NDR_NIGHT_ENTRY_MIN_DEMAND_EFFICIENCY", "75")
+)
+
+NIGHT_ENTRY_MIN_PRICE_ACCEPTANCE = float(
+    os.getenv("NDR_NIGHT_ENTRY_MIN_PRICE_ACCEPTANCE", "70")
+)
+
+NIGHT_ENTRY_MIN_VOLUME_ACCELERATION = float(
+    os.getenv("NDR_NIGHT_ENTRY_MIN_VOLUME_ACCELERATION", "1.30")
+)
+
+NIGHT_ENTRY_MAX_SPREAD_PCT = float(
+    os.getenv("NDR_NIGHT_ENTRY_MAX_SPREAD_PCT", "1.20")
+)
+
+NIGHT_ENTRY_MIN_ROTATION = float(
+    os.getenv("NDR_NIGHT_ENTRY_MIN_ROTATION", "0.5")
+)
+
+NIGHT_ENTRY_MAX_ROTATION = float(
+    os.getenv("NDR_NIGHT_ENTRY_MAX_ROTATION", "3.0")
+)
+
+NIGHT_ENTRY_MAX_EXTENSION_RISK = float(
+    os.getenv("NDR_NIGHT_ENTRY_MAX_EXTENSION_RISK", "50")
+)
 ENTRY_MAX_STOP_PCT = float(
     os.getenv("NDR_ENTRY_MAX_STOP_PCT", "6.0")
 )
@@ -2699,7 +2743,61 @@ def early_entry_setup(c: Candidate) -> Tuple[bool, List[str]]:
         reasons.append(f"extension:{c.extension_risk:.1f}")
 
     return not reasons, reasons
-    
+
+def exceptional_night_entry_setup(
+    c: Candidate,
+) -> Tuple[bool, List[str]]:
+    reasons = []
+
+    if c.phase not in (
+        SessionPhase.AFTER_HOURS,
+        SessionPhase.OVERNIGHT,
+    ):
+        reasons.append(f"session:{c.phase.value}")
+
+    if c.state not in (
+        CandidateState.BREAKOUT_READY,
+        CandidateState.ELITE_CONTINUATION,
+    ):
+        reasons.append(f"state:{c.state.value}")
+
+    if c.opportunity_score < NIGHT_ENTRY_MIN_OPPORTUNITY:
+        reasons.append(f"opportunity:{c.opportunity_score:.1f}")
+
+    if c.failure_pressure > NIGHT_ENTRY_MAX_FAILURE_PRESSURE:
+        reasons.append(f"failure_pressure:{c.failure_pressure:.1f}")
+
+    if RISK_ORDER[c.structural_risk] > RISK_ORDER[StructuralRisk.MODERATE]:
+        reasons.append(f"structural:{c.structural_risk.value}")
+
+    if c.demand_efficiency < NIGHT_ENTRY_MIN_DEMAND_EFFICIENCY:
+        reasons.append("demand_efficiency")
+
+    if c.price_acceptance < NIGHT_ENTRY_MIN_PRICE_ACCEPTANCE:
+        reasons.append("price_acceptance")
+
+    if c.volume_acceleration < NIGHT_ENTRY_MIN_VOLUME_ACCELERATION:
+        reasons.append("volume_not_accelerating")
+
+    if c.spread_pct > NIGHT_ENTRY_MAX_SPREAD_PCT:
+        reasons.append(f"spread:{c.spread_pct:.2f}%")
+
+    if not (
+        NIGHT_ENTRY_MIN_ROTATION
+        <= c.float_rotation
+        <= NIGHT_ENTRY_MAX_ROTATION
+    ):
+        reasons.append(f"rotation:{c.float_rotation:.2f}")
+
+    if c.extension_risk >= NIGHT_ENTRY_MAX_EXTENSION_RISK:
+        reasons.append(f"extension:{c.extension_risk:.1f}")
+
+    if c.vwap > 0 and c.price < c.vwap:
+        reasons.append("below_vwap")
+
+    return not reasons, reasons
+
+
 def maybe_send_state_transition(c: Candidate) -> None:
     if not SEND_DISCOVERY_ALERTS:
         return
@@ -2727,17 +2825,38 @@ def maybe_send_state_transition(c: Candidate) -> None:
 # ==============================================================================
 # Entry Confirmation Engine
 # ==============================================================================
-
 def entry_allowed_now(phase: SessionPhase) -> bool:
     if phase == SessionPhase.REGULAR:
         return True
-    if ALLOW_PREMARKET_ENTRY and phase == SessionPhase.PREMARKET_LATE:
+
+    if (
+        ALLOW_PREMARKET_ENTRY
+        and phase in (
+            SessionPhase.PREMARKET_EARLY,
+            SessionPhase.PREMARKET_LATE,
+        )
+    ):
         return True
+
+    if (
+        ALLOW_EXCEPTIONAL_NIGHT_ENTRY
+        and phase in (
+            SessionPhase.AFTER_HOURS,
+            SessionPhase.OVERNIGHT,
+        )
+    ):
+        return True
+
     return False
 
 
 def entry_gate(c: Candidate) -> Tuple[bool, List[str]]:
     reasons = []
+
+    is_night_session = c.phase in (
+        SessionPhase.AFTER_HOURS,
+        SessionPhase.OVERNIGHT,
+    )
 
     standard_path = (
         c.state in (
@@ -2748,42 +2867,55 @@ def entry_gate(c: Candidate) -> Tuple[bool, List[str]]:
     )
 
     early_path, _ = early_entry_setup(c)
+    exceptional_night_path, night_reasons = (
+        exceptional_night_entry_setup(c)
+    )
 
-    if not standard_path and not early_path:
+    if is_night_session:
+        if not ALLOW_EXCEPTIONAL_NIGHT_ENTRY:
+            reasons.append("night_entry_disabled")
+        elif not exceptional_night_path:
+            reasons.extend(night_reasons)
+    elif not standard_path and not early_path:
         reasons.append("entry_path")
 
-    if (
-        c.state in (
-            CandidateState.BREAKOUT_READY,
-            CandidateState.ELITE_CONTINUATION,
-        )
-        and c.opportunity_score < ENTRY_MIN_OPPORTUNITY
-    ):
-        reasons.append(f"opportunity:{c.opportunity_score:.1f}")
+    if not is_night_session:
+        if (
+            c.state in (
+                CandidateState.BREAKOUT_READY,
+                CandidateState.ELITE_CONTINUATION,
+            )
+            and c.opportunity_score < ENTRY_MIN_OPPORTUNITY
+        ):
+            reasons.append(f"opportunity:{c.opportunity_score:.1f}")
 
-    if RISK_ORDER[c.structural_risk] > RISK_ORDER[StructuralRisk.MODERATE]:
-        reasons.append(f"structural:{c.structural_risk.value}")
+        if RISK_ORDER[c.structural_risk] > RISK_ORDER[StructuralRisk.MODERATE]:
+            reasons.append(f"structural:{c.structural_risk.value}")
 
-    if c.failure_pressure > ENTRY_MAX_FAILURE_PRESSURE:
-        reasons.append(f"failure_pressure:{c.failure_pressure:.1f}")
+        if c.failure_pressure > ENTRY_MAX_FAILURE_PRESSURE:
+            reasons.append(
+                f"failure_pressure:{c.failure_pressure:.1f}"
+            )
 
-    if c.spread_pct > ENTRY_MAX_SPREAD_PCT:
-        reasons.append(f"spread:{c.spread_pct:.2f}%")
+        if c.spread_pct > ENTRY_MAX_SPREAD_PCT:
+            reasons.append(f"spread:{c.spread_pct:.2f}%")
 
-    if c.vwap > 0 and c.price < c.vwap:
-        reasons.append("below_vwap")
+        if c.vwap > 0 and c.price < c.vwap:
+            reasons.append("below_vwap")
 
-    if c.demand_efficiency < 65:
-        reasons.append("demand_efficiency")
+        if c.demand_efficiency < 65:
+            reasons.append("demand_efficiency")
 
-    if c.price_acceptance < 62:
-        reasons.append("price_acceptance")
+        if c.price_acceptance < 62:
+            reasons.append("price_acceptance")
 
-    if c.volume_acceleration < 1.0:
-        reasons.append("volume_not_accelerating")
+        if c.volume_acceleration < 1.0:
+            reasons.append("volume_not_accelerating")
 
-    if c.extension_risk >= ENTRY_MAX_EXTENSION_RISK:
-        reasons.append(f"extension:{c.extension_risk:.1f}")
+        if c.extension_risk >= ENTRY_MAX_EXTENSION_RISK:
+            reasons.append(f"extension:{c.extension_risk:.1f}")
+
+    reasons = list(dict.fromkeys(reasons))
 
     for reason in reasons:
         bump_rejection(reason.split(":", 1)[0])
@@ -3378,6 +3510,7 @@ def entry_cycle() -> None:
             if (
                 c.entry_eligible
                 or early_entry_setup(c)[0]
+                or exceptional_night_entry_setup(c)[0]
                 or c.state in (
                     CandidateState.BREAKOUT_READY,
                     CandidateState.ELITE_CONTINUATION,
@@ -3750,6 +3883,32 @@ def config_snapshot() -> Dict[str, Any]:
         "entry_interval_sec": ENTRY_INTERVAL_SEC,
         "max_deep_eval_per_minute": MAX_DEEP_EVAL_PER_MINUTE,
         "allow_premarket_entry": ALLOW_PREMARKET_ENTRY,
+        "allow_exceptional_night_entry": (
+            ALLOW_EXCEPTIONAL_NIGHT_ENTRY
+        ),
+        "night_entry_min_opportunity": (
+            NIGHT_ENTRY_MIN_OPPORTUNITY
+        ),
+        "night_entry_max_failure_pressure": (
+            NIGHT_ENTRY_MAX_FAILURE_PRESSURE
+        ),
+        "night_entry_min_demand_efficiency": (
+            NIGHT_ENTRY_MIN_DEMAND_EFFICIENCY
+        ),
+        "night_entry_min_price_acceptance": (
+            NIGHT_ENTRY_MIN_PRICE_ACCEPTANCE
+        ),
+        "night_entry_min_volume_acceleration": (
+            NIGHT_ENTRY_MIN_VOLUME_ACCELERATION
+        ),
+        "night_entry_max_spread_pct": NIGHT_ENTRY_MAX_SPREAD_PCT,
+        "night_entry_rotation_range": [
+            NIGHT_ENTRY_MIN_ROTATION,
+            NIGHT_ENTRY_MAX_ROTATION,
+        ],
+        "night_entry_max_extension_risk": (
+            NIGHT_ENTRY_MAX_EXTENSION_RISK
+        ),
         "send_discovery_alerts": SEND_DISCOVERY_ALERTS,
         "send_to_ltm": SEND_TO_LTM,
         "dry_run": DRY_RUN,
@@ -3881,7 +4040,10 @@ def startup_message() -> str:
         f"📡 Feed: {feed_for_phase(current_market_session()) if current_market_session() != SessionPhase.CLOSED else 'none'}\n"
         f"📰 News: Central Redis Consumer\n"
         f"📦 Float: Shared Gist Consumer\n"
-        f"🎯 Entry Engine: {'Regular + Late PM' if ALLOW_PREMARKET_ENTRY else 'Regular only'}\n"
+        f"🎯 Entry Engine: "
+        f"{'Full PM + Regular' if ALLOW_PREMARKET_ENTRY else 'Regular only'}\n"
+        f"🌙 Exceptional Night Entry: "
+        f"{'ON' if ALLOW_EXCEPTIONAL_NIGHT_ENTRY else 'OFF'}\n"
         f"🧪 Dry Run: {'ON' if DRY_RUN else 'OFF'}\n"
         f"🌙 BOATS: {'ON' if ENABLE_OVERNIGHT_BOATS else 'OFF'}\n"
         f"🚨 Live Entry Alerts: {'ON' if ENABLE_LIVE_ENTRY_ALERTS else 'OFF'}\n"
