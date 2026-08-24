@@ -200,6 +200,7 @@ NEWS_CURSOR = 0
 ACTIVE_TRADES_LOCK = threading.Lock()
 WATCHLIST_LOCK = threading.Lock()
 CATALYST_ENTRY_WATCHLIST_LOCK = threading.Lock()
+CATALYST_ALERT_EXECUTION_LOCK = threading.RLock()
 FINNHUB_LOCK = threading.Lock()
 LAST_FINNHUB_REQUEST_TIME = 0.0
 BAR_CACHE: Dict[str, tuple] = {}
@@ -3133,20 +3134,45 @@ def send_deferred_catalyst_alert(
         )
     )
 
-    if not send_telegram(
-        message
-    ):
-        log(
-            f"[DEFERRED] Telegram failed: "
-            f"{symbol}"
-        )
-        return False
+    with CATALYST_ALERT_EXECUTION_LOCK:
+        if was_news_id_alerted(
+            symbol,
+            news_id,
+        ):
+            remove_from_catalyst_entry_watchlist(
+                symbol,
+                reason=(
+                    "same news alerted while "
+                    "waiting for execution lock"
+                ),
+            )
+            return False
 
-    save_deferred_sent_alert(
-        symbol,
-        news_id,
-        fresh_metrics,
-    )
+        with ACTIVE_TRADES_LOCK:
+            if symbol in ACTIVE_TRADES:
+                remove_from_catalyst_entry_watchlist(
+                    symbol,
+                    reason=(
+                        "symbol became active while "
+                        "waiting for execution lock"
+                    ),
+                )
+                return False
+
+        if not send_telegram(
+            message
+        ):
+            log(
+                f"[DEFERRED] Telegram failed: "
+                f"{symbol}"
+            )
+            return False
+
+        save_deferred_sent_alert(
+            symbol,
+            news_id,
+            fresh_metrics,
+        )
 
     redis_hset_json(
         KEY_HISTORY,
@@ -3284,9 +3310,56 @@ def send_catalyst_alert(metrics):
         log(f"Final safety rejected {symbol}: {reason}")
         return False
     metrics = refreshed_metrics
-    if not send_telegram(build_alert_message(metrics, plan)):
-        return False
-    save_sent_alert(symbol, metrics)
+
+    news_id = str(
+        watch_item.get(
+            "news_id",
+            "",
+        )
+        or ""
+    )
+
+    with CATALYST_ALERT_EXECUTION_LOCK:
+        if already_alerted_today(symbol):
+            remove_from_news_watchlist(
+                symbol,
+                "alerted while waiting for execution lock",
+            )
+            return False
+
+        if (
+            news_id
+            and was_news_id_alerted(
+                symbol,
+                news_id,
+            )
+        ):
+            remove_from_news_watchlist(
+                symbol,
+                "same news already alerted",
+            )
+            return False
+
+        with ACTIVE_TRADES_LOCK:
+            if symbol in ACTIVE_TRADES:
+                remove_from_news_watchlist(
+                    symbol,
+                    "symbol already active",
+                )
+                return False
+
+        if not send_telegram(
+            build_alert_message(
+                metrics,
+                plan,
+            )
+        ):
+            return False
+
+        save_sent_alert(
+            symbol,
+            metrics,
+        )
     redis_hset_json(KEY_HISTORY, f"{symbol}:open:{int(time.time())}", {
         "symbol": symbol, "metrics": metrics, "trade_plan": plan,
         "date": today_ksa(), "time": now_ksa().strftime("%Y-%m-%d %H:%M:%S"),
