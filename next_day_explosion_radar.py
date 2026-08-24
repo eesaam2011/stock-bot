@@ -1,7 +1,7 @@
 # ==============================================================================
 # Next-Day Explosion Radar
-# Version : 0.7.0
-# Build   : CATALYST-AGNOSTIC-2026-08-22-F
+# VERSION = "0.8.0"
+# BUILD = "EARLY-ENTRY-FLOAT-LIQUIDITY-2026-08-24-G"
 # File    : next_day_explosion_radar.py
 #
 # Deployment:
@@ -63,9 +63,8 @@ from flask import Flask, jsonify
 
 BOT_NAME = "Next-Day Explosion Radar"
 BOT_NAME_AR = "رادار انفجار اليوم التالي"
-VERSION = "0.7.0"
-BUILD = "CATALYST-AGNOSTIC-2026-08-22-F"
-
+VERSION = "0.8.0"
+BUILD = "EARLY-ENTRY-FLOAT-LIQUIDITY-2026-08-24-G"
 NY_TZ = ZoneInfo("America/New_York")
 KSA_TZ = ZoneInfo("Asia/Riyadh")
 UTC_TZ = timezone.utc
@@ -190,12 +189,53 @@ STATE_THRESHOLDS = {
     "elite_continuation": float(os.getenv("NDR_STATE_ELITE", "93")),
 }
 
-ENTRY_MIN_OPPORTUNITY = float(os.getenv("NDR_ENTRY_MIN_OPPORTUNITY", "88"))
+ENTRY_MIN_OPPORTUNITY = float(
+    os.getenv("NDR_ENTRY_MIN_OPPORTUNITY", "88")
+)
+
+EARLY_ENTRY_MIN_OPPORTUNITY = float(
+    os.getenv("NDR_EARLY_ENTRY_MIN_OPPORTUNITY", "80")
+)
+
 ENTRY_MAX_FAILURE_PRESSURE = float(
     os.getenv("NDR_ENTRY_MAX_FAILURE_PRESSURE", "35")
 )
-ENTRY_MAX_SPREAD_PCT = float(os.getenv("NDR_ENTRY_MAX_SPREAD_PCT", "2.0"))
-ENTRY_MAX_STOP_PCT = float(os.getenv("NDR_ENTRY_MAX_STOP_PCT", "6.0"))
+
+EARLY_ENTRY_MAX_FAILURE_PRESSURE = float(
+    os.getenv("NDR_EARLY_ENTRY_MAX_FAILURE_PRESSURE", "25")
+)
+
+ENTRY_MAX_SPREAD_PCT = float(
+    os.getenv("NDR_ENTRY_MAX_SPREAD_PCT", "2.0")
+)
+
+ENTRY_MAX_EXTENSION_RISK = float(
+    os.getenv("NDR_ENTRY_MAX_EXTENSION_RISK", "65")
+)
+
+EARLY_ENTRY_MIN_ROTATION = float(
+    os.getenv("NDR_EARLY_ENTRY_MIN_ROTATION", "0.5")
+)
+
+EARLY_ENTRY_MAX_ROTATION = float(
+    os.getenv("NDR_EARLY_ENTRY_MAX_ROTATION", "5.0")
+)
+
+FLOAT_ADJUSTED_ULTRA_LOW_MAX = float(
+    os.getenv("NDR_FLOAT_ADJUSTED_ULTRA_LOW_MAX", "1000000")
+)
+
+FLOAT_ADJUSTED_LOW_MAX = float(
+    os.getenv("NDR_FLOAT_ADJUSTED_LOW_MAX", "5000000")
+)
+
+FLOAT_ADJUSTED_MIN_CONTINUITY = float(
+    os.getenv("NDR_FLOAT_ADJUSTED_MIN_CONTINUITY", "40")
+)
+
+ENTRY_MAX_STOP_PCT = float(
+    os.getenv("NDR_ENTRY_MAX_STOP_PCT", "6.0")
+)
 ENTRY_MIN_RR_T1 = float(os.getenv("NDR_ENTRY_MIN_RR_T1", "1.4"))
 ALLOW_PREMARKET_ENTRY = os.getenv("NDR_ALLOW_PREMARKET_ENTRY", "false").lower() in {
     "1", "true", "yes", "y",
@@ -553,12 +593,14 @@ class Candidate:
     cross_session_persistence: float = 0.0
     trajectory_score: float = 0.0
     spread_quality: float = 0.0
+    raw_liquidity_evolution: float = 0.0
     liquidity_evolution: float = 0.0
 
     runner_personality: float = 0.0
     runner_fatigue: float = 0.0
     extension_risk: float = 0.0
     evidence_convergence: float = 0.0
+    peak_snapshot: Dict[str, Any] = field(default_factory=dict)
 
     catalyst_strength: float = 0.0
     unpriced_catalyst: float = 0.0
@@ -2244,7 +2286,59 @@ def cached_historical_session_rvol(
 # ==============================================================================
 # Deep candidate evaluator
 # ==============================================================================
+def float_adjusted_liquidity_evolution(
+    float_shares: Optional[float],
+    rotation: float,
+    spread_pct: float,
+    continuity: float,
+    raw_score: float,
+) -> float:
+    """Give healthy low-float turnover context without rewarding crowding."""
+    if not float_shares or float_shares <= 0:
+        return raw_score
 
+    healthy_rotation = (
+        EARLY_ENTRY_MIN_ROTATION
+        <= rotation
+        <= EARLY_ENTRY_MAX_ROTATION
+    )
+
+    if (
+        not healthy_rotation
+        or spread_pct > ENTRY_MAX_SPREAD_PCT
+        or continuity < FLOAT_ADJUSTED_MIN_CONTINUITY
+    ):
+        return raw_score
+
+    if float_shares <= FLOAT_ADJUSTED_ULTRA_LOW_MAX:
+        return max(raw_score, 60.0)
+
+    if float_shares <= FLOAT_ADJUSTED_LOW_MAX:
+        return max(raw_score, 55.0)
+
+    return raw_score
+
+
+def update_peak_snapshot(c: Candidate) -> None:
+    if c.opportunity_score <= c.peak_score:
+        return
+
+    c.peak_snapshot = {
+        "ts": iso(),
+        "price": round(c.price, 6),
+        "state": c.state.value,
+        "opportunity_score": round(c.opportunity_score, 2),
+        "failure_pressure": round(c.failure_pressure, 2),
+        "feature_groups": asdict(c.feature_groups),
+        "demand_efficiency": round(c.demand_efficiency, 2),
+        "price_acceptance": round(c.price_acceptance, 2),
+        "vwap": round(c.vwap, 6),
+        "resistance": round(c.resistance, 6),
+        "volume_acceleration": round(c.volume_acceleration, 4),
+        "float_rotation": round(c.float_rotation, 4),
+        "spread_pct": round(c.spread_pct, 4),
+    }
+    
 def deep_evaluate(symbol: str) -> Optional[Candidate]:
     if not allow_deep_evaluation():
         return None
@@ -2262,7 +2356,16 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
         return None
 
     price = bar_close(bars[-1])
-    if price < PRICE_MIN or price > PRICE_MAX:
+
+    with candidate_lock:
+        existing = candidates.get(symbol)
+
+    if price < PRICE_MIN:
+        return None
+
+    # PRICE_MAX يمنع اكتشاف مرشح جديد فقط.
+    # المرشح الموجود يستمر تحت المراقبة بعد تجاوزه 25 دولارًا.
+    if price > PRICE_MAX and existing is None:
         return None
 
     # Use shared snapshot for reference price and current quote when available.
@@ -2283,12 +2386,21 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
     # Detailed recent microstructure.
     q_start = now_et - timedelta(minutes=DETAIL_QUOTE_LOOKBACK_MIN)
     quotes = cached_micro_quotes(symbol, q_start, now_et, feed)
-    spread_pct, spread_quality, liquidity_evolution = spread_metrics(quotes, price)
+    spread_pct, spread_quality, raw_liquidity_evolution = spread_metrics(
+        quotes,
+        price,
+    )
 
     t_start = now_et - timedelta(minutes=DETAIL_TRADE_LOOKBACK_MIN)
     trades = cached_micro_trades(symbol, t_start, now_et, feed)
     continuity = trade_continuity_score(trades, t_start, now_et)
-
+    liquidity_evolution = float_adjusted_liquidity_evolution(
+        f,
+        rotation,
+        spread_pct,
+        continuity,
+        raw_liquidity_evolution,
+    )
     vol_accel_score, vol_accel_ratio = volume_acceleration_score(bars)
     acceptance, acceptance_meta = price_acceptance_score(bars, ref)
     pullback, pullback_meta = pullback_quality_score(bars)
@@ -2346,8 +2458,8 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
     c.reclaim_structure = reclaim
 
     c.spread_quality = spread_quality
-    c.liquidity_evolution = liquidity_evolution
-    c.runner_personality = runner_personality
+    c.raw_liquidity_evolution = raw_liquidity_evolution
+    c.liquidity_evolution = liquidity_evolution    c.runner_personality = runner_personality
     c.runner_fatigue = fatigue
     c.extension_risk = extension
 
@@ -2431,6 +2543,7 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
     )
     c.failure_pressure = fp
     c.state = infer_state(c)
+    update_peak_snapshot(c)
     update_candidate_health(c)
     update_live_research_metrics(c)
     record_first_state_time(c)
@@ -2457,15 +2570,11 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
     if len(c.history) > MAX_HISTORY_POINTS:
         c.history = c.history[-MAX_HISTORY_POINTS:]
 
-    with candidate_lock:
-        candidates[symbol] = c
-
     with stats_lock:
         runtime_stats["deep_evaluations"] += 1
 
     maybe_send_state_transition(c)
     return c
-
 
 def rotation_score(rotation: float) -> float:
     """
@@ -2551,12 +2660,55 @@ DISCOVERY_ALERT_STATES = {
 def state_alert_key(c: Candidate) -> str:
     return f"{now_ny().date().isoformat()}:{c.symbol}"
 
+def early_entry_setup(c: Candidate) -> Tuple[bool, List[str]]:
+    reasons = []
 
+    if c.state != CandidateState.BUILDING:
+        reasons.append(f"state:{c.state.value}")
+
+    if c.opportunity_score < EARLY_ENTRY_MIN_OPPORTUNITY:
+        reasons.append(f"opportunity:{c.opportunity_score:.1f}")
+
+    if c.failure_pressure > EARLY_ENTRY_MAX_FAILURE_PRESSURE:
+        reasons.append(f"failure_pressure:{c.failure_pressure:.1f}")
+
+    if RISK_ORDER[c.structural_risk] > RISK_ORDER[StructuralRisk.MODERATE]:
+        reasons.append(f"structural:{c.structural_risk.value}")
+
+    if c.spread_pct > ENTRY_MAX_SPREAD_PCT:
+        reasons.append(f"spread:{c.spread_pct:.2f}%")
+
+    if c.vwap > 0 and c.price < c.vwap:
+        reasons.append("below_vwap")
+
+    if c.demand_efficiency < 65:
+        reasons.append("demand_efficiency")
+
+    if c.price_acceptance < 62:
+        reasons.append("price_acceptance")
+
+    if c.volume_acceleration < 1.0:
+        reasons.append("volume_not_accelerating")
+
+    if not (
+        EARLY_ENTRY_MIN_ROTATION
+        <= c.float_rotation
+        <= EARLY_ENTRY_MAX_ROTATION
+    ):
+        reasons.append(f"rotation:{c.float_rotation:.2f}")
+
+    if c.extension_risk >= ENTRY_MAX_EXTENSION_RISK:
+        reasons.append(f"extension:{c.extension_risk:.1f}")
+
+    return not reasons, reasons
+    
 def maybe_send_state_transition(c: Candidate) -> None:
     if not SEND_DISCOVERY_ALERTS:
         return
 
-    if c.state not in DISCOVERY_ALERT_STATES:
+    early_ready, _ = early_entry_setup(c)
+
+    if c.state not in DISCOVERY_ALERT_STATES and not early_ready:
         return
 
     key = state_alert_key(c)
@@ -2588,31 +2740,57 @@ def entry_allowed_now(phase: SessionPhase) -> bool:
 
 def entry_gate(c: Candidate) -> Tuple[bool, List[str]]:
     reasons = []
-    if c.state not in (
-        CandidateState.BREAKOUT_READY,
-        CandidateState.ELITE_CONTINUATION,
+
+    standard_path = (
+        c.state in (
+            CandidateState.BREAKOUT_READY,
+            CandidateState.ELITE_CONTINUATION,
+        )
+        and c.opportunity_score >= ENTRY_MIN_OPPORTUNITY
+    )
+
+    early_path, _ = early_entry_setup(c)
+
+    if not standard_path and not early_path:
+        reasons.append("entry_path")
+
+    if (
+        c.state in (
+            CandidateState.BREAKOUT_READY,
+            CandidateState.ELITE_CONTINUATION,
+        )
+        and c.opportunity_score < ENTRY_MIN_OPPORTUNITY
     ):
-        reasons.append(f"state:{c.state.value}")
-    if c.opportunity_score < ENTRY_MIN_OPPORTUNITY:
         reasons.append(f"opportunity:{c.opportunity_score:.1f}")
+
     if RISK_ORDER[c.structural_risk] > RISK_ORDER[StructuralRisk.MODERATE]:
         reasons.append(f"structural:{c.structural_risk.value}")
+
     if c.failure_pressure > ENTRY_MAX_FAILURE_PRESSURE:
         reasons.append(f"failure_pressure:{c.failure_pressure:.1f}")
+
     if c.spread_pct > ENTRY_MAX_SPREAD_PCT:
         reasons.append(f"spread:{c.spread_pct:.2f}%")
+
     if c.vwap > 0 and c.price < c.vwap:
         reasons.append("below_vwap")
+
     if c.demand_efficiency < 65:
         reasons.append("demand_efficiency")
+
     if c.price_acceptance < 62:
         reasons.append("price_acceptance")
+
     if c.volume_acceleration < 1.0:
         reasons.append("volume_not_accelerating")
+
+    if c.extension_risk >= ENTRY_MAX_EXTENSION_RISK:
+        reasons.append(f"extension:{c.extension_risk:.1f}")
+
     for reason in reasons:
         bump_rejection(reason.split(":", 1)[0])
-    return not reasons, reasons
 
+    return not reasons, reasons
 
 def calculate_atr(bars: List[Dict[str, Any]], period: int = 14) -> float:
     if len(bars) < period + 1:
