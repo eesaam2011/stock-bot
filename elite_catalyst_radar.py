@@ -4050,6 +4050,16 @@ def monitor_deferred_catalyst_watchlist_once():
                     f"{momentum_3m:.2f}%"
                 )
 
+                alert_sent = (
+                    send_deferred_catalyst_alert(
+                        metrics,
+                        item,
+                    )
+                )
+
+                if alert_sent:
+                    continue
+
         except Exception as exc:
             runtime_stats[
                 "deferred_errors"
@@ -4068,6 +4078,14 @@ def monitor_deferred_catalyst_watchlist_once():
 
 
 def deferred_catalyst_entry_loop():
+    log(
+        f"[DEFERRED] monitor started | "
+        f"Interval="
+        f"{DEFERRED_CATALYST_MONITOR_INTERVAL}s | "
+        f"MaxAge="
+        f"{DEFERRED_CATALYST_MAX_AGE // 60}m"
+    )
+    
     while True:
         cycle_started = time.monotonic()
 
@@ -4456,6 +4474,11 @@ def main_loop():
 
     threading.Thread(target=news_discovery_loop, daemon=True, name="news-discovery").start()
     threading.Thread(target=news_watch_loop, daemon=True, name="news-watch").start()
+    threading.Thread(
+        target=deferred_catalyst_entry_loop,
+        daemon=True,
+        name="deferred-catalyst-entry",
+    ).start()
     threading.Thread(target=trade_monitor_loop, daemon=True, name="trade-monitor").start()
 
     while True:
@@ -4475,9 +4498,13 @@ def main_loop():
             if time.time() - last_redis_cleanup_ts >= REDIS_CLEANUP_INTERVAL:
                 cleanup_news_redis_and_blocks()
                 cleanup_news_watchlist()
+                cleanup_catalyst_entry_watchlist()
                 cleanup_stale_active_trades()
                 last_redis_cleanup_ts = time.time()
             runtime_stats["news_watchlist_size"] = len(NEWS_WATCHLIST)
+            runtime_stats["deferred_watchlist_size"] = len(
+                CATALYST_ENTRY_WATCHLIST
+            )
             runtime_stats["active_trades"] = len(ACTIVE_TRADES)
             redis_set_json(KEY_RUNTIME, runtime_stats)
             time.sleep(60)
