@@ -129,6 +129,13 @@ DEFERRED_CATALYST_MAX_AGE = 90 * 60
 DEFERRED_CATALYST_MAX_WEAK_CYCLES = 4
 DEFERRED_VWAP_FAILURE_CONFIRMATIONS = 2
 DEFERRED_BREAKOUT_FAILURE_CONFIRMATIONS = 2
+DEFERRED_MIN_RVOL = 2.0
+DEFERRED_MIN_VOLUME_ACCEL = 1.25
+DEFERRED_MIN_ENTRY_SCORE = 78
+DEFERRED_MIN_3M_MOMENTUM_PCT = 0.60
+DEFERRED_MIN_CLOSE_POSITION = 0.60
+DEFERRED_MAX_RESISTANCE_DISTANCE_PCT = 2.5
+DEFERRED_MAX_EXTENSION_ABOVE_RESISTANCE_PCT = 3.0
 
 # ==============================================================================
 # Redis Keys - new namespace to avoid mixing with old Elite Radar state
@@ -1509,6 +1516,7 @@ def add_to_catalyst_entry_watchlist(
                 "%Y-%m-%d %H:%M:%S"
             ),
             "last_seen_ts": now_ts,
+            "monitoring_started_ts": 0.0,
             "last_checked_ts": 0.0,
             "last_status": initial_status,
             "best_entry_score": safe_float(
@@ -1597,6 +1605,12 @@ def remove_from_catalyst_entry_watchlist(
 
 
 def cleanup_catalyst_entry_watchlist():
+    if (
+        is_weekend()
+        or not is_scan_window()
+    ):
+        return
+
     now_ts = time.time()
 
     with CATALYST_ENTRY_WATCHLIST_LOCK:
@@ -1610,13 +1624,15 @@ def cleanup_catalyst_entry_watchlist():
         ]
 
     for symbol, item in items:
-        added_ts = safe_float(
-            item.get("added_ts")
+        monitoring_started_ts = safe_float(
+            item.get("monitoring_started_ts")
         )
 
+        if monitoring_started_ts <= 0:
+            continue
+
         if (
-            added_ts <= 0
-            or now_ts - added_ts
+            now_ts - monitoring_started_ts
             > DEFERRED_CATALYST_MAX_AGE
         ):
             runtime_stats[
@@ -1633,7 +1649,8 @@ def cleanup_catalyst_entry_watchlist():
                 symbol,
                 reason="maximum monitoring age reached",
             )
-            
+
+
 # ==============================================================================
 # Alpaca Data
 # ==============================================================================
@@ -2088,6 +2105,425 @@ def evaluate_news_entry(symbol, watch_item, snapshot=None):
     }
     return metrics, "ready" if entry_ready else "waiting technical confirmation"
 
+def get_shared_catalyst_record(
+    symbol,
+    expected_news_id=None,
+):
+    symbol = str(symbol or "").strip().upper()
+
+    if not symbol:
+        return None, "invalid_symbol"
+
+    shared = redis_hget_json(
+        SHARED_NEWS_HASH_KEY,
+        symbol,
+        None,
+    )
+
+    if not isinstance(shared, dict):
+        return None, "shared_news_missing"
+
+    if (
+        shared.get("producer")
+        != "elite_catalyst_radar"
+    ):
+        return None, "invalid_shared_producer"
+
+    analysis = shared.get(
+        "analysis",
+        {},
+    )
+
+    if not isinstance(analysis, dict):
+        return None, "shared_analysis_missing"
+
+    shared_news_id = str(
+        analysis.get("news_id", "")
+        or ""
+    )
+
+    expected_news_id = str(
+        expected_news_id
+        or ""
+    )
+
+    if (
+        expected_news_id
+        and shared_news_id
+        and shared_news_id
+        != expected_news_id
+    ):
+        return None, "news_id_changed"
+
+    if analysis.get(
+        "serious_negative",
+        False,
+    ):
+        return None, "serious_negative_news"
+
+    if not analysis.get(
+        "positive",
+        False,
+    ):
+        return None, "catalyst_no_longer_positive"
+
+    expires_at = safe_float(
+        shared.get("expires_at")
+    )
+
+    if (
+        expires_at > 0
+        and time.time() > expires_at
+    ):
+        return None, "shared_news_expired"
+
+    return shared, "ok"
+
+def evaluate_deferred_catalyst_entry(
+    symbol,
+    watch_item,
+    snapshot=None,
+):
+    if snapshot is None:
+        snapshot = get_snapshots_batch(
+            [symbol]
+        ).get(symbol)
+
+    if not snapshot:
+        return None, "snapshot_unavailable"
+
+    shared, shared_status = (
+        get_shared_catalyst_record(
+            symbol,
+            expected_news_id=watch_item.get(
+                "news_id"
+            ),
+        )
+    )
+
+    if not shared:
+        return None, shared_status
+
+    metrics, base_status = (
+        evaluate_news_entry(
+            symbol,
+            watch_item,
+            snapshot=snapshot,
+        )
+    )
+
+    if not metrics:
+        return None, base_status
+
+    df = get_bars(
+        symbol,
+        TimeFrame.Minute,
+        limit=160,
+        cache_ttl=0,
+    )
+
+    df = completed_indicator_df(df)
+
+    if df.empty or len(df) < 30:
+        return None, "insufficient_completed_bars"
+
+    closes = df["close"].astype(float)
+    opens = df["open"].astype(float)
+    highs = df["high"].astype(float)
+    lows = df["low"].astype(float)
+
+    last_close = safe_float(
+        closes.iloc[-1]
+    )
+
+    last_open = safe_float(
+        opens.iloc[-1]
+    )
+
+    last_high = safe_float(
+        highs.iloc[-1]
+    )
+
+    last_low = safe_float(
+        lows.iloc[-1]
+    )
+
+    candle_range = max(
+        last_high - last_low,
+        0.000001,
+    )
+
+    close_position = (
+        last_close - last_low
+    ) / candle_range
+
+    momentum_3m_pct = 0.0
+
+    if len(closes) >= 4:
+        base_3m = safe_float(
+            closes.iloc[-4]
+        )
+
+        if base_3m > 0:
+            momentum_3m_pct = (
+                (
+                    last_close
+                    - base_3m
+                )
+                / base_3m
+            ) * 100
+
+    bullish_closes = 0
+
+    for index in range(
+        max(0, len(df) - 3),
+        len(df),
+    ):
+        if (
+            safe_float(
+                closes.iloc[index]
+            )
+            >= safe_float(
+                opens.iloc[index]
+            )
+        ):
+            bullish_closes += 1
+
+    price = safe_float(
+        metrics.get("price")
+    )
+
+    vwap = safe_float(
+        metrics.get("vwap")
+    )
+
+    rvol = safe_float(
+        metrics.get("rvol")
+    )
+
+    accel = safe_float(
+        metrics.get(
+            "volume_accel_ratio"
+        )
+    )
+
+    resistance = safe_float(
+        metrics.get("resistance")
+    )
+
+    resistance_distance = safe_float(
+        metrics.get(
+            "resistance_distance_pct"
+        ),
+        999,
+    )
+
+    final_score = safe_float(
+        metrics.get("final_score")
+    )
+
+    breakout = bool(
+        metrics.get("breakout")
+    )
+
+    fresh_breakout = bool(
+        metrics.get("fresh_breakout")
+    )
+
+    near_breakout = bool(
+        metrics.get("near_breakout")
+    )
+
+    above_vwap = bool(
+        vwap > 0
+        and price >= vwap
+    )
+
+    volume_confirmed = bool(
+        rvol >= DEFERRED_MIN_RVOL
+        and accel
+        >= DEFERRED_MIN_VOLUME_ACCEL
+    )
+
+    momentum_confirmed = bool(
+        momentum_3m_pct
+        >= DEFERRED_MIN_3M_MOMENTUM_PCT
+    )
+
+    candle_quality_confirmed = bool(
+        close_position
+        >= DEFERRED_MIN_CLOSE_POSITION
+        and bullish_closes >= 2
+        and last_close
+        >= last_open * 0.998
+    )
+
+    breakout_zone_confirmed = bool(
+        breakout
+        or fresh_breakout
+        or (
+            near_breakout
+            and resistance_distance
+            <= DEFERRED_MAX_RESISTANCE_DISTANCE_PCT
+        )
+    )
+
+    extension_pct = 0.0
+
+    if (
+        resistance > 0
+        and price > resistance
+    ):
+        extension_pct = (
+            (
+                price
+                - resistance
+            )
+            / resistance
+        ) * 100
+
+    not_overextended = bool(
+        extension_pct
+        <= DEFERRED_MAX_EXTENSION_ABOVE_RESISTANCE_PCT
+    )
+
+    score_confirmed = bool(
+        final_score
+        >= DEFERRED_MIN_ENTRY_SCORE
+    )
+
+    deferred_ready = bool(
+        score_confirmed
+        and volume_confirmed
+        and above_vwap
+        and momentum_confirmed
+        and breakout_zone_confirmed
+        and candle_quality_confirmed
+        and not_overextended
+    )
+
+    confirmation_reasons = []
+
+    if volume_confirmed:
+        confirmation_reasons.append(
+            f"RVOL {rvol:.2f} "
+            f"وتسارع حجم {accel:.2f}x"
+        )
+
+    if above_vwap:
+        confirmation_reasons.append(
+            "ثبات/استعادة فوق VWAP"
+        )
+
+    if momentum_confirmed:
+        confirmation_reasons.append(
+            f"زخم 3 دقائق "
+            f"{momentum_3m_pct:.2f}%"
+        )
+
+    if breakout or fresh_breakout:
+        confirmation_reasons.append(
+            "اختراق المقاومة مؤكد"
+        )
+    elif near_breakout:
+        confirmation_reasons.append(
+            "السعر في منطقة الاختراق"
+        )
+
+    if candle_quality_confirmed:
+        confirmation_reasons.append(
+            "جودة إغلاق الشموع قوية"
+        )
+
+    metrics["deferred_ready"] = (
+        deferred_ready
+    )
+
+    metrics[
+        "deferred_momentum_3m_pct"
+    ] = round(
+        momentum_3m_pct,
+        3,
+    )
+
+    metrics[
+        "deferred_close_position"
+    ] = round(
+        close_position,
+        3,
+    )
+
+    metrics[
+        "deferred_bullish_closes"
+    ] = bullish_closes
+
+    metrics[
+        "deferred_extension_pct"
+    ] = round(
+        extension_pct,
+        3,
+    )
+
+    metrics[
+        "deferred_confirmation_reasons"
+    ] = confirmation_reasons
+
+    metrics[
+        "deferred_volume_confirmed"
+    ] = volume_confirmed
+
+    metrics[
+        "deferred_vwap_confirmed"
+    ] = above_vwap
+
+    metrics[
+        "deferred_momentum_confirmed"
+    ] = momentum_confirmed
+
+    metrics[
+        "deferred_candle_quality_confirmed"
+    ] = candle_quality_confirmed
+
+    metrics[
+        "deferred_breakout_confirmed"
+    ] = breakout_zone_confirmed
+
+    metrics[
+        "deferred_not_overextended"
+    ] = not_overextended
+
+    if deferred_ready:
+        return metrics, "deferred_ready"
+
+    missing = []
+
+    if not score_confirmed:
+        missing.append("score")
+
+    if not volume_confirmed:
+        missing.append("volume")
+
+    if not above_vwap:
+        missing.append("vwap")
+
+    if not momentum_confirmed:
+        missing.append("momentum")
+
+    if not breakout_zone_confirmed:
+        missing.append("breakout")
+
+    if not candle_quality_confirmed:
+        missing.append("candle_quality")
+
+    if not not_overextended:
+        missing.append("overextended")
+
+    return (
+        metrics,
+        "waiting:"
+        + ",".join(missing),
+    )
+    
 # ==============================================================================
 # Trade Plan / Alert
 # ==============================================================================
@@ -2655,6 +3091,494 @@ def news_watch_loop():
         elapsed = time.monotonic() - cycle_started
         time.sleep(max(0.25, NEWS_WATCH_MONITOR_INTERVAL - elapsed))
 
+# ==============================================================================
+# Deferred Catalyst Entry Monitor
+# ==============================================================================
+
+def monitor_deferred_catalyst_watchlist_once():
+    cleanup_catalyst_entry_watchlist()
+
+    with CATALYST_ENTRY_WATCHLIST_LOCK:
+        symbols = list(
+            CATALYST_ENTRY_WATCHLIST.keys()
+        )
+
+    if not symbols:
+        return
+
+    snapshots = get_snapshots_batch(
+        symbols
+    )
+
+    for symbol in symbols:
+        try:
+            with CATALYST_ENTRY_WATCHLIST_LOCK:
+                original_item = (
+                    CATALYST_ENTRY_WATCHLIST.get(
+                        symbol
+                    )
+                )
+
+                if not original_item:
+                    continue
+
+                item = dict(
+                    original_item
+                )
+
+            now_ts = time.time()
+
+            if safe_float(
+                item.get(
+                    "monitoring_started_ts"
+                )
+            ) <= 0:
+                item[
+                    "monitoring_started_ts"
+                ] = now_ts
+
+            shared, shared_status = (
+                get_shared_catalyst_record(
+                    symbol,
+                    expected_news_id=item.get(
+                        "news_id"
+                    ),
+                )
+            )
+
+            if not shared:
+                if shared_status in {
+                    "serious_negative_news",
+                    "catalyst_no_longer_positive",
+                    "news_id_changed",
+                    "shared_news_expired",
+                }:
+                    if (
+                        shared_status
+                        == "serious_negative_news"
+                    ):
+                        runtime_stats[
+                            "deferred_removed_negative"
+                        ] = (
+                            runtime_stats.get(
+                                "deferred_removed_negative",
+                                0,
+                            )
+                            + 1
+                        )
+
+                    remove_from_catalyst_entry_watchlist(
+                        symbol,
+                        reason=shared_status,
+                    )
+
+                continue
+
+            snapshot = snapshots.get(
+                symbol
+            )
+
+            metrics, status = (
+                evaluate_deferred_catalyst_entry(
+                    symbol,
+                    item,
+                    snapshot=snapshot,
+                )
+            )
+
+            runtime_stats[
+                "deferred_checks"
+            ] = (
+                runtime_stats.get(
+                    "deferred_checks",
+                    0,
+                )
+                + 1
+            )
+
+            item[
+                "last_checked_ts"
+            ] = now_ts
+
+            item[
+                "last_status"
+            ] = status
+
+            if not metrics:
+                redis_hset_json(
+                    KEY_CATALYST_ENTRY_WATCHLIST,
+                    symbol,
+                    item,
+                )
+
+                with CATALYST_ENTRY_WATCHLIST_LOCK:
+                    if (
+                        symbol
+                        in CATALYST_ENTRY_WATCHLIST
+                    ):
+                        CATALYST_ENTRY_WATCHLIST[
+                            symbol
+                        ] = item
+
+                continue
+
+            price = safe_float(
+                metrics.get("price")
+            )
+
+            final_score = safe_float(
+                metrics.get("final_score")
+            )
+
+            rvol = safe_float(
+                metrics.get("rvol")
+            )
+
+            accel = safe_float(
+                metrics.get(
+                    "volume_accel_ratio"
+                )
+            )
+
+            momentum_3m = safe_float(
+                metrics.get(
+                    "deferred_momentum_3m_pct"
+                )
+            )
+
+            above_vwap = bool(
+                metrics.get(
+                    "deferred_vwap_confirmed"
+                )
+            )
+
+            breakout_zone = bool(
+                metrics.get(
+                    "deferred_breakout_confirmed"
+                )
+            )
+
+            deferred_ready = bool(
+                metrics.get(
+                    "deferred_ready"
+                )
+            )
+
+            item[
+                "best_entry_score"
+            ] = max(
+                safe_float(
+                    item.get(
+                        "best_entry_score"
+                    )
+                ),
+                final_score,
+            )
+
+            item[
+                "peak_price"
+            ] = max(
+                safe_float(
+                    item.get(
+                        "peak_price"
+                    )
+                ),
+                price,
+            )
+
+            if (
+                metrics.get("breakout")
+                or metrics.get(
+                    "fresh_breakout"
+                )
+            ):
+                item[
+                    "breakout_seen"
+                ] = True
+
+            # ---------------------------------
+            # VWAP FAILURE CONFIRMATION
+            # ---------------------------------
+            if above_vwap:
+                item[
+                    "vwap_fail_cycles"
+                ] = 0
+            else:
+                item[
+                    "vwap_fail_cycles"
+                ] = (
+                    int(
+                        item.get(
+                            "vwap_fail_cycles",
+                            0,
+                        )
+                    )
+                    + 1
+                )
+
+            if (
+                int(
+                    item.get(
+                        "vwap_fail_cycles",
+                        0,
+                    )
+                )
+                >= DEFERRED_VWAP_FAILURE_CONFIRMATIONS
+            ):
+                runtime_stats[
+                    "deferred_removed_vwap"
+                ] = (
+                    runtime_stats.get(
+                        "deferred_removed_vwap",
+                        0,
+                    )
+                    + 1
+                )
+
+                remove_from_catalyst_entry_watchlist(
+                    symbol,
+                    reason=(
+                        "confirmed VWAP failure"
+                    ),
+                )
+                continue
+
+            # ---------------------------------
+            # BREAKOUT FAILURE CONFIRMATION
+            # ---------------------------------
+            breakout_seen = bool(
+                item.get(
+                    "breakout_seen",
+                    False,
+                )
+            )
+
+            if breakout_seen:
+                if breakout_zone:
+                    item[
+                        "breakout_fail_cycles"
+                    ] = 0
+                else:
+                    item[
+                        "breakout_fail_cycles"
+                    ] = (
+                        int(
+                            item.get(
+                                "breakout_fail_cycles",
+                                0,
+                            )
+                        )
+                        + 1
+                    )
+
+                if (
+                    int(
+                        item.get(
+                            "breakout_fail_cycles",
+                            0,
+                        )
+                    )
+                    >= DEFERRED_BREAKOUT_FAILURE_CONFIRMATIONS
+                ):
+                    remove_from_catalyst_entry_watchlist(
+                        symbol,
+                        reason=(
+                            "confirmed breakout failure"
+                        ),
+                    )
+                    continue
+
+            # ---------------------------------
+            # GENERAL WEAKNESS
+            # ---------------------------------
+            weak_now = bool(
+                rvol
+                < DEFERRED_MIN_RVOL * 0.75
+                and accel
+                < DEFERRED_MIN_VOLUME_ACCEL * 0.80
+                and momentum_3m <= 0
+            )
+
+            if weak_now:
+                item[
+                    "weak_cycles"
+                ] = (
+                    int(
+                        item.get(
+                            "weak_cycles",
+                            0,
+                        )
+                    )
+                    + 1
+                )
+            else:
+                item[
+                    "weak_cycles"
+                ] = 0
+
+            if (
+                int(
+                    item.get(
+                        "weak_cycles",
+                        0,
+                    )
+                )
+                >= DEFERRED_CATALYST_MAX_WEAK_CYCLES
+            ):
+                runtime_stats[
+                    "deferred_removed_weak"
+                ] = (
+                    runtime_stats.get(
+                        "deferred_removed_weak",
+                        0,
+                    )
+                    + 1
+                )
+
+                remove_from_catalyst_entry_watchlist(
+                    symbol,
+                    reason=(
+                        "movement weakened for "
+                        f"{item.get('weak_cycles')} "
+                        "consecutive checks"
+                    ),
+                )
+                continue
+
+            item[
+                "last_metrics"
+            ] = {
+                "price": price,
+                "final_score": final_score,
+                "rvol": rvol,
+                "volume_accel_ratio": accel,
+                "vwap": safe_float(
+                    metrics.get("vwap")
+                ),
+                "momentum_3m_pct": (
+                    momentum_3m
+                ),
+                "resistance": safe_float(
+                    metrics.get(
+                        "resistance"
+                    )
+                ),
+                "breakout": bool(
+                    metrics.get(
+                        "breakout"
+                    )
+                ),
+                "near_breakout": bool(
+                    metrics.get(
+                        "near_breakout"
+                    )
+                ),
+                "close_position": safe_float(
+                    metrics.get(
+                        "deferred_close_position"
+                    )
+                ),
+                "deferred_ready": (
+                    deferred_ready
+                ),
+            }
+
+            redis_hset_json(
+                KEY_CATALYST_ENTRY_WATCHLIST,
+                symbol,
+                item,
+            )
+
+            with CATALYST_ENTRY_WATCHLIST_LOCK:
+                if (
+                    symbol
+                    in CATALYST_ENTRY_WATCHLIST
+                ):
+                    CATALYST_ENTRY_WATCHLIST[
+                        symbol
+                    ] = item
+
+            if deferred_ready:
+                runtime_stats[
+                    "deferred_ready"
+                ] = (
+                    runtime_stats.get(
+                        "deferred_ready",
+                        0,
+                    )
+                    + 1
+                )
+
+                log(
+                    f"[DEFERRED] READY: "
+                    f"{symbol} | "
+                    f"Score={final_score:.1f} | "
+                    f"RVOL={rvol:.2f} | "
+                    f"Accel={accel:.2f}x | "
+                    f"Momentum3m="
+                    f"{momentum_3m:.2f}%"
+                )
+
+        except Exception as exc:
+            runtime_stats[
+                "deferred_errors"
+            ] = (
+                runtime_stats.get(
+                    "deferred_errors",
+                    0,
+                )
+                + 1
+            )
+
+            log(
+                f"[DEFERRED] symbol error "
+                f"{symbol}: {exc}"
+            )
+
+
+def deferred_catalyst_entry_loop():
+    while True:
+        cycle_started = time.monotonic()
+
+        try:
+            if (
+                not is_weekend()
+                and is_scan_window()
+            ):
+                monitor_deferred_catalyst_watchlist_once()
+
+        except Exception as exc:
+            runtime_stats[
+                "deferred_errors"
+            ] = (
+                runtime_stats.get(
+                    "deferred_errors",
+                    0,
+                )
+                + 1
+            )
+
+            log(
+                f"[DEFERRED] monitor loop error: "
+                f"{exc}"
+            )
+            log(
+                traceback.format_exc()
+            )
+
+        elapsed = (
+            time.monotonic()
+            - cycle_started
+        )
+
+        time.sleep(
+            max(
+                0.25,
+                DEFERRED_CATALYST_MONITOR_INTERVAL
+                - elapsed,
+            )
+        )
+        
 # ==============================================================================
 # Active Trade Monitor
 # ==============================================================================
