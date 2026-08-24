@@ -157,7 +157,20 @@ FLOAT_REFRESH_SEC = int(os.getenv("NDR_FLOAT_REFRESH_SEC", str(6 * 3600)))
 SHARED_NEWS_REFRESH_SEC = int(os.getenv("NDR_SHARED_NEWS_REFRESH_SEC", "60"))
 
 DISCOVERY_INTERVAL_SEC = float(os.getenv("NDR_DISCOVERY_INTERVAL_SEC", "45"))
-WATCH_INTERVAL_SEC = float(os.getenv("NDR_WATCH_INTERVAL_SEC", "10"))
+WATCH_INTERVAL_SEC = float(
+    os.getenv("NDR_WATCH_INTERVAL_SEC", "5")
+)
+WATCH_BATCH_SIZE = int(
+    os.getenv("NDR_WATCH_BATCH_SIZE", "10")
+)
+
+WATCH_NORMAL_RESERVE = int(
+    os.getenv("NDR_WATCH_NORMAL_RESERVE", "4")
+)
+
+WATCH_FAST_MIN_OPPORTUNITY = float(
+    os.getenv("NDR_WATCH_FAST_MIN_OPPORTUNITY", "80")
+)
 ENTRY_INTERVAL_SEC = float(os.getenv("NDR_ENTRY_INTERVAL_SEC", "5"))
 STATE_SAVE_INTERVAL_SEC = float(os.getenv("NDR_STATE_SAVE_INTERVAL_SEC", "30"))
 
@@ -297,7 +310,9 @@ DRY_RUN = os.getenv("NDR_DRY_RUN", "false").lower() in {
 STARTUP_SELF_TEST = os.getenv("NDR_STARTUP_SELF_TEST", "true").lower() in {
     "1", "true", "yes", "y",
 }
-MAX_DEEP_EVAL_PER_MINUTE = int(os.getenv("NDR_MAX_DEEP_EVAL_PER_MINUTE", "30"))
+MAX_DEEP_EVAL_PER_MINUTE = int(
+    os.getenv("NDR_MAX_DEEP_EVAL_PER_MINUTE", "120")
+)
 API_FAILURE_BACKOFF_SEC = float(os.getenv("NDR_API_FAILURE_BACKOFF_SEC", "2"))
 STALE_CANDIDATE_WARN_MINUTES = int(os.getenv("NDR_STALE_CANDIDATE_WARN_MINUTES", "10"))
 RESEARCH_HISTORY_MAX = int(os.getenv("NDR_RESEARCH_HISTORY_MAX", "5000"))
@@ -3129,15 +3144,74 @@ PERSISTENCE_STATE_ORDER = {
 }
 
 
-def candidate_age_hours(c: Candidate) -> float:
-    dt = parse_ts(c.created_at)
-    if not dt:
+def weekend_closed_seconds(
+    start_value: datetime,
+    end_value: datetime,
+) -> float:
+    start_et = start_value.astimezone(NY_TZ)
+    end_et = end_value.astimezone(NY_TZ)
+
+    if end_et <= start_et:
         return 0.0
 
-    return max(
-        0.0,
-        (now_utc() - dt.astimezone(UTC_TZ)).total_seconds() / 3600.0,
+    total_seconds = 0.0
+
+    week_start = (
+        start_et.date()
+        - timedelta(days=start_et.weekday())
     )
+
+    while True:
+        friday_date = week_start + timedelta(days=4)
+
+        friday_close = datetime.combine(
+            friday_date,
+            dtime(20, 0),
+            tzinfo=NY_TZ,
+        )
+
+        sunday_open = friday_close + timedelta(days=2)
+
+        if friday_close >= end_et:
+            break
+
+        overlap_start = max(start_et, friday_close)
+        overlap_end = min(end_et, sunday_open)
+
+        if overlap_end > overlap_start:
+            total_seconds += (
+                overlap_end - overlap_start
+            ).total_seconds()
+
+        week_start += timedelta(days=7)
+
+    return max(0.0, total_seconds)
+
+
+def candidate_age_hours(c: Candidate) -> float:
+    created = parse_ts(c.created_at)
+    if not created:
+        return 0.0
+
+    created_utc = created.astimezone(UTC_TZ)
+    current_utc = now_utc()
+
+    wall_seconds = max(
+        0.0,
+        (current_utc - created_utc).total_seconds(),
+    )
+
+    closed_seconds = weekend_closed_seconds(
+        created_utc,
+        current_utc,
+    )
+
+    active_seconds = max(
+        0.0,
+        wall_seconds - closed_seconds,
+    )
+
+    return active_seconds / 3600.0
 
 
 def minutes_since(value: str) -> float:
@@ -3475,29 +3549,141 @@ def discovery_cycle() -> None:
         runtime_stats["last_discovery_scan"] = iso()
 
 
-def watch_cycle() -> None:
-    with candidate_lock:
-        items = sorted(
-            candidates.values(),
-            key=persistence_priority_score,
-            reverse=True,
-        )
+watch_fast_cursor = 0
+watch_normal_cursor = 0
 
-    for c in items[:60]:
-        if c.state == CandidateState.FAILED:
-            continue
-            
+
+def take_round_robin_batch(
+    items: List[Candidate],
+    cursor: int,
+    count: int,
+) -> Tuple[List[Candidate], int]:
+    if not items or count <= 0:
+        return [], 0
+
+    start = cursor % len(items)
+    take_count = min(count, len(items))
+
+    batch = [
+        items[(start + index) % len(items)]
+        for index in range(take_count)
+    ]
+
+    next_cursor = (
+        start + take_count
+    ) % len(items)
+
+    return batch, next_cursor
+
+
+def watch_cycle() -> None:
+    global watch_fast_cursor
+    global watch_normal_cursor
+
+    with candidate_lock:
+        all_items = [
+            c
+            for c in candidates.values()
+            if c.state != CandidateState.FAILED
+        ]
+
+    fast_items = [
+        c
+        for c in all_items
+        if (
+            c.opportunity_score >= WATCH_FAST_MIN_OPPORTUNITY
+            or c.state in (
+                CandidateState.BUILDING,
+                CandidateState.BREAKOUT_READY,
+                CandidateState.ELITE_CONTINUATION,
+            )
+        )
+    ]
+
+    fast_symbols = {
+        c.symbol
+        for c in fast_items
+    }
+
+    normal_items = [
+        c
+        for c in all_items
+        if c.symbol not in fast_symbols
+    ]
+
+    fast_items.sort(
+        key=persistence_priority_score,
+        reverse=True,
+    )
+
+    normal_items.sort(
+        key=persistence_priority_score,
+        reverse=True,
+    )
+
+    normal_slots = min(
+        WATCH_NORMAL_RESERVE,
+        WATCH_BATCH_SIZE,
+        len(normal_items),
+    )
+
+    fast_slots = max(
+        0,
+        WATCH_BATCH_SIZE - normal_slots,
+    )
+
+    fast_batch, watch_fast_cursor = (
+        take_round_robin_batch(
+            fast_items,
+            watch_fast_cursor,
+            fast_slots,
+        )
+    )
+
+    remaining_slots = max(
+        0,
+        WATCH_BATCH_SIZE - len(fast_batch),
+    )
+
+    normal_batch, watch_normal_cursor = (
+        take_round_robin_batch(
+            normal_items,
+            watch_normal_cursor,
+            remaining_slots,
+        )
+    )
+
+    selected_items = fast_batch + normal_batch
+
+    for c in selected_items:
         try:
             deep_evaluate(c.symbol)
         except Exception as e:
             with stats_lock:
-                runtime_stats["last_error"] = f"watch {c.symbol}: {e}"
+                runtime_stats["last_error"] = (
+                    f"watch {c.symbol}: {e}"
+                )
+
         time.sleep(0.08)
 
     with stats_lock:
         runtime_stats["last_watch_scan"] = iso()
-
-
+        runtime_stats["last_watch_batch_size"] = len(
+            selected_items
+        )
+        runtime_stats["watch_fast_count"] = len(
+            fast_items
+        )
+        runtime_stats["watch_normal_count"] = len(
+            normal_items
+        )
+        runtime_stats["watch_fast_cursor"] = (
+            watch_fast_cursor
+        )
+        runtime_stats["watch_normal_cursor"] = (
+            watch_normal_cursor
+        )
+        
 def entry_cycle() -> None:
     phase = current_market_session()
     if not entry_allowed_now(phase):
@@ -3880,6 +4066,11 @@ def config_snapshot() -> Dict[str, Any]:
         "max_float": MAX_FLOAT,
         "discovery_interval_sec": DISCOVERY_INTERVAL_SEC,
         "watch_interval_sec": WATCH_INTERVAL_SEC,
+        "watch_batch_size": WATCH_BATCH_SIZE,
+        "watch_normal_reserve": WATCH_NORMAL_RESERVE,
+        "watch_fast_min_opportunity": (
+            WATCH_FAST_MIN_OPPORTUNITY
+        ),
         "entry_interval_sec": ENTRY_INTERVAL_SEC,
         "max_deep_eval_per_minute": MAX_DEEP_EVAL_PER_MINUTE,
         "allow_premarket_entry": ALLOW_PREMARKET_ENTRY,
