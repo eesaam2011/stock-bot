@@ -1,7 +1,7 @@
 # ==============================================================================
 # Next-Day Explosion Radar
-# VERSION = "0.9.0"
-# BUILD = "SESSION-AWARE-ENTRY-2026-08-24-H"
+# VERSION = "0.10.0"
+# BUILD = "WEEKEND-ROUND-ROBIN-2026-08-24-I"
 # File    : next_day_explosion_radar.py
 #
 # Deployment:
@@ -63,8 +63,8 @@ from flask import Flask, jsonify
 
 BOT_NAME = "Next-Day Explosion Radar"
 BOT_NAME_AR = "رادار انفجار اليوم التالي"
-VERSION = "0.9.0"
-BUILD = "SESSION-AWARE-ENTRY-2026-08-24-H"
+VERSION = "0.10.0"
+BUILD = "WEEKEND-ROUND-ROBIN-2026-08-24-I"
 NY_TZ = ZoneInfo("America/New_York")
 KSA_TZ = ZoneInfo("Asia/Riyadh")
 UTC_TZ = timezone.utc
@@ -2831,9 +2831,13 @@ def maybe_send_state_transition(c: Candidate) -> None:
         if alert_token in states:
             return
 
-        states.append(alert_token)
-
     if telegram_send(discovery_alert(c)):
+        with sent_lock:
+            states = sent_state_alerts.setdefault(key, [])
+
+            if alert_token not in states:
+                states.append(alert_token)
+
         with stats_lock:
             runtime_stats["alerts_sent"] += 1
             
@@ -3109,12 +3113,16 @@ def confirm_entry(c: Candidate) -> bool:
         return False
 
     if DRY_RUN or not ENABLE_LIVE_ENTRY_ALERTS:
+        plan["dry_run"] = True
+
         print(
             f"[DRY RUN ENTRY] {c.symbol} entry={plan['entry']} "
             f"stop={plan['stop']} score={c.opportunity_score:.1f}",
             flush=True,
         )
+
         c.last_entry_plan = plan
+        mark_entry_alerted(c.symbol, plan)
         return True
 
     if telegram_send(entry_alert_message(c, plan)):
