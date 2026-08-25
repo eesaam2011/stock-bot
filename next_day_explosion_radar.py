@@ -1,7 +1,7 @@
 # ==============================================================================
 # Next-Day Explosion Radar
-# VERSION = "0.10.0"
-# BUILD = "WEEKEND-ROUND-ROBIN-2026-08-24-I"
+# VERSION = "0.11.0"
+# BUILD = "DEDICATED-ENTRY-QUOTA-2026-08-25-J"
 # File    : next_day_explosion_radar.py
 #
 # Deployment:
@@ -63,8 +63,8 @@ from flask import Flask, jsonify
 
 BOT_NAME = "Next-Day Explosion Radar"
 BOT_NAME_AR = "رادار انفجار اليوم التالي"
-VERSION = "0.10.0"
-BUILD = "WEEKEND-ROUND-ROBIN-2026-08-24-I"
+VERSION = "0.11.0"
+BUILD = "DEDICATED-ENTRY-QUOTA-2026-08-25-J"
 NY_TZ = ZoneInfo("America/New_York")
 KSA_TZ = ZoneInfo("Asia/Riyadh")
 UTC_TZ = timezone.utc
@@ -311,7 +311,15 @@ STARTUP_SELF_TEST = os.getenv("NDR_STARTUP_SELF_TEST", "true").lower() in {
     "1", "true", "yes", "y",
 }
 MAX_DEEP_EVAL_PER_MINUTE = int(
-    os.getenv("NDR_MAX_DEEP_EVAL_PER_MINUTE", "120")
+    os.getenv("NDR_MAX_DEEP_EVAL_PER_MINUTE", "300")
+)
+
+ENTRY_CONFIRM_MAX_PER_MINUTE = int(
+    os.getenv("NDR_ENTRY_CONFIRM_MAX_PER_MINUTE", "30")
+)
+
+ENTRY_CONFIRM_BATCH_SIZE = int(
+    os.getenv("NDR_ENTRY_CONFIRM_BATCH_SIZE", "2")
 )
 API_FAILURE_BACKOFF_SEC = float(os.getenv("NDR_API_FAILURE_BACKOFF_SEC", "2"))
 STALE_CANDIDATE_WARN_MINUTES = int(os.getenv("NDR_STALE_CANDIDATE_WARN_MINUTES", "10"))
@@ -482,6 +490,8 @@ RVOL_CACHE_TTL = float(os.getenv("NDR_RVOL_CACHE_TTL", str(15 * 60)))
 deep_eval_rate_lock = threading.RLock()
 deep_eval_timestamps: List[float] = []
 
+entry_confirm_rate_lock = threading.RLock()
+entry_confirm_timestamps: List[float] = []
 
 def allow_deep_evaluation() -> bool:
     now_ts = time.time()
@@ -496,7 +506,37 @@ def allow_deep_evaluation() -> bool:
         deep_eval_timestamps.append(now_ts)
         return True
 
+def allow_entry_confirmation() -> bool:
+    now_ts = time.time()
 
+    with entry_confirm_rate_lock:
+        cutoff = now_ts - 60.0
+
+        while (
+            entry_confirm_timestamps
+            and entry_confirm_timestamps[0] < cutoff
+        ):
+            entry_confirm_timestamps.pop(0)
+
+        if (
+            len(entry_confirm_timestamps)
+            >= ENTRY_CONFIRM_MAX_PER_MINUTE
+        ):
+            with stats_lock:
+                runtime_stats["entry_confirm_rate_limited"] = (
+                    safe_int(
+                        runtime_stats.get(
+                            "entry_confirm_rate_limited"
+                        )
+                    )
+                    + 1
+                )
+
+            return False
+
+        entry_confirm_timestamps.append(now_ts)
+        return True
+        
 def bump_rejection(reason: str) -> None:
     with stats_lock:
         d = runtime_stats.setdefault("rejections", {})
@@ -2398,8 +2438,14 @@ def update_peak_snapshot(c: Candidate) -> None:
         "spread_pct": round(c.spread_pct, 4),
     }
     
-def deep_evaluate(symbol: str) -> Optional[Candidate]:
-    if not allow_deep_evaluation():
+def deep_evaluate(
+    symbol: str,
+    bypass_general_rate_limit: bool = False,
+) -> Optional[Candidate]:
+    if (
+        not bypass_general_rate_limit
+        and not allow_deep_evaluation()
+    ):
         return None
 
     phase = current_market_session()
@@ -3082,13 +3128,30 @@ def confirm_entry(c: Candidate) -> bool:
     phase = current_market_session()
     if not entry_allowed_now(phase):
         return False
+        
     if entry_alerted_today(c.symbol):
         return False
 
-    # Fresh deep evaluation immediately before the entry decision.
-    fresh = deep_evaluate(c.symbol)
-    if not fresh:
+    if not allow_entry_confirmation():
+        c.entry_block_reasons = [
+            "entry_confirm_rate_limited"
+        ]
+        bump_rejection("entry_confirm_rate_limited")
         return False
+
+    # تقييم حي مستقل مباشرة قبل قرار الدخول.
+    fresh = deep_evaluate(
+        c.symbol,
+        bypass_general_rate_limit=True,
+    )
+
+    if not fresh:
+        c.entry_block_reasons = [
+            "fresh_evaluation_unavailable"
+        ]
+        bump_rejection("fresh_evaluation_unavailable")
+        return False
+
     c = fresh
 
     eligible, reasons = entry_gate(c)
@@ -3717,7 +3780,7 @@ def entry_cycle() -> None:
         
     items.sort(key=lambda c: c.opportunity_score, reverse=True)
 
-    for c in items[:30]:
+    for c in items[:ENTRY_CONFIRM_BATCH_SIZE]:
         try:
             confirm_entry(c)
         except Exception as e:
@@ -4084,6 +4147,10 @@ def config_snapshot() -> Dict[str, Any]:
         ),
         "entry_interval_sec": ENTRY_INTERVAL_SEC,
         "max_deep_eval_per_minute": MAX_DEEP_EVAL_PER_MINUTE,
+        "entry_confirm_max_per_minute": (
+            ENTRY_CONFIRM_MAX_PER_MINUTE
+        ),
+        "entry_confirm_batch_size": ENTRY_CONFIRM_BATCH_SIZE,
         "allow_premarket_entry": ALLOW_PREMARKET_ENTRY,
         "allow_exceptional_night_entry": (
             ALLOW_EXCEPTIONAL_NIGHT_ENTRY
