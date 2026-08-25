@@ -2627,6 +2627,9 @@ def deep_evaluate(symbol: str) -> Optional[Candidate]:
     if len(c.history) > MAX_HISTORY_POINTS:
         c.history = c.history[-MAX_HISTORY_POINTS:]
 
+    with candidate_lock:
+        candidates[symbol] = c
+
     with stats_lock:
         runtime_stats["deep_evaluations"] += 1
 
