@@ -5413,7 +5413,8 @@ def scan_once():
     runtime_stats["last_scan"] = datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S")
 
     finalists = []
-
+    scored_candidates = []
+    
     evaluated = 0
     deep_news_count = 0
 
@@ -5488,7 +5489,24 @@ def scan_once():
                 metrics = deep_metrics
 
             metrics = apply_pattern_boost(metrics)
-
+            scored_candidates.append(
+                {
+                    "symbol": symbol,
+                    "final_score": safe_float(
+                        metrics.get("final_score")
+                    ),
+                    "core_score": safe_float(
+                        metrics.get("core_score")
+                    ),
+                    "rvol": safe_float(
+                        metrics.get("rvol")
+                    ),
+                    "volume_accel_ratio": safe_float(
+                        metrics.get("volume_accel_ratio")
+                    )
+                }
+            )
+            
             if safe_float(metrics.get("final_score")) >= required_score:
                 finalists.append(metrics)
 
@@ -5500,7 +5518,31 @@ def scan_once():
         key=lambda item: safe_float(item.get("final_score")),
         reverse=True
     )
+    
+    top_scores = sorted(
+        scored_candidates,
+        key=lambda item: safe_float(
+            item.get("final_score")
+        ),
+        reverse=True
+    )[:10]
 
+    if top_scores:
+        log("🏆 Top 10 Scores This Scan:")
+
+        for rank, item in enumerate(
+            top_scores,
+            start=1
+        ):
+            log(
+                f"{rank}. "
+                f"{item.get('symbol')} | "
+                f"Score={safe_float(item.get('final_score')):.1f} | "
+                f"Core={safe_float(item.get('core_score')):.1f} | "
+                f"RVOL={safe_float(item.get('rvol')):.2f} | "
+                f"Accel={safe_float(item.get('volume_accel_ratio')):.2f}x"
+            )
+            
     sent = 0
 
     # No fixed max: send only truly qualified candidates.
