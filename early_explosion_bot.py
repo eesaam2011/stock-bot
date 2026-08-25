@@ -136,6 +136,13 @@ top_rejected_candidates = []
 SCAN_INTERVAL_SEC  = 60
 TRACK_INTERVAL_SEC = 10
 ALERT_COOLDOWN_SEC = 3600
+ENTRY_MAX_BREAKOUT_EXTENSION_PCT = 5.0
+ENTRY_LARGE_DAILY_MOVE_PCT = 12.0
+ENTRY_CONSOLIDATION_MAX_RANGE_PCT = 3.5
+ENTRY_REENTRY_NEW_HIGH_PCT = 0.5
+ENTRY_MIN_HEADROOM_ATR = 0.75
+
+session_alert_state = {}
 
 FLOAT_CACHE_FILE = "float_cache.json"
 LIVE_ALERTS_FILE = "early_explosion_live_alerts.json"
@@ -1239,6 +1246,247 @@ def track_rejected_candidate(symbol, score, reason, rvol, price_change_pct, vol_
 
     except Exception:
         pass
+
+def evaluate_entry_quality(
+    symbol,
+    current_price,
+    price_change_pct,
+    resistance_20,
+    atr_14,
+    previous_bars,
+    bars_1m,
+    volume_acceleration_score,
+    last_1m_vs_avg,
+    last_3m_vs_prev_7m,
+):
+    try:
+        if (
+            bars_1m is None
+            or bars_1m.empty
+            or len(bars_1m) < 12
+        ):
+            return False, "INSUFFICIENT_INTRADAY_DATA", {}
+
+        bars_1m = bars_1m.sort_index()
+
+        closes = bars_1m["close"].astype(float)
+        highs = bars_1m["high"].astype(float)
+        lows = bars_1m["low"].astype(float)
+
+        ema9 = closes.ewm(
+            span=9,
+            adjust=False
+        ).mean()
+
+        ema20 = closes.ewm(
+            span=20,
+            adjust=False
+        ).mean()
+
+        ema9_now = float(ema9.iloc[-1])
+        ema20_now = float(ema20.iloc[-1])
+        last_close = float(closes.iloc[-1])
+
+        momentum_structure_ok = (
+            ema9_now > ema20_now
+            and last_close >= ema9_now
+        )
+
+        prior_6 = bars_1m.iloc[-7:-1]
+
+        prior_6_high = float(
+            prior_6["high"].max()
+        )
+
+        prior_6_low = float(
+            prior_6["low"].min()
+        )
+
+        consolidation_range_pct = (
+            (
+                prior_6_high
+                - prior_6_low
+            )
+            / prior_6_low
+        ) * 100 if prior_6_low > 0 else 999.0
+
+        consolidation_ok = (
+            consolidation_range_pct
+            <= ENTRY_CONSOLIDATION_MAX_RANGE_PCT
+        )
+
+        fresh_intraday_breakout = (
+            last_close
+            > prior_6_high * 1.001
+            and momentum_structure_ok
+            and (
+                volume_acceleration_score >= 5
+                or last_1m_vs_avg >= 1.3
+                or last_3m_vs_prev_7m >= 1.3
+            )
+        )
+
+        breakout_extension_pct = 0.0
+
+        if resistance_20 > 0:
+            breakout_extension_pct = (
+                (
+                    current_price
+                    - resistance_20
+                )
+                / resistance_20
+            ) * 100
+
+        if breakout_extension_pct > ENTRY_MAX_BREAKOUT_EXTENSION_PCT:
+            if not (
+                consolidation_ok
+                and fresh_intraday_breakout
+            ):
+                return False, "OVEREXTENDED_FROM_BREAKOUT", {
+                    "breakout_extension_pct": round(
+                        breakout_extension_pct,
+                        2
+                    ),
+                    "consolidation_range_pct": round(
+                        consolidation_range_pct,
+                        2
+                    ),
+                }
+
+        if price_change_pct >= ENTRY_LARGE_DAILY_MOVE_PCT:
+            if not (
+                consolidation_ok
+                and fresh_intraday_breakout
+            ):
+                return False, "LATE_DAILY_MOVE_NO_NEW_BASE", {
+                    "breakout_extension_pct": round(
+                        breakout_extension_pct,
+                        2
+                    ),
+                    "consolidation_range_pct": round(
+                        consolidation_range_pct,
+                        2
+                    ),
+                }
+
+        overhead_highs = previous_bars.loc[
+            previous_bars["high"] > current_price,
+            "high"
+        ]
+
+        nearest_overhead = None
+        headroom_atr = None
+
+        if not overhead_highs.empty:
+            nearest_overhead = float(
+                overhead_highs.min()
+            )
+
+            if atr_14 > 0:
+                headroom_atr = (
+                    nearest_overhead
+                    - current_price
+                ) / atr_14
+
+                if headroom_atr < ENTRY_MIN_HEADROOM_ATR:
+                    return False, "INSUFFICIENT_HEADROOM", {
+                        "nearest_overhead": round(
+                            nearest_overhead,
+                            4
+                        ),
+                        "headroom_atr": round(
+                            headroom_atr,
+                            2
+                        ),
+                    }
+
+        previous_alert = session_alert_state.get(
+            symbol
+        )
+
+        recent_intraday_high = float(
+            highs.max()
+        )
+
+        if previous_alert:
+            previous_high = float(
+                previous_alert.get(
+                    "recent_intraday_high",
+                    previous_alert.get(
+                        "alert_price",
+                        0
+                    )
+                )
+            )
+
+            required_new_high = (
+                previous_high
+                * (
+                    1
+                    + ENTRY_REENTRY_NEW_HIGH_PCT / 100
+                )
+            )
+
+            reentry_structure_ok = (
+                current_price >= required_new_high
+                and momentum_structure_ok
+                and fresh_intraday_breakout
+            )
+
+            if not reentry_structure_ok:
+                return False, "REENTRY_NOT_RESET", {
+                    "previous_high": round(
+                        previous_high,
+                        4
+                    ),
+                    "required_new_high": round(
+                        required_new_high,
+                        4
+                    ),
+                    "current_price": round(
+                        current_price,
+                        4
+                    ),
+                }
+
+        return True, "ENTRY_QUALITY_OK", {
+            "ema9": round(ema9_now, 4),
+            "ema20": round(ema20_now, 4),
+            "breakout_extension_pct": round(
+                breakout_extension_pct,
+                2
+            ),
+            "consolidation_range_pct": round(
+                consolidation_range_pct,
+                2
+            ),
+            "fresh_intraday_breakout": bool(
+                fresh_intraday_breakout
+            ),
+            "recent_intraday_high": round(
+                recent_intraday_high,
+                4
+            ),
+            "nearest_overhead": (
+                round(nearest_overhead, 4)
+                if nearest_overhead is not None
+                else None
+            ),
+            "headroom_atr": (
+                round(headroom_atr, 2)
+                if headroom_atr is not None
+                else None
+            ),
+        }
+
+    except Exception as e:
+        print(
+            f"⚠️ Entry Quality Gate error "
+            f"{symbol}: {e}",
+            flush=True
+        )
+
+        return False, "ENTRY_QUALITY_ERROR", {}
         
 def check_explosion(api, symbol, asset_name):
     global reject_price_change
@@ -1560,6 +1808,30 @@ def check_explosion(api, symbol, asset_name):
             reject_score += 1
             return None
 
+        entry_quality_ok, entry_quality_reason, entry_quality_data = (
+            evaluate_entry_quality(
+                symbol,
+                current_price,
+                price_change_pct,
+                resistance_20,
+                atr_14,
+                previous_bars,
+                bars_1m,
+                volume_acceleration_score,
+                last_1m_vs_avg,
+                last_3m_vs_prev_7m,
+            )
+        )
+
+        if not entry_quality_ok:
+            print(
+                f"🚫 ENTRY QUALITY REJECT | "
+                f"{symbol} | "
+                f"{entry_quality_reason} | "
+                f"{entry_quality_data}",
+                flush=True
+            )
+            return None
             
         digits = 4 if current_price < 1 else 2
 
@@ -1597,6 +1869,8 @@ def check_explosion(api, symbol, asset_name):
             "target2": target2,
             "target3": target3,
             "stop_loss": stop_loss,
+            "entry_quality_reason": entry_quality_reason,
+            "entry_quality": entry_quality_data,
             "explosion_candidate": True
         }
 
@@ -2551,6 +2825,7 @@ def main_scanner():
         if last_session_date != today_key:
             final_session_report_sent = False
             session_closed_reports = []
+            session_alert_state.clear()
             last_session_date = today_key
 
         print("🔎 Full scan started...", flush=True)
@@ -2665,6 +2940,24 @@ def main_scanner():
                             continue
 
                         sent_alerts[sym] = time.time()
+                        
+                        entry_quality_data = result.get(
+                            "entry_quality",
+                            {}
+                        )
+
+                        session_alert_state[sym] = {
+                            "alert_ts": time.time(),
+                            "alert_price": float(
+                                result.get("price", 0)
+                            ),
+                            "recent_intraday_high": float(
+                                entry_quality_data.get(
+                                    "recent_intraday_high",
+                                    result.get("price", 0)
+                                )
+                            ),
+                        }
                         
                         threading.Thread(
                             target=send_news_after_alert,
