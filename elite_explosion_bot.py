@@ -3163,6 +3163,262 @@ def fast_watchlist_monitor_loop():
             )
             traceback.print_exc()
             time.sleep(FAST_WATCHLIST_SCAN_INTERVAL)
+
+def reentry_watch_monitor_loop():
+    print(
+        f"🔄 REENTRY_WATCH monitor started | "
+        f"Interval="
+        f"{REENTRY_WATCH_INTERVAL_SECONDS}s | "
+        f"MaxAge="
+        f"{REENTRY_WATCH_MAX_AGE_SECONDS // 60}m"
+    )
+
+    while True:
+        try:
+            if not is_work_time():
+                time.sleep(
+                    REENTRY_WATCH_INTERVAL_SECONDS
+                )
+                continue
+
+            with REENTRY_WATCHLIST_LOCK:
+                items = [
+                    dict(item)
+                    for item in (
+                        REENTRY_WATCHLIST.values()
+                    )
+                ]
+
+            if not items:
+                time.sleep(
+                    REENTRY_WATCH_INTERVAL_SECONDS
+                )
+                continue
+
+            for item in items:
+                symbol = str(
+                    item.get("symbol")
+                    or ""
+                ).strip().upper()
+
+                if not symbol:
+                    continue
+
+                now_ts = time.time()
+
+                added_at = safe_float(
+                    item.get("added_at")
+                )
+
+                if (
+                    added_at > 0
+                    and now_ts - added_at
+                    >= REENTRY_WATCH_MAX_AGE_SECONDS
+                ):
+                    with REENTRY_WATCHLIST_LOCK:
+                        REENTRY_WATCHLIST.pop(
+                            symbol,
+                            None,
+                        )
+
+                    print(
+                        f"🗑️ REENTRY_WATCH expired: "
+                        f"{symbol}"
+                    )
+                    continue
+
+                manager_active = (
+                    is_symbol_already_in_live_manager(
+                        symbol
+                    )
+                )
+
+                with REENTRY_WATCHLIST_LOCK:
+                    current = REENTRY_WATCHLIST.get(
+                        symbol
+                    )
+
+                    if current is None:
+                        continue
+
+                    current["last_check_at"] = (
+                        now_ts
+                    )
+
+                    if manager_active:
+                        current[
+                            "manager_seen_active"
+                        ] = True
+
+                        current[
+                            "reentry_ready"
+                        ] = False
+
+                        continue
+
+                    manager_seen_active = bool(
+                        current.get(
+                            "manager_seen_active",
+                            False,
+                        )
+                    )
+
+                    exit_detected_at = safe_float(
+                        current.get(
+                            "exit_detected_at"
+                        )
+                    )
+
+                    reentry_count = int(
+                        current.get(
+                            "reentry_count",
+                            0,
+                        )
+                    )
+
+                    if not manager_seen_active:
+                        continue
+
+                    if exit_detected_at <= 0:
+                        current[
+                            "exit_detected_at"
+                        ] = now_ts
+
+                        print(
+                            f"👀 REENTRY_WATCH exit "
+                            f"detected: {symbol}"
+                        )
+
+                        continue
+
+                    if (
+                        now_ts - exit_detected_at
+                        < REENTRY_MIN_SECONDS_AFTER_EXIT
+                    ):
+                        continue
+
+                    if (
+                        reentry_count
+                        >= REENTRY_MAX_PER_SYMBOL
+                    ):
+                        REENTRY_WATCHLIST.pop(
+                            symbol,
+                            None,
+                        )
+                        continue
+
+                    current[
+                        "reentry_ready"
+                    ] = True
+
+                blocked, block_reason = (
+                    get_trading_block_reason(
+                        symbol
+                    )
+                )
+
+                if blocked:
+                    continue
+
+                metrics = build_symbol_metrics(
+                    symbol
+                )
+
+                if not metrics:
+                    continue
+
+                score, breakdown = (
+                    calculate_final_score(
+                        symbol,
+                        metrics,
+                    )
+                )
+
+                metrics["final_score"] = (
+                    safe_float(score)
+                )
+
+                metrics["score_breakdown"] = (
+                    breakdown
+                )
+
+                required_score = (
+                    get_required_entry_score()
+                )
+
+                print(
+                    f"🔄 REENTRY_WATCH check: "
+                    f"{symbol} | "
+                    f"Score="
+                    f"{metrics['final_score']:.1f}/"
+                    f"{required_score:.1f}"
+                )
+
+                if (
+                    metrics["final_score"]
+                    < required_score
+                ):
+                    continue
+
+                alert_sent = (
+                    execute_entry_if_any(
+                        [metrics]
+                    )
+                )
+
+                if not alert_sent:
+                    continue
+
+                with REENTRY_WATCHLIST_LOCK:
+                    current = REENTRY_WATCHLIST.get(
+                        symbol
+                    )
+
+                    if current:
+                        current[
+                            "reentry_count"
+                        ] = (
+                            int(
+                                current.get(
+                                    "reentry_count",
+                                    0,
+                                )
+                            )
+                            + 1
+                        )
+
+                        current[
+                            "reentry_ready"
+                        ] = False
+
+                        current[
+                            "manager_seen_active"
+                        ] = False
+
+                        current[
+                            "exit_detected_at"
+                        ] = 0.0
+
+                print(
+                    f"✅ REENTRY alert sent: "
+                    f"{symbol}"
+                )
+
+            time.sleep(
+                REENTRY_WATCH_INTERVAL_SECONDS
+            )
+
+        except Exception as e:
+            print(
+                f"❌ REENTRY_WATCH error: "
+                f"{e}"
+            )
+
+            traceback.print_exc()
+
+            time.sleep(
+                REENTRY_WATCH_INTERVAL_SECONDS
+            )
             
 def scan_market_batch():
     runtime_stats["batch_scanned"] = 0
@@ -3280,14 +3536,34 @@ def scan_market_batch():
 # DECISION ENGINE
 # =========================================================
 def was_alert_sent_recently(symbol):
+    with REENTRY_WATCHLIST_LOCK:
+        reentry_item = REENTRY_WATCHLIST.get(
+            symbol,
+            {},
+        )
+
+        if reentry_item.get(
+            "reentry_ready",
+            False,
+        ):
+            return False
+
     item = sent_alerts.get(symbol)
+
     if not item:
         return False
 
     try:
-        last_sent = datetime.fromisoformat(item.get("sent_at"))
-        age_hours = (now_ksa() - last_sent).total_seconds() / 3600
+        last_sent = datetime.fromisoformat(
+            item.get("sent_at")
+        )
+
+        age_hours = (
+            now_ksa() - last_sent
+        ).total_seconds() / 3600
+
         return age_hours < REPEAT_BLOCK_HOURS
+
     except Exception:
         return False
 
@@ -4489,6 +4765,17 @@ def execute_entry_if_any(scored_candidates):
         )
 
         if alert_ok:
+            with REENTRY_WATCHLIST_LOCK:
+                REENTRY_WATCHLIST[symbol] = {
+                    "symbol": symbol,
+                    "added_at": time.time(),
+                    "manager_seen_active": False,
+                    "exit_detected_at": 0.0,
+                    "reentry_ready": False,
+                    "reentry_count": 0,
+                    "last_check_at": 0.0,
+                }
+
             sent_alerts[symbol] = {
                 "sent_at": fresh_candidate.get(
                     "alert_sent_at",
@@ -5513,6 +5800,14 @@ if __name__ == "__main__":
         daemon=True,
     )
     fast_watchlist_thread.start()
+    
+    reentry_watch_thread = threading.Thread(
+        target=reentry_watch_monitor_loop,
+        name="reentry-watch-monitor",
+        daemon=True,
+    )
 
+    reentry_watch_thread.start()
+    
     main_loop()
     
