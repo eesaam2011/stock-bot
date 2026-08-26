@@ -100,6 +100,8 @@ TRADING_STATUS = {}
 TRADING_STATUS_LOCK = threading.RLock()
 POST_HALT_WATCHLIST = {}
 POST_HALT_WATCHLIST_LOCK = threading.RLock()
+REENTRY_WATCHLIST = {}
+REENTRY_WATCHLIST_LOCK = threading.RLock()
 halt_stream_connected = False
 halt_stream_last_message_at = 0.0
 
