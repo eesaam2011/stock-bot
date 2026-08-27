@@ -63,7 +63,9 @@ KEY_ACTIVE = f"{REDIS_PREFIX}:active_trades"
 KEY_POST_EXIT = f"{REDIS_PREFIX}:post_exit_watch"
 KEY_HISTORY = f"{REDIS_PREFIX}:history"
 KEY_EVENTS = f"{REDIS_PREFIX}:events"
-
+KEY_ELITE_REENTRY_REQUESTS = (
+    f"{REDIS_PREFIX}:elite_reentry_requests"
+)
 # ------------------------------------------------------------------------------
 # Runtime configuration
 # ------------------------------------------------------------------------------
@@ -2319,13 +2321,40 @@ def evaluate_post_exit_trade(trade: dict):
         trade["reentry_signal_price"] = current_price
         trade["reentry_signal_ts"] = now_ts()
 
-        send_telegram_message(
-            f"🔄 *[{symbol}] REENTRY_POSSIBLE — استعادة قوية بعد الخروج*\n"
-            f"• السعر: `${current_price:.4f}`\n"
-            f"• فوق EMA9 / EMA20 / VWAP\n"
-            f"• الحجم عاد للدعم\n"
-            f"• هذه `Reclaim` مؤكدة بعد `{REENTRY_CONFIRMATIONS}` فحوص، وليست ارتدادًا لحظيًا فقط."
-        )
+        if trade.get("source_bot") == "elite_explosion":
+            request_payload = {
+                "symbol": symbol,
+                "source_bot": "elite_explosion",
+                "trade_id": trade.get("trade_id"),
+                "exit_price": trade.get("exit_price"),
+                "reentry_signal_price": current_price,
+                "request_ts": now_ts(),
+                "confirmations": REENTRY_CONFIRMATIONS,
+            }
+
+            redis_client.rpush(
+                KEY_ELITE_REENTRY_REQUESTS,
+                json.dumps(
+                    request_payload,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+
+            print(
+                f"🔄 Internal re-entry request sent "
+                f"to Elite Explosion: {symbol}",
+                flush=True,
+            )
+
+        else:
+            send_telegram_message(
+                f"🔄 *[{symbol}] REENTRY_POSSIBLE — استعادة قوية بعد الخروج*\n"
+                f"• السعر: `${current_price:.4f}`\n"
+                f"• فوق EMA9 / EMA20 / VWAP\n"
+                f"• الحجم عاد للدعم\n"
+                f"• هذه `Reclaim` مؤكدة بعد `{REENTRY_CONFIRMATIONS}` فحوص، وليست ارتدادًا لحظيًا فقط."
+            )
 
         save_event(
             "REENTRY_POSSIBLE",
