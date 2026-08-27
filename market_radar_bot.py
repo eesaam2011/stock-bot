@@ -98,7 +98,7 @@ def health():
     
 SCAN_INTERVAL = 30
 
-MONITOR_INTERVAL = 30
+MONITOR_INTERVAL = 10
 
 FULL_UNIVERSE_REFRESH = 60 * 60 * 4
 
@@ -4269,7 +4269,7 @@ Penalty: -{safe_float(metrics.get('penalty_points')):.1f}
 {high_target_text}
 ━━━━━━━━━━━━━━
 
-👀 سيستمر البوت في مراقبة الصفقة كل 30 ثانية، ويرسل تحديثات رفع الوقف أو الخروج عند الحاجة.
+👀 سيستمر البوت في مراقبة الصفقة كل 10 ثوانٍ، ويرسل تحديثات رفع الوقف أو الخروج عند الحاجة.
 """
 
     return message
@@ -5145,7 +5145,7 @@ def monitor_single_trade(symbol, item):
         symbol,
         TimeFrame.Minute,
         limit=120,
-        cache_ttl=20
+        cache_ttl=10
     )
 
     latest_bar_high = price
