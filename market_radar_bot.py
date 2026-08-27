@@ -122,14 +122,10 @@ FINNHUB_MAX_REQUESTS_PER_MINUTE = 40
 FINNHUB_DELAY = 60 / FINNHUB_MAX_REQUESTS_PER_MINUTE
 
 PRICE_MIN = 0.50
-PRICE_MAX = 25.00
+PRICE_MAX = 40.00
 
 MIN_SCORE = 86
 LAST_HOUR_SCORE = 93
-
-MAX_SPREAD = 2.0
-
-MIN_DOLLAR_VOLUME = 500000
 
 MAX_STOP = 6
 
@@ -914,8 +910,19 @@ def get_min_dollar_volume(float_shares):
         return 750_000
 
     return 1_000_000
-    
 
+
+def get_max_spread(price):
+    price = safe_float(price)
+
+    if price >= 25:
+        return 1.0
+
+    if price >= 10:
+        return 1.5
+
+    return 2.0
+    
 # ==============================================================================
 # Finnhub News Manager - Max 40 Requests / Minute
 # ==============================================================================
@@ -2433,7 +2440,9 @@ def fast_priority_check(symbol, snapshot=None):
     if price < PRICE_MIN or price > PRICE_MAX:
         return False, snapshot
 
-    if spread > MAX_SPREAD:
+    max_spread = get_max_spread(price)
+
+    if spread > max_spread:
         return False, snapshot
 
     float_value = get_float(symbol)
@@ -3550,8 +3559,18 @@ def pass_hard_rules(symbol, snapshot):
         save_rejection(symbol, "السعر خارج النطاق", snapshot)
         return False
 
-    if spread_pct > MAX_SPREAD:
-        save_rejection(symbol, "السبريد مرتفع", snapshot)
+    max_spread = get_max_spread(price)
+
+    if spread_pct > max_spread:
+        save_rejection(
+            symbol,
+            "السبريد مرتفع",
+            {
+                **snapshot,
+                "spread_pct": spread_pct,
+                "max_spread_allowed": max_spread
+            }
+        )
         return False
 
     if dollar_volume < min_dollar_volume:
@@ -4033,8 +4052,13 @@ def final_safety_check(metrics, trade_plan):
     if price <= 0:
         return False, "تعذر قراءة السعر النهائي"
 
-    if spread_pct > MAX_SPREAD:
-        return False, "السبريد توسع قبل الإرسال"
+    max_spread = get_max_spread(price)
+
+    if spread_pct > max_spread:
+        return False, (
+            f"السبريد توسع قبل الإرسال "
+            f"({spread_pct:.2f}% > {max_spread:.2f}%)"
+        )
 
     # أحدث شموع قبل الإرسال
     df = get_bars(
