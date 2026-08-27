@@ -133,8 +133,11 @@ MIN_DOLLAR_VOLUME = 500000
 
 MAX_STOP = 6
 
-WATCHLIST_RECHECK = 30
-
+WATCHLIST_RECHECK = 10
+FINALIST_RECHECK_INTERVAL_SECONDS = 5
+FINALIST_RECHECK_MAX_AGE_SECONDS = 3 * 60
+FINALIST_RECHECK_MIN_RVOL = 3.0
+FINALIST_RECHECK_MIN_ACCEL = 1.0
 
 # ==============================================================================
 # Redis Keys
@@ -218,6 +221,9 @@ WATCHLIST = {}
 ACTIVE_TRADES = {}
 
 ACTIVE_TRADES_LOCK = threading.Lock()
+
+FINALIST_RECHECK_WATCHLIST = {}
+FINALIST_RECHECK_LOCK = threading.RLock()
 
 UNIVERSE = []
 
@@ -4299,8 +4305,70 @@ def activate_trade(symbol, metrics, trade_plan):
     )
 
     return True
-    
-def send_elite_alert(metrics):
+
+def add_to_finalist_recheck(symbol, metrics, reason):
+    symbol = symbol.upper().strip()
+
+    now_ts = time.time()
+
+    with FINALIST_RECHECK_LOCK:
+        existing = FINALIST_RECHECK_WATCHLIST.get(
+            symbol
+        )
+
+        if existing:
+            existing["last_seen_at"] = now_ts
+            existing["last_reason"] = reason
+            existing["latest_score"] = safe_float(
+                metrics.get("final_score")
+            )
+            return
+
+        FINALIST_RECHECK_WATCHLIST[symbol] = {
+            "symbol": symbol,
+            "added_at": now_ts,
+            "last_seen_at": now_ts,
+            "last_reason": reason,
+            "qualified_score": safe_float(
+                metrics.get("final_score")
+            ),
+            "latest_score": safe_float(
+                metrics.get("final_score")
+            )
+        }
+
+    log(
+        f"Finalist recheck added {symbol} | "
+        f"reason={reason} | "
+        f"score={safe_float(metrics.get('final_score')):.1f} | "
+        f"max_age={FINALIST_RECHECK_MAX_AGE_SECONDS}s"
+    )
+
+
+def remove_from_finalist_recheck(
+    symbol,
+    log_reason=None
+):
+    symbol = symbol.upper().strip()
+
+    removed = None
+
+    with FINALIST_RECHECK_LOCK:
+        removed = FINALIST_RECHECK_WATCHLIST.pop(
+            symbol,
+            None
+        )
+
+    if removed and log_reason:
+        log(
+            f"Finalist recheck removed {symbol} | "
+            f"{log_reason}"
+        )
+        
+def send_elite_alert(
+    metrics,
+    allow_vwap_recheck=True
+):
     symbol = metrics["symbol"]
 
     # التنبيهات الجديدة خلال السوق الرسمي فقط
@@ -4349,6 +4417,17 @@ def send_elite_alert(metrics):
                 "trade_plan": trade_plan
             }
         )
+
+        if (
+            allow_vwap_recheck
+            and reason == "كسر VWAP قبل الإرسال"
+        ):
+            add_to_finalist_recheck(
+                symbol,
+                metrics,
+                reason
+            )
+
         return False
 
     # بناء رسالة التنبيه
@@ -4406,8 +4485,12 @@ def send_elite_alert(metrics):
             f"alert sent but trade activation failed"
         )
 
-    # إزالة السهم من قائمة الانتظار بعد نجاح التنبيه
+    # إزالة السهم من قوائم الانتظار بعد نجاح التنبيه
     remove_from_watchlist(symbol)
+
+    remove_from_finalist_recheck(
+        symbol
+    )
 
     runtime_stats["alerts_sent"] = (
         int(runtime_stats.get("alerts_sent", 0)) + 1
@@ -4422,6 +4505,226 @@ def send_elite_alert(metrics):
 
     return True
 
+def process_finalist_rechecks():
+    if not is_regular_market_hours():
+        return
+
+    now_ts = time.time()
+
+    with FINALIST_RECHECK_LOCK:
+        watch_items = list(
+            FINALIST_RECHECK_WATCHLIST.items()
+        )
+
+    for symbol, watch_item in watch_items:
+        try:
+            added_at = safe_float(
+                watch_item.get("added_at")
+            )
+
+            age_seconds = (
+                now_ts - added_at
+                if added_at > 0
+                else FINALIST_RECHECK_MAX_AGE_SECONDS + 1
+            )
+
+            if age_seconds > FINALIST_RECHECK_MAX_AGE_SECONDS:
+                remove_from_finalist_recheck(
+                    symbol,
+                    "expired without valid VWAP reclaim"
+                )
+                continue
+
+            if already_alerted_today(symbol):
+                remove_from_finalist_recheck(
+                    symbol,
+                    "already alerted today"
+                )
+                continue
+
+            snapshot = get_snapshot(
+                symbol
+            )
+
+            price = safe_float(
+                snapshot.get("price")
+            )
+
+            if price <= 0:
+                continue
+
+            df = get_bars(
+                symbol,
+                TimeFrame.Minute,
+                limit=160,
+                cache_ttl=5
+            )
+
+            if df.empty or len(df) < 40:
+                continue
+
+            live_vwap = calculate_vwap(
+                df
+            )
+
+            live_rvol = calculate_rvol(
+                df
+            )
+
+            volume_acceleration = (
+                calculate_volume_acceleration(
+                    df
+                )
+            )
+
+            live_accel = safe_float(
+                volume_acceleration.get(
+                    "ratio"
+                )
+            )
+
+            # إذا انهار الزخم فعلًا، ننهي المراقبة.
+            if (
+                live_rvol < FINALIST_RECHECK_MIN_RVOL
+                or live_accel < FINALIST_RECHECK_MIN_ACCEL
+            ):
+                remove_from_finalist_recheck(
+                    symbol,
+                    (
+                        "momentum faded | "
+                        f"RVOL={live_rvol:.2f} | "
+                        f"Accel={live_accel:.2f}x"
+                    )
+                )
+                continue
+
+            # ما زال تحت VWAP:
+            # نبقيه تحت المراقبة فقط ولا نرسل شيئًا.
+            if (
+                live_vwap > 0
+                and price < live_vwap
+            ):
+                continue
+
+            # استعاد VWAP:
+            # نعيد تقييم السهم بالكامل من الصفر.
+            fresh_metrics = evaluate_candidate(
+                symbol,
+                deep_news=True,
+                snapshot=snapshot,
+                df=df
+            )
+
+            if not fresh_metrics:
+                continue
+
+            fresh_metrics = apply_pattern_boost(
+                fresh_metrics
+            )
+
+            required_score = (
+                LAST_HOUR_SCORE
+                if is_last_market_hour()
+                else MIN_SCORE
+            )
+
+            fresh_score = safe_float(
+                fresh_metrics.get(
+                    "final_score"
+                )
+            )
+
+            with FINALIST_RECHECK_LOCK:
+                current_item = (
+                    FINALIST_RECHECK_WATCHLIST.get(
+                        symbol
+                    )
+                )
+
+                if current_item:
+                    current_item[
+                        "latest_score"
+                    ] = fresh_score
+
+            # لا نعتمد على السكور القديم.
+            if fresh_score < required_score:
+                continue
+
+            # بناء خطة جديدة تمامًا.
+            fresh_trade_plan, plan_reason = (
+                build_trade_plan(
+                    fresh_metrics
+                )
+            )
+
+            if not fresh_trade_plan:
+                remove_from_finalist_recheck(
+                    symbol,
+                    (
+                        "fresh trade plan failed | "
+                        f"{plan_reason}"
+                    )
+                )
+                continue
+
+            # تشغيل Final Safety كاملًا مرة أخرى.
+            ok, reason = final_safety_check(
+                fresh_metrics,
+                fresh_trade_plan
+            )
+
+            if not ok:
+                # إذا عاد للحظة تحت VWAP فقط،
+                # نبقيه حتى انتهاء مهلة الثلاث دقائق.
+                if reason == "كسر VWAP قبل الإرسال":
+                    continue
+
+                # أي فشل آخر بعد الاستعادة = رفض.
+                remove_from_finalist_recheck(
+                    symbol,
+                    (
+                        "fresh final safety failed | "
+                        f"{reason}"
+                    )
+                )
+                continue
+
+            sent = send_elite_alert(
+                fresh_metrics,
+                allow_vwap_recheck=False
+            )
+
+            if sent:
+                log(
+                    f"Finalist recheck recovered {symbol} | "
+                    f"fresh_score={fresh_score:.1f} | "
+                    f"age={age_seconds:.0f}s"
+                )
+
+                remove_from_finalist_recheck(
+                    symbol
+                )
+
+        except Exception as e:
+            log(
+                f"Finalist recheck error {symbol}: {e}"
+            )
+
+
+def finalist_recheck_loop():
+    while True:
+        try:
+            process_finalist_rechecks()
+
+        except Exception as e:
+            log(
+                f"Finalist recheck loop error: {e}"
+            )
+
+        time.sleep(
+            FINALIST_RECHECK_INTERVAL_SECONDS
+        )
+        
 # ==============================================================================
 # Active Trade Manager
 # ==============================================================================
@@ -6381,6 +6684,12 @@ def main_loop():
     threading.Thread(
         target=trade_monitor_loop,
         daemon=True
+    ).start()
+
+    threading.Thread(
+        target=finalist_recheck_loop,
+        daemon=True,
+        name="finalist-recheck-loop"
     ).start()
     
     while True:
