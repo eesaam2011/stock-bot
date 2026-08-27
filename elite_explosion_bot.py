@@ -3166,7 +3166,7 @@ def fast_watchlist_monitor_loop():
             traceback.print_exc()
             time.sleep(FAST_WATCHLIST_SCAN_INTERVAL)
 
- def ltm_reentry_request_listener_loop():
+def ltm_reentry_request_listener_loop():
     print(
         f"🔄 LTM re-entry listener started | "
         f"Key={LTM_REENTRY_REQUEST_KEY}"
