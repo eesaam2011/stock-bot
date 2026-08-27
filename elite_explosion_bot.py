@@ -54,6 +54,8 @@ LTM_ACTIVE_KEY = "live_trade_manager:active_trades"
 LTM_REENTRY_REQUEST_KEY = (
     "live_trade_manager:elite_reentry_requests"
 )
+LTM_REENTRY_WINDOW_SECONDS = 120
+LTM_REENTRY_RECHECK_INTERVAL_SECONDS = 5
 # =========================================================
 # FINAL ACTIONABLE ENTRY GATE
 # =========================================================
