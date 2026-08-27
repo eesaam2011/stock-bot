@@ -3247,70 +3247,130 @@ def ltm_reentry_request_listener_loop():
                 }
 
             try:
-                metrics = build_symbol_metrics(
-                    symbol
-                )
+                window_started_at = time.time()
 
-                if not metrics:
+                while True:
+                    elapsed = (
+                        time.time()
+                        - window_started_at
+                    )
+
+                    if (
+                        elapsed
+                        >= LTM_REENTRY_WINDOW_SECONDS
+                    ):
+                        print(
+                            f"⏳ LTM re-entry window "
+                            f"expired: {symbol}"
+                        )
+                        break
+
+                    if is_symbol_already_in_live_manager(
+                        symbol
+                    ):
+                        print(
+                            f"ℹ️ LTM re-entry stopped "
+                            f"because symbol became "
+                            f"active: {symbol}"
+                        )
+                        break
+
+                    blocked, block_reason = (
+                        get_trading_block_reason(
+                            symbol
+                        )
+                    )
+
+                    if blocked:
+                        print(
+                            f"⏸ LTM re-entry waiting: "
+                            f"{symbol} | "
+                            f"{block_reason}"
+                        )
+
+                        time.sleep(
+                            LTM_REENTRY_RECHECK_INTERVAL_SECONDS
+                        )
+                        continue
+
+                    metrics = build_symbol_metrics(
+                        symbol
+                    )
+
+                    if not metrics:
+                        print(
+                            f"⏳ LTM re-entry waiting: "
+                            f"{symbol} | "
+                            f"Metrics unavailable"
+                        )
+
+                        time.sleep(
+                            LTM_REENTRY_RECHECK_INTERVAL_SECONDS
+                        )
+                        continue
+
+                    score, breakdown = (
+                        calculate_final_score(
+                            symbol,
+                            metrics,
+                        )
+                    )
+
+                    metrics["final_score"] = (
+                        safe_float(score)
+                    )
+
+                    metrics["score_breakdown"] = (
+                        breakdown
+                    )
+
+                    required_score = (
+                        get_required_entry_score()
+                    )
+
                     print(
-                        f"⏳ LTM re-entry rejected: "
+                        f"🔄 LTM re-entry check: "
                         f"{symbol} | "
-                        f"Metrics unavailable"
+                        f"Score="
+                        f"{metrics['final_score']:.1f}/"
+                        f"{required_score:.1f} | "
+                        f"Window="
+                        f"{elapsed:.0f}/"
+                        f"{LTM_REENTRY_WINDOW_SECONDS}s"
                     )
-                    continue
 
-                score, breakdown = (
-                    calculate_final_score(
-                        symbol,
-                        metrics,
+                    if (
+                        metrics["final_score"]
+                        < required_score
+                    ):
+                        time.sleep(
+                            LTM_REENTRY_RECHECK_INTERVAL_SECONDS
+                        )
+                        continue
+
+                    alert_sent = (
+                        execute_entry_if_any(
+                            [metrics]
+                        )
                     )
-                )
 
-                metrics["final_score"] = (
-                    safe_float(score)
-                )
+                    if alert_sent:
+                        print(
+                            f"✅ LTM re-entry approved "
+                            f"and entry alert sent: "
+                            f"{symbol}"
+                        )
+                        break
 
-                metrics["score_breakdown"] = (
-                    breakdown
-                )
-
-                required_score = (
-                    get_required_entry_score()
-                )
-
-                print(
-                    f"🔄 LTM re-entry final check: "
-                    f"{symbol} | "
-                    f"Score="
-                    f"{metrics['final_score']:.1f}/"
-                    f"{required_score:.1f}"
-                )
-
-                if (
-                    metrics["final_score"]
-                    < required_score
-                ):
-                    continue
-
-                alert_sent = (
-                    execute_entry_if_any(
-                        [metrics]
-                    )
-                )
-
-                if alert_sent:
                     print(
-                        f"✅ LTM re-entry approved "
-                        f"and entry alert sent: "
+                        f"⏳ LTM re-entry did not "
+                        f"pass Elite final gates: "
                         f"{symbol}"
                     )
 
-                else:
-                    print(
-                        f"⏳ LTM re-entry failed "
-                        f"Elite final entry gates: "
-                        f"{symbol}"
-                    )
+                    time.sleep(
+                        LTM_REENTRY_RECHECK_INTERVAL_SECONDS
+                    ) 
 
             finally:
                 with REENTRY_WATCHLIST_LOCK:
