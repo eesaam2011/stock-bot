@@ -51,7 +51,9 @@ UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 MARKET_RADAR_NEWS_HASH_KEY = "market_radar:news"
 LTM_INCOMING_KEY = "live_trade_manager:incoming"
 LTM_ACTIVE_KEY = "live_trade_manager:active_trades"
-
+LTM_REENTRY_REQUEST_KEY = (
+    "live_trade_manager:elite_reentry_requests"
+)
 # =========================================================
 # FINAL ACTIONABLE ENTRY GATE
 # =========================================================
@@ -3164,167 +3166,95 @@ def fast_watchlist_monitor_loop():
             traceback.print_exc()
             time.sleep(FAST_WATCHLIST_SCAN_INTERVAL)
 
-def reentry_watch_monitor_loop():
+ def ltm_reentry_request_listener_loop():
     print(
-        f"🔄 REENTRY_WATCH monitor started | "
-        f"Interval="
-        f"{REENTRY_WATCH_INTERVAL_SECONDS}s | "
-        f"MaxAge="
-        f"{REENTRY_WATCH_MAX_AGE_SECONDS // 60}m"
+        f"🔄 LTM re-entry listener started | "
+        f"Key={LTM_REENTRY_REQUEST_KEY}"
     )
 
     while True:
         try:
+            raw = redis_request([
+                "LPOP",
+                LTM_REENTRY_REQUEST_KEY,
+            ])
+
+            if not raw:
+                time.sleep(1)
+                continue
+
+            try:
+                payload = json.loads(raw)
+
+            except Exception:
+                print(
+                    f"⚠️ Invalid LTM re-entry payload: "
+                    f"{raw}"
+                )
+                continue
+
+            symbol = str(
+                payload.get("symbol")
+                or ""
+            ).strip().upper()
+
+            if not symbol:
+                continue
+
             if not is_work_time():
-                time.sleep(
-                    REENTRY_WATCH_INTERVAL_SECONDS
+                print(
+                    f"⏳ LTM re-entry ignored outside "
+                    f"work time: {symbol}"
+                )
+                continue
+
+            if is_symbol_already_in_live_manager(
+                symbol
+            ):
+                print(
+                    f"ℹ️ LTM re-entry ignored because "
+                    f"symbol is already active: "
+                    f"{symbol}"
+                )
+                continue
+
+            blocked, block_reason = (
+                get_trading_block_reason(
+                    symbol
+                )
+            )
+
+            if blocked:
+                print(
+                    f"🛑 LTM re-entry blocked: "
+                    f"{symbol} | "
+                    f"{block_reason}"
                 )
                 continue
 
             with REENTRY_WATCHLIST_LOCK:
-                items = [
-                    dict(item)
-                    for item in (
-                        REENTRY_WATCHLIST.values()
-                    )
-                ]
+                REENTRY_WATCHLIST[symbol] = {
+                    "symbol": symbol,
+                    "reentry_ready": True,
+                    "ltm_request_ts": safe_float(
+                        payload.get(
+                            "request_ts"
+                        ),
+                        time.time(),
+                    ),
+                }
 
-            if not items:
-                time.sleep(
-                    REENTRY_WATCH_INTERVAL_SECONDS
-                )
-                continue
-
-            for item in items:
-                symbol = str(
-                    item.get("symbol")
-                    or ""
-                ).strip().upper()
-
-                if not symbol:
-                    continue
-
-                now_ts = time.time()
-
-                added_at = safe_float(
-                    item.get("added_at")
-                )
-
-                if (
-                    added_at > 0
-                    and now_ts - added_at
-                    >= REENTRY_WATCH_MAX_AGE_SECONDS
-                ):
-                    with REENTRY_WATCHLIST_LOCK:
-                        REENTRY_WATCHLIST.pop(
-                            symbol,
-                            None,
-                        )
-
-                    print(
-                        f"🗑️ REENTRY_WATCH expired: "
-                        f"{symbol}"
-                    )
-                    continue
-
-                manager_active = (
-                    is_symbol_already_in_live_manager(
-                        symbol
-                    )
-                )
-
-                with REENTRY_WATCHLIST_LOCK:
-                    current = REENTRY_WATCHLIST.get(
-                        symbol
-                    )
-
-                    if current is None:
-                        continue
-
-                    current["last_check_at"] = (
-                        now_ts
-                    )
-
-                    if manager_active:
-                        current[
-                            "manager_seen_active"
-                        ] = True
-
-                        current[
-                            "reentry_ready"
-                        ] = False
-
-                        continue
-
-                    manager_seen_active = bool(
-                        current.get(
-                            "manager_seen_active",
-                            False,
-                        )
-                    )
-
-                    exit_detected_at = safe_float(
-                        current.get(
-                            "exit_detected_at"
-                        )
-                    )
-
-                    reentry_count = int(
-                        current.get(
-                            "reentry_count",
-                            0,
-                        )
-                    )
-
-                    if not manager_seen_active:
-                        continue
-
-                    if exit_detected_at <= 0:
-                        current[
-                            "exit_detected_at"
-                        ] = now_ts
-
-                        print(
-                            f"👀 REENTRY_WATCH exit "
-                            f"detected: {symbol}"
-                        )
-
-                        continue
-
-                    if (
-                        now_ts - exit_detected_at
-                        < REENTRY_MIN_SECONDS_AFTER_EXIT
-                    ):
-                        continue
-
-                    if (
-                        reentry_count
-                        >= REENTRY_MAX_PER_SYMBOL
-                    ):
-                        REENTRY_WATCHLIST.pop(
-                            symbol,
-                            None,
-                        )
-                        continue
-
-                    current[
-                        "reentry_ready"
-                    ] = True
-
-                blocked, block_reason = (
-                    get_trading_block_reason(
-                        symbol
-                    )
-                )
-
-                if blocked:
-                    continue
-
+            try:
                 metrics = build_symbol_metrics(
                     symbol
                 )
 
                 if not metrics:
+                    print(
+                        f"⏳ LTM re-entry rejected: "
+                        f"{symbol} | "
+                        f"Metrics unavailable"
+                    )
                     continue
 
                 score, breakdown = (
@@ -3347,7 +3277,7 @@ def reentry_watch_monitor_loop():
                 )
 
                 print(
-                    f"🔄 REENTRY_WATCH check: "
+                    f"🔄 LTM re-entry final check: "
                     f"{symbol} | "
                     f"Score="
                     f"{metrics['final_score']:.1f}/"
@@ -3366,60 +3296,36 @@ def reentry_watch_monitor_loop():
                     )
                 )
 
-                if not alert_sent:
-                    continue
-
-                with REENTRY_WATCHLIST_LOCK:
-                    current = REENTRY_WATCHLIST.get(
-                        symbol
+                if alert_sent:
+                    print(
+                        f"✅ LTM re-entry approved "
+                        f"and entry alert sent: "
+                        f"{symbol}"
                     )
 
-                    if current:
-                        current[
-                            "reentry_count"
-                        ] = (
-                            int(
-                                current.get(
-                                    "reentry_count",
-                                    0,
-                                )
-                            )
-                            + 1
-                        )
+                else:
+                    print(
+                        f"⏳ LTM re-entry failed "
+                        f"Elite final entry gates: "
+                        f"{symbol}"
+                    )
 
-                        current[
-                            "reentry_ready"
-                        ] = False
-
-                        current[
-                            "manager_seen_active"
-                        ] = False
-
-                        current[
-                            "exit_detected_at"
-                        ] = 0.0
-
-                print(
-                    f"✅ REENTRY alert sent: "
-                    f"{symbol}"
-                )
-
-            time.sleep(
-                REENTRY_WATCH_INTERVAL_SECONDS
-            )
+            finally:
+                with REENTRY_WATCHLIST_LOCK:
+                    REENTRY_WATCHLIST.pop(
+                        symbol,
+                        None,
+                    )
 
         except Exception as e:
             print(
-                f"❌ REENTRY_WATCH error: "
-                f"{e}"
+                f"❌ LTM re-entry listener "
+                f"error: {e}"
             )
 
             traceback.print_exc()
-
-            time.sleep(
-                REENTRY_WATCH_INTERVAL_SECONDS
-            )
-            
+            time.sleep(2)
+       
 def scan_market_batch():
     runtime_stats["batch_scanned"] = 0
     runtime_stats["passed_activity_filter"] = 0
@@ -4765,16 +4671,6 @@ def execute_entry_if_any(scored_candidates):
         )
 
         if alert_ok:
-            with REENTRY_WATCHLIST_LOCK:
-                REENTRY_WATCHLIST[symbol] = {
-                    "symbol": symbol,
-                    "added_at": time.time(),
-                    "manager_seen_active": False,
-                    "exit_detected_at": 0.0,
-                    "reentry_ready": False,
-                    "reentry_count": 0,
-                    "last_check_at": 0.0,
-                }
 
             sent_alerts[symbol] = {
                 "sent_at": fresh_candidate.get(
@@ -5801,13 +5697,13 @@ if __name__ == "__main__":
     )
     fast_watchlist_thread.start()
     
-    reentry_watch_thread = threading.Thread(
-        target=reentry_watch_monitor_loop,
-        name="reentry-watch-monitor",
+    ltm_reentry_thread = threading.Thread(
+        target=ltm_reentry_request_listener_loop,
+        name="ltm-reentry-listener",
         daemon=True,
     )
 
-    reentry_watch_thread.start()
+    ltm_reentry_thread.start()
     
     main_loop()
     
