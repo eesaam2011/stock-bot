@@ -3508,9 +3508,12 @@ def process_news_symbol(symbol):
             f"Headline={best.get('headline', '')[:120]}"
         )
         
-        if is_weekend():
+        if (
+            is_weekend()
+            or not is_scan_window()
+        ):
             log(
-                f"⏳ Weekend catalyst queued for "
+                f"⏳ Off-hours catalyst queued for "
                 f"deferred confirmation: {symbol}"
             )
 
@@ -3519,7 +3522,7 @@ def process_news_symbol(symbol):
                 result,
                 initial_metrics=None,
                 initial_status=(
-                    "weekend_waiting_for_market"
+                    "off_hours_waiting_for_market"
                 ),
             )
 
@@ -3655,15 +3658,6 @@ def news_discovery_loop():
                     "for morning float update."
                 )
                 time.sleep(60)
-                continue
-
-            # في أيام السوق نلتزم بنافذة الفحص المعتادة.
-            # في الويكند يستمر اكتشاف الأخبار فقط.
-            if (
-                not weekend_mode
-                and not is_scan_window()
-            ):
-                time.sleep(30)
                 continue
 
             if not UNIVERSE:
