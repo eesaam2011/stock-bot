@@ -24,6 +24,28 @@ class FakeRedis:
         raise AssertionError(parts)
 
 
+class BatchRedis(FakeRedis):
+    def __init__(self):
+        super().__init__()
+        self.values["next_day_radar_backtest_v3:detail_cursor"] = json.dumps(
+            {"session_index": 0, "sscan_cursor": "1220", "processed": 4348})
+        self.calls = []
+        self.existing = json.dumps({"preserved": True})
+    def command(self, *parts):
+        self.calls.append(parts)
+        if parts[0] == "SSCAN": return ["1250", ["AAA", "BBB"]]
+        if parts[0] == "HMGET": return [self.existing, None, None, None]
+        if parts[0] == "HSET": return len(parts[2:]) // 2
+        if parts[0] == "SADD": return len(parts) - 2
+        return super().command(*parts)
+
+
+class BatchAlpaca:
+    def bars(self, symbols, start, end, feed):
+        data = bars(40)
+        return {symbol: data for symbol in symbols}
+
+
 def bars(count=80):
     start = datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc)
     out = []
@@ -99,6 +121,21 @@ class ReplayTests(unittest.TestCase):
         started = time.perf_counter()
         self.engine.replay("2026-08-28", "TEST", bars(1500), "approx")
         self.assertLess(time.perf_counter()-started, 1.0)
+
+    def test_batch_write_preserves_cursor_and_existing_results(self):
+        redis = BatchRedis()
+        engine = BacktestCollector(redis, BatchAlpaca())
+        engine.delay = 0
+        engine.detail_replay_step()
+        hmget = [x for x in redis.calls if x[0] == "HMGET"]
+        hset = [x for x in redis.calls if x[0] == "HSET"]
+        sadd = [x for x in redis.calls if x[0] == "SADD"]
+        self.assertEqual(len(hmget), 1)
+        self.assertEqual(len(hset), 1)
+        self.assertNotIn("2026-08-28|AAA|strict", hset[0])
+        self.assertEqual(len(sadd), 1)
+        cursor = redis.get_json("next_day_radar_backtest_v3:detail_cursor")
+        self.assertEqual(cursor, {"session_index": 0, "sscan_cursor": "1250", "processed": 4350})
 
 
 if __name__ == "__main__": unittest.main()
