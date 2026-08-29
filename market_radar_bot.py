@@ -6446,6 +6446,62 @@ def weekend_analysis():
     if not history:
         return
 
+    current = now_ksa()
+
+    week_start = (
+        current
+        - timedelta(days=current.weekday())
+    ).date()
+
+    week_end = (
+        week_start
+        + timedelta(days=4)
+    )
+
+    weekly_alerts = []
+    weekly_closed_trades = []
+
+    for key, item in history.items():
+        if not isinstance(item, dict):
+            continue
+
+        item_date_text = str(
+            item.get("date") or ""
+        ).strip()
+
+        try:
+            item_date = datetime.strptime(
+                item_date_text,
+                "%Y-%m-%d"
+            ).date()
+
+        except Exception:
+            continue
+
+        if not (
+            week_start
+            <= item_date
+            <= week_end
+        ):
+            continue
+
+        # سجل التنبيه الأصلي:
+        # SYMBOL:timestamp
+        if ":closed:" not in str(key):
+            weekly_alerts.append(item)
+            continue
+
+        # سجل النتيجة النهائية فقط:
+        # SYMBOL:closed:timestamp
+        weekly_closed_trades.append(item)
+
+    if not weekly_alerts:
+        log(
+            "Weekend analysis skipped: "
+            "no Market Radar alerts this week"
+        )
+        return
+
     wins = 0
     losses = 0
     unknown = 0
@@ -6454,10 +6510,7 @@ def weekend_analysis():
     failure_warnings = {}
     failure_close_reasons = {}
 
-    for key, item in history.items():
-        if not isinstance(item, dict):
-            continue
-
+    for item in weekly_closed_trades:
         result = analyze_trade_result(item)
 
         metrics = item.get("metrics", {})
@@ -6490,6 +6543,19 @@ def weekend_analysis():
         else:
             unknown += 1
 
+    total_weekly_alerts = len(
+        weekly_alerts
+    )
+
+    closed_count = len(
+        weekly_closed_trades
+    )
+
+    unknown = max(
+        0,
+        total_weekly_alerts
+        - closed_count
+    )
     success_sorted = sorted(
         success_reasons.items(),
         key=lambda x: x[1],
@@ -6534,9 +6600,13 @@ def weekend_analysis():
 
     message = f"""🧠 <b>Market Radar Bot - تحليل الويكند</b>
 
+📅 <b>الفترة:</b> {week_start} → {week_end}
+
 📊 <b>نتائج التنبيهات:</b>
+🚀 تنبيهات الدخول الفعلية: {total_weekly_alerts}
 ✅ صفقات ناجحة: {wins}
 ❌ صفقات فاشلة: {losses}
+⚪ غير محسومة: {unknown}
 ⚪ غير محسومة: {unknown}
 
 ━━━━━━━━━━━━━━
