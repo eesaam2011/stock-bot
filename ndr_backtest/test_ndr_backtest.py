@@ -1,10 +1,12 @@
 import json
+import math
 import os
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("NDR_BT_REDIS_PREFIX", "next_day_radar_backtest_v3")
-from ndr_backtest_engine import BacktestCollector
+from ndr_backtest_engine import BacktestCollector, avg, clamp
 
 
 class FakeRedis:
@@ -46,7 +48,7 @@ class ReplayTests(unittest.TestCase):
         self.assertIn("point_in_time_float", result["unavailable_features"])
 
     def test_approx_signal_is_causal(self):
-        def known_good(history, mode):
+        def known_good(history, mode, running=None):
             price = float(history[-1]["c"])
             return {"price": price, "vwap": price-.01, "change_pct": 5,
                     "resistance": price-.01, "opportunity": 95,
@@ -72,6 +74,31 @@ class ReplayTests(unittest.TestCase):
 
     def test_holdout_partition_is_separate(self):
         self.assertEqual(self.engine.partition("2026-08-28"), "holdout")
+
+    def test_running_feature_optimization_is_numerically_identical(self):
+        history = bars(80)
+        running = {
+            "reference": float(history[0]["o"]),
+            "volume": sum(float(x["v"]) for x in history),
+            "vwap_numerator": sum(float(x["vw"])*float(x["v"]) for x in history),
+        }
+        optimized = BacktestCollector.features(history, "approx", running)
+        closes=[float(x["c"]) for x in history]; highs=[float(x["h"]) for x in history]; vols=[float(x.get("v",0)) for x in history]
+        price,ref=closes[-1],float(history[0]["o"]); total=sum(vols); vwap=sum(float(x.get("vw") or x["c"])*float(x.get("v",0)) for x in history)/total
+        recent=history[-12:]; prior=history[-24:-12]; rv=avg(float(x.get("v",0)) for x in recent); pv=avg((float(x.get("v",0)) for x in prior),max(1,rv)); accel=rv/max(1,pv)
+        window=closes[-30:]; lo,hi=min(window),max(window); span=max(1e-9,hi-lo); acceptance=clamp(100*avg(1 if x>=lo+.55*span else 0 for x in window)); closepos=clamp(100*(price-lo)/span)
+        demand=clamp(.5*closepos+.25*acceptance+.25*min(100,accel*40)); resistance=max(highs[-21:-1] or highs[-1:]); reclaim=100 if price>=resistance*.998 else clamp(50+(price/resistance-1)*1000)
+        pullback=clamp(100-max(0,(hi-price)/max(hi,1e-9)*500)); change=(price/ref-1)*100; extension=clamp(max(0,change-12)*4+max(0,(price/max(vwap,1e-9)-1)*100-8)*5)
+        trajectory=clamp(50+(closes[-1]/max(closes[max(0,len(closes)-10)],1e-9)-1)*700); continuity=clamp(avg(1 if float(x.get("n",0))>0 else 0 for x in recent)*100)
+        spread=clamp(avg((float(x["h"])-float(x["l"]))/max(float(x["c"]),1e-9)*100 for x in recent),0,25); spreadq=clamp(100-spread*15)
+        participation=clamp(avg([min(100,accel*45),continuity,min(100,math.log10(total+1)*18)])); persistence=clamp(avg([acceptance,pullback,trajectory])); liquidity=clamp(avg([spreadq,continuity])); context=clamp(avg([100-extension,trajectory]))
+        legacy={"price":price,"vwap":vwap,"change_pct":change,"resistance":resistance,"opportunity":clamp(.24*participation+.34*demand+.18*persistence+.10*liquidity+.14*context),"failure_pressure":clamp(.30*(100-demand)+.25*(100-acceptance)+.20*(100-pullback)+.15*(100-reclaim)+.10*(100-spreadq)),"demand_efficiency":demand,"price_acceptance":acceptance,"volume_acceleration":accel,"spread_pct":spread,"extension_risk":extension}
+        for key, value in legacy.items(): self.assertAlmostEqual(optimized[key], value, places=10, msg=key)
+
+    def test_optimized_minute_replay_is_fast(self):
+        started = time.perf_counter()
+        self.engine.replay("2026-08-28", "TEST", bars(1500), "approx")
+        self.assertLess(time.perf_counter()-started, 1.0)
 
 
 if __name__ == "__main__": unittest.main()
