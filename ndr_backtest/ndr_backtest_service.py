@@ -62,19 +62,19 @@ def worker_loop():
         while not stop_event.is_set():
             current = engine.status()
             phase = current.get("phase")
-            if phase in ("NOT_PREPARED", "PREPARING"):
-                engine.prepare()
-            elif phase in ("COARSE_READY", "COARSE_SCANNING"):
-                engine.coarse_step()
-            elif phase == "DETAIL_READY":
+            if phase in ("DETAIL_READY", "DETAIL_INDEXING"):
+                engine.detail_index_step()
+            elif phase in ("DETAIL_REPLAY_READY", "DETAIL_DOWNLOAD_READY", "DETAIL_REPLAYING"):
+                engine.detail_replay_step()
+            elif phase == "COMPLETED":
                 with lock:
-                    state["status"] = "PAUSED"
-                    state["phase"] = "DETAIL_READY"
-                    state["message"] = "Coarse scan complete; replay engine is the next deployment."
+                    state["status"] = "COMPLETED"
+                    state["phase"] = "COMPLETED"
+                    state["message"] = "Backtest and report completed."
                     state["updated_at"] = stamp()
                 break
             else:
-                time.sleep(2)
+                raise RuntimeError(f"Unsupported or unsafe phase: {phase}. Expected existing v3 DETAIL_READY data.")
         if stop_event.is_set():
             with lock:
                 state["status"] = "PAUSED"
@@ -134,7 +134,8 @@ def home():
         "source_build": os.getenv("NDR_BT_SOURCE_BUILD", "unknown"),
         "status_url": "/status",
         "health_url": "/health",
-        "next_step": "Run the protected Historical BOATS test.",
+        "report_url": "/report",
+        "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
 
 
@@ -151,15 +152,31 @@ def status():
     return jsonify(payload)
 
 
+@app.get("/report")
+def report():
+    return jsonify(BacktestCollector().report())
+
+
+@app.get("/report/<mode>/<partition>")
+def report_slice(mode: str, partition: str):
+    if mode not in {"strict", "approx"} or partition not in {"development", "holdout"}:
+        return jsonify({"ok": False, "error": "invalid_report_slice"}), 400
+    payload = BacktestCollector().report()
+    if not payload.get("modes"):
+        return jsonify(payload), 202
+    return jsonify({"generated_at": payload.get("generated_at"), "mode": mode,
+                    "partition": partition, "results": payload["modes"][mode][partition]})
+
+
 @app.get("/control")
 def control():
     return """
     <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
     <style>body{font-family:Arial;background:#111;color:#eee;padding:24px}input,button{font-size:18px;padding:12px;margin:6px 0;width:100%;max-width:520px}button{background:#6d28d9;color:#fff;border:0;border-radius:8px}</style></head>
     <body><h2>NDR Backtest Control</h2><p>Paste the current admin token. It is sent in the form body, not the URL.</p>
-    <form method="post" action="/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume coarse scan</button></form>
+    <form method="post" action="/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume backtest</button></form>
     <form method="post" action="/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a></p></body></html>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a></p></body></html>
     """
 
 
@@ -190,8 +207,8 @@ def start():
         stop_event.clear()
         state["boats_test"] = result
         state["status"] = "RUNNING"
-        state["phase"] = "COARSE_COLLECTION"
-        state["message"] = "Preparing 60 sessions and causal 15-minute scan"
+        state["phase"] = collector_status().get("phase", "DETAIL_READY")
+        state["message"] = "Starting or resuming the current backtest phase"
         state["updated_at"] = stamp()
         worker_thread = threading.Thread(target=worker_loop, name="ndr-backtest-worker", daemon=True)
         worker_thread.start()
