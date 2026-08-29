@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json, math, os, re, time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from statistics import mean
 from urllib.error import HTTPError
@@ -107,9 +108,18 @@ class BacktestCollector:
         if 240<=m<570:return "PREMARKET"
         return "REGULAR"
     @staticmethod
-    def features(history, mode):
-        closes=[float(x["c"]) for x in history]; highs=[float(x["h"]) for x in history]; vols=[float(x.get("v",0)) for x in history]
-        price,ref=closes[-1],float(history[0]["o"]); total=sum(vols); vwap=sum(float(x.get("vw") or x["c"])*float(x.get("v",0)) for x in history)/total if total else avg(closes)
+    def features(history, mode, running=None):
+        # All non-cumulative features use at most 30 completed bars.  The
+        # optional running totals make this O(1) per minute while producing the
+        # same values as summing the full causal history on every minute.
+        tail=history[-30:]; closes=[float(x["c"]) for x in tail]; highs=[float(x["h"]) for x in tail]
+        if running:
+            ref=running["reference"]; total=running["volume"]
+            vwap=running["vwap_numerator"]/total if total else avg(closes)
+        else:
+            ref=float(history[0]["o"]); total=sum(float(x.get("v",0)) for x in history)
+            vwap=sum(float(x.get("vw") or x["c"])*float(x.get("v",0)) for x in history)/total if total else avg(closes)
+        price=closes[-1]
         recent=history[-12:]; prior=history[-24:-12]; rv=avg(float(x.get("v",0)) for x in recent); pv=avg((float(x.get("v",0)) for x in prior),max(1,rv)); accel=rv/max(1,pv)
         window=closes[-30:]; lo,hi=min(window),max(window); span=max(1e-9,hi-lo); acceptance=clamp(100*avg(1 if x>=lo+.55*span else 0 for x in window)); closepos=clamp(100*(price-lo)/span)
         demand=clamp(.5*closepos+.25*acceptance+.25*min(100,accel*40)); resistance=max(highs[-21:-1] or highs[-1:]); reclaim=100 if price>=resistance*.998 else clamp(50+(price/resistance-1)*1000)
@@ -142,10 +152,11 @@ class BacktestCollector:
         manifest=self.redis.get_json(self.key("manifest"),{}); return "holdout" if session in set(manifest.get("holdout_sessions",[])) else "development"
     def replay(self,session,symbol,bars,mode):
         result={"schema":1,"session":session,"partition":self.partition(session),"symbol":symbol,"mode":mode,"bars":len(bars),"breakout_ready":None,"confirmed_entry":None,"block_reasons":Counter(),"unavailable_features":Counter()}; history=[]; ready=None; entry=None
+        running={"reference":float(bars[0]["o"]) if bars else 0.0,"volume":0.0,"vwap_numerator":0.0}
         for bar in bars:
-            history.append(bar)
+            history.append(bar);volume=float(bar.get("v",0));running["volume"]+=volume;running["vwap_numerator"]+=float(bar.get("vw") or bar["c"])*volume
             if len(history)<24:continue
-            f=self.features(history,mode); result["unavailable_features"].update(f["unavailable_features"]); phase=self.phase(bar); reasons=[]
+            f=self.features(history,mode,running); result["unavailable_features"].update(f["unavailable_features"]); phase=self.phase(bar); reasons=[]
             if f["opportunity"]<self.opp_min:reasons.append("opportunity")
             if f["failure_pressure"]>self.fail_max:reasons.append("failure_pressure")
             if f["price"]<f["vwap"]:reasons.append("below_vwap")
@@ -172,7 +183,14 @@ class BacktestCollector:
         if si>=len(manifest["sessions"]):return self.finalize_report()
         session=manifest["sessions"][si]; scanned=self.redis.command("SSCAN",self.key(f"detail_session:{session}"),str(cursor.get("sscan_cursor","0")),"COUNT",self.batch_size); nxt,symbols=str(scanned[0]),sorted(set(scanned[1] or []))
         if symbols:
-            start,end=self.session_window(session);sip=self.alpaca.bars(symbols,start,end,"sip");time.sleep(self.delay);boats=self.alpaca.bars(symbols,start,end,"boats");time.sleep(self.delay)
+            start,end=self.session_window(session)
+            # SIP and BOATS are independent historical reads. Two workers keep
+            # request pressure bounded while removing their sequential wait.
+            with ThreadPoolExecutor(max_workers=2,thread_name_prefix="ndr-feed") as pool:
+                sip_future=pool.submit(self.alpaca.bars,symbols,start,end,"sip")
+                boats_future=pool.submit(self.alpaca.bars,symbols,start,end,"boats")
+                sip=sip_future.result();boats=boats_future.result()
+            time.sleep(self.delay)
             for symbol in symbols:
                 bars=self.merge_bars(sip.get(symbol,[]),boats.get(symbol,[]))
                 for mode in self.modes:
