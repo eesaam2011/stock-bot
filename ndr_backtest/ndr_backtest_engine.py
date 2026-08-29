@@ -48,6 +48,9 @@ class RedisREST:
     def set_json(self, key, value):
         return self.command("SET", key, json.dumps(value, ensure_ascii=False))
 
+    def delete(self, key):
+        return self.command("DEL", key)
+
     def get_json(self, key, default=None):
         raw = self.command("GET", key)
         if raw is None:
@@ -137,7 +140,10 @@ class BacktestCollector:
             "source_build": os.getenv("NDR_BT_SOURCE_BUILD", "unknown"),
         }
         self.redis.set_json(self.key("manifest"), manifest)
-        self.redis.set_json(self.key("coarse_candidates"), {})
+        # Candidates can exceed Upstash's REST request-size limit when stored as
+        # one JSON document. Keep only unique session/symbol pairs in a Redis set
+        # and append the discoveries from each Alpaca page incrementally.
+        self.redis.delete(self.key("coarse_candidates"))
         self.redis.set_json(self.key("cursor"), {"feed_index": 0, "batch_index": 0, "page_token": None})
         return self.save_status(
             phase="COARSE_READY", message="Ready for causal 15-minute scan",
@@ -174,8 +180,11 @@ class BacktestCollector:
         feed_index = int(cursor.get("feed_index", 0))
         batch_index = int(cursor.get("batch_index", 0))
         if feed_index >= len(feeds):
-            candidates = self.redis.get_json(self.key("coarse_candidates"), {})
-            return self.save_status(phase="DETAIL_READY", message="Coarse scan completed", coarse_candidates=len(candidates))
+            candidate_count = int(self.redis.command("SCARD", self.key("coarse_candidates")) or 0)
+            return self.save_status(
+                phase="DETAIL_READY", message="Coarse scan completed",
+                coarse_candidates=candidate_count,
+            )
         if batch_index >= len(symbol_batches):
             cursor = {"feed_index": feed_index + 1, "batch_index": 0, "page_token": None}
             self.redis.set_json(self.key("cursor"), cursor)
@@ -192,24 +201,31 @@ class BacktestCollector:
         if cursor.get("page_token"):
             params["page_token"] = cursor["page_token"]
         page = self.alpaca.get("https://data.alpaca.markets/v2/stocks/bars", params)
-        candidates = self.redis.get_json(self.key("coarse_candidates"), {})
-        first = {}
+        page_candidates = set()
+        anchors_key = self.key(f"coarse_anchors:{feed_index}:{batch_index}")
+        anchors = self.redis.get_json(anchors_key, {}) if cursor.get("page_token") else {}
         for symbol, bars in (page.get("bars") or {}).items():
             for bar in bars:
                 key = self.phase_key(bar["t"])
                 if not key or key[0] not in sessions:
                     continue
-                anchor = (symbol, key[0], key[1])
-                first.setdefault(anchor, float(bar["o"]))
-                ref = first[anchor]
+                anchor = f"{symbol}|{key[0]}|{key[1]}"
+                anchors.setdefault(anchor, float(bar["o"]))
+                ref = anchors[anchor]
                 high = float(bar["h"])
                 if self.min_price <= high <= self.max_price * 1.5 and ref > 0 and (high / ref - 1) * 100 >= 1.5:
-                    candidates[f"{key[0]}:{symbol}"] = {"session": key[0], "symbol": symbol, "first_phase": key[1]}
-        self.redis.set_json(self.key("coarse_candidates"), candidates)
-        token = page.get("next_page_token")
+                    # Exact phase is reconstructed causally during the 1-minute
+                    # detail replay, so the coarse index needs only this pair.
+                    page_candidates.add(f"{key[0]}|{symbol}")
+        if page_candidates:
+            self.redis.command("SADD", self.key("coarse_candidates"), *sorted(page_candidates))
+        candidate_count = int(self.redis.command("SCARD", self.key("coarse_candidates")) or 0)
+        token = page.get("next_page_token") or None
         if token:
             cursor["page_token"] = token
+            self.redis.set_json(anchors_key, anchors)
         else:
+            self.redis.delete(anchors_key)
             cursor = {"feed_index": feed_index, "batch_index": batch_index + 1, "page_token": None}
         self.redis.set_json(self.key("cursor"), cursor)
         status = self.status()
@@ -218,9 +234,8 @@ class BacktestCollector:
         progress_done = feed_index * len(symbol_batches) + batch_index
         result = self.save_status(
             phase="COARSE_SCANNING", message=f"Scanning {feeds[feed_index]} batch {batch_index + 1}/{len(symbol_batches)}",
-            requests=requests_count, coarse_candidates=len(candidates),
+            requests=requests_count, coarse_candidates=candidate_count,
             progress_pct=round(progress_done / progress_total * 100, 2), cursor=cursor,
         )
         time.sleep(self.delay)
         return result
-
