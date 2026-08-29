@@ -191,12 +191,19 @@ class BacktestCollector:
                 boats_future=pool.submit(self.alpaca.bars,symbols,start,end,"boats")
                 sip=sip_future.result();boats=boats_future.result()
             time.sleep(self.delay)
+            fields=[f"{session}|{symbol}|{mode}" for symbol in symbols for mode in self.modes]
+            existing_values=self.redis.command("HMGET",self.key("results"),*fields) or [None]*len(fields)
+            existing={field for field,value in zip(fields,existing_values) if value is not None}
+            writes=[]
             for symbol in symbols:
                 bars=self.merge_bars(sip.get(symbol,[]),boats.get(symbol,[]))
                 for mode in self.modes:
                     field=f"{session}|{symbol}|{mode}"
-                    if not self.redis.command("HEXISTS",self.key("results"),field):self.redis.command("HSET",self.key("results"),field,json.dumps(self.replay(session,symbol,bars,mode),separators=(",",":"),ensure_ascii=False))
-                self.redis.command("SADD",self.key(f"completed:{session}"),symbol)
+                    if field not in existing:writes.extend((field,json.dumps(self.replay(session,symbol,bars,mode),separators=(",",":"),ensure_ascii=False)))
+            # One bounded hash write and one completion-set write per batch.
+            # Existing fields are never recalculated or overwritten on resume.
+            if writes:self.redis.command("HSET",self.key("results"),*writes)
+            self.redis.command("SADD",self.key(f"completed:{session}"),*symbols)
         if nxt=="0":si+=1
         cursor={"session_index":si,"sscan_cursor":nxt,"processed":int(cursor.get("processed",0))+len(symbols)};self.redis.set_json(self.key("detail_cursor"),cursor);total=int(self.redis.command("SCARD",self.key("coarse_candidates")) or 0)
         return self.save_status(phase="DETAIL_REPLAYING",message=f"Causal 1-minute replay: {session}",detail_cursor=cursor,detail_processed=cursor["processed"],detail_progress_pct=round(cursor["processed"]/max(1,total)*100,2))
