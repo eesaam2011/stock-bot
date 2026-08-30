@@ -134,6 +134,17 @@ FINALIST_RECHECK_INTERVAL_SECONDS = 5
 FINALIST_RECHECK_MAX_AGE_SECONDS = 3 * 60
 FINALIST_RECHECK_MIN_RVOL = 3.0
 FINALIST_RECHECK_MIN_ACCEL = 1.0
+BREAKOUT_CONFIRM_MAX_AGE_SECONDS = 60
+
+ENTRY_QUALITY_UPPER_WICK_RATIO = 0.45
+ENTRY_QUALITY_WEAK_CLOSE_POSITION = 0.55
+
+ENTRY_QUALITY_HIGH_VOLUME_RATIO = 1.80
+ENTRY_QUALITY_WEAK_VOLUME_RATIO = 0.90
+
+ENTRY_QUALITY_MAX_PRICE_PROGRESS_PCT = 0.20
+
+ENTRY_QUALITY_SPREAD_WARNING_RATIO = 0.85
 
 # ==============================================================================
 # Redis Keys
@@ -4038,6 +4049,368 @@ def build_trade_plan(metrics):
     return plan, "OK"
 
 # ==============================================================================
+# Entry Quality / Breakout Validation
+# ==============================================================================
+
+def analyze_entry_quality(
+    metrics,
+    is_recheck=False
+):
+    symbol = str(
+        metrics.get("symbol") or ""
+    ).upper().strip()
+
+    result = {
+        "action": "allow",
+        "reason": "OK",
+        "signals": [],
+        "upper_wick_ratio": 0.0,
+        "close_position": 0.5,
+        "volume_ratio": 0.0,
+        "price_progress_pct": 0.0,
+        "closed_below_resistance": False,
+        "pierced_resistance": False,
+        "lost_vwap": False,
+        "lower_high": False,
+        "spread_stretched": False,
+        "absorption": False
+    }
+
+    if not symbol:
+        return result
+
+    try:
+        snapshot = get_snapshot(
+            symbol
+        )
+
+        price = safe_float(
+            snapshot.get("price")
+        )
+
+        spread_pct = safe_float(
+            snapshot.get("spread_pct"),
+            999
+        )
+
+        df = get_bars(
+            symbol,
+            TimeFrame.Minute,
+            limit=60,
+            cache_ttl=5
+        )
+
+        if df.empty or len(df) < 25:
+            return result
+
+        # --------------------------------------------------------------
+        # لا نعتمد على شمعة الدقيقة الحالية لأنها قد تكون غير مكتملة.
+        # آخر شمعة مكتملة = -2 من البيانات الأصلية.
+        # --------------------------------------------------------------
+
+        completed_df = df.iloc[:-1].copy()
+
+        if len(completed_df) < 22:
+            return result
+
+        last_bar = completed_df.iloc[-1]
+        previous_bar = completed_df.iloc[-2]
+
+        last_open = safe_float(
+            last_bar.get("open")
+        )
+
+        last_high = safe_float(
+            last_bar.get("high")
+        )
+
+        last_low = safe_float(
+            last_bar.get("low")
+        )
+
+        last_close = safe_float(
+            last_bar.get("close")
+        )
+
+        last_volume = safe_float(
+            last_bar.get("volume")
+        )
+
+        previous_high = safe_float(
+            previous_bar.get("high")
+        )
+
+        candle_range = max(
+            last_high - last_low,
+            0
+        )
+
+        upper_wick = max(
+            last_high
+            - max(last_open, last_close),
+            0
+        )
+
+        upper_wick_ratio = (
+            upper_wick / candle_range
+            if candle_range > 0
+            else 0
+        )
+
+        close_position = (
+            (last_close - last_low)
+            / candle_range
+            if candle_range > 0
+            else 0.5
+        )
+
+        history_volume = (
+            completed_df["volume"]
+            .iloc[:-1]
+            .tail(20)
+            .astype(float)
+        )
+
+        average_volume_20 = safe_float(
+            history_volume.mean()
+        )
+
+        volume_ratio = (
+            last_volume / average_volume_20
+            if average_volume_20 > 0
+            else 0
+        )
+
+        price_progress_pct = (
+            (
+                (last_close - last_open)
+                / last_open
+            ) * 100
+            if last_open > 0
+            else 0
+        )
+
+        resistance = safe_float(
+            metrics.get("resistance")
+        )
+
+        pierced_resistance = bool(
+            resistance > 0
+            and last_high
+            > resistance * 1.001
+        )
+
+        closed_below_resistance = bool(
+            resistance > 0
+            and last_close < resistance
+        )
+
+        lower_high = bool(
+            previous_high > 0
+            and last_high
+            < previous_high * 0.998
+        )
+
+        completed_vwap = calculate_vwap(
+            completed_df
+        )
+
+        lost_vwap = bool(
+            completed_vwap > 0
+            and last_close < completed_vwap
+        )
+
+        max_spread = get_max_spread(
+            price
+        )
+
+        spread_stretched = bool(
+            max_spread > 0
+            and spread_pct
+            >= (
+                max_spread
+                * ENTRY_QUALITY_SPREAD_WARNING_RATIO
+            )
+        )
+
+        upper_wick_signal = bool(
+            upper_wick_ratio
+            >= ENTRY_QUALITY_UPPER_WICK_RATIO
+            and close_position
+            <= ENTRY_QUALITY_WEAK_CLOSE_POSITION
+        )
+
+        high_volume_no_progress = bool(
+            volume_ratio
+            >= ENTRY_QUALITY_HIGH_VOLUME_RATIO
+            and abs(price_progress_pct)
+            <= ENTRY_QUALITY_MAX_PRICE_PROGRESS_PCT
+        )
+
+        absorption = bool(
+            high_volume_no_progress
+            and (
+                upper_wick_ratio >= 0.25
+                or closed_below_resistance
+            )
+        )
+
+        weak_breakout_volume = bool(
+            volume_ratio
+            < ENTRY_QUALITY_WEAK_VOLUME_RATIO
+            and (
+                pierced_resistance
+                or bool(metrics.get("breakout"))
+            )
+        )
+
+        signals = []
+
+        if upper_wick_signal:
+            signals.append(
+                "ذيل علوي طويل مع إغلاق ضعيف"
+            )
+
+        if (
+            pierced_resistance
+            and closed_below_resistance
+        ):
+            signals.append(
+                "اختراق المقاومة ثم إغلاق تحتها"
+            )
+
+        if absorption:
+            signals.append(
+                "حجم مرتفع دون تقدم سعري واضح"
+            )
+
+        if lower_high:
+            signals.append(
+                "Lower High"
+            )
+
+        if lost_vwap:
+            signals.append(
+                "فقد VWAP"
+            )
+
+        if spread_stretched:
+            signals.append(
+                "السبريد قريب من الحد الأقصى"
+            )
+
+        if weak_breakout_volume:
+            signals.append(
+                "حجم الاختراق أضعف من المعتاد"
+            )
+
+        result.update(
+            {
+                "signals": signals,
+                "upper_wick_ratio": upper_wick_ratio,
+                "close_position": close_position,
+                "volume_ratio": volume_ratio,
+                "price_progress_pct": price_progress_pct,
+                "closed_below_resistance": closed_below_resistance,
+                "pierced_resistance": pierced_resistance,
+                "lost_vwap": lost_vwap,
+                "lower_high": lower_high,
+                "spread_stretched": spread_stretched,
+                "absorption": absorption
+            }
+        )
+
+        # --------------------------------------------------------------
+        # Bull Trap مؤكد:
+        # لا نحكم عليه من أول لقطة.
+        # يصبح مؤكدًا فقط أثناء إعادة الفحص إذا بقي الفشل موجودًا
+        # ومعه علامة ضعف إضافية.
+        # --------------------------------------------------------------
+
+        confirmed_bull_trap = bool(
+            is_recheck
+            and pierced_resistance
+            and closed_below_resistance
+            and (
+                upper_wick_signal
+                or absorption
+                or lost_vwap
+                or lower_high
+            )
+        )
+
+        if confirmed_bull_trap:
+            result["action"] = "block_attempt"
+            result["reason"] = (
+                "Bull Trap مؤكد بعد إعادة الفحص"
+            )
+
+        else:
+            correlated_rejection = bool(
+                upper_wick_signal
+                and (
+                    closed_below_resistance
+                    or absorption
+                    or lower_high
+                    or lost_vwap
+                    or spread_stretched
+                )
+            )
+
+            breakout_failure_combo = bool(
+                pierced_resistance
+                and closed_below_resistance
+                and (
+                    weak_breakout_volume
+                    or lower_high
+                    or spread_stretched
+                    or upper_wick_signal
+                )
+            )
+
+            weak_volume_with_rejection = bool(
+                weak_breakout_volume
+                and (
+                    upper_wick_signal
+                    or closed_below_resistance
+                )
+            )
+
+            if (
+                correlated_rejection
+                or breakout_failure_combo
+                or weak_volume_with_rejection
+            ):
+                result["action"] = "delay"
+                result["reason"] = (
+                    "BREAKOUT_UNCONFIRMED"
+                )
+
+        log(
+            f"Entry Quality {symbol} | "
+            f"Action={result['action']} | "
+            f"UpperWick={upper_wick_ratio:.2f} | "
+            f"ClosePos={close_position:.2f} | "
+            f"VolRatio={volume_ratio:.2f}x | "
+            f"PriceProgress={price_progress_pct:+.2f}% | "
+            f"PiercedR={pierced_resistance} | "
+            f"BelowR={closed_below_resistance} | "
+            f"LostVWAP={lost_vwap} | "
+            f"LowerHigh={lower_high} | "
+            f"Spread={spread_pct:.2f}% | "
+            f"Signals={signals}"
+        )
+
+        return result
+
+    except Exception as e:
+        log(
+            f"Entry Quality error {symbol}: {e}"
+        )
+
+        return result
+        
+# ==============================================================================
 # Final Safety Check
 # ==============================================================================
 
@@ -4107,51 +4480,6 @@ def final_safety_check(metrics, trade_plan):
             and trend_ok
         ):
             return False, "آخر ساعة والسهم لا يملك زخمًا استثنائيًا"
-
-    if not df.empty and len(df) >= 3:
-        last_open = safe_float(df["open"].iloc[-1])
-        last_high = safe_float(df["high"].iloc[-1])
-        last_low = safe_float(df["low"].iloc[-1])
-        last_close = safe_float(df["close"].iloc[-1])
-
-        candle_range = max(
-            last_high - last_low,
-            0
-        )
-
-        candle_body = abs(
-            last_close - last_open
-        )
-
-        body_ratio = (
-            candle_body / candle_range
-            if candle_range > 0
-            else 0
-        )
-
-        close_position = (
-            (last_close - last_low) / candle_range
-            if candle_range > 0
-            else 0.5
-        )
-
-        strong_bearish_candle = (
-            last_close < last_open
-            and body_ratio >= 0.60
-            and close_position <= 0.25
-        )
-
-        if strong_bearish_candle:
-            return False, "آخر شمعة دقيقة هابطة بقوة"
-
-    # نحمي الاختراق فقط إذا كان المرشح مصنفًا أصلًا كاختراق
-    if bool(metrics.get("breakout")):
-        resistance = safe_float(
-            metrics.get("resistance")
-        )
-
-        if resistance > 0 and price <= resistance:
-            return False, "فشل الاختراق قبل الإرسال"
 
     return True, "OK"
 
@@ -4391,7 +4719,8 @@ def remove_from_finalist_recheck(
         
 def send_elite_alert(
     metrics,
-    allow_vwap_recheck=True
+    allow_vwap_recheck=True,
+    allow_entry_quality_recheck=True
 ):
     symbol = metrics["symbol"]
 
@@ -4454,6 +4783,63 @@ def send_elite_alert(
 
         return False
 
+    # ------------------------------------------------------------------
+    # Entry Quality / Breakout Validation
+    # ------------------------------------------------------------------
+
+    if allow_entry_quality_recheck:
+        quality = analyze_entry_quality(
+            metrics,
+            is_recheck=False
+        )
+
+        quality_action = str(
+            quality.get("action") or "allow"
+        )
+
+        if quality_action == "delay":
+            reason_text = (
+                "BREAKOUT_UNCONFIRMED | "
+                + " | ".join(
+                    quality.get("signals", [])[:4]
+                )
+            )
+
+            add_to_finalist_recheck(
+                symbol,
+                metrics,
+                reason_text
+            )
+
+            add_to_watchlist(
+                symbol,
+                "BREAKOUT_UNCONFIRMED",
+                quality
+            )
+
+            log(
+                f"Alert delayed {symbol} | "
+                f"BREAKOUT_UNCONFIRMED | "
+                f"Signals={quality.get('signals', [])}"
+            )
+
+            return False
+
+        if quality_action == "block_attempt":
+            add_to_watchlist(
+                symbol,
+                "Bull Trap - current attempt blocked",
+                quality
+            )
+
+            log(
+                f"Alert attempt blocked {symbol} | "
+                f"Bull Trap | "
+                f"Signals={quality.get('signals', [])}"
+            )
+
+            return False
+            
     # بناء رسالة التنبيه
     message = build_alert_message(
         metrics,
@@ -4545,19 +4931,41 @@ def process_finalist_rechecks():
             added_at = safe_float(
                 watch_item.get("added_at")
             )
+            
+            watch_reason = str(
+                watch_item.get("last_reason") or ""
+            )
+
+            is_breakout_confirmation = (
+                watch_reason.startswith(
+                    "BREAKOUT_UNCONFIRMED"
+                )
+            )
+
+            max_age_seconds = (
+                BREAKOUT_CONFIRM_MAX_AGE_SECONDS
+                if is_breakout_confirmation
+                else FINALIST_RECHECK_MAX_AGE_SECONDS
+            )
 
             age_seconds = (
                 now_ts - added_at
                 if added_at > 0
-                else FINALIST_RECHECK_MAX_AGE_SECONDS + 1
+                else max_age_seconds + 1
             )
 
-            if age_seconds > FINALIST_RECHECK_MAX_AGE_SECONDS:
+            if age_seconds > max_age_seconds:
                 remove_from_finalist_recheck(
                     symbol,
-                    "expired without valid VWAP reclaim"
+                    (
+                        "BREAKOUT_UNCONFIRMED expired"
+                        if is_breakout_confirmation
+                        else
+                        "expired without valid VWAP reclaim"
+                    )
                 )
-                continue
+
+                continue            
 
             if already_alerted_today(symbol):
                 remove_from_finalist_recheck(
@@ -4713,9 +5121,60 @@ def process_finalist_rechecks():
                 )
                 continue
 
+            # ----------------------------------------------------------
+            # إعادة تقييم جودة الاختراق بعد فترة التأجيل
+            # ----------------------------------------------------------
+
+            if is_breakout_confirmation:
+                quality = analyze_entry_quality(
+                    fresh_metrics,
+                    is_recheck=True
+                )
+
+                quality_action = str(
+                    quality.get("action") or "allow"
+                )
+
+                if quality_action == "delay":
+                    log(
+                        f"Breakout confirmation waiting {symbol} | "
+                        f"Signals={quality.get('signals', [])}"
+                    )
+
+                    continue
+
+                if quality_action == "block_attempt":
+                    add_to_watchlist(
+                        symbol,
+                        "Bull Trap confirmed - current attempt blocked",
+                        quality
+                    )
+
+                    remove_from_finalist_recheck(
+                        symbol,
+                        (
+                            "confirmed bull trap | "
+                            + " | ".join(
+                                quality.get(
+                                    "signals",
+                                    []
+                                )[:4]
+                            )
+                        )
+                    )
+
+                    continue
+
+                log(
+                    f"Breakout confirmation passed {symbol} | "
+                    f"Score={fresh_score:.1f} | "
+                    f"Signals={quality.get('signals', [])}"
+                )
+                
             sent = send_elite_alert(
                 fresh_metrics,
-                allow_vwap_recheck=False
+                allow_vwap_recheck=False,
+                allow_entry_quality_recheck=False
             )
 
             if sent:
