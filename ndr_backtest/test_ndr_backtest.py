@@ -207,5 +207,17 @@ class ReplayTests(unittest.TestCase):
         engine=BacktestCollector(RawRedis(),object());legacy=engine.raw_session("2026-08-28","legacy","0",100);shard=engine.raw_session("2026-08-28",legacy["next_source"],legacy["next_cursor"],100)
         self.assertEqual(legacy["next_source"],"shard");self.assertEqual(shard["results"][0]["symbol"],"AAA");self.assertIsNone(shard["next_source"])
 
+    def test_trade_simulation_uses_next_bar_open_and_stop_first(self):
+        candidate={"session":"2026-08-28","partition":"holdout","symbol":"AAA","signal":{"ts":"2026-08-28T14:00:00Z","price":10,"stop":9,"opportunity":94,"failure_pressure":10}}
+        rows=[{"t":"2026-08-28T14:01:00Z","o":10,"h":11.6,"l":8.9,"c":10.5}]
+        conservative=BacktestCollector.simulate_trade(candidate,rows,"conservative","full_t1");optimistic=BacktestCollector.simulate_trade(candidate,rows,"optimistic","full_t1")
+        self.assertEqual(conservative["status"],"stop_after_entry");self.assertEqual(conservative["return_pct"],-10.0);self.assertEqual(optimistic["status"],"t1_exit");self.assertEqual(optimistic["return_pct"],15.0);self.assertEqual(conservative["ambiguous_bars"],1)
+
+    def test_scaled_policy_moves_stop_to_breakeven_after_t1(self):
+        candidate={"session":"2026-08-28","partition":"holdout","symbol":"AAA","signal":{"ts":"2026-08-28T14:00:00Z","price":10,"stop":9,"opportunity":94,"failure_pressure":10}}
+        rows=[{"t":"2026-08-28T14:01:00Z","o":10,"h":11.6,"l":9.5,"c":11.5},{"t":"2026-08-28T14:02:00Z","o":11.4,"h":11.5,"l":9.9,"c":10}]
+        result=BacktestCollector.simulate_trade(candidate,rows,"conservative","scaled")
+        self.assertEqual(result["targets_hit"],["T1"]);self.assertEqual(result["status"],"stop_after_t1");self.assertEqual(result["return_pct"],7.5)
+
 
 if __name__ == "__main__": unittest.main()
