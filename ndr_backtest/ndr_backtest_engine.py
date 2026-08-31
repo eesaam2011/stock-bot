@@ -291,6 +291,85 @@ class BacktestCollector:
         if progress:progress(scanned)
         return report
     def threshold_analysis_result(self):return self.redis.get_json(self.key("analysis:threshold:93:35"),None)
+    def simulation_candidates(self):
+        cached=self.redis.get_json(self.key("simulation:93:35:candidates"),None)
+        if cached is not None:return cached
+        candidates=[]
+        for row in self.iter_results():
+            signal=row.get("confirmed_entry")
+            if row.get("mode")=="approx" and signal and float(signal.get("opportunity",-1))>=93 and float(signal.get("failure_pressure",101))<=35:
+                candidates.append({"session":row["session"],"partition":row["partition"],"symbol":row["symbol"],"signal":signal})
+        candidates.sort(key=lambda x:(x["session"],x["signal"]["ts"],x["symbol"]));self.redis.set_json(self.key("simulation:93:35:candidates"),candidates);return candidates
+    @staticmethod
+    def simulate_trade(candidate,bars,assumption="conservative",policy="scaled"):
+        signal=candidate["signal"];future=[b for b in bars if b.get("t") and b["t"]>signal["ts"]]
+        base={"session":candidate["session"],"partition":candidate["partition"],"symbol":candidate["symbol"],"signal_ts":signal["ts"],"assumption":assumption,"policy":policy}
+        if not future:return {**base,"status":"no_future_bars","entry":None,"exit":None,"return_pct":0.0,"duration_minutes":None,"ambiguous_bars":0,"targets_hit":[]}
+        entry=float(future[0].get("o") or future[0]["c"]);original_stop=float(signal["stop"])
+        if entry<=original_stop:return {**base,"status":"gap_below_stop","entry":entry,"exit":entry,"return_pct":0.0,"duration_minutes":0.0,"ambiguous_bars":0,"targets_hit":[]}
+        risk=entry-original_stop;targets=[entry+1.5*risk,entry+2.5*risk,entry+4*risk];weights=[1.0,0.0,0.0] if policy=="full_t1" else [0.5,0.3,0.2]
+        remaining=1.0;realized=0.0;stop=original_stop;hit=[];ambiguous=0;exit_price=None;exit_ts=None;status="end_of_window"
+        for bar in future:
+            o=float(bar.get("o") or bar["c"]);h=float(bar["h"]);l=float(bar["l"])
+            next_target=targets[len(hit)] if len(hit)<3 and weights[len(hit)]>0 else None
+            stop_hit=l<=stop or o<=stop;target_hit=next_target is not None and (h>=next_target or o>=next_target)
+            if stop_hit and target_hit:ambiguous+=1
+            def take_targets():
+                nonlocal remaining,realized,stop,exit_price,exit_ts,status
+                while len(hit)<3 and weights[len(hit)]>0 and (h>=targets[len(hit)] or o>=targets[len(hit)]):
+                    i=len(hit);portion=min(remaining,weights[i]);fill=max(targets[i],o) if o>=targets[i] else targets[i];realized+=portion*(fill/entry-1);remaining-=portion;hit.append(f"T{i+1}");exit_price=fill;exit_ts=bar["t"]
+                    if policy=="full_t1":remaining=0;status="t1_exit";break
+                    stop=entry if i==0 else (targets[0] if i==1 else stop)
+            def take_stop():
+                nonlocal remaining,realized,exit_price,exit_ts,status
+                if remaining>1e-12:
+                    fill=min(stop,o) if o<=stop else stop;realized+=remaining*(fill/entry-1);remaining=0;exit_price=fill;exit_ts=bar["t"];status="stop_after_"+(hit[-1].lower() if hit else "entry")
+            if assumption=="conservative":
+                if stop_hit:take_stop()
+                else:take_targets()
+            else:
+                take_targets()
+                if remaining>1e-12 and (l<=stop or o<=stop):take_stop()
+            if remaining<=1e-12:
+                if len(hit)==3:status="t3_exit"
+                break
+        if remaining>1e-12:
+            exit_price=float(future[-1]["c"]);exit_ts=future[-1]["t"];realized+=remaining*(exit_price/entry-1);remaining=0
+        duration=(parse_dt(exit_ts)-parse_dt(future[0]["t"])).total_seconds()/60 if exit_ts else None
+        return {**base,"status":status,"entry":round(entry,6),"initial_stop":round(original_stop,6),"targets":[round(x,6) for x in targets],"exit":round(exit_price,6) if exit_price is not None else None,"return_pct":round(realized*100,4),"duration_minutes":round(duration,1) if duration is not None else None,"ambiguous_bars":ambiguous,"targets_hit":hit}
+    @staticmethod
+    def simulation_summary(rows):
+        values=[float(x["return_pct"]) for x in rows];n=len(values);wins=[x for x in values if x>0];losses=[x for x in values if x<0];ordered=sorted(values);gross_profit=sum(wins);gross_loss=abs(sum(losses));equity=1.0;peak=1.0;max_dd=0.0;streak=max_streak=current=0
+        for value in values:
+            equity*=1+value/100;peak=max(peak,equity);max_dd=max(max_dd,(peak-equity)/peak*100)
+            current=current+1 if value<0 else 0;max_streak=max(max_streak,current)
+        return {"trades":n,"wins":len(wins),"losses":len(losses),"flat":n-len(wins)-len(losses),"win_rate":round(len(wins)/max(1,n)*100,2),"avg_return_pct":round(avg(values),4),"median_return_pct":round(ordered[n//2],4) if n else 0,"profit_factor":round(gross_profit/max(gross_loss,1e-9),4),"compounded_return_pct":round((equity-1)*100,4),"max_drawdown_pct":round(max_dd,4),"max_loss_streak":max_streak,"ambiguous_trades":sum(x.get("ambiguous_bars",0)>0 for x in rows),"statuses":dict(Counter(x["status"] for x in rows).most_common())}
+    def run_trade_simulation(self,progress=None):
+        candidates=self.simulation_candidates();grouped={}
+        for candidate in candidates:grouped.setdefault(candidate["session"],[]).append(candidate)
+        case_key=self.key("simulation:93:35:cases");processed=0
+        for session,items in sorted(grouped.items()):
+            start,end=self.session_window(session)
+            for begin in range(0,len(items),self.batch_size):
+                batch=items[begin:begin+self.batch_size];symbols=[x["symbol"] for x in batch];fields=[f"{x['session']}|{x['symbol']}" for x in batch];existing=self.redis.command("HMGET",case_key,*fields) or [None]*len(fields);todo=[x for x,value in zip(batch,existing) if value is None]
+                if todo:
+                    sip=self.alpaca.bars([x["symbol"] for x in todo],start,end,"sip");writes=[]
+                    for candidate in todo:
+                        bars=sip.get(candidate["symbol"],[]);runs={f"{policy}_{assumption}":self.simulate_trade(candidate,bars,assumption,policy) for policy in ("full_t1","scaled") for assumption in ("conservative","optimistic")};writes.append((f"{candidate['session']}|{candidate['symbol']}",json.dumps({"candidate":candidate,"runs":runs},separators=(",",":"))))
+                    self.hset_bounded(case_key,writes);time.sleep(self.delay)
+                processed+=len(batch)
+                if progress:progress(processed,len(candidates),session)
+        rows=[];cursor="0"
+        while True:
+            scanned=self.redis.command("HSCAN",case_key,cursor,"COUNT",200);cursor=str(scanned[0]);pairs=scanned[1] or [];rows.extend(json.loads(pairs[i+1]) for i in range(0,len(pairs),2))
+            if cursor=="0":break
+        rows.sort(key=lambda x:(x["candidate"]["session"],x["candidate"]["signal"]["ts"],x["candidate"]["symbol"]));report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"threshold":{"opportunity_min":93,"failure_max":35},"fill_model":"entry at next SIP one-minute bar open; targets recomputed at 1.5R/2.5R/4R from stored stop","costs":"gross returns; commissions, spread and slippage not deducted","intrabar_bounds":{"conservative":"stop before target when both occur in one minute","optimistic":"targets before stop when both occur in one minute"},"candidate_count":len(candidates),"cases":rows,"summary":{}}
+        for partition in ("development","holdout","all"):
+            subset=rows if partition=="all" else [x for x in rows if x["candidate"]["partition"]==partition];report["summary"][partition]={}
+            for key in ("full_t1_conservative","full_t1_optimistic","scaled_conservative","scaled_optimistic"):report["summary"][partition][key]=self.simulation_summary([x["runs"][key] for x in subset])
+        self.redis.set_json(self.key("simulation:93:35:report"),report);return report
+    def trade_simulation_result(self):return self.redis.get_json(self.key("simulation:93:35:report"),None)
+    def trade_simulation_status(self):return self.redis.get_json(self.key("simulation:93:35:status"),None)
     @staticmethod
     def aggregate(rows,sensitivity=False):
         out={"cases":len(rows),"signals":{},"block_reasons":{},"unavailable_features":{}};blocks=Counter();missing=Counter()
