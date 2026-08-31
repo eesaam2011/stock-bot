@@ -137,5 +137,13 @@ class ReplayTests(unittest.TestCase):
         cursor = redis.get_json("next_day_radar_backtest_v3:detail_cursor")
         self.assertEqual(cursor, {"session_index": 0, "sscan_cursor": "1250", "processed": 4350})
 
+    def test_large_hash_write_is_split_into_bounded_requests(self):
+        redis = BatchRedis()
+        engine = BacktestCollector(redis, object())
+        pairs = [(f"field-{i}", "x"*1000) for i in range(25)]
+        engine.hset_bounded("results", pairs, max_fields=10, max_bytes=200000)
+        hsets = [x for x in redis.calls if x[0] == "HSET"]
+        self.assertEqual([len(x[2:])//2 for x in hsets], [10, 10, 5])
+
 
 if __name__ == "__main__": unittest.main()
