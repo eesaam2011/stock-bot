@@ -59,6 +59,19 @@ class ReportRedis(FakeRedis):
         return super().command(*parts)
 
 
+class RawRedis(FakeRedis):
+    def __init__(self):
+        super().__init__();self.row={"session":"2026-08-28","symbol":"AAA","mode":"approx","breakout_ready":None}
+    def command(self,*parts):
+        if parts[0]=="HGET":
+            return json.dumps(self.row) if parts[1].endswith(":results:2026-08-28") and parts[2].endswith("|AAA|approx") else None
+        if parts[0]=="HMGET":
+            return [json.dumps(dict(self.row,mode="approx")) if field.endswith("|AAA|approx") and parts[1].endswith(":results:2026-08-28") else None for field in parts[2:]]
+        if parts[0]=="HSCAN":
+            return ["0",["2026-08-28|AAA|approx",json.dumps(self.row)]] if parts[1].endswith(":results:2026-08-28") else ["0",[]]
+        return super().command(*parts)
+
+
 def bars(count=80):
     start = datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc)
     out = []
@@ -162,6 +175,37 @@ class ReplayTests(unittest.TestCase):
     def test_report_reads_legacy_and_session_shards(self):
         engine = BacktestCollector(ReportRedis(), object())
         self.assertEqual([x["symbol"] for x in engine.iter_results()], ["OLD", "NEW"])
+
+    def test_frozen_threshold_analysis_separates_holdout_and_signal_types(self):
+        engine = BacktestCollector(FakeRedis(), object())
+        engine.iter_results = lambda: iter([
+            {"mode":"approx","partition":"development","session":"2026-08-01","breakout_ready":{"opportunity":94,"failure_pressure":30,"mfe_pct":8,"mae_pct":-2,"phase":"regular"},"confirmed_entry":{"opportunity":94,"failure_pressure":30,"mfe_pct":6,"mae_pct":-1,"phase":"regular"}},
+            {"mode":"approx","partition":"development","session":"2026-08-02","breakout_ready":{"opportunity":92,"failure_pressure":20,"mfe_pct":20,"mae_pct":-5,"phase":"premarket"},"confirmed_entry":None},
+            {"mode":"approx","partition":"holdout","session":"2026-08-20","breakout_ready":{"opportunity":95,"failure_pressure":35,"mfe_pct":10,"mae_pct":-4,"phase":"overnight"},"confirmed_entry":{"opportunity":95,"failure_pressure":36,"mfe_pct":12,"mae_pct":-3,"phase":"overnight"}},
+            {"mode":"strict","partition":"holdout","session":"2026-08-21","breakout_ready":{"opportunity":99,"failure_pressure":1,"mfe_pct":99,"mae_pct":0,"phase":"regular"},"confirmed_entry":None},
+        ])
+        result=engine.threshold_analysis(93,35)
+        self.assertEqual(result["source_rows_scanned"],4)
+        self.assertEqual(result["partitions"]["development"]["breakout_ready"]["count"],1)
+        self.assertEqual(result["partitions"]["holdout"]["breakout_ready"]["mfe_ge_5_rate"],100.0)
+        self.assertEqual(result["partitions"]["holdout"]["confirmed_entry"]["count"],0)
+        self.assertEqual(result["partitions"]["development"]["breakout_ready"]["sessions"][0]["session"],"2026-08-01")
+        self.assertIsNotNone(engine.threshold_analysis_result())
+
+    def test_thresholds_below_stored_ready_floor_are_rejected(self):
+        with self.assertRaises(ValueError):self.engine.threshold_analysis(87,35)
+
+    def test_raw_case_prefers_session_shard(self):
+        result=BacktestCollector(RawRedis(),object()).raw_case("2026-08-28","AAA","approx")
+        self.assertEqual(result["symbol"],"AAA")
+
+    def test_raw_symbol_is_session_paginated_and_reads_both_modes(self):
+        result=BacktestCollector(RawRedis(),object()).raw_symbol("AAA",0,1)
+        self.assertEqual(result["sessions_scanned"],1);self.assertEqual(len(result["results"]),1);self.assertIsNone(result["next_offset"])
+
+    def test_raw_session_moves_from_legacy_to_shard(self):
+        engine=BacktestCollector(RawRedis(),object());legacy=engine.raw_session("2026-08-28","legacy","0",100);shard=engine.raw_session("2026-08-28",legacy["next_source"],legacy["next_cursor"],100)
+        self.assertEqual(legacy["next_source"],"shard");self.assertEqual(shard["results"][0]["symbol"],"AAA");self.assertIsNone(shard["next_source"])
 
 
 if __name__ == "__main__": unittest.main()
