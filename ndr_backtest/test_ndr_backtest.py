@@ -207,6 +207,19 @@ class ReplayTests(unittest.TestCase):
     def test_thresholds_below_stored_ready_floor_are_rejected(self):
         with self.assertRaises(ValueError):self.engine.threshold_analysis(87,35)
 
+    def test_weekday_report_uses_all_signal_outcomes_and_separate_partitions(self):
+        redis=FakeRedis();redis.values["next_day_radar_backtest_v3:manifest"]=json.dumps({"sessions":["2026-08-27","2026-08-28"],"development_sessions":["2026-08-27"],"holdout_sessions":["2026-08-28"]})
+        engine=BacktestCollector(redis,object());engine.iter_results=lambda:iter([
+            {"mode":"approx","partition":"development","session":"2026-08-27","symbol":"WIN","breakout_ready":{"opportunity":94,"failure_pressure":20,"mfe_pct":8,"mae_pct":-1,"phase":"REGULAR"},"confirmed_entry":{"opportunity":94,"failure_pressure":20,"mfe_pct":6,"mae_pct":-1,"phase":"REGULAR"}},
+            {"mode":"approx","partition":"development","session":"2026-08-27","symbol":"LOSS","breakout_ready":{"opportunity":89,"failure_pressure":20,"mfe_pct":1,"mae_pct":-3,"phase":"PREMARKET"},"confirmed_entry":None},
+            {"mode":"approx","partition":"holdout","session":"2026-08-28","symbol":"LOSS2","breakout_ready":{"opportunity":95,"failure_pressure":20,"mfe_pct":-2,"mae_pct":-5,"phase":"REGULAR"},"confirmed_entry":None},
+            {"mode":"strict","partition":"holdout","session":"2026-08-28","symbol":"IGNORE","breakout_ready":{"opportunity":99,"failure_pressure":1,"mfe_pct":99,"mae_pct":0,"phase":"REGULAR"},"confirmed_entry":None},
+        ])
+        result=engine.weekday_signal_report();thu=result["thresholds"]["88/35"]["development"]["Thursday"]["breakout_ready"];fri=result["thresholds"]["93/35"]["holdout"]["Friday"]["breakout_ready"]
+        self.assertEqual(result["source_rows_scanned"],4);self.assertEqual(thu["signals"],2);self.assertEqual(thu["mfe_ge_5_rate"],50.0);self.assertEqual(thu["sessions"],1)
+        self.assertEqual(fri["signals"],1);self.assertEqual(fri["mfe_ge_0_rate"],0.0);self.assertEqual(result["thresholds"]["93/35"]["development"]["Thursday"]["confirmed_entry"]["signals"],1)
+        self.assertFalse(result["methodology"]["winner_only_explosions_file_used"]);self.assertIsNotNone(engine.weekday_signal_result())
+
     def test_raw_case_prefers_session_shard(self):
         result=BacktestCollector(RawRedis(),object()).raw_case("2026-08-28","AAA","approx")
         self.assertEqual(result["symbol"],"AAA")
