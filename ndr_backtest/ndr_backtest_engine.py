@@ -26,7 +26,11 @@ class RedisREST:
     def command(self, *parts):
         if not self.url or not self.token: raise RuntimeError("Redis environment is missing")
         req=Request(self.url, data=json.dumps(list(parts)).encode(), headers={"Authorization":f"Bearer {self.token}","Content-Type":"application/json"}, method="POST")
-        with urlopen(req, timeout=90) as response: payload=json.load(response)
+        try:
+            with urlopen(req, timeout=90) as response: payload=json.load(response)
+        except HTTPError as exc:
+            detail=exc.read(500).decode("utf-8","replace")
+            raise RuntimeError(f"Redis HTTP {exc.code}: {detail}") from exc
         if payload.get("error"): raise RuntimeError(str(payload["error"]))
         return payload.get("result")
     def get_json(self, key, default=None):
@@ -64,6 +68,15 @@ class BacktestCollector:
         self.modes=tuple(x.strip() for x in os.getenv("NDR_BT_TEST_MODES","strict,approx").split(",") if x.strip())
         self.opp_min=88.0; self.fail_max=35.0
     def key(self, suffix): return f"{self.prefix}:{suffix}"
+    def hset_bounded(self,key,pairs,max_fields=10,max_bytes=200000):
+        """Write hash pairs in small requests so one large result cannot cause HTTP 400/413."""
+        chunk=[];size=0
+        for field,value in pairs:
+            pair_size=len(field.encode("utf-8"))+len(value.encode("utf-8"))
+            if chunk and (len(chunk)>=max_fields or size+pair_size>max_bytes):
+                self.redis.command("HSET",key,*[item for pair in chunk for item in pair]);chunk=[];size=0
+            chunk.append((field,value));size+=pair_size
+        if chunk:self.redis.command("HSET",key,*[item for pair in chunk for item in pair])
     def status(self): return self.redis.get_json(self.key("status"), {"phase":"NOT_PREPARED"})
     def save_status(self, **updates):
         current=self.status(); current.update(updates); current["updated_at"]=now_iso(); self.redis.set_json(self.key("status"), current); return current
@@ -199,10 +212,10 @@ class BacktestCollector:
                 bars=self.merge_bars(sip.get(symbol,[]),boats.get(symbol,[]))
                 for mode in self.modes:
                     field=f"{session}|{symbol}|{mode}"
-                    if field not in existing:writes.extend((field,json.dumps(self.replay(session,symbol,bars,mode),separators=(",",":"),ensure_ascii=False)))
-            # One bounded hash write and one completion-set write per batch.
+                    if field not in existing:writes.append((field,json.dumps(self.replay(session,symbol,bars,mode),separators=(",",":"),ensure_ascii=False)))
+            # Bounded hash writes and one completion-set write per batch.
             # Existing fields are never recalculated or overwritten on resume.
-            if writes:self.redis.command("HSET",self.key("results"),*writes)
+            if writes:self.hset_bounded(self.key("results"),writes)
             self.redis.command("SADD",self.key(f"completed:{session}"),*symbols)
         if nxt=="0":si+=1
         cursor={"session_index":si,"sscan_cursor":nxt,"processed":int(cursor.get("processed",0))+len(symbols)};self.redis.set_json(self.key("detail_cursor"),cursor);total=int(self.redis.command("SCARD",self.key("coarse_candidates")) or 0)
