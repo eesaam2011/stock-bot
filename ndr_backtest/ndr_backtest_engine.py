@@ -371,6 +371,56 @@ class BacktestCollector:
     def trade_simulation_result(self):return self.redis.get_json(self.key("simulation:93:35:report"),None)
     def trade_simulation_status(self):return self.redis.get_json(self.key("simulation:93:35:status"),None)
     @staticmethod
+    def diagnose_trade(candidate,bars):
+        signal=candidate["signal"];past=[b for b in bars if b.get("t") and b["t"]<=signal["ts"]];future=[b for b in bars if b.get("t") and b["t"]>signal["ts"]];base={"session":candidate["session"],"partition":candidate["partition"],"symbol":candidate["symbol"],"signal_ts":signal["ts"],"opportunity":signal["opportunity"],"failure_pressure":signal["failure_pressure"],"stored_stop_pct":signal.get("stop_pct")}
+        if not future:return {**base,"classification":"no_future_bars"}
+        entry=float(future[0].get("o") or future[0]["c"]);stop=float(signal["stop"]);risk=entry-stop
+        if risk<=0:return {**base,"classification":"gap_below_stop","entry":entry,"stop":stop}
+        targets=[entry+1.5*risk,entry+2.5*risk,entry+4*risk];stop_i=None;target_i=[None,None,None]
+        for i,bar in enumerate(future):
+            o=float(bar.get("o") or bar["c"]);h=float(bar["h"]);l=float(bar["l"])
+            if stop_i is None and (l<=stop or o<=stop):stop_i=i
+            for j,target in enumerate(targets):
+                if target_i[j] is None and (h>=target or o>=target):target_i[j]=i
+        t1_i=target_i[0];ambiguous=stop_i is not None and t1_i==stop_i
+        if stop_i is None and t1_i is not None:classification="t1_before_stop"
+        elif stop_i is not None and t1_i is None:classification="stop_never_recovered_t1"
+        elif stop_i is None:classification="neither"
+        elif t1_i<stop_i:classification="t1_before_stop"
+        elif t1_i>stop_i:classification="stop_then_recovered_t1"
+        else:classification="same_minute_ambiguous"
+        after_stop=future[stop_i+1:] if stop_i is not None else [];post_high=max((float(x["h"]) for x in after_stop),default=entry);signal_bar=past[-1] if past else None;prior=past[-21:-1];prior_vol=avg(float(x.get("v",0)) for x in prior);signal_vol=float(signal_bar.get("v",0)) if signal_bar else 0;bar_range=float(signal_bar["h"])-float(signal_bar["l"]) if signal_bar else 0;close=float(signal_bar["c"]) if signal_bar else entry;open_=float(signal_bar["o"]) if signal_bar else entry
+        features={"entry_gap_pct":round((entry/float(signal["price"])-1)*100,4),"risk_pct":round(risk/entry*100,4),"signal_upper_wick_ratio":round((float(signal_bar["h"])-max(open_,close))/max(bar_range,1e-9),4) if signal_bar else None,"signal_close_location":round((close-float(signal_bar["l"]))/max(bar_range,1e-9),4) if signal_bar else None,"signal_volume_ratio":round(signal_vol/max(prior_vol,1),4),"momentum_5m_pct":round((close/float(past[-6]["c"])-1)*100,4) if len(past)>=6 else None,"resistance_distance_pct":round((float(signal["price"])/max(float(signal["resistance"]),1e-9)-1)*100,4)}
+        return {**base,"classification":classification,"entry":round(entry,6),"stop":round(stop,6),"targets":[round(x,6) for x in targets],"stop_time":future[stop_i]["t"] if stop_i is not None else None,"t1_time":future[t1_i]["t"] if t1_i is not None else None,"minutes_to_stop":round((parse_dt(future[stop_i]["t"])-parse_dt(future[0]["t"])).total_seconds()/60,1) if stop_i is not None else None,"minutes_to_t1":round((parse_dt(future[t1_i]["t"])-parse_dt(future[0]["t"])).total_seconds()/60,1) if t1_i is not None else None,"post_stop_mfe_pct":round((post_high/entry-1)*100,4) if stop_i is not None else None,"event_same_minute":ambiguous,"features":features}
+    @staticmethod
+    def diagnostic_summary(rows):
+        groups=Counter(x.get("classification","unknown") for x in rows);recovered=[x for x in rows if x.get("classification")=="stop_then_recovered_t1"];failed=[x for x in rows if x.get("classification")=="stop_never_recovered_t1"]
+        feature_names=("entry_gap_pct","risk_pct","signal_upper_wick_ratio","signal_close_location","signal_volume_ratio","momentum_5m_pct","resistance_distance_pct")
+        def feature_means(items):return {name:round(avg(x.get("features",{}).get(name) for x in items if x.get("features",{}).get(name) is not None),4) for name in feature_names}
+        stopped=[x for x in rows if x.get("stop_time")]
+        return {"cases":len(rows),"classifications":dict(groups.most_common()),"stopped_cases":len(stopped),"stop_then_recovered_t1":len(recovered),"stop_recovery_rate":round(len(recovered)/max(1,len(stopped))*100,2),"median_minutes_to_stop":round(sorted(x["minutes_to_stop"] for x in stopped if x.get("minutes_to_stop") is not None)[len([x for x in stopped if x.get("minutes_to_stop") is not None])//2],2) if stopped else None,"same_minute_ambiguous":sum(bool(x.get("event_same_minute")) for x in rows),"feature_means":{"t1_before_stop":feature_means([x for x in rows if x.get("classification")=="t1_before_stop"]),"stop_then_recovered_t1":feature_means(recovered),"stop_never_recovered_t1":feature_means(failed)}}
+    def run_stop_diagnostic(self,progress=None):
+        candidates=self.simulation_candidates();grouped={}
+        for candidate in candidates:grouped.setdefault(candidate["session"],[]).append(candidate)
+        case_key=self.key("diagnostic:93:35:cases");processed=0
+        for session,items in sorted(grouped.items()):
+            start,end=self.session_window(session)
+            for begin in range(0,len(items),self.batch_size):
+                batch=items[begin:begin+self.batch_size];fields=[f"{x['session']}|{x['symbol']}" for x in batch];existing=self.redis.command("HMGET",case_key,*fields) or [None]*len(fields);todo=[x for x,value in zip(batch,existing) if value is None]
+                if todo:
+                    sip=self.alpaca.bars([x["symbol"] for x in todo],start,end,"sip");writes=[(f"{x['session']}|{x['symbol']}",json.dumps(self.diagnose_trade(x,sip.get(x["symbol"],[])),separators=(",",":"))) for x in todo];self.hset_bounded(case_key,writes);time.sleep(self.delay)
+                processed+=len(batch)
+                if progress:progress(processed,len(candidates),session)
+        rows=[];cursor="0"
+        while True:
+            scanned=self.redis.command("HSCAN",case_key,cursor,"COUNT",200);cursor=str(scanned[0]);pairs=scanned[1] or [];rows.extend(json.loads(pairs[i+1]) for i in range(0,len(pairs),2))
+            if cursor=="0":break
+        rows.sort(key=lambda x:(x["session"],x["signal_ts"],x["symbol"]));report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"threshold":{"opportunity_min":93,"failure_max":35},"purpose":"determine whether losses come from premature stops or failed entries","policy":"descriptive diagnosis; do not tune on holdout","summary":{},"cases":rows}
+        for partition in ("development","holdout","all"):report["summary"][partition]=self.diagnostic_summary(rows if partition=="all" else [x for x in rows if x["partition"]==partition])
+        self.redis.set_json(self.key("diagnostic:93:35:report"),report);return report
+    def stop_diagnostic_result(self):return self.redis.get_json(self.key("diagnostic:93:35:report"),None)
+    def stop_diagnostic_status(self):return self.redis.get_json(self.key("diagnostic:93:35:status"),None)
+    @staticmethod
     def aggregate(rows,sensitivity=False):
         out={"cases":len(rows),"signals":{},"block_reasons":{},"unavailable_features":{}};blocks=Counter();missing=Counter()
         for row in rows:blocks.update(row.get("block_reasons",{}));missing.update(row.get("unavailable_features",{}))
