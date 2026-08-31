@@ -400,6 +400,48 @@ class BacktestCollector:
         self.redis.set_json(self.key("stopwidth:93:35:report"),report);return report
     def stop_width_result(self):return self.redis.get_json(self.key("stopwidth:93:35:report"),None)
     def stop_width_status(self):return self.redis.get_json(self.key("stopwidth:93:35:status"),None)
+    def entry_compare_candidates(self,signal_field):
+        cache_key=self.key(f"entrycompare:93:35:candidates:{signal_field}");cached=self.redis.get_json(cache_key,None)
+        if cached is not None:return cached
+        candidates=[]
+        for row in self.iter_results():
+            signal=row.get(signal_field)
+            if row.get("mode")=="approx" and signal and float(signal.get("opportunity",-1))>=93 and float(signal.get("failure_pressure",101))<=35:
+                candidates.append({"session":row["session"],"partition":row["partition"],"symbol":row["symbol"],"signal":signal})
+        candidates.sort(key=lambda x:(x["session"],x["signal"]["ts"],x["symbol"]));self.redis.set_json(cache_key,candidates);return candidates
+    def entry_compare_report(self,policies=None,progress=None):
+        policies=policies or [("full_t1","conservative"),("scaled","conservative")]
+        variants={"breakout_ready_entry":self.entry_compare_candidates("breakout_ready"),"confirmed_entry_entry":self.entry_compare_candidates("confirmed_entry")}
+        bars_key=self.key("entrycompare_test:bars");all_candidates=[c for group in variants.values() for c in group];grouped={}
+        for c in all_candidates:grouped.setdefault(c["session"],[]).append(c)
+        all_bars={};total=len(all_candidates);processed=0
+        for session,items in sorted(grouped.items()):
+            start,end=self.session_window(session);symbols_seen=set()
+            for begin in range(0,len(items),self.batch_size):
+                batch=[x for x in items[begin:begin+self.batch_size] if x["symbol"] not in symbols_seen]
+                for x in batch:symbols_seen.add(x["symbol"])
+                if not batch:continue
+                fields=[f"{session}|{x['symbol']}" for x in batch];existing=self.redis.command("HMGET",bars_key,*fields) or [None]*len(fields);todo=[x for x,value in zip(batch,existing) if value is None]
+                for x,value in zip(batch,existing):
+                    if value is not None:all_bars[f"{session}|{x['symbol']}"]=json.loads(value)
+                if todo:
+                    sip=self.alpaca.bars([x["symbol"] for x in todo],start,end,"sip");writes=[]
+                    for x in todo:
+                        bars=sip.get(x["symbol"],[]);all_bars[f"{session}|{x['symbol']}"]=bars;writes.append((f"{session}|{x['symbol']}",json.dumps(bars,separators=(",",":"))))
+                    self.hset_bounded(bars_key,writes);time.sleep(self.delay)
+                processed+=len(batch)
+                if progress:progress(processed,total,session)
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"note":"Compares entering at BREAKOUT_READY vs waiting for CONFIRMED_ENTRY, same 93/35 threshold, same bar data. Reuses stored results; does not re-run the collector.","policies_tested":[f"{p}_{a}" for p,a in policies],"candidate_counts":{name:len(group) for name,group in variants.items()},"results":{}}
+        for name,group in variants.items():
+            report["results"][name]={}
+            for policy,assumption in policies:
+                key=f"{policy}_{assumption}";rows_all,rows_dev,rows_hold=[],[],[]
+                for c in group:
+                    bars=all_bars.get(f"{c['session']}|{c['symbol']}",[]);run=self.simulate_trade(c,bars,assumption=assumption,policy=policy);rows_all.append(run);(rows_dev if c["partition"]=="development" else rows_hold).append(run)
+                report["results"][name][key]={"all":self.simulation_summary(rows_all),"development":self.simulation_summary(rows_dev),"holdout":self.simulation_summary(rows_hold)}
+        self.redis.set_json(self.key("entrycompare:93:35:report"),report);return report
+    def entry_compare_result(self):return self.redis.get_json(self.key("entrycompare:93:35:report"),None)
+    def entry_compare_status(self):return self.redis.get_json(self.key("entrycompare:93:35:status"),None)
     @staticmethod
     def diagnose_trade(candidate,bars):
         signal=candidate["signal"];past=[b for b in bars if b.get("t") and b["t"]<=signal["ts"]];future=[b for b in bars if b.get("t") and b["t"]>signal["ts"]];base={"session":candidate["session"],"partition":candidate["partition"],"symbol":candidate["symbol"],"signal_ts":signal["ts"],"opportunity":signal["opportunity"],"failure_pressure":signal["failure_pressure"],"stored_stop_pct":signal.get("stop_pct")}
