@@ -34,7 +34,9 @@ class BatchRedis(FakeRedis):
     def command(self, *parts):
         self.calls.append(parts)
         if parts[0] == "SSCAN": return ["1250", ["AAA", "BBB"]]
-        if parts[0] == "HMGET": return [self.existing, None, None, None]
+        if parts[0] == "HMGET":
+            if parts[1].endswith(":results"): return [self.existing, None, None, None]
+            return [None] * (len(parts)-2)
         if parts[0] == "HSET": return len(parts[2:]) // 2
         if parts[0] == "SADD": return len(parts) - 2
         return super().command(*parts)
@@ -44,6 +46,17 @@ class BatchAlpaca:
     def bars(self, symbols, start, end, feed):
         data = bars(40)
         return {symbol: data for symbol in symbols}
+
+
+class ReportRedis(FakeRedis):
+    def command(self, *parts):
+        if parts[0] == "HSCAN":
+            if parts[1].endswith(":results"):
+                return ["0", ["old", json.dumps({"symbol": "OLD"})]]
+            if parts[1].endswith(":results:2026-08-28"):
+                return ["0", ["new", json.dumps({"symbol": "NEW"})]]
+            return ["0", []]
+        return super().command(*parts)
 
 
 def bars(count=80):
@@ -130,9 +143,10 @@ class ReplayTests(unittest.TestCase):
         hmget = [x for x in redis.calls if x[0] == "HMGET"]
         hset = [x for x in redis.calls if x[0] == "HSET"]
         sadd = [x for x in redis.calls if x[0] == "SADD"]
-        self.assertEqual(len(hmget), 1)
+        self.assertEqual(len(hmget), 2)
         self.assertEqual(len(hset), 1)
         self.assertNotIn("2026-08-28|AAA|strict", hset[0])
+        self.assertEqual(hset[0][1], "next_day_radar_backtest_v3:results:2026-08-28")
         self.assertEqual(len(sadd), 1)
         cursor = redis.get_json("next_day_radar_backtest_v3:detail_cursor")
         self.assertEqual(cursor, {"session_index": 0, "sscan_cursor": "1250", "processed": 4350})
@@ -144,6 +158,10 @@ class ReplayTests(unittest.TestCase):
         engine.hset_bounded("results", pairs, max_fields=10, max_bytes=200000)
         hsets = [x for x in redis.calls if x[0] == "HSET"]
         self.assertEqual([len(x[2:])//2 for x in hsets], [10, 10, 5])
+
+    def test_report_reads_legacy_and_session_shards(self):
+        engine = BacktestCollector(ReportRedis(), object())
+        self.assertEqual([x["symbol"] for x in engine.iter_results()], ["OLD", "NEW"])
 
 
 if __name__ == "__main__": unittest.main()
