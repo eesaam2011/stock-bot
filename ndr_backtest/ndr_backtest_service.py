@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, request, Response
 from ndr_backtest_engine import BacktestCollector
+from market_radar_backtest_engine import MarketRadarBacktest
 
 app = Flask(__name__)
 UTC = timezone.utc
@@ -34,6 +35,8 @@ entrycompare_thread = None
 entrycompare_state = {"status":"IDLE","message":"Entry comparison (ready vs confirmed) has not started.","processed":0,"total":0,"session":None,"updated_at":None}
 weekday_thread = None
 weekday_state = {"status":"IDLE","message":"All-signal weekday analysis has not started.","rows_scanned":0,"session":None,"updated_at":None}
+market_radar_thread = None
+market_radar_stop = threading.Event()
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -242,6 +245,18 @@ def weekday_loop():
         with lock:weekday_state.update(payload)
     finally:weekday_thread=None
 
+def market_radar_loop():
+    global market_radar_thread
+    engine=MarketRadarBacktest()
+    try:
+        while not market_radar_stop.is_set():
+            result=engine.step()
+            if result.get("status")=="COMPLETED":break
+        if market_radar_stop.is_set():engine.save_status(status="PAUSED",message="Market Radar backtest paused by user")
+    except Exception as exc:
+        engine.save_status(status="ERROR",phase="ERROR",message=f"{type(exc).__name__}: {exc}")
+    finally:market_radar_thread=None
+
 
 def historical_boats_test() -> dict:
     # A liquid symbol and a completed overnight interval. Access is proven only
@@ -294,6 +309,7 @@ def home():
         "explosions_url": "/explosions/result",
         "big_moves_url": "/big-moves/result",
         "weekday_url": "/weekday/result",
+        "market_radar_backtest_url": "/market-radar/report",
         "raw_case_url_template": "/api/results/case/YYYY-MM-DD/SYMBOL/approx",
         "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
@@ -467,7 +483,9 @@ def control():
     <form method="post" action="/stop-width/start"><input name="token" type="password" placeholder="Admin token" required><button>Run stop-width sensitivity test</button></form>
     <form method="post" action="/entry-compare/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare READY vs CONFIRMED entry</button></form>
     <form method="post" action="/weekday/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze weekdays on all stored signals</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a></p></body></html>
+    <form method="post" action="/market-radar/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume Market Radar backtest</button></form>
+    <form method="post" action="/market-radar/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause Market Radar backtest</button></form>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a></p></body></html>
     """
 
 
@@ -654,6 +672,34 @@ def start_weekday():
         if weekday_thread and weekday_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/weekday/status"})
         payload={"status":"RUNNING","message":"Starting all-signal weekday analysis","rows_scanned":0,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("weekday:signals:status"),payload);weekday_state.update(payload);weekday_thread=threading.Thread(target=weekday_loop,name="ndr-weekday-analysis",daemon=True);weekday_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/weekday/status","result_url":"/weekday/result"})
+
+
+@app.get("/market-radar/status")
+def market_radar_status():
+    return jsonify(MarketRadarBacktest().status())
+
+
+@app.get("/market-radar/report")
+def market_radar_report():
+    result=MarketRadarBacktest().report();return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/market-radar/status"}),202)
+
+
+@app.post("/market-radar/start")
+def market_radar_start():
+    global market_radar_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=MarketRadarBacktest()
+    with lock:
+        if engine.report() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/market-radar/report"})
+        if market_radar_thread and market_radar_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/market-radar/status"})
+        market_radar_stop.clear();engine.save_status(status="RUNNING",phase="REPLAYING",message="Starting or resuming Market Radar technical backtest");market_radar_thread=threading.Thread(target=market_radar_loop,name="market-radar-backtest",daemon=True);market_radar_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/market-radar/status","result_url":"/market-radar/report"})
+
+
+@app.post("/market-radar/pause")
+def market_radar_pause():
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    market_radar_stop.set();return jsonify({"ok":True,"status":"pause_requested","status_url":"/market-radar/status"})
 
 
 if __name__ == "__main__":
