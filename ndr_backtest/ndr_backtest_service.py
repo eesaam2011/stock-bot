@@ -18,8 +18,10 @@ UTC = timezone.utc
 lock = threading.RLock()
 worker_thread = None
 analysis_thread = None
+simulation_thread = None
 stop_event = threading.Event()
 analysis_state = {"status": "IDLE", "message": "Frozen 93/35 analysis has not started.", "rows_scanned": 0, "updated_at": None}
+simulation_state = {"status":"IDLE","message":"Trade simulation has not started.","processed":0,"total":169,"session":None,"updated_at":None}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -110,6 +112,24 @@ def analysis_loop():
         analysis_thread = None
 
 
+def simulation_loop():
+    global simulation_thread
+    try:
+        engine=BacktestCollector()
+        def progress(processed,total,session):
+            payload={"status":"RUNNING","message":"Simulating stored 93/35 entries minute by minute","processed":processed,"total":total,"session":session,"updated_at":stamp()};engine.redis.set_json(engine.key("simulation:93:35:status"),payload)
+            with lock:simulation_state.update(payload)
+        result=engine.run_trade_simulation(progress)
+        payload={"status":"COMPLETED","message":"Trade simulation completed","processed":result["candidate_count"],"total":result["candidate_count"],"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("simulation:93:35:status"),payload)
+        with lock:simulation_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("simulation:93:35:status"),{**simulation_state,**payload})
+        except Exception:pass
+        with lock:simulation_state.update(payload)
+    finally:simulation_thread=None
+
+
 def historical_boats_test() -> dict:
     # A liquid symbol and a completed overnight interval. Access is proven only
     # by at least one returned bar, never by HTTP 200 alone.
@@ -156,6 +176,7 @@ def home():
         "health_url": "/health",
         "report_url": "/report",
         "analysis_url": "/analysis/result",
+        "simulation_url": "/simulation/result",
         "raw_case_url_template": "/api/results/case/YYYY-MM-DD/SYMBOL/approx",
         "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
@@ -243,6 +264,18 @@ def analysis_result():
     return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/analysis/status"}),202)
 
 
+@app.get("/simulation/status")
+def simulation_status():
+    engine=BacktestCollector();stored=engine.trade_simulation_status()
+    with lock:payload=dict(stored or simulation_state)
+    payload["result_ready"]=engine.trade_simulation_result() is not None;payload["result_url"]="/simulation/result";return jsonify(payload)
+
+
+@app.get("/simulation/result")
+def simulation_result():
+    result=BacktestCollector().trade_simulation_result();return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/simulation/status"}),202)
+
+
 @app.get("/control")
 def control():
     return """
@@ -252,7 +285,8 @@ def control():
     <form method="post" action="/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume backtest</button></form>
     <form method="post" action="/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause</button></form>
     <form method="post" action="/analysis/start"><input name="token" type="password" placeholder="Admin token" required><button>Run frozen 93/35 analysis</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a></p></body></html>
+    <form method="post" action="/simulation/start"><input name="token" type="password" placeholder="Admin token" required><button>Run decisive 93/35 trade simulation</button></form>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a></p></body></html>
     """
 
 
@@ -311,6 +345,19 @@ def start_analysis():
         analysis_state.update(status="RUNNING",message="Starting frozen 93/35 validation from stored results",rows_scanned=0,updated_at=stamp())
         analysis_thread=threading.Thread(target=analysis_loop,name="ndr-threshold-analysis",daemon=True);analysis_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/analysis/status"})
+
+
+@app.post("/simulation/start")
+def start_simulation():
+    global simulation_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=BacktestCollector()
+    if engine.threshold_analysis_result() is None:return jsonify({"ok":False,"error":"frozen_analysis_not_completed"}),409
+    with lock:
+        if engine.trade_simulation_result() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/simulation/result"})
+        if simulation_thread and simulation_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/simulation/status"})
+        payload={"status":"RUNNING","message":"Selecting stored 93/35 entries","processed":0,"total":169,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("simulation:93:35:status"),payload);simulation_state.update(payload);simulation_thread=threading.Thread(target=simulation_loop,name="ndr-trade-simulation",daemon=True);simulation_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/simulation/status","result_url":"/simulation/result"})
 
 
 if __name__ == "__main__":
