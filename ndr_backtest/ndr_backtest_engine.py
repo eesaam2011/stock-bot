@@ -291,6 +291,58 @@ class BacktestCollector:
         if progress:progress(scanned)
         return report
     def threshold_analysis_result(self):return self.redis.get_json(self.key("analysis:threshold:93:35"),None)
+    @staticmethod
+    def _weekday_signal_summary(signals,session_count):
+        mfes=sorted(float(x.get("mfe_pct") or 0) for x in signals);maes=sorted(float(x.get("mae_pct") or 0) for x in signals);n=len(mfes)
+        def median(values):
+            if not values:return 0.0
+            mid=len(values)//2
+            return values[mid] if len(values)%2 else (values[mid-1]+values[mid])/2
+        trim=int(n*.01);trimmed=mfes[trim:n-trim] if trim and n>2*trim else mfes
+        out={"sessions":session_count,"signals":n,"signals_per_session":round(n/max(1,session_count),3),"median_mfe_pct":round(median(mfes),4),"trimmed_mean_mfe_pct":round(avg(trimmed),4),"median_mae_pct":round(median(maes),4),"phases":dict(Counter(str(x.get("phase") or "UNKNOWN") for x in signals).most_common())}
+        for threshold in (0,2,5,10,20):
+            count=sum(value>=threshold for value in mfes);key=f"mfe_ge_{threshold}"
+            out[f"{key}_count"]=count;out[f"{key}_rate"]=round(count/max(1,n)*100,2)
+        out["corporate_action_risk_count"]=sum(abs(value)>100 for value in mfes)
+        return out
+    def weekday_signal_report(self,progress=None):
+        """Robust weekday study over every stored approx READY/ENTRY signal, not a winner-only catalog."""
+        manifest=self.redis.get_json(self.key("manifest"),{})
+        sessions=list(manifest.get("sessions",[]));dev=set(manifest.get("development_sessions",sessions[:45]));hold=set(manifest.get("holdout_sessions",sessions[45:]))
+        partition_sessions={"development":dev,"holdout":hold,"all":set(sessions)};day_names=("Monday","Tuesday","Wednesday","Thursday","Friday")
+        session_counts={part:Counter(day_names[date.fromisoformat(s).weekday()] for s in values if date.fromisoformat(s).weekday()<5) for part,values in partition_sessions.items()}
+        thresholds=(88,90,93);signal_names=("breakout_ready","confirmed_entry")
+        selected={(threshold,part,name,day):[] for threshold in thresholds for part in partition_sessions for name in signal_names for day in day_names};scanned=0
+        for row in self.iter_results():
+            scanned+=1
+            if row.get("mode")!="approx" or row.get("partition") not in ("development","holdout"):continue
+            session=str(row.get("session") or "");weekday=date.fromisoformat(session).weekday()
+            if weekday>=5:continue
+            day=day_names[weekday];parts=(row["partition"],"all")
+            for name in signal_names:
+                signal=row.get(name)
+                if not signal:continue
+                opportunity=float(signal.get("opportunity",-1));failure=float(signal.get("failure_pressure",101))
+                for threshold in thresholds:
+                    if opportunity>=threshold and failure<=35:
+                        item=dict(signal,session=session,symbol=row.get("symbol"))
+                        for part in parts:selected[(threshold,part,name,day)].append(item)
+            if progress and scanned%5000==0:progress(scanned,session)
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"source_rows_scanned":scanned,"mode":"approx","failure_max":35,"thresholds":{},"methodology":{"population":"All stored approx BREAKOUT_READY and CONFIRMED_ENTRY signals, including signals with MFE below 5%.","minimum_evaluable_opportunity":88,"profit_factor_available":False,"reason_no_profit_factor":"Stored signal outcomes contain MFE/MAE, not an executable exit return for every signal.","winner_only_explosions_file_used":False,"unit":"one signal per symbol/session/signal_type","corporate_action_guard":"Medians and 1%-trimmed means are reported; abs(MFE)>100% is flagged."}}
+        for threshold in thresholds:
+            report["thresholds"][f"{threshold}/35"]={}
+            for part in ("development","holdout","all"):
+                block={}
+                for day in day_names:
+                    block[day]={name:self._weekday_signal_summary(selected[(threshold,part,name,day)],session_counts[part][day]) for name in signal_names}
+                    ready=block[day]["breakout_ready"]["signals"];entry=block[day]["confirmed_entry"]["signals"]
+                    block[day]["entry_conversion_rate"]=round(entry/max(1,ready)*100,2)
+                report["thresholds"][f"{threshold}/35"][part]=block
+        self.redis.set_json(self.key("weekday:signals:report"),report)
+        if progress:progress(scanned,None)
+        return report
+    def weekday_signal_result(self):return self.redis.get_json(self.key("weekday:signals:report"),None)
+    def weekday_signal_status(self):return self.redis.get_json(self.key("weekday:signals:status"),None)
     def simulation_candidates(self):
         cached=self.redis.get_json(self.key("simulation:93:35:candidates"),None)
         if cached is not None:return cached
