@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,9 @@ app = Flask(__name__)
 UTC = timezone.utc
 lock = threading.RLock()
 worker_thread = None
+analysis_thread = None
 stop_event = threading.Event()
+analysis_state = {"status": "IDLE", "message": "Frozen 93/35 analysis has not started.", "rows_scanned": 0, "updated_at": None}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -90,6 +93,23 @@ def worker_loop():
         worker_thread = None
 
 
+def analysis_loop():
+    global analysis_thread
+    try:
+        engine = BacktestCollector()
+        def progress(rows):
+            with lock:
+                analysis_state.update(status="RUNNING", message="Scanning existing Redis results only", rows_scanned=rows, updated_at=stamp())
+        result = engine.threshold_analysis(93, 35, progress)
+        with lock:
+            analysis_state.update(status="COMPLETED", message="Frozen 93/35 validation completed", rows_scanned=result["source_rows_scanned"], updated_at=stamp())
+    except Exception as exc:
+        with lock:
+            analysis_state.update(status="ERROR", message=f"{type(exc).__name__}: {exc}", updated_at=stamp())
+    finally:
+        analysis_thread = None
+
+
 def historical_boats_test() -> dict:
     # A liquid symbol and a completed overnight interval. Access is proven only
     # by at least one returned bar, never by HTTP 200 alone.
@@ -135,6 +155,8 @@ def home():
         "status_url": "/status",
         "health_url": "/health",
         "report_url": "/report",
+        "analysis_url": "/analysis/result",
+        "raw_case_url_template": "/api/results/case/YYYY-MM-DD/SYMBOL/approx",
         "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
 
@@ -168,6 +190,59 @@ def report_slice(mode: str, partition: str):
                     "partition": partition, "results": payload["modes"][mode][partition]})
 
 
+def valid_session(engine, session):
+    return session in engine.redis.get_json(engine.key("manifest"),{}).get("sessions",[])
+
+
+@app.get("/api/results")
+def raw_results_index():
+    return jsonify({"read_only":True,"case":"/api/results/case/YYYY-MM-DD/SYMBOL/approx","symbol":"/api/results/symbol/SYMBOL?offset=0&limit=10","session":"/api/results/session/YYYY-MM-DD?source=legacy&cursor=0&count=100","modes":["strict","approx"],"notes":["Symbol pages cover at most 15 sessions per request.","For session pages, follow next_source and next_cursor until next_source is null."]})
+
+
+@app.get("/api/results/case/<session>/<symbol>/<mode>")
+def raw_case(session: str, symbol: str, mode: str):
+    engine=BacktestCollector();symbol=symbol.upper()
+    if mode not in {"strict","approx"} or not valid_session(engine,session) or not re.fullmatch(r"[A-Z]{1,5}",symbol):return jsonify({"ok":False,"error":"invalid_case"}),400
+    result=engine.raw_case(session,symbol,mode)
+    return (jsonify(result),200) if result else (jsonify({"ok":False,"error":"case_not_found"}),404)
+
+
+@app.get("/api/results/symbol/<symbol>")
+def raw_symbol(symbol: str):
+    symbol=symbol.upper()
+    if not re.fullmatch(r"[A-Z]{1,5}",symbol):return jsonify({"ok":False,"error":"invalid_symbol"}),400
+    try:offset=max(0,int(request.args.get("offset","0")));limit=max(1,min(15,int(request.args.get("limit","10"))))
+    except ValueError:return jsonify({"ok":False,"error":"invalid_pagination"}),400
+    payload=BacktestCollector().raw_symbol(symbol,offset,limit)
+    payload["next_url"]=f"/api/results/symbol/{symbol}?offset={payload['next_offset']}&limit={limit}" if payload["next_offset"] is not None else None
+    return jsonify(payload)
+
+
+@app.get("/api/results/session/<session>")
+def raw_session(session: str):
+    engine=BacktestCollector();source=request.args.get("source","legacy");cursor=request.args.get("cursor","0")
+    if not valid_session(engine,session) or source not in {"legacy","shard"} or not cursor.isdigit():return jsonify({"ok":False,"error":"invalid_session_page"}),400
+    try:count=max(1,min(200,int(request.args.get("count","100"))))
+    except ValueError:return jsonify({"ok":False,"error":"invalid_pagination"}),400
+    payload=engine.raw_session(session,source,cursor,count)
+    payload["next_url"]=f"/api/results/session/{session}?source={payload['next_source']}&cursor={payload['next_cursor']}&count={count}" if payload["next_source"] else None
+    return jsonify(payload)
+
+
+@app.get("/analysis/status")
+def analysis_status():
+    with lock: payload=dict(analysis_state)
+    payload["result_ready"]=BacktestCollector().threshold_analysis_result() is not None
+    payload["result_url"]="/analysis/result"
+    return jsonify(payload)
+
+
+@app.get("/analysis/result")
+def analysis_result():
+    result=BacktestCollector().threshold_analysis_result()
+    return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/analysis/status"}),202)
+
+
 @app.get("/control")
 def control():
     return """
@@ -176,7 +251,8 @@ def control():
     <body><h2>NDR Backtest Control</h2><p>Paste the current admin token. It is sent in the form body, not the URL.</p>
     <form method="post" action="/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume backtest</button></form>
     <form method="post" action="/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a></p></body></html>
+    <form method="post" action="/analysis/start"><input name="token" type="password" placeholder="Admin token" required><button>Run frozen 93/35 analysis</button></form>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a></p></body></html>
     """
 
 
@@ -221,6 +297,20 @@ def pause():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     stop_event.set()
     return jsonify({"ok": True, "status": "pause_requested", "status_url": "/status"})
+
+
+@app.post("/analysis/start")
+def start_analysis():
+    global analysis_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    if BacktestCollector().status().get("phase")!="COMPLETED":return jsonify({"ok":False,"error":"backtest_not_completed"}),409
+    with lock:
+        cached=BacktestCollector().threshold_analysis_result()
+        if cached:return jsonify({"ok":True,"status":"already_completed","result_url":"/analysis/result"})
+        if analysis_thread and analysis_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/analysis/status"})
+        analysis_state.update(status="RUNNING",message="Starting frozen 93/35 validation from stored results",rows_scanned=0,updated_at=stamp())
+        analysis_thread=threading.Thread(target=analysis_loop,name="ndr-threshold-analysis",daemon=True);analysis_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/analysis/status"})
 
 
 if __name__ == "__main__":
