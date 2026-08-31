@@ -370,6 +370,36 @@ class BacktestCollector:
         self.redis.set_json(self.key("simulation:93:35:report"),report);return report
     def trade_simulation_result(self):return self.redis.get_json(self.key("simulation:93:35:report"),None)
     def trade_simulation_status(self):return self.redis.get_json(self.key("simulation:93:35:status"),None)
+    def stop_width_report(self,stop_widths=None,policies=None,progress=None):
+        stop_widths=stop_widths or [1.5,2.0,2.5,3.0,4.0,5.0,6.0,8.0];policies=policies or [("full_t1","conservative"),("scaled","conservative")]
+        candidates=self.simulation_candidates();bars_key=self.key("stopwidth_test:bars");grouped={}
+        for c in candidates:grouped.setdefault(c["session"],[]).append(c)
+        all_bars={};total=len(candidates);processed=0
+        for session,items in sorted(grouped.items()):
+            start,end=self.session_window(session)
+            for begin in range(0,len(items),self.batch_size):
+                batch=items[begin:begin+self.batch_size];fields=[f"{session}|{x['symbol']}" for x in batch];existing=self.redis.command("HMGET",bars_key,*fields) or [None]*len(fields);todo=[x for x,value in zip(batch,existing) if value is None]
+                for x,value in zip(batch,existing):
+                    if value is not None:all_bars[f"{session}|{x['symbol']}"]=json.loads(value)
+                if todo:
+                    sip=self.alpaca.bars([x["symbol"] for x in todo],start,end,"sip");writes=[]
+                    for x in todo:
+                        bars=sip.get(x["symbol"],[]);all_bars[f"{session}|{x['symbol']}"]=bars;writes.append((f"{session}|{x['symbol']}",json.dumps(bars,separators=(",",":"))))
+                    self.hset_bounded(bars_key,writes);time.sleep(self.delay)
+                processed+=len(batch)
+                if progress:progress(processed,total,session)
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"note":"Stop-width sensitivity test; reuses cached candidates, does not re-run the collector.","stop_widths_tested":stop_widths,"policies_tested":[f"{p}_{a}" for p,a in policies],"results":{}}
+        for stop_pct in stop_widths:
+            report["results"][str(stop_pct)]={}
+            for policy,assumption in policies:
+                key=f"{policy}_{assumption}";rows_all,rows_dev,rows_hold=[],[],[]
+                for c in candidates:
+                    bars=all_bars.get(f"{c['session']}|{c['symbol']}",[]);c_override=json.loads(json.dumps(c));c_override["signal"]["stop"]=round(float(c["signal"]["price"])*(1-stop_pct/100),6);c_override["signal"]["stop_pct"]=stop_pct
+                    run=self.simulate_trade(c_override,bars,assumption=assumption,policy=policy);rows_all.append(run);(rows_dev if c["partition"]=="development" else rows_hold).append(run)
+                report["results"][str(stop_pct)][key]={"all":self.simulation_summary(rows_all),"development":self.simulation_summary(rows_dev),"holdout":self.simulation_summary(rows_hold)}
+        self.redis.set_json(self.key("stopwidth:93:35:report"),report);return report
+    def stop_width_result(self):return self.redis.get_json(self.key("stopwidth:93:35:report"),None)
+    def stop_width_status(self):return self.redis.get_json(self.key("stopwidth:93:35:status"),None)
     @staticmethod
     def diagnose_trade(candidate,bars):
         signal=candidate["signal"];past=[b for b in bars if b.get("t") and b["t"]<=signal["ts"]];future=[b for b in bars if b.get("t") and b["t"]>signal["ts"]];base={"session":candidate["session"],"partition":candidate["partition"],"symbol":candidate["symbol"],"signal_ts":signal["ts"],"opportunity":signal["opportunity"],"failure_pressure":signal["failure_pressure"],"stored_stop_pct":signal.get("stop_pct")}
