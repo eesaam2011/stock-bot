@@ -420,6 +420,24 @@ class BacktestCollector:
         self.redis.set_json(self.key("diagnostic:93:35:report"),report);return report
     def stop_diagnostic_result(self):return self.redis.get_json(self.key("diagnostic:93:35:report"),None)
     def stop_diagnostic_status(self):return self.redis.get_json(self.key("diagnostic:93:35:status"),None)
+    def build_explosion_catalog(self,progress=None):
+        cases=[];scanned=0
+        for row in self.iter_results():
+            scanned+=1
+            if row.get("mode")=="approx":
+                for signal_type in ("breakout_ready","confirmed_entry"):
+                    signal=row.get(signal_type)
+                    if signal and float(signal.get("mfe_pct",0))>=5:
+                        cases.append({"session":row["session"],"partition":row["partition"],"symbol":row["symbol"],"signal_type":signal_type,"signal_ts":signal["ts"],"phase":signal.get("phase"),"price":signal.get("price"),"opportunity":signal.get("opportunity"),"failure_pressure":signal.get("failure_pressure"),"mfe_pct":signal.get("mfe_pct"),"mae_pct":signal.get("mae_pct"),"time_to_mfe_minutes":signal.get("time_to_mfe_minutes"),"forward_bars":signal.get("forward_bars")})
+            if progress and scanned%5000==0:progress(scanned)
+        cases.sort(key=lambda x:(-float(x["mfe_pct"]),x["session"],x["symbol"],x["signal_type"]));summary={}
+        for signal_type in ("breakout_ready","confirmed_entry"):
+            selected=[x for x in cases if x["signal_type"]==signal_type];summary[signal_type]={"mfe_ge_5":len(selected),"mfe_ge_10":sum(float(x["mfe_pct"])>=10 for x in selected),"mfe_ge_20":sum(float(x["mfe_pct"])>=20 for x in selected),"mfe_ge_50":sum(float(x["mfe_pct"])>=50 for x in selected),"development_ge_5":sum(x["partition"]=="development" for x in selected),"holdout_ge_5":sum(x["partition"]=="holdout" for x in selected),"unique_symbol_sessions_ge_5":len({(x["session"],x["symbol"]) for x in selected})}
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"source_rows_scanned":scanned,"scope":"approx signals with MFE >= 5%, sorted by strongest MFE","limitation":"Rejected cases without BREAKOUT_READY have no stored reference outcome and cannot be classified as missed explosions without additional price retrieval.","summary":summary,"cases":cases};self.redis.set_json(self.key("explosions:catalog"),report)
+        if progress:progress(scanned)
+        return report
+    def explosion_catalog(self):return self.redis.get_json(self.key("explosions:catalog"),None)
+    def explosion_catalog_status(self):return self.redis.get_json(self.key("explosions:status"),None)
     @staticmethod
     def aggregate(rows,sensitivity=False):
         out={"cases":len(rows),"signals":{},"block_reasons":{},"unavailable_features":{}};blocks=Counter();missing=Counter()
