@@ -48,10 +48,10 @@ class Alpaca:
             except HTTPError as exc:
                 if exc.code != 429 or attempt == 6: raise RuntimeError(f"Alpaca HTTP {exc.code}: {exc.read(500).decode('utf-8','replace')}")
                 time.sleep(min(30, 2**attempt))
-    def bars(self, symbols, start, end, feed):
+    def bars(self, symbols, start, end, feed, adjustment="raw"):
         out={s:[] for s in symbols}; token=None
         while True:
-            params={"symbols":",".join(symbols),"timeframe":"1Min","start":start.isoformat().replace("+00:00","Z"),"end":end.isoformat().replace("+00:00","Z"),"feed":feed,"limit":10000,"adjustment":"raw","sort":"asc"}
+            params={"symbols":",".join(symbols),"timeframe":"1Min","start":start.isoformat().replace("+00:00","Z"),"end":end.isoformat().replace("+00:00","Z"),"feed":feed,"limit":10000,"adjustment":adjustment,"sort":"asc"}
             if token: params["page_token"]=token
             page=self.get("https://data.alpaca.markets/v2/stocks/bars", params)
             for symbol, rows in (page.get("bars") or {}).items(): out.setdefault(symbol, []).extend(rows or [])
@@ -438,6 +438,43 @@ class BacktestCollector:
         return report
     def explosion_catalog(self):return self.redis.get_json(self.key("explosions:catalog"),None)
     def explosion_catalog_status(self):return self.redis.get_json(self.key("explosions:status"),None)
+    @staticmethod
+    def big_move_summary(cases):
+        with_entry=[x for x in cases if x["entry"] is not None];delays=sorted(x["entry_delay_minutes"] for x in with_entry);times=sorted(x["ready"]["time_to_mfe_minutes"] for x in cases if x["ready"].get("time_to_mfe_minutes") is not None)
+        return {"cases":len(cases),"mfe_ge_50":sum(float(x["ready"]["mfe_pct"])>=50 for x in cases),"with_confirmed_entry":len(with_entry),"without_confirmed_entry":len(cases)-len(with_entry),"entry_conversion_rate":round(len(with_entry)/max(1,len(cases))*100,2),"entry_retained_mfe_ge_5":sum(float(x["entry"].get("mfe_pct",0))>=5 for x in with_entry),"entry_retained_mfe_ge_10":sum(float(x["entry"].get("mfe_pct",0))>=10 for x in with_entry),"entry_retained_mfe_ge_20":sum(float(x["entry"].get("mfe_pct",0))>=20 for x in with_entry),"median_entry_delay_minutes":round(delays[len(delays)//2],2) if delays else None,"median_time_to_ready_mfe_minutes":round(times[len(times)//2],2) if times else None,"ready_mfe_within_15_minutes":sum(x["ready"].get("time_to_mfe_minutes") is not None and float(x["ready"]["time_to_mfe_minutes"])<=15 for x in cases),"ready_mfe_within_60_minutes":sum(x["ready"].get("time_to_mfe_minutes") is not None and float(x["ready"]["time_to_mfe_minutes"])<=60 for x in cases),"ready_phases":dict(Counter(x["ready"].get("phase","unknown") for x in cases).most_common()),"ready_opportunity_bands":{"below_90":sum(float(x["ready"].get("opportunity",0))<90 for x in cases),"90_to_below_93":sum(90<=float(x["ready"].get("opportunity",0))<93 for x in cases),"93_plus":sum(float(x["ready"].get("opportunity",0))>=93 for x in cases)}}
+    def build_big_move_review(self,progress=None):
+        raw_cases=[];scanned=0
+        for row in self.iter_results():
+            scanned+=1
+            ready=row.get("breakout_ready")
+            if row.get("mode")=="approx" and ready and float(ready.get("mfe_pct",0))>=20:
+                entry=row.get("confirmed_entry");delay=round((parse_dt(entry["ts"])-parse_dt(ready["ts"])).total_seconds()/60,1) if entry else None
+                raw_cases.append({"session":row["session"],"partition":row["partition"],"symbol":row["symbol"],"raw_ready":ready,"raw_entry":entry,"entry_delay_minutes":delay,"block_reasons_minute_occurrences":row.get("block_reasons",{}),"unavailable_features":row.get("unavailable_features",{})})
+            if progress and scanned%5000==0:progress(scanned)
+        grouped={}
+        for item in raw_cases:grouped.setdefault(item["session"],[]).append(item)
+        cases=[];excluded=[]
+        for session,items in sorted(grouped.items()):
+            start,end=self.session_window(session)
+            for begin in range(0,len(items),self.batch_size):
+                batch=items[begin:begin+self.batch_size];symbols=[x["symbol"] for x in batch];sip=self.alpaca.bars(symbols,start,end,"sip","split");boats=self.alpaca.bars(symbols,start,end,"boats","split")
+                for item in batch:
+                    bars=self.merge_bars(sip.get(item["symbol"],[]),boats.get(item["symbol"],[]));by_time={x["t"]:x for x in bars}
+                    def adjusted(signal):
+                        if not signal or signal["ts"] not in by_time:return None
+                        rebased={**signal,"price":float(by_time[signal["ts"]]["c"])};return self.outcome(rebased,bars)
+                    ready=adjusted(item["raw_ready"]);entry=adjusted(item["raw_entry"]);raw_mfe=float(item["raw_ready"]["mfe_pct"]);adjusted_mfe=float(ready["mfe_pct"]) if ready else None;contaminated=adjusted_mfe is None or abs(raw_mfe-adjusted_mfe)>max(5,abs(raw_mfe)*.25)
+                    case={**item,"ready":ready,"entry":entry,"raw_ready_mfe_pct":raw_mfe,"split_adjusted_ready_mfe_pct":adjusted_mfe,"corporate_action_contaminated":contaminated}
+                    (cases if ready and adjusted_mfe>=20 else excluded).append(case)
+                time.sleep(self.delay)
+                if progress:progress(scanned)
+        cases.sort(key=lambda x:(-float(x["ready"]["mfe_pct"]),x["session"],x["symbol"]));excluded.sort(key=lambda x:-float(x["raw_ready_mfe_pct"]));report={"schema":2,"generated_at":now_iso(),"source_prefix":self.prefix,"source_rows_scanned":scanned,"scope":"Split-adjusted Approx BREAKOUT_READY cases with MFE >= 20%","bar_adjustment":"split","raw_candidate_count":len(raw_cases),"clean_case_count":len(cases),"excluded_after_split_adjustment":len(excluded),"caution":"block_reasons_minute_occurrences are aggregate failed-minute counts, not a definitive single reason that prevented entry","summary":{},"cases":cases,"excluded_cases":excluded}
+        for partition in ("development","holdout","all"):report["summary"][partition]=self.big_move_summary(cases if partition=="all" else [x for x in cases if x["partition"]==partition])
+        self.redis.set_json(self.key("big_moves:report"),report)
+        if progress:progress(scanned)
+        return report
+    def big_move_review(self):return self.redis.get_json(self.key("big_moves:report"),None)
+    def big_move_status(self):return self.redis.get_json(self.key("big_moves:status"),None)
     @staticmethod
     def aggregate(rows,sensitivity=False):
         out={"cases":len(rows),"signals":{},"block_reasons":{},"unavailable_features":{}};blocks=Counter();missing=Counter()
