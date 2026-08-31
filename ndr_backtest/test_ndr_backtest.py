@@ -219,5 +219,16 @@ class ReplayTests(unittest.TestCase):
         result=BacktestCollector.simulate_trade(candidate,rows,"conservative","scaled")
         self.assertEqual(result["targets_hit"],["T1"]);self.assertEqual(result["status"],"stop_after_t1");self.assertEqual(result["return_pct"],7.5)
 
+    def test_diagnostic_detects_stop_then_recovery(self):
+        candidate={"session":"2026-08-28","partition":"holdout","symbol":"AAA","signal":{"ts":"2026-08-28T14:00:00Z","price":10,"stop":9,"stop_pct":10,"resistance":10,"opportunity":94,"failure_pressure":10}}
+        rows=[{"t":"2026-08-28T14:00:00Z","o":9.8,"h":10.1,"l":9.7,"c":10,"v":100},{"t":"2026-08-28T14:01:00Z","o":10,"h":10.2,"l":8.9,"c":9.1,"v":200},{"t":"2026-08-28T14:02:00Z","o":9.1,"h":11.6,"l":9,"c":11.5,"v":300}]
+        result=BacktestCollector.diagnose_trade(candidate,rows)
+        self.assertEqual(result["classification"],"stop_then_recovered_t1");self.assertEqual(result["minutes_to_stop"],0.0);self.assertEqual(result["minutes_to_t1"],1.0);self.assertGreaterEqual(result["post_stop_mfe_pct"],15)
+
+    def test_diagnostic_separates_true_failed_entry(self):
+        candidate={"session":"2026-08-28","partition":"holdout","symbol":"AAA","signal":{"ts":"2026-08-28T14:00:00Z","price":10,"stop":9,"stop_pct":10,"resistance":10,"opportunity":94,"failure_pressure":10}}
+        rows=[{"t":"2026-08-28T14:01:00Z","o":10,"h":10.1,"l":8.9,"c":9,"v":200},{"t":"2026-08-28T14:02:00Z","o":9,"h":9.5,"l":8.8,"c":9.2,"v":100}]
+        self.assertEqual(BacktestCollector.diagnose_trade(candidate,rows)["classification"],"stop_never_recovered_t1")
+
 
 if __name__ == "__main__": unittest.main()
