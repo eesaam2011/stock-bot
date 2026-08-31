@@ -28,6 +28,8 @@ simulation_state = {"status":"IDLE","message":"Trade simulation has not started.
 diagnostic_state = {"status":"IDLE","message":"Stop diagnostic has not started.","processed":0,"total":169,"session":None,"updated_at":None}
 explosions_state = {"status":"IDLE","message":"Explosion catalog has not started.","rows_scanned":0,"updated_at":None}
 big_moves_state = {"status":"IDLE","message":"Big-move review has not started.","rows_scanned":0,"updated_at":None}
+stopwidth_thread = None
+stopwidth_state = {"status":"IDLE","message":"Stop-width sensitivity test has not started.","processed":0,"total":169,"session":None,"updated_at":None}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -185,6 +187,23 @@ def big_moves_loop():
         except Exception:pass
         with lock:big_moves_state.update(payload)
     finally:big_moves_thread=None
+
+
+def stopwidth_loop():
+    global stopwidth_thread
+    try:
+        engine=BacktestCollector()
+        def progress(processed,total,session):
+            payload={"status":"RUNNING","message":"Running stop-width sensitivity simulation","processed":processed,"total":total,"session":session,"updated_at":stamp()};engine.redis.set_json(engine.key("stopwidth:93:35:status"),payload)
+            with lock:stopwidth_state.update(payload)
+        result=engine.stop_width_report(progress=progress);payload={"status":"COMPLETED","message":"Stop-width sensitivity test completed","processed":169,"total":169,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("stopwidth:93:35:status"),payload)
+        with lock:stopwidth_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("stopwidth:93:35:status"),{**stopwidth_state,**payload})
+        except Exception:pass
+        with lock:stopwidth_state.update(payload)
+    finally:stopwidth_thread=None
 
 
 def historical_boats_test() -> dict:
@@ -399,7 +418,8 @@ def control():
     <form method="post" action="/diagnostic/start"><input name="token" type="password" placeholder="Admin token" required><button>Diagnose stops and missed recoveries</button></form>
     <form method="post" action="/explosions/start"><input name="token" type="password" placeholder="Admin token" required><button>Build explosion catalog</button></form>
     <form method="post" action="/big-moves/start"><input name="token" type="password" placeholder="Admin token" required><button>Review +20% and +50% moves</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a></p></body></html>
+    <form method="post" action="/stop-width/start"><input name="token" type="password" placeholder="Admin token" required><button>Run stop-width sensitivity test</button></form>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a></p></body></html>
     """
 
 
@@ -509,6 +529,33 @@ def start_big_moves():
         if big_moves_thread and big_moves_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/big-moves/status"})
         payload={"status":"RUNNING","message":"Starting focused +20% and +50% review","rows_scanned":0,"updated_at":stamp()};engine.redis.set_json(engine.key("big_moves:status"),payload);big_moves_state.update(payload);big_moves_thread=threading.Thread(target=big_moves_loop,name="ndr-big-moves",daemon=True);big_moves_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/big-moves/status","result_url":"/big-moves/result"})
+
+
+@app.get("/stop-width/status")
+def stopwidth_status():
+    engine=BacktestCollector();stored=engine.stop_width_status()
+    with lock:payload=dict(stored or stopwidth_state)
+    payload["result_ready"]=engine.stop_width_result() is not None;payload["result_url"]="/stop-width/result";return jsonify(payload)
+
+
+@app.get("/stop-width/result")
+def stopwidth_result():
+    result=BacktestCollector().stop_width_result()
+    if not result:return jsonify({"ready":False,"status_url":"/stop-width/status"}),202
+    return jsonify(result)
+
+
+@app.post("/stop-width/start")
+def start_stopwidth():
+    global stopwidth_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=BacktestCollector()
+    if engine.trade_simulation_result() is None:return jsonify({"ok":False,"error":"trade_simulation_not_completed"}),409
+    with lock:
+        if engine.stop_width_result() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/stop-width/result"})
+        if stopwidth_thread and stopwidth_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/stop-width/status"})
+        payload={"status":"RUNNING","message":"Starting stop-width sensitivity test","processed":0,"total":169,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("stopwidth:93:35:status"),payload);stopwidth_state.update(payload);stopwidth_thread=threading.Thread(target=stopwidth_loop,name="ndr-stopwidth-test",daemon=True);stopwidth_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/stop-width/status","result_url":"/stop-width/result"})
 
 
 if __name__ == "__main__":
