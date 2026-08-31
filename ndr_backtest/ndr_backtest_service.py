@@ -30,6 +30,8 @@ explosions_state = {"status":"IDLE","message":"Explosion catalog has not started
 big_moves_state = {"status":"IDLE","message":"Big-move review has not started.","rows_scanned":0,"updated_at":None}
 stopwidth_thread = None
 stopwidth_state = {"status":"IDLE","message":"Stop-width sensitivity test has not started.","processed":0,"total":169,"session":None,"updated_at":None}
+entrycompare_thread = None
+entrycompare_state = {"status":"IDLE","message":"Entry comparison (ready vs confirmed) has not started.","processed":0,"total":0,"session":None,"updated_at":None}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -204,6 +206,23 @@ def stopwidth_loop():
         except Exception:pass
         with lock:stopwidth_state.update(payload)
     finally:stopwidth_thread=None
+
+
+def entrycompare_loop():
+    global entrycompare_thread
+    try:
+        engine=BacktestCollector()
+        def progress(processed,total,session):
+            payload={"status":"RUNNING","message":"Comparing BREAKOUT_READY vs CONFIRMED_ENTRY","processed":processed,"total":total,"session":session,"updated_at":stamp()};engine.redis.set_json(engine.key("entrycompare:93:35:status"),payload)
+            with lock:entrycompare_state.update(payload)
+        result=engine.entry_compare_report(progress=progress);total=sum(result["candidate_counts"].values());payload={"status":"COMPLETED","message":"Entry comparison completed","processed":total,"total":total,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("entrycompare:93:35:status"),payload)
+        with lock:entrycompare_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("entrycompare:93:35:status"),{**entrycompare_state,**payload})
+        except Exception:pass
+        with lock:entrycompare_state.update(payload)
+    finally:entrycompare_thread=None
 
 
 def historical_boats_test() -> dict:
@@ -419,7 +438,8 @@ def control():
     <form method="post" action="/explosions/start"><input name="token" type="password" placeholder="Admin token" required><button>Build explosion catalog</button></form>
     <form method="post" action="/big-moves/start"><input name="token" type="password" placeholder="Admin token" required><button>Review +20% and +50% moves</button></form>
     <form method="post" action="/stop-width/start"><input name="token" type="password" placeholder="Admin token" required><button>Run stop-width sensitivity test</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a></p></body></html>
+    <form method="post" action="/entry-compare/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare READY vs CONFIRMED entry</button></form>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a></p></body></html>
     """
 
 
@@ -556,6 +576,32 @@ def start_stopwidth():
         if stopwidth_thread and stopwidth_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/stop-width/status"})
         payload={"status":"RUNNING","message":"Starting stop-width sensitivity test","processed":0,"total":169,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("stopwidth:93:35:status"),payload);stopwidth_state.update(payload);stopwidth_thread=threading.Thread(target=stopwidth_loop,name="ndr-stopwidth-test",daemon=True);stopwidth_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/stop-width/status","result_url":"/stop-width/result"})
+
+
+@app.get("/entry-compare/status")
+def entrycompare_status():
+    engine=BacktestCollector();stored=engine.entry_compare_status()
+    with lock:payload=dict(stored or entrycompare_state)
+    payload["result_ready"]=engine.entry_compare_result() is not None;payload["result_url"]="/entry-compare/result";return jsonify(payload)
+
+
+@app.get("/entry-compare/result")
+def entrycompare_result():
+    result=BacktestCollector().entry_compare_result()
+    if not result:return jsonify({"ready":False,"status_url":"/entry-compare/status"}),202
+    return jsonify(result)
+
+
+@app.post("/entry-compare/start")
+def start_entrycompare():
+    global entrycompare_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=BacktestCollector()
+    with lock:
+        if engine.entry_compare_result() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/entry-compare/result"})
+        if entrycompare_thread and entrycompare_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/entry-compare/status"})
+        payload={"status":"RUNNING","message":"Starting entry comparison (ready vs confirmed)","processed":0,"total":0,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("entrycompare:93:35:status"),payload);entrycompare_state.update(payload);entrycompare_thread=threading.Thread(target=entrycompare_loop,name="ndr-entry-compare",daemon=True);entrycompare_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/entry-compare/status","result_url":"/entry-compare/result"})
 
 
 if __name__ == "__main__":
