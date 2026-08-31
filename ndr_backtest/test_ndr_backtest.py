@@ -230,5 +230,10 @@ class ReplayTests(unittest.TestCase):
         rows=[{"t":"2026-08-28T14:01:00Z","o":10,"h":10.1,"l":8.9,"c":9,"v":200},{"t":"2026-08-28T14:02:00Z","o":9,"h":9.5,"l":8.8,"c":9.2,"v":100}]
         self.assertEqual(BacktestCollector.diagnose_trade(candidate,rows)["classification"],"stop_never_recovered_t1")
 
+    def test_explosion_catalog_lists_and_buckets_named_cases(self):
+        engine=BacktestCollector(FakeRedis(),object());engine.iter_results=lambda:iter([{"mode":"approx","session":"2026-08-28","partition":"holdout","symbol":"AAA","breakout_ready":{"ts":"x","phase":"REGULAR","price":1,"opportunity":90,"failure_pressure":10,"mfe_pct":25,"mae_pct":-2,"time_to_mfe_minutes":5,"forward_bars":10},"confirmed_entry":{"ts":"y","phase":"REGULAR","price":1.1,"opportunity":94,"failure_pressure":8,"mfe_pct":9,"mae_pct":-1,"time_to_mfe_minutes":4,"forward_bars":9}},{"mode":"strict","session":"2026-08-28","partition":"holdout","symbol":"BBB","breakout_ready":{"mfe_pct":99},"confirmed_entry":None},{"mode":"approx","session":"2026-08-28","partition":"holdout","symbol":"CCC","breakout_ready":None,"confirmed_entry":None}])
+        result=engine.build_explosion_catalog()
+        self.assertEqual(len(result["cases"]),2);self.assertEqual(result["cases"][0]["symbol"],"AAA");self.assertEqual(result["summary"]["breakout_ready"]["mfe_ge_20"],1);self.assertEqual(result["summary"]["confirmed_entry"]["mfe_ge_10"],0);self.assertIn("Rejected cases",result["limitation"])
+
 
 if __name__ == "__main__": unittest.main()
