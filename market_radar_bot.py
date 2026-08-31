@@ -2623,7 +2623,7 @@ def is_universe_empty():
 
 priority_cursor = 0
 
-DISCOVERY_INTERVAL = 300
+DISCOVERY_INTERVAL = 90
 DISCOVERY_CHUNK_SIZE = 400
 
 
@@ -3615,7 +3615,7 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
     price = safe_float(snapshot.get("price"))
 
     if df is None or df.empty:
-        df = get_bars(symbol, TimeFrame.Minute, limit=160, cache_ttl=60)
+        df = get_bars(symbol, TimeFrame.Minute, limit=160, cache_ttl=10)
         
     if df.empty or len(df) < 40:
         save_rejection(symbol, "بيانات الشموع غير كافية", snapshot)
@@ -6234,7 +6234,7 @@ def scan_once():
         hot_symbols,
         TimeFrame.Minute,
         limit=160,
-        cache_ttl=60
+        cache_ttl=10
     )
 
     for symbol in hot_symbols:
