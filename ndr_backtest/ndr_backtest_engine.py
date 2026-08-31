@@ -400,6 +400,25 @@ class BacktestCollector:
         self.redis.set_json(self.key("stopwidth:93:35:report"),report);return report
     def stop_width_result(self):return self.redis.get_json(self.key("stopwidth:93:35:report"),None)
     def stop_width_status(self):return self.redis.get_json(self.key("stopwidth:93:35:status"),None)
+    @staticmethod
+    def synth_entry_plan(price,past_bars,entry_max_stop_pct=6.0,entry_min_rr_t1=1.4):
+        """يعيد نفس منطق build_entry_plan/calculate_atr من next_day_explosion_radar.py
+        تماماً، مستخدم فقط لأن BREAKOUT_READY لا يخزّن وقفاً أصلاً (يُبنى فقط عند CONFIRMED_ENTRY)."""
+        entry=float(price)
+        if entry<=0 or len(past_bars)<8:return None
+        period=14
+        if len(past_bars)<period+1:atr=0.0
+        else:
+            trs=[];prev_close=float(past_bars[0].get("c") or past_bars[0].get("o") or entry)
+            for b in past_bars[1:]:
+                h=float(b["h"]);l=float(b["l"]);c=float(b.get("c") or b.get("o") or entry);trs.append(max(h-l,abs(h-prev_close),abs(l-prev_close)));prev_close=c
+            recent=trs[-period:];atr=(sum(recent)/len(recent)) if recent else 0.0
+        recent_lows=[float(b["l"]) for b in past_bars[-8:] if float(b["l"])>0];swing_low=min(recent_lows) if recent_lows else entry*0.97
+        atr_stop=entry-max(atr*1.3,entry*0.015);stop=max(swing_low*0.998,atr_stop)
+        stop_pct=max(0.0,(entry-stop)/entry*100)
+        if stop>=entry or stop_pct<=0 or stop_pct>entry_max_stop_pct:return None
+        risk=entry-stop
+        return {"stop":round(stop,6),"stop_pct":round(stop_pct,4),"t1":round(entry+risk*max(entry_min_rr_t1,1.5),6),"t2":round(entry+risk*2.5,6),"t3":round(entry+risk*4.0,6)}
     def entry_compare_candidates(self,signal_field):
         cache_key=self.key(f"entrycompare:93:35:candidates:{signal_field}");cached=self.redis.get_json(cache_key,None)
         if cached is not None:return cached
@@ -431,14 +450,24 @@ class BacktestCollector:
                     self.hset_bounded(bars_key,writes);time.sleep(self.delay)
                 processed+=len(batch)
                 if progress:progress(processed,total,session)
-        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"note":"Compares entering at BREAKOUT_READY vs waiting for CONFIRMED_ENTRY, same 93/35 threshold, same bar data. Reuses stored results; does not re-run the collector.","policies_tested":[f"{p}_{a}" for p,a in policies],"candidate_counts":{name:len(group) for name,group in variants.items()},"results":{}}
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"note":"Compares entering at BREAKOUT_READY (stop synthesized with the bot's own ATR/swing-low formula, since BREAKOUT_READY stores no plan) vs waiting for CONFIRMED_ENTRY. Reuses stored results; does not re-run the collector.","policies_tested":[f"{p}_{a}" for p,a in policies],"candidate_counts":{name:len(group) for name,group in variants.items()},"results":{}}
         for name,group in variants.items():
             report["results"][name]={}
+            excluded_no_plan=0;usable=[]
+            for c in group:
+                bars=all_bars.get(f"{c['session']}|{c['symbol']}",[])
+                if name=="breakout_ready_entry":
+                    ts=c["signal"]["ts"];past=[b for b in bars if b.get("t") and b["t"]<=ts]
+                    plan=self.synth_entry_plan(c["signal"]["price"],past)
+                    if plan is None:excluded_no_plan+=1;continue
+                    c=json.loads(json.dumps(c));c["signal"].update(plan)
+                usable.append((c,bars))
             for policy,assumption in policies:
                 key=f"{policy}_{assumption}";rows_all,rows_dev,rows_hold=[],[],[]
-                for c in group:
-                    bars=all_bars.get(f"{c['session']}|{c['symbol']}",[]);run=self.simulate_trade(c,bars,assumption=assumption,policy=policy);rows_all.append(run);(rows_dev if c["partition"]=="development" else rows_hold).append(run)
+                for c,bars in usable:
+                    run=self.simulate_trade(c,bars,assumption=assumption,policy=policy);rows_all.append(run);(rows_dev if c["partition"]=="development" else rows_hold).append(run)
                 report["results"][name][key]={"all":self.simulation_summary(rows_all),"development":self.simulation_summary(rows_dev),"holdout":self.simulation_summary(rows_hold)}
+            report["results"][name]["excluded_no_valid_stop_plan"]=excluded_no_plan;report["results"][name]["usable_candidates"]=len(usable)
         self.redis.set_json(self.key("entrycompare:93:35:report"),report);return report
     def entry_compare_result(self):return self.redis.get_json(self.key("entrycompare:93:35:report"),None)
     def entry_compare_status(self):return self.redis.get_json(self.key("entrycompare:93:35:status"),None)
