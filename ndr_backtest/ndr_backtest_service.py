@@ -32,6 +32,8 @@ stopwidth_thread = None
 stopwidth_state = {"status":"IDLE","message":"Stop-width sensitivity test has not started.","processed":0,"total":169,"session":None,"updated_at":None}
 entrycompare_thread = None
 entrycompare_state = {"status":"IDLE","message":"Entry comparison (ready vs confirmed) has not started.","processed":0,"total":0,"session":None,"updated_at":None}
+weekday_thread = None
+weekday_state = {"status":"IDLE","message":"All-signal weekday analysis has not started.","rows_scanned":0,"session":None,"updated_at":None}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -224,6 +226,22 @@ def entrycompare_loop():
         with lock:entrycompare_state.update(payload)
     finally:entrycompare_thread=None
 
+def weekday_loop():
+    global weekday_thread
+    engine=BacktestCollector()
+    try:
+        def progress(rows,session):
+            payload={"status":"RUNNING","message":"Analyzing weekdays across all stored approx signals","rows_scanned":rows,"session":session,"updated_at":stamp()};engine.redis.set_json(engine.key("weekday:signals:status"),payload)
+            with lock:weekday_state.update(payload)
+        result=engine.weekday_signal_report(progress);payload={"status":"COMPLETED","message":"All-signal weekday analysis completed","rows_scanned":result["source_rows_scanned"],"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("weekday:signals:status"),payload)
+        with lock:weekday_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("weekday:signals:status"),{**weekday_state,**payload})
+        except Exception:pass
+        with lock:weekday_state.update(payload)
+    finally:weekday_thread=None
+
 
 def historical_boats_test() -> dict:
     # A liquid symbol and a completed overnight interval. Access is proven only
@@ -275,6 +293,7 @@ def home():
         "diagnostic_url": "/diagnostic/result",
         "explosions_url": "/explosions/result",
         "big_moves_url": "/big-moves/result",
+        "weekday_url": "/weekday/result",
         "raw_case_url_template": "/api/results/case/YYYY-MM-DD/SYMBOL/approx",
         "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
@@ -447,7 +466,8 @@ def control():
     <form method="post" action="/big-moves/start"><input name="token" type="password" placeholder="Admin token" required><button>Review +20% and +50% moves</button></form>
     <form method="post" action="/stop-width/start"><input name="token" type="password" placeholder="Admin token" required><button>Run stop-width sensitivity test</button></form>
     <form method="post" action="/entry-compare/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare READY vs CONFIRMED entry</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a></p></body></html>
+    <form method="post" action="/weekday/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze weekdays on all stored signals</button></form>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a></p></body></html>
     """
 
 
@@ -610,6 +630,30 @@ def start_entrycompare():
         if entrycompare_thread and entrycompare_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/entry-compare/status"})
         payload={"status":"RUNNING","message":"Starting entry comparison (ready vs confirmed)","processed":0,"total":0,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("entrycompare:93:35:status"),payload);entrycompare_state.update(payload);entrycompare_thread=threading.Thread(target=entrycompare_loop,name="ndr-entry-compare",daemon=True);entrycompare_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/entry-compare/status","result_url":"/entry-compare/result"})
+
+
+@app.get("/weekday/status")
+def weekday_status():
+    engine=BacktestCollector();stored=engine.weekday_signal_status()
+    with lock:payload=dict(stored or weekday_state)
+    payload["result_ready"]=engine.weekday_signal_result() is not None;payload["result_url"]="/weekday/result";return jsonify(payload)
+
+
+@app.get("/weekday/result")
+def weekday_result():
+    result=BacktestCollector().weekday_signal_result();return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/weekday/status"}),202)
+
+
+@app.post("/weekday/start")
+def start_weekday():
+    global weekday_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=BacktestCollector()
+    with lock:
+        if engine.weekday_signal_result() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/weekday/result"})
+        if weekday_thread and weekday_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/weekday/status"})
+        payload={"status":"RUNNING","message":"Starting all-signal weekday analysis","rows_scanned":0,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("weekday:signals:status"),payload);weekday_state.update(payload);weekday_thread=threading.Thread(target=weekday_loop,name="ndr-weekday-analysis",daemon=True);weekday_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/weekday/status","result_url":"/weekday/result"})
 
 
 if __name__ == "__main__":
