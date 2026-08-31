@@ -21,11 +21,13 @@ analysis_thread = None
 simulation_thread = None
 diagnostic_thread = None
 explosions_thread = None
+big_moves_thread = None
 stop_event = threading.Event()
 analysis_state = {"status": "IDLE", "message": "Frozen 93/35 analysis has not started.", "rows_scanned": 0, "updated_at": None}
 simulation_state = {"status":"IDLE","message":"Trade simulation has not started.","processed":0,"total":169,"session":None,"updated_at":None}
 diagnostic_state = {"status":"IDLE","message":"Stop diagnostic has not started.","processed":0,"total":169,"session":None,"updated_at":None}
 explosions_state = {"status":"IDLE","message":"Explosion catalog has not started.","rows_scanned":0,"updated_at":None}
+big_moves_state = {"status":"IDLE","message":"Big-move review has not started.","rows_scanned":0,"updated_at":None}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -168,6 +170,23 @@ def explosions_loop():
     finally:explosions_thread=None
 
 
+def big_moves_loop():
+    global big_moves_thread
+    try:
+        engine=BacktestCollector()
+        def progress(rows):
+            payload={"status":"RUNNING","message":"Reviewing stored +20% and +50% READY cases","rows_scanned":rows,"updated_at":stamp()};engine.redis.set_json(engine.key("big_moves:status"),payload)
+            with lock:big_moves_state.update(payload)
+        result=engine.build_big_move_review(progress);payload={"status":"COMPLETED","message":"Big-move review completed","rows_scanned":result["source_rows_scanned"],"cases":len(result["cases"]),"updated_at":stamp()};engine.redis.set_json(engine.key("big_moves:status"),payload)
+        with lock:big_moves_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("big_moves:status"),{**big_moves_state,**payload})
+        except Exception:pass
+        with lock:big_moves_state.update(payload)
+    finally:big_moves_thread=None
+
+
 def historical_boats_test() -> dict:
     # A liquid symbol and a completed overnight interval. Access is proven only
     # by at least one returned bar, never by HTTP 200 alone.
@@ -217,6 +236,7 @@ def home():
         "simulation_url": "/simulation/result",
         "diagnostic_url": "/diagnostic/result",
         "explosions_url": "/explosions/result",
+        "big_moves_url": "/big-moves/result",
         "raw_case_url_template": "/api/results/case/YYYY-MM-DD/SYMBOL/approx",
         "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
@@ -337,7 +357,33 @@ def explosions_status():
 
 @app.get("/explosions/result")
 def explosions_result():
-    result=BacktestCollector().explosion_catalog();return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/explosions/status"}),202)
+    result=BacktestCollector().explosion_catalog()
+    if not result:return jsonify({"ready":False,"status_url":"/explosions/status"}),202
+    try:offset=max(0,int(request.args.get("offset","0")));limit=max(1,min(200,int(request.args.get("limit","100"))));min_mfe=max(5,float(request.args.get("min_mfe","5")))
+    except ValueError:return jsonify({"ok":False,"error":"invalid_filter"}),400
+    signal_type=request.args.get("signal_type");partition=request.args.get("partition");phase=request.args.get("phase");symbol=request.args.get("symbol","").upper()
+    if signal_type and signal_type not in {"breakout_ready","confirmed_entry"}:return jsonify({"ok":False,"error":"invalid_signal_type"}),400
+    if partition and partition not in {"development","holdout"}:return jsonify({"ok":False,"error":"invalid_partition"}),400
+    if phase and phase not in {"AFTER_HOURS","OVERNIGHT","PREMARKET","REGULAR"}:return jsonify({"ok":False,"error":"invalid_phase"}),400
+    if symbol and not re.fullmatch(r"[A-Z]{1,5}",symbol):return jsonify({"ok":False,"error":"invalid_symbol"}),400
+    filtered=[x for x in result["cases"] if float(x["mfe_pct"])>=min_mfe and (not signal_type or x["signal_type"]==signal_type) and (not partition or x["partition"]==partition) and (not phase or x.get("phase")==phase) and (not symbol or x["symbol"]==symbol)];page=filtered[offset:offset+limit];next_offset=offset+len(page);params={"offset":next_offset,"limit":limit,"min_mfe":min_mfe}
+    if signal_type:params["signal_type"]=signal_type
+    if partition:params["partition"]=partition
+    if phase:params["phase"]=phase
+    if symbol:params["symbol"]=symbol
+    return jsonify({"schema":result["schema"],"generated_at":result["generated_at"],"summary":result["summary"],"filters":{"signal_type":signal_type,"partition":partition,"phase":phase,"symbol":symbol or None,"min_mfe":min_mfe},"offset":offset,"limit":limit,"total_filtered":len(filtered),"cases":page,"next_url":"/explosions/result?"+urlencode(params) if next_offset<len(filtered) else None,"split_warning":"This raw catalog uses unadjusted source outcomes. Use the split-adjusted /big-moves/result for validated +20%/+50% cases."})
+
+
+@app.get("/big-moves/status")
+def big_moves_status():
+    engine=BacktestCollector();stored=engine.big_move_status()
+    with lock:payload=dict(stored or big_moves_state)
+    payload["result_ready"]=engine.big_move_review() is not None;payload["result_url"]="/big-moves/result";return jsonify(payload)
+
+
+@app.get("/big-moves/result")
+def big_moves_result():
+    result=BacktestCollector().big_move_review();return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/big-moves/status"}),202)
 
 
 @app.get("/control")
@@ -352,7 +398,8 @@ def control():
     <form method="post" action="/simulation/start"><input name="token" type="password" placeholder="Admin token" required><button>Run decisive 93/35 trade simulation</button></form>
     <form method="post" action="/diagnostic/start"><input name="token" type="password" placeholder="Admin token" required><button>Diagnose stops and missed recoveries</button></form>
     <form method="post" action="/explosions/start"><input name="token" type="password" placeholder="Admin token" required><button>Build explosion catalog</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a></p></body></html>
+    <form method="post" action="/big-moves/start"><input name="token" type="password" placeholder="Admin token" required><button>Review +20% and +50% moves</button></form>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a></p></body></html>
     """
 
 
@@ -449,6 +496,19 @@ def start_explosions():
         if explosions_thread and explosions_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/explosions/status"})
         payload={"status":"RUNNING","message":"Starting catalog from stored results only","rows_scanned":0,"updated_at":stamp()};engine.redis.set_json(engine.key("explosions:status"),payload);explosions_state.update(payload);explosions_thread=threading.Thread(target=explosions_loop,name="ndr-explosion-catalog",daemon=True);explosions_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/explosions/status","result_url":"/explosions/result"})
+
+
+@app.post("/big-moves/start")
+def start_big_moves():
+    global big_moves_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=BacktestCollector()
+    if engine.explosion_catalog() is None:return jsonify({"ok":False,"error":"explosion_catalog_not_completed"}),409
+    with lock:
+        if engine.big_move_review() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/big-moves/result"})
+        if big_moves_thread and big_moves_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/big-moves/status"})
+        payload={"status":"RUNNING","message":"Starting focused +20% and +50% review","rows_scanned":0,"updated_at":stamp()};engine.redis.set_json(engine.key("big_moves:status"),payload);big_moves_state.update(payload);big_moves_thread=threading.Thread(target=big_moves_loop,name="ndr-big-moves",daemon=True);big_moves_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/big-moves/status","result_url":"/big-moves/result"})
 
 
 if __name__ == "__main__":
