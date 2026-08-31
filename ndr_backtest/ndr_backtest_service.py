@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from ndr_backtest_engine import BacktestCollector
 
 app = Flask(__name__)
@@ -393,6 +393,14 @@ def explosions_status():
     payload["result_ready"]=engine.explosion_catalog() is not None;payload["result_url"]="/explosions/result";return jsonify(payload)
 
 
+@app.get("/explosions/download")
+def explosions_download():
+    result=BacktestCollector().explosion_catalog()
+    if not result:return jsonify({"ready":False,"status_url":"/explosions/status"}),202
+    body=json.dumps(result,ensure_ascii=False)
+    return Response(body,mimetype="application/json",headers={"Content-Disposition":"attachment; filename=explosions_full.json"})
+
+
 @app.get("/explosions/result")
 def explosions_result():
     result=BacktestCollector().explosion_catalog()
@@ -439,7 +447,7 @@ def control():
     <form method="post" action="/big-moves/start"><input name="token" type="password" placeholder="Admin token" required><button>Review +20% and +50% moves</button></form>
     <form method="post" action="/stop-width/start"><input name="token" type="password" placeholder="Admin token" required><button>Run stop-width sensitivity test</button></form>
     <form method="post" action="/entry-compare/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare READY vs CONFIRMED entry</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a></p></body></html>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a></p></body></html>
     """
 
 
