@@ -231,6 +231,66 @@ class BacktestCollector:
                 scanned=self.redis.command("HSCAN",result_key,cursor,"COUNT",500);cursor=str(scanned[0]);rows=scanned[1] or []
                 for i in range(0,len(rows),2):yield json.loads(rows[i+1])
                 if cursor=="0":break
+    def raw_case(self,session,symbol,mode):
+        field=f"{session}|{symbol}|{mode}"
+        raw=self.redis.command("HGET",self.key(f"results:{session}"),field)
+        if raw is None:raw=self.redis.command("HGET",self.key("results"),field)
+        return json.loads(raw) if raw is not None else None
+    def raw_symbol(self,symbol,offset=0,limit=10):
+        manifest=self.redis.get_json(self.key("manifest"),{});sessions=manifest.get("sessions",[]);page=sessions[offset:offset+limit];results=[]
+        for session in page:
+            fields=[f"{session}|{symbol}|strict",f"{session}|{symbol}|approx"]
+            values=self.redis.command("HMGET",self.key(f"results:{session}"),*fields)
+            missing=[i for i,value in enumerate(values) if value is None]
+            if missing:
+                legacy=self.redis.command("HMGET",self.key("results"),*[fields[i] for i in missing])
+                for i,value in zip(missing,legacy):values[i]=value
+            for value in values:
+                if value is not None:results.append(json.loads(value))
+        next_offset=offset+len(page)
+        return {"symbol":symbol,"offset":offset,"limit":limit,"sessions_scanned":len(page),"results":results,"next_offset":next_offset if next_offset<len(sessions) else None,"total_sessions":len(sessions)}
+    def raw_session(self,session,source="legacy",cursor="0",count=100):
+        key=self.key("results") if source=="legacy" else self.key(f"results:{session}")
+        scanned=self.redis.command("HSCAN",key,cursor,"MATCH",f"{session}|*","COUNT",count);next_cursor=str(scanned[0]);pairs=scanned[1] or [];results=[json.loads(pairs[i+1]) for i in range(0,len(pairs),2)]
+        if next_cursor=="0" and source=="legacy":next_source="shard"
+        elif next_cursor=="0":next_source=None
+        else:next_source=source
+        return {"session":session,"source":source,"cursor":str(cursor),"count":count,"results":results,"next_source":next_source,"next_cursor":"0" if next_source=="shard" else (next_cursor if next_source else None)}
+    @staticmethod
+    def _selected_summary(signals):
+        mfes=sorted(float(x["mfe_pct"]) for x in signals);maes=sorted(float(x["mae_pct"]) for x in signals);n=len(signals)
+        phases=Counter(str(x.get("phase") or "unknown") for x in signals);sessions={}
+        for signal in signals:
+            cell=sessions.setdefault(str(signal["session"]),{"count":0,"mfe_sum":0.0,"mae_sum":0.0,"mfe_ge_5":0,"mfe_ge_10":0})
+            cell["count"]+=1;cell["mfe_sum"]+=float(signal["mfe_pct"]);cell["mae_sum"]+=float(signal["mae_pct"]);cell["mfe_ge_5"]+=float(signal["mfe_pct"])>=5;cell["mfe_ge_10"]+=float(signal["mfe_pct"])>=10
+        per_session=[]
+        for session,cell in sorted(sessions.items()):
+            count=cell["count"];per_session.append({"session":session,"count":count,"avg_mfe_pct":round(cell["mfe_sum"]/count,4),"avg_mae_pct":round(cell["mae_sum"]/count,4),"mfe_ge_5_rate":round(cell["mfe_ge_5"]/count*100,2),"mfe_ge_10_rate":round(cell["mfe_ge_10"]/count*100,2)})
+        ge5=sum(x>=5 for x in mfes);ge10=sum(x>=10 for x in mfes);avg_mfe=sum(mfes)/max(1,n);avg_mae=sum(maes)/max(1,n)
+        return {"count":n,"avg_mfe_pct":round(avg_mfe,4),"median_mfe_pct":round(mfes[n//2],4) if n else 0,"avg_mae_pct":round(avg_mae,4),"median_mae_pct":round(maes[n//2],4) if n else 0,"mfe_ge_5_count":ge5,"mfe_ge_5_rate":round(ge5/max(1,n)*100,2),"mfe_ge_10_count":ge10,"mfe_ge_10_rate":round(ge10/max(1,n)*100,2),"mfe_to_abs_mae_ratio":round(avg_mfe/max(abs(avg_mae),1e-9),4) if n else 0,"phases":dict(phases.most_common()),"sessions":per_session}
+    def threshold_analysis(self,opportunity=93.0,failure=35.0,progress=None):
+        if float(opportunity)!=93 or float(failure)!=35:raise ValueError("this one-time validation is frozen at opportunity 93 / failure 35")
+        if opportunity<88:raise ValueError("opportunity below 88 cannot be evaluated from stored READY signals")
+        selected={(part,name):[] for part in ("development","holdout") for name in ("breakout_ready","confirmed_entry")};scanned=0
+        for row in self.iter_results():
+            scanned+=1
+            if row.get("mode")=="approx" and row.get("partition") in ("development","holdout"):
+                for name in ("breakout_ready","confirmed_entry"):
+                    signal=row.get(name)
+                    if signal and float(signal.get("opportunity",-1))>=opportunity and float(signal.get("failure_pressure",101))<=failure:
+                        selected[(row["partition"],name)].append(dict(signal,session=row.get("session")))
+            if progress and scanned%5000==0:progress(scanned)
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"mode":"approx","threshold":{"opportunity_min":opportunity,"failure_max":failure},"policy":{"threshold_selected_on":"development","holdout_use":"one-time frozen validation","minimum_evaluable_opportunity":88,"note":"Stored results can validate stricter READY filters only; thresholds below 88 require replay."},"source_rows_scanned":scanned,"partitions":{}}
+        for part in ("development","holdout"):
+            report["partitions"][part]={name:self._selected_summary(selected[(part,name)]) for name in ("breakout_ready","confirmed_entry")}
+        report["comparison"]={}
+        for part in ("development","holdout"):
+            ready=report["partitions"][part]["breakout_ready"];entry=report["partitions"][part]["confirmed_entry"]
+            report["comparison"][part]={"ready_minus_entry_count":ready["count"]-entry["count"],"ready_minus_entry_avg_mfe_pct":round(ready["avg_mfe_pct"]-entry["avg_mfe_pct"],4),"ready_minus_entry_avg_mae_pct":round(ready["avg_mae_pct"]-entry["avg_mae_pct"],4),"ready_minus_entry_mfe_ge_5_rate_points":round(ready["mfe_ge_5_rate"]-entry["mfe_ge_5_rate"],2)}
+        self.redis.set_json(self.key("analysis:threshold:93:35"),report)
+        if progress:progress(scanned)
+        return report
+    def threshold_analysis_result(self):return self.redis.get_json(self.key("analysis:threshold:93:35"),None)
     @staticmethod
     def aggregate(rows,sensitivity=False):
         out={"cases":len(rows),"signals":{},"block_reasons":{},"unavailable_features":{}};blocks=Counter();missing=Counter()
