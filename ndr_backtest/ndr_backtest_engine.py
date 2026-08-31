@@ -205,8 +205,10 @@ class BacktestCollector:
                 sip=sip_future.result();boats=boats_future.result()
             time.sleep(self.delay)
             fields=[f"{session}|{symbol}|{mode}" for symbol in symbols for mode in self.modes]
-            existing_values=self.redis.command("HMGET",self.key("results"),*fields) or [None]*len(fields)
-            existing={field for field,value in zip(fields,existing_values) if value is not None}
+            legacy_values=self.redis.command("HMGET",self.key("results"),*fields) or [None]*len(fields)
+            shard_key=self.key(f"results:{session}")
+            shard_values=self.redis.command("HMGET",shard_key,*fields) or [None]*len(fields)
+            existing={field for field,legacy,shard in zip(fields,legacy_values,shard_values) if legacy is not None or shard is not None}
             writes=[]
             for symbol in symbols:
                 bars=self.merge_bars(sip.get(symbol,[]),boats.get(symbol,[]))
@@ -215,17 +217,20 @@ class BacktestCollector:
                     if field not in existing:writes.append((field,json.dumps(self.replay(session,symbol,bars,mode),separators=(",",":"),ensure_ascii=False)))
             # Bounded hash writes and one completion-set write per batch.
             # Existing fields are never recalculated or overwritten on resume.
-            if writes:self.hset_bounded(self.key("results"),writes)
+            if writes:self.hset_bounded(shard_key,writes)
             self.redis.command("SADD",self.key(f"completed:{session}"),*symbols)
         if nxt=="0":si+=1
         cursor={"session_index":si,"sscan_cursor":nxt,"processed":int(cursor.get("processed",0))+len(symbols)};self.redis.set_json(self.key("detail_cursor"),cursor);total=int(self.redis.command("SCARD",self.key("coarse_candidates")) or 0)
         return self.save_status(phase="DETAIL_REPLAYING",message=f"Causal 1-minute replay: {session}",detail_cursor=cursor,detail_processed=cursor["processed"],detail_progress_pct=round(cursor["processed"]/max(1,total)*100,2))
     def iter_results(self):
-        cursor="0"
-        while True:
-            scanned=self.redis.command("HSCAN",self.key("results"),cursor,"COUNT",500);cursor=str(scanned[0]);rows=scanned[1] or []
-            for i in range(0,len(rows),2):yield json.loads(rows[i+1])
-            if cursor=="0":break
+        manifest=self.redis.get_json(self.key("manifest"),{})
+        keys=[self.key("results")]+[self.key(f"results:{session}") for session in manifest.get("sessions",[])]
+        for result_key in keys:
+            cursor="0"
+            while True:
+                scanned=self.redis.command("HSCAN",result_key,cursor,"COUNT",500);cursor=str(scanned[0]);rows=scanned[1] or []
+                for i in range(0,len(rows),2):yield json.loads(rows[i+1])
+                if cursor=="0":break
     @staticmethod
     def aggregate(rows,sensitivity=False):
         out={"cases":len(rows),"signals":{},"block_reasons":{},"unavailable_features":{}};blocks=Counter();missing=Counter()
