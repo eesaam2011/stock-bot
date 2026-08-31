@@ -43,9 +43,21 @@ class BatchRedis(FakeRedis):
 
 
 class BatchAlpaca:
-    def bars(self, symbols, start, end, feed):
+    def bars(self, symbols, start, end, feed, adjustment="raw"):
         data = bars(40)
         return {symbol: data for symbol in symbols}
+
+
+class AdjustedAlpaca:
+    def bars(self,symbols,start,end,feed,adjustment="raw"):
+        rows=[{"t":"2026-08-28T14:00:00Z","o":1,"h":1,"l":1,"c":1,"v":100},{"t":"2026-08-28T14:10:00Z","o":1.2,"h":1.2,"l":1.2,"c":1.2,"v":100},{"t":"2026-08-28T14:30:00Z","o":1.3,"h":1.6,"l":1.2,"c":1.5,"v":100}]
+        return {symbol:(rows if feed=="sip" else []) for symbol in symbols}
+
+
+class SplitAdjustedAlpaca:
+    def bars(self,symbols,start,end,feed,adjustment="raw"):
+        rows=[{"t":"2026-08-28T14:00:00Z","o":10,"h":10,"l":10,"c":10,"v":100},{"t":"2026-08-28T14:01:00Z","o":10,"h":11,"l":9.8,"c":10.5,"v":100}]
+        return {symbol:(rows if feed=="sip" else []) for symbol in symbols}
 
 
 class ReportRedis(FakeRedis):
@@ -234,6 +246,16 @@ class ReplayTests(unittest.TestCase):
         engine=BacktestCollector(FakeRedis(),object());engine.iter_results=lambda:iter([{"mode":"approx","session":"2026-08-28","partition":"holdout","symbol":"AAA","breakout_ready":{"ts":"x","phase":"REGULAR","price":1,"opportunity":90,"failure_pressure":10,"mfe_pct":25,"mae_pct":-2,"time_to_mfe_minutes":5,"forward_bars":10},"confirmed_entry":{"ts":"y","phase":"REGULAR","price":1.1,"opportunity":94,"failure_pressure":8,"mfe_pct":9,"mae_pct":-1,"time_to_mfe_minutes":4,"forward_bars":9}},{"mode":"strict","session":"2026-08-28","partition":"holdout","symbol":"BBB","breakout_ready":{"mfe_pct":99},"confirmed_entry":None},{"mode":"approx","session":"2026-08-28","partition":"holdout","symbol":"CCC","breakout_ready":None,"confirmed_entry":None}])
         result=engine.build_explosion_catalog()
         self.assertEqual(len(result["cases"]),2);self.assertEqual(result["cases"][0]["symbol"],"AAA");self.assertEqual(result["summary"]["breakout_ready"]["mfe_ge_20"],1);self.assertEqual(result["summary"]["confirmed_entry"]["mfe_ge_10"],0);self.assertIn("Rejected cases",result["limitation"])
+
+    def test_big_move_review_pairs_ready_with_entry_and_delay(self):
+        engine=BacktestCollector(FakeRedis(),AdjustedAlpaca());engine.delay=0;engine.iter_results=lambda:iter([{"mode":"approx","session":"2026-08-28","partition":"holdout","symbol":"AAA","block_reasons":{"breakout_not_held":3},"unavailable_features":{},"breakout_ready":{"ts":"2026-08-28T14:00:00Z","phase":"PREMARKET","price":1,"opportunity":94,"failure_pressure":10,"mfe_pct":55,"mae_pct":-2,"time_to_mfe_minutes":30},"confirmed_entry":{"ts":"2026-08-28T14:10:00Z","phase":"REGULAR","price":1.2,"opportunity":90,"failure_pressure":12,"mfe_pct":12,"mae_pct":-1,"time_to_mfe_minutes":20}},{"mode":"approx","session":"2026-08-28","partition":"holdout","symbol":"BBB","block_reasons":{},"unavailable_features":{},"breakout_ready":{"ts":"2026-08-28T15:00:00Z","phase":"REGULAR","price":2,"opportunity":91,"failure_pressure":15,"mfe_pct":19,"mae_pct":-1,"time_to_mfe_minutes":10},"confirmed_entry":None}])
+        result=engine.build_big_move_review();summary=result["summary"]["all"]
+        self.assertEqual(len(result["cases"]),1);self.assertEqual(result["cases"][0]["entry_delay_minutes"],10.0);self.assertEqual(result["raw_candidate_count"],1);self.assertEqual(result["excluded_after_split_adjustment"],0);self.assertEqual(summary["with_confirmed_entry"],1);self.assertEqual(summary["entry_retained_mfe_ge_10"],1);self.assertEqual(summary["ready_opportunity_bands"]["93_plus"],1)
+
+    def test_split_adjustment_removes_mechanical_raw_explosion(self):
+        engine=BacktestCollector(FakeRedis(),SplitAdjustedAlpaca());engine.delay=0;engine.iter_results=lambda:iter([{"mode":"approx","session":"2026-08-28","partition":"holdout","symbol":"AAA","block_reasons":{},"unavailable_features":{},"breakout_ready":{"ts":"2026-08-28T14:00:00Z","phase":"REGULAR","price":0.1,"opportunity":94,"failure_pressure":10,"mfe_pct":10900,"mae_pct":0,"time_to_mfe_minutes":1},"confirmed_entry":None}])
+        result=engine.build_big_move_review()
+        self.assertEqual(result["raw_candidate_count"],1);self.assertEqual(result["clean_case_count"],0);self.assertEqual(result["excluded_after_split_adjustment"],1);self.assertTrue(result["excluded_cases"][0]["corporate_action_contaminated"])
 
 
 if __name__ == "__main__": unittest.main()
