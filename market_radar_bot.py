@@ -5920,17 +5920,140 @@ def monitor_single_trade(symbol, item):
             and body_ratio >= 0.60
             and close_position <= 0.25
         )
+        # ------------------------------------------------------------------
+        # شموع مكتملة تكونت بعد وقت الدخول فقط
+        # ------------------------------------------------------------------
 
-        # خروج VWAP قبل T1 يحتاج تأكيد إغلاق شمعتين
-        two_closes_below_vwap = (
-            vwap > 0
-            and last_close < vwap
-            and previous_close < vwap
-        )
+        post_entry_closed_df = pd.DataFrame()
+
+        opened_at = item.get("opened_at")
+
+        if opened_at:
+            try:
+                opened_dt = datetime.strptime(
+                    opened_at,
+                    "%Y-%m-%d %H:%M:%S"
+                ).replace(
+                    tzinfo=saudi_tz
+                )
+
+                opened_utc = opened_dt.astimezone(
+                    timezone.utc
+                )
+
+                # أول دقيقة كاملة بدأت بعد لحظة الدخول
+                first_full_bar_start = opened_utc.replace(
+                    second=0,
+                    microsecond=0
+                )
+
+                if (
+                    opened_utc.second > 0
+                    or opened_utc.microsecond > 0
+                ):
+                    first_full_bar_start += timedelta(
+                        minutes=1
+                    )
+
+                # نستبعد شمعة الدقيقة الحالية لأنها لم تكتمل بعد
+                current_minute_start = datetime.now(
+                    timezone.utc
+                ).replace(
+                    second=0,
+                    microsecond=0
+                )
+
+                bar_times = pd.to_datetime(
+                    df.index,
+                    utc=True,
+                    errors="coerce"
+                )
+
+                post_entry_mask = (
+                    (bar_times >= first_full_bar_start)
+                    & (bar_times < current_minute_start)
+                )
+
+                post_entry_closed_df = df.loc[
+                    post_entry_mask
+                ].copy()
+
+            except Exception as e:
+                log(
+                    f"Post-entry candle filter error "
+                    f"{symbol}: {e}"
+                )
+
+                post_entry_closed_df = pd.DataFrame()
+
+        post_entry_strong_bearish = False
+
+        if len(post_entry_closed_df) >= 1:
+            post_last_open = safe_float(
+                post_entry_closed_df["open"].iloc[-1]
+            )
+
+            post_last_high = safe_float(
+                post_entry_closed_df["high"].iloc[-1]
+            )
+
+            post_last_low = safe_float(
+                post_entry_closed_df["low"].iloc[-1]
+            )
+
+            post_last_close = safe_float(
+                post_entry_closed_df["close"].iloc[-1]
+            )
+
+            post_range = max(
+                post_last_high - post_last_low,
+                0
+            )
+
+            post_body = abs(
+                post_last_close - post_last_open
+            )
+
+            post_body_ratio = (
+                post_body / post_range
+                if post_range > 0
+                else 0
+            )
+
+            post_close_position = (
+                (post_last_close - post_last_low)
+                / post_range
+                if post_range > 0
+                else 0.5
+            )
+
+            post_entry_strong_bearish = (
+                post_last_close < post_last_open
+                and post_body_ratio >= 0.60
+                and post_close_position <= 0.25
+            )
+            
+        # خروج VWAP قبل T1 يحتاج شمعتين مكتملتين بعد الدخول
+        two_closes_below_vwap = False
+
+        if len(post_entry_closed_df) >= 2:
+            post_last_close = safe_float(
+                post_entry_closed_df["close"].iloc[-1]
+            )
+
+            post_previous_close = safe_float(
+                post_entry_closed_df["close"].iloc[-2]
+            )
+
+            two_closes_below_vwap = (
+                vwap > 0
+                and post_last_close < vwap
+                and post_previous_close < vwap
+            )
 
         if (
             two_closes_below_vwap
-            and strong_bearish_candle
+            and post_entry_strong_bearish
             and not trade_plan.get("hit_t1")
         ):
             send_trade_exit(
@@ -6003,7 +6126,7 @@ def monitor_single_trade(symbol, item):
         if (
             rvol < 1.5
             and volume_accel_ratio < 1.0
-            and strong_bearish_candle
+            and post_entry_strong_bearish
             and not trade_plan.get("hit_t1")
         ):
             send_trade_exit(
