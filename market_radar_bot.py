@@ -6829,7 +6829,21 @@ def send_daily_summary():
         exit_price = safe_float(
             item.get("exit_price")
         )
+        highest_price = safe_float(
+            item.get("highest_price")
+        )
 
+        lowest_price = safe_float(
+            item.get("lowest_price")
+        )
+
+        max_profit_pct = safe_float(
+            item.get("max_profit_pct")
+        )
+
+        max_drawdown_pct = safe_float(
+            item.get("max_drawdown_pct")
+        )
         realized_pct = item.get(
             "realized_pct"
         )
@@ -6887,10 +6901,13 @@ def send_daily_summary():
 {icon} <b>{symbol} — {status_text}</b>
 
 💰 <b>الدخول:</b> {fmt_price(entry) if entry > 0 else 'غير متوفر'}
+📈 <b>أعلى سعر بعد الدخول:</b> {fmt_price(highest_price) if highest_price > 0 else 'غير متوفر'}
 🚪 <b>الخروج:</b> {fmt_price(exit_price) if exit_price > 0 else 'غير متوفر'}
 
 🎯 <b>أعلى هدف تحقق:</b> {highest_target}
-📊 <b>النتيجة:</b> {result_text}
+🚀 <b>أقصى صعود بعد الدخول:</b> {max_profit_pct:+.2f}%
+📉 <b>أقصى هبوط بعد الدخول:</b> {max_drawdown_pct:+.2f}%
+💵 <b>النتيجة النهائية عند الخروج:</b> {result_text}
 
 📌 <b>السبب الأقرب:</b>
 {reason}
