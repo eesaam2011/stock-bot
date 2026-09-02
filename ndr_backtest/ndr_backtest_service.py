@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from flask import Flask, jsonify, request, Response
 from ndr_backtest_engine import BacktestCollector
 from market_radar_backtest_engine import MarketRadarBacktest
+from evidence_first_engine import EvidenceFirstEngine
 
 app = Flask(__name__)
 UTC = timezone.utc
@@ -47,6 +48,15 @@ market_radar_diagnostic_thread = None
 market_radar_diagnostic_state = {"status":"IDLE","message":"Stored Market Radar diagnostic has not started.","rows_scanned":0,"updated_at":None}
 market_radar_ablation_thread = None
 market_radar_ablation_state = {"status":"IDLE","message":"Market Radar scoring-layer ablation has not started.","rows_scanned":0,"updated_at":None}
+evidence_first_thread = None
+evidence_first_state = {
+    "status": "IDLE",
+    "message": "Frozen development-only ORB/retest research has not started.",
+    "processed": 0,
+    "total": 0,
+    "session": None,
+    "updated_at": None,
+}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -353,6 +363,56 @@ def market_radar_ablation_loop():
     finally:market_radar_ablation_thread=None
 
 
+def evidence_first_loop():
+    global evidence_first_thread
+    engine = EvidenceFirstEngine()
+    try:
+        def progress(processed, total, session):
+            payload = {
+                "status": "RUNNING",
+                "message": "Running frozen development-only ORB/retest research",
+                "processed": processed,
+                "total": total,
+                "session": session,
+                "protocol_sha256": engine.protocol_sha256,
+                "updated_at": stamp(),
+            }
+            engine.redis.set_json(engine.key("status"), payload)
+            with lock:
+                evidence_first_state.update(payload)
+
+        result = engine.run_development(progress)
+        payload = {
+            "status": "COMPLETED",
+            "message": "Frozen development-only ORB/retest research completed",
+            "processed": result["symbols_processed"],
+            "total": result["symbols_processed"],
+            "session": None,
+            "protocol_sha256": engine.protocol_sha256,
+            "result_url": "/evidence-first/result",
+            "live_approved": False,
+            "updated_at": stamp(),
+        }
+        engine.redis.set_json(engine.key("status"), payload)
+        with lock:
+            evidence_first_state.update(payload)
+    except Exception as exc:
+        payload = {
+            "status": "ERROR",
+            "message": f"{type(exc).__name__}: {exc}",
+            "updated_at": stamp(),
+            "live_approved": False,
+        }
+        try:
+            engine.redis.set_json(engine.key("status"), payload)
+        except Exception:
+            pass
+        with lock:
+            evidence_first_state.update(payload)
+    finally:
+        evidence_first_thread = None
+
+
 def historical_boats_test() -> dict:
     # A liquid symbol and a completed overnight interval. Access is proven only
     # by at least one returned bar, never by HTTP 200 alone.
@@ -405,6 +465,10 @@ def home():
         "big_moves_url": "/big-moves/result",
         "weekday_url": "/weekday/result",
         "market_radar_backtest_url": "/market-radar/report",
+        "evidence_first_protocol_url": "/evidence-first/protocol",
+        "evidence_first_readiness_url": "/evidence-first/readiness",
+        "evidence_first_status_url": "/evidence-first/status",
+        "evidence_first_result_url": "/evidence-first/result",
         "raw_case_url_template": "/api/results/case/YYYY-MM-DD/SYMBOL/approx",
         "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
@@ -585,6 +649,10 @@ def control():
     <form method="post" action="/market-radar/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause Market Radar backtest</button></form>
     <form method="post" action="/market-radar/diagnostic/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze stored Market Radar results</button></form>
     <form method="post" action="/market-radar/ablation/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare simplified Market Radar layers</button></form>
+    <hr><h3>Evidence-First Phase 1</h3>
+    <p>Check readiness first. This run is Development-only and can never send alerts or orders.</p>
+    <form method="post" action="/evidence-first/start"><input name="token" type="password" placeholder="Admin token" required><button>Start frozen ORB / Retest research</button></form>
+    <p><a style="color:#a78bfa" href="/evidence-first/readiness">Evidence-First readiness</a> · <a style="color:#a78bfa" href="/evidence-first/protocol">Frozen protocol</a> · <a style="color:#a78bfa" href="/evidence-first/status">Evidence-First status</a> · <a style="color:#a78bfa" href="/evidence-first/result">Evidence-First result</a></p>
     <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a> · <a style="color:#a78bfa" href="/temporal-hypotheses/status">H1/H2 confirmatory test</a> · <a style="color:#a78bfa" href="/price-change-profitability/status">Price-change profitability</a> · <a style="color:#a78bfa" href="/er45-profitability/status">ER45 profitability</a></p></body></html>
     """
 
@@ -928,6 +996,92 @@ def market_radar_ablation_start():
         if market_radar_ablation_thread and market_radar_ablation_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/market-radar/ablation/status"})
         payload={"status":"RUNNING","message":"Starting Market Radar scoring-layer ablation","rows_scanned":0,"updated_at":stamp()};engine.redis.set_json(engine.key("stored_ablation:status"),payload);market_radar_ablation_state.update(payload);market_radar_ablation_thread=threading.Thread(target=market_radar_ablation_loop,name="market-radar-stored-ablation",daemon=True);market_radar_ablation_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/market-radar/ablation/status","result_url":"/market-radar/ablation/result"})
+
+
+@app.get("/evidence-first/protocol")
+def evidence_first_protocol():
+    return jsonify(EvidenceFirstEngine().protocol_record())
+
+
+@app.get("/evidence-first/readiness")
+def evidence_first_readiness():
+    try:
+        return jsonify(EvidenceFirstEngine().readiness())
+    except Exception as exc:
+        return jsonify({
+            "ready_for_decisive_development_run": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "alerts_enabled": False,
+            "orders_enabled": False,
+        }), 503
+
+
+@app.get("/evidence-first/status")
+def evidence_first_status():
+    engine = EvidenceFirstEngine()
+    stored = engine.status()
+    with lock:
+        payload = dict(stored or evidence_first_state)
+    payload["result_ready"] = engine.development_result() is not None
+    payload["result_url"] = "/evidence-first/result"
+    payload["protocol_url"] = "/evidence-first/protocol"
+    payload["live_approved"] = False
+    return jsonify(payload)
+
+
+@app.get("/evidence-first/result")
+def evidence_first_result():
+    result = EvidenceFirstEngine().development_result()
+    if result is None:
+        return jsonify({
+            "ready": False,
+            "status_url": "/evidence-first/status",
+            "protocol_url": "/evidence-first/protocol",
+            "live_approved": False,
+        }), 202
+    return jsonify(result)
+
+
+@app.post("/evidence-first/start")
+def evidence_first_start():
+    global evidence_first_thread
+    if not authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if BacktestCollector().status().get("phase") != "COMPLETED":
+        return jsonify({"ok": False, "error": "immutable_backtest_not_completed"}), 409
+    engine = EvidenceFirstEngine()
+    with lock:
+        if engine.development_result() is not None:
+            return jsonify({"ok": True, "status": "already_completed", "result_url": "/evidence-first/result"})
+        if evidence_first_thread and evidence_first_thread.is_alive():
+            return jsonify({"ok": True, "status": "already_running", "status_url": "/evidence-first/status"})
+        payload = {
+            "status": "RUNNING",
+            "message": "Starting frozen development-only ORB/retest research",
+            "processed": 0,
+            "total": 0,
+            "session": None,
+            "protocol_sha256": engine.protocol_sha256,
+            "updated_at": stamp(),
+            "live_approved": False,
+        }
+        engine.lock_protocol()
+        engine.redis.set_json(engine.key("status"), payload)
+        evidence_first_state.update(payload)
+        evidence_first_thread = threading.Thread(
+            target=evidence_first_loop,
+            name="evidence-first-development",
+            daemon=True,
+        )
+        evidence_first_thread.start()
+    return jsonify({
+        "ok": True,
+        "status": "started",
+        "status_url": "/evidence-first/status",
+        "result_url": "/evidence-first/result",
+        "protocol_url": "/evidence-first/protocol",
+        "live_approved": False,
+    })
 
 
 if __name__ == "__main__":
