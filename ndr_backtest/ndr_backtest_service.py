@@ -31,6 +31,8 @@ explosions_state = {"status":"IDLE","message":"Explosion catalog has not started
 big_moves_state = {"status":"IDLE","message":"Big-move review has not started.","rows_scanned":0,"updated_at":None}
 stopwidth_thread = None
 stopwidth_state = {"status":"IDLE","message":"Stop-width sensitivity test has not started.","processed":0,"total":169,"session":None,"updated_at":None}
+micro_features_thread = None
+micro_features_state = {"status":"IDLE","message":"Micro-feature extraction has not started.","processed":0,"total":30,"session":None,"updated_at":None}
 entrycompare_thread = None
 entrycompare_state = {"status":"IDLE","message":"Entry comparison (ready vs confirmed) has not started.","processed":0,"total":0,"session":None,"updated_at":None}
 weekday_thread = None
@@ -215,6 +217,23 @@ def stopwidth_loop():
         except Exception:pass
         with lock:stopwidth_state.update(payload)
     finally:stopwidth_thread=None
+
+
+def micro_features_loop():
+    global micro_features_thread
+    try:
+        engine=BacktestCollector()
+        def progress(processed,total,session):
+            payload={"status":"RUNNING","message":"Extracting micro-features","processed":processed,"total":total,"session":session,"updated_at":stamp()};engine.redis.set_json(engine.key("micro_features:status"),payload)
+            with lock:micro_features_state.update(payload)
+        engine.micro_feature_report(progress=progress);payload={"status":"COMPLETED","message":"Micro-feature extraction completed","processed":30,"total":30,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("micro_features:status"),payload)
+        with lock:micro_features_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("micro_features:status"),{**micro_features_state,**payload})
+        except Exception:pass
+        with lock:micro_features_state.update(payload)
+    finally:micro_features_thread=None
 
 
 def entrycompare_loop():
@@ -464,6 +483,37 @@ def explosions_status():
     payload["result_ready"]=engine.explosion_catalog() is not None;payload["result_url"]="/explosions/result";return jsonify(payload)
 
 
+@app.get("/overnight-followthrough/result")
+def overnight_followthrough_result():
+    return jsonify(BacktestCollector().overnight_followthrough_report())
+
+
+@app.get("/micro-features/status")
+def micro_features_status():
+    engine=BacktestCollector();stored=engine.micro_feature_status()
+    with lock:payload=dict(stored or micro_features_state)
+    payload["result_ready"]=engine.micro_feature_result() is not None;payload["result_url"]="/micro-features/result";return jsonify(payload)
+
+
+@app.get("/micro-features/result")
+def micro_features_result():
+    result=BacktestCollector().micro_feature_result()
+    if not result:return jsonify({"ready":False,"status_url":"/micro-features/status"}),202
+    return jsonify(result)
+
+
+@app.post("/micro-features/start")
+def start_micro_features():
+    global micro_features_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=BacktestCollector()
+    with lock:
+        if engine.micro_feature_result() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/micro-features/result"})
+        if micro_features_thread and micro_features_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/micro-features/status"})
+        payload={"status":"RUNNING","message":"Starting micro-feature extraction (30 cases)","processed":0,"total":30,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("micro_features:status"),payload);micro_features_state.update(payload);micro_features_thread=threading.Thread(target=micro_features_loop,name="ndr-micro-features",daemon=True);micro_features_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/micro-features/status","result_url":"/micro-features/result"})
+
+
 @app.get("/explosions/download")
 def explosions_download():
     result=BacktestCollector().explosion_catalog()
@@ -517,13 +567,14 @@ def control():
     <form method="post" action="/explosions/start"><input name="token" type="password" placeholder="Admin token" required><button>Build explosion catalog</button></form>
     <form method="post" action="/big-moves/start"><input name="token" type="password" placeholder="Admin token" required><button>Review +20% and +50% moves</button></form>
     <form method="post" action="/stop-width/start"><input name="token" type="password" placeholder="Admin token" required><button>Run stop-width sensitivity test</button></form>
+    <form method="post" action="/micro-features/start"><input name="token" type="password" placeholder="Admin token" required><button>Extract micro-features (30 exploratory cases)</button></form>
     <form method="post" action="/entry-compare/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare READY vs CONFIRMED entry</button></form>
     <form method="post" action="/weekday/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze weekdays on all stored signals</button></form>
     <form method="post" action="/market-radar/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume Market Radar backtest</button></form>
     <form method="post" action="/market-radar/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause Market Radar backtest</button></form>
     <form method="post" action="/market-radar/diagnostic/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze stored Market Radar results</button></form>
     <form method="post" action="/market-radar/ablation/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare simplified Market Radar layers</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a></p></body></html>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a> · <a style="color:#a78bfa" href="/overnight-followthrough/result">Overnight follow-through</a> · <a style="color:#a78bfa" href="/micro-features/status">Micro-feature exploration (30 cases)</a></p></body></html>
     """
 
 
