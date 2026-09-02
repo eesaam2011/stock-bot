@@ -291,6 +291,58 @@ class BacktestCollector:
         if progress:progress(scanned)
         return report
     def threshold_analysis_result(self):return self.redis.get_json(self.key("analysis:threshold:93:35"),None)
+    @staticmethod
+    def _weekday_signal_summary(signals,session_count):
+        mfes=sorted(float(x.get("mfe_pct") or 0) for x in signals);maes=sorted(float(x.get("mae_pct") or 0) for x in signals);n=len(mfes)
+        def median(values):
+            if not values:return 0.0
+            mid=len(values)//2
+            return values[mid] if len(values)%2 else (values[mid-1]+values[mid])/2
+        trim=int(n*.01);trimmed=mfes[trim:n-trim] if trim and n>2*trim else mfes
+        out={"sessions":session_count,"signals":n,"signals_per_session":round(n/max(1,session_count),3),"median_mfe_pct":round(median(mfes),4),"trimmed_mean_mfe_pct":round(avg(trimmed),4),"median_mae_pct":round(median(maes),4),"phases":dict(Counter(str(x.get("phase") or "UNKNOWN") for x in signals).most_common())}
+        for threshold in (0,2,5,10,20):
+            count=sum(value>=threshold for value in mfes);key=f"mfe_ge_{threshold}"
+            out[f"{key}_count"]=count;out[f"{key}_rate"]=round(count/max(1,n)*100,2)
+        out["corporate_action_risk_count"]=sum(abs(value)>100 for value in mfes)
+        return out
+    def weekday_signal_report(self,progress=None):
+        """Robust weekday study over every stored approx READY/ENTRY signal, not a winner-only catalog."""
+        manifest=self.redis.get_json(self.key("manifest"),{})
+        sessions=list(manifest.get("sessions",[]));dev=set(manifest.get("development_sessions",sessions[:45]));hold=set(manifest.get("holdout_sessions",sessions[45:]))
+        partition_sessions={"development":dev,"holdout":hold,"all":set(sessions)};day_names=("Monday","Tuesday","Wednesday","Thursday","Friday")
+        session_counts={part:Counter(day_names[date.fromisoformat(s).weekday()] for s in values if date.fromisoformat(s).weekday()<5) for part,values in partition_sessions.items()}
+        thresholds=(88,90,93);signal_names=("breakout_ready","confirmed_entry")
+        selected={(threshold,part,name,day):[] for threshold in thresholds for part in partition_sessions for name in signal_names for day in day_names};scanned=0
+        for row in self.iter_results():
+            scanned+=1
+            if row.get("mode")!="approx" or row.get("partition") not in ("development","holdout"):continue
+            session=str(row.get("session") or "");weekday=date.fromisoformat(session).weekday()
+            if weekday>=5:continue
+            day=day_names[weekday];parts=(row["partition"],"all")
+            for name in signal_names:
+                signal=row.get(name)
+                if not signal:continue
+                opportunity=float(signal.get("opportunity",-1));failure=float(signal.get("failure_pressure",101))
+                for threshold in thresholds:
+                    if opportunity>=threshold and failure<=35:
+                        item=dict(signal,session=session,symbol=row.get("symbol"))
+                        for part in parts:selected[(threshold,part,name,day)].append(item)
+            if progress and scanned%5000==0:progress(scanned,session)
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"source_rows_scanned":scanned,"mode":"approx","failure_max":35,"thresholds":{},"methodology":{"population":"All stored approx BREAKOUT_READY and CONFIRMED_ENTRY signals, including signals with MFE below 5%.","minimum_evaluable_opportunity":88,"profit_factor_available":False,"reason_no_profit_factor":"Stored signal outcomes contain MFE/MAE, not an executable exit return for every signal.","winner_only_explosions_file_used":False,"unit":"one signal per symbol/session/signal_type","corporate_action_guard":"Medians and 1%-trimmed means are reported; abs(MFE)>100% is flagged."}}
+        for threshold in thresholds:
+            report["thresholds"][f"{threshold}/35"]={}
+            for part in ("development","holdout","all"):
+                block={}
+                for day in day_names:
+                    block[day]={name:self._weekday_signal_summary(selected[(threshold,part,name,day)],session_counts[part][day]) for name in signal_names}
+                    ready=block[day]["breakout_ready"]["signals"];entry=block[day]["confirmed_entry"]["signals"]
+                    block[day]["entry_conversion_rate"]=round(entry/max(1,ready)*100,2)
+                report["thresholds"][f"{threshold}/35"][part]=block
+        self.redis.set_json(self.key("weekday:signals:report"),report)
+        if progress:progress(scanned,None)
+        return report
+    def weekday_signal_result(self):return self.redis.get_json(self.key("weekday:signals:report"),None)
+    def weekday_signal_status(self):return self.redis.get_json(self.key("weekday:signals:status"),None)
     def simulation_candidates(self):
         cached=self.redis.get_json(self.key("simulation:93:35:candidates"),None)
         if cached is not None:return cached
@@ -641,6 +693,148 @@ class BacktestCollector:
         return out
     def temporal_hypotheses_result(self):return self.redis.get_json(self.key("temporal_hypotheses:report"),None)
     def temporal_hypotheses_status(self):return self.redis.get_json(self.key("temporal_hypotheses:status"),None)
+    def price_change_profitability_candidates(self):
+        cached=self.redis.get_json(self.key("pcprofit:v2:candidates"),None)
+        if cached is not None:return cached
+        candidates=[]
+        for row in self.iter_results():
+            if row.get("mode")!="approx":continue
+            signal=row.get("breakout_ready")
+            if signal and signal.get("phase")=="REGULAR" and signal.get("price") and signal.get("ts"):
+                candidates.append({"session":row["session"],"partition":row["partition"],"symbol":row["symbol"],
+                    "t":signal["ts"],"price":float(signal["price"])})
+        candidates.sort(key=lambda x:(x["session"],x["t"],x["symbol"]))
+        self.redis.set_json(self.key("pcprofit:v2:candidates"),candidates);return candidates
+    @classmethod
+    def _pcprofit_compute_case(cls,c,bars):
+        t_iso=c["t"];t_dt=parse_dt(t_iso)
+        w45_start=(t_dt-timedelta(minutes=45)).isoformat().replace("+00:00","Z")
+        w60_end=(t_dt+timedelta(minutes=60)).isoformat().replace("+00:00","Z")
+        past45=[b for b in bars if w45_start<=b["t"]<=t_iso]
+        past_all=[b for b in bars if b["t"]<=t_iso]
+        future=[b for b in bars if t_iso<b["t"]<=w60_end]
+        if len(past45)<5 or len(future)<5:return None
+        base_price=float(past45[0]["o"]);last_price=float(past45[-1]["c"])
+        price_change_pct_last45m=round((last_price-base_price)/base_price*100,4) if base_price>0 else None
+        plan=cls.synth_entry_plan(c["price"],past_all)
+        recomputed_mfe=round((max(float(b["h"]) for b in future)/c["price"]-1)*100,4)
+        recomputed_mae=round((min(float(b["l"]) for b in future)/c["price"]-1)*100,4)
+        row={"symbol":c["symbol"],"session":c["session"],"t":t_iso,"partition":c["partition"],
+            "price_change_pct_last45m":price_change_pct_last45m,
+            "recomputed_mfe_pct":recomputed_mfe,"recomputed_mae_pct":recomputed_mae,"has_plan":plan is not None}
+        if plan is not None:
+            bars_until_t60=[b for b in bars if b["t"]<=w60_end]
+            sim_candidate={"session":c["session"],"partition":c["partition"],"symbol":c["symbol"],
+                "signal":{"ts":t_iso,"stop":plan["stop"]}}
+            run=cls.simulate_trade(sim_candidate,bars_until_t60,assumption="conservative",policy="full_t1")
+            row["return_pct"]=run["return_pct"];row["status"]=run["status"]
+        else:
+            row["return_pct"]=None;row["status"]="no_valid_stop_plan"
+        return row
+    def price_change_profitability_report(self,progress=None):
+        candidates=self.price_change_profitability_candidates()
+        cases_key=self.key("pcprofit:v2:cases");grouped={}
+        for c in candidates:grouped.setdefault(c["session"],[]).append(c)
+        rows=[];processed=0;total=len(candidates)
+        for session,items in sorted(grouped.items()):
+            fields=[f"{c['session']}|{c['symbol']}|{c['t']}" for c in items]
+            existing=self.redis.command("HMGET",cases_key,*fields) or [None]*len(fields)
+            todo=[c for c,value in zip(items,existing) if value is None]
+            sip={}
+            if todo:
+                start=min(parse_dt(x["t"]) for x in todo)-timedelta(minutes=60)
+                end=max(parse_dt(x["t"]) for x in todo)+timedelta(minutes=65)
+                todo_symbols=list({x["symbol"] for x in todo})
+                sip=self.alpaca.bars(todo_symbols,start,end,"sip")
+            for c,field,value in zip(items,fields,existing):
+                if value is not None:
+                    row=json.loads(value)
+                else:
+                    bars=sorted(sip.get(c["symbol"],[]),key=lambda b:b["t"])
+                    row=self._pcprofit_compute_case(c,bars)
+                    if row is None:row={"symbol":c["symbol"],"session":c["session"],"t":c["t"],"partition":c["partition"],
+                        "price_change_pct_last45m":None,"return_pct":None,"status":"insufficient_bars","has_plan":False}
+                    self.redis.command("HSET",cases_key,field,json.dumps(row,separators=(",",":")))
+                rows.append(row)
+                processed+=1
+                if progress:progress(processed,total,session)
+            if todo:time.sleep(self.delay)
+        analysis=self._pcprofit_analyze(rows)
+        report={"schema":1,"generated_at":now_iso(),
+            "note":"Decisive profitability simulation of a price_change_pct_last45m entry filter across ALL BREAKOUT_READY REGULAR cases (not just the MFE>=5% subset). Trade simulation uses bars strictly up to T+60 (no look-ahead beyond the stated window). Same synthesized stop/targets (ATR/swing-low, full_t1 policy, conservative fills) applied uniformly to every case regardless of threshold. Results reported at three round-trip cost assumptions (0%, 0.25%, 0.50%) applied per trade before profit_factor/avg_return/drawdown. A threshold is adopted only if, at the 0.25% decision cost, it clears a minimum sample size (max(100, 10% of the development baseline)) AND beats the no-filter development baseline on both profit_factor and avg_return_pct; the single best such threshold is then frozen and validated once on holdout.",
+            "cases":len(candidates),"analysis":analysis}
+        self.redis.set_json(self.key("pcprofit:v2:report"),report);return report
+    @classmethod
+    def _pcprofit_analyze(cls,rows):
+        thresholds=[0,1,2,3,4,5]
+        cost_levels=[0.0,0.25,0.50]  # round-trip cost assumptions in percentage points, applied per trade
+        decision_cost=0.25  # the single cost level used for threshold selection/eligibility; all three are still reported
+        def subset_stats(recs,cost_pct):
+            tradable=[r for r in recs if r.get("has_plan") and r.get("return_pct") is not None]
+            tradable=sorted(tradable,key=lambda r:(r["session"],r["t"]))
+            runs=[{"return_pct":r["return_pct"]-cost_pct,"status":r.get("status","unknown")} for r in tradable]
+            summary=cls.simulation_summary(runs) if runs else None
+            mfes=[r["recomputed_mfe_pct"] for r in tradable if r.get("recomputed_mfe_pct") is not None]
+            maes=[r["recomputed_mae_pct"] for r in tradable if r.get("recomputed_mae_pct") is not None]
+            stopped=sum(1 for r in tradable if str(r.get("status","")).startswith("stop_") or r.get("status")=="gap_below_stop")
+            return {"n_tradable":len(tradable),"cost_pct_per_trade":cost_pct,"summary":summary,
+                "avg_mfe_pct":round(sum(mfes)/len(mfes),4) if mfes else None,
+                "avg_mae_pct":round(sum(maes)/len(maes),4) if maes else None,
+                "pct_stopped_before_target":round(stopped/len(tradable)*100,2) if tradable else None}
+        def stats_all_costs(recs):
+            return {f"cost_{c}pct".replace(".","_"):subset_stats(recs,c) for c in cost_levels}
+        out={"excluded_no_valid_plan":sum(1 for r in rows if not r.get("has_plan")),
+            "excluded_insufficient_bars":sum(1 for r in rows if r.get("status")=="insufficient_bars"),
+            "cost_levels_pct_round_trip":cost_levels,"decision_cost_pct":decision_cost}
+        dev_all=[r for r in rows if r["partition"]=="development"]
+        hold_all=[r for r in rows if r["partition"]=="holdout"]
+        dev_table={};dev_table["baseline_no_filter"]=stats_all_costs(dev_all)
+        for th in thresholds:
+            sub=[r for r in dev_all if r.get("price_change_pct_last45m") is not None and r["price_change_pct_last45m"]>=th]
+            dev_table[f"threshold_{th}pct"]=stats_all_costs(sub)
+        out["development"]=dev_table
+        baseline_n=dev_table["baseline_no_filter"]["cost_0_0pct"]["n_tradable"]
+        min_n=max(100,int(round(0.10*baseline_n)))
+        baseline_at_decision=dev_table["baseline_no_filter"][f"cost_{decision_cost}pct".replace(".","_")]
+        baseline_pf=baseline_at_decision["summary"]["profit_factor"] if baseline_at_decision["summary"] else None
+        baseline_avg=baseline_at_decision["summary"]["avg_return_pct"] if baseline_at_decision["summary"] else None
+        eligible=[]
+        beats_baseline=[]
+        for th in thresholds:
+            stats=dev_table[f"threshold_{th}pct"][f"cost_{decision_cost}pct".replace(".","_")]
+            if stats["n_tradable"]>=min_n and stats["summary"] is not None:
+                eligible.append(th)
+                pf=stats["summary"]["profit_factor"];avg=stats["summary"]["avg_return_pct"]
+                absolutely_profitable=pf>1.0 and avg>0
+                relatively_better=baseline_pf is not None and pf>baseline_pf and avg>baseline_avg
+                if absolutely_profitable and relatively_better:beats_baseline.append(th)
+        frozen=None
+        if beats_baseline:
+            frozen=max(beats_baseline,key=lambda th:dev_table[f"threshold_{th}pct"][f"cost_{decision_cost}pct".replace(".","_")]["summary"]["profit_factor"])
+        out["frozen_threshold_selection"]={
+            "rule":f"At decision_cost={decision_cost}% round-trip: eligible if n_tradable>=max(100,10% of baseline n={baseline_n})={min_n}; adopted only if it is BOTH absolutely profitable (profit_factor>1.0 AND avg_return_pct>0) AND beats the development no-filter baseline on both metrics at the same cost level; frozen = highest-PF threshold among those that qualify on both counts.",
+            "min_n_required":min_n,"baseline_profit_factor":baseline_pf,"baseline_avg_return_pct":baseline_avg,
+            "eligible_thresholds":eligible,"thresholds_beating_baseline":beats_baseline,"frozen_threshold_pct":frozen}
+        out["holdout"]={"baseline_no_filter":stats_all_costs(hold_all)}
+        if frozen is not None:
+            sub=[r for r in hold_all if r.get("price_change_pct_last45m") is not None and r["price_change_pct_last45m"]>=frozen]
+            holdout_stats=stats_all_costs(sub)
+            out["holdout"][f"frozen_threshold_{frozen}pct"]=holdout_stats
+            hs=holdout_stats[f"cost_{decision_cost}pct".replace(".","_")]
+            if hs["summary"] is not None:
+                h_pf=hs["summary"]["profit_factor"];h_avg=hs["summary"]["avg_return_pct"]
+                out["holdout_validation"]={"decision_cost_pct":decision_cost,
+                    "profit_factor":h_pf,"avg_return_pct":h_avg,
+                    "validated_successful":bool(h_pf>1.0 and h_avg>0),
+                    "rule":"Successful only if the SAME absolute conditions (profit_factor>1.0 AND avg_return_pct>0) also hold independently on holdout, at the decision cost. This is not re-selected or re-tuned; it is a one-time check of the frozen threshold."}
+            else:
+                out["holdout_validation"]={"validated_successful":False,"reason":"no_tradable_holdout_cases_at_frozen_threshold"}
+        else:
+            out["holdout"]["frozen_threshold"]=None
+            out["note_no_frozen_threshold"]="No development threshold was both absolutely profitable (PF>1.0, avg_return>0) and better than the no-filter baseline on both metrics at the decision cost; nothing was validated on holdout."
+        return out
+    def price_change_profitability_result(self):return self.redis.get_json(self.key("pcprofit:v2:report"),None)
+    def price_change_profitability_status(self):return self.redis.get_json(self.key("pcprofit:v2:status"),None)
     MICRO_FEATURE_CASES=[
         {"group":"1_clean_explosion","symbol":"MF","session":"2026-07-09","t":"2026-07-09T13:32:00Z","price":4.02,"mfe":38.68,"mae":-1.49},
         {"group":"1_clean_explosion","symbol":"SDOT","session":"2026-06-15","t":"2026-06-15T16:33:00Z","price":22.74,"mfe":18.43,"mae":-0.57},
