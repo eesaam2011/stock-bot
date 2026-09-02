@@ -37,6 +37,8 @@ weekday_thread = None
 weekday_state = {"status":"IDLE","message":"All-signal weekday analysis has not started.","rows_scanned":0,"session":None,"updated_at":None}
 market_radar_thread = None
 market_radar_stop = threading.Event()
+market_radar_diagnostic_thread = None
+market_radar_diagnostic_state = {"status":"IDLE","message":"Stored Market Radar diagnostic has not started.","rows_scanned":0,"updated_at":None}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -256,6 +258,22 @@ def market_radar_loop():
     except Exception as exc:
         engine.save_status(status="ERROR",phase="ERROR",message=f"{type(exc).__name__}: {exc}")
     finally:market_radar_thread=None
+
+def market_radar_diagnostic_loop():
+    global market_radar_diagnostic_thread
+    engine=MarketRadarBacktest()
+    try:
+        def progress(rows):
+            payload={"status":"RUNNING","message":"Diagnosing stored Market Radar signals","rows_scanned":rows,"updated_at":stamp()};engine.redis.set_json(engine.key("stored_diagnostic:status"),payload)
+            with lock:market_radar_diagnostic_state.update(payload)
+        result=engine.stored_diagnostic_report(progress);payload={"status":"COMPLETED","message":"Stored Market Radar diagnostic completed","rows_scanned":result["source_rows_scanned"],"updated_at":stamp()};engine.redis.set_json(engine.key("stored_diagnostic:status"),payload)
+        with lock:market_radar_diagnostic_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("stored_diagnostic:status"),{**market_radar_diagnostic_state,**payload})
+        except Exception:pass
+        with lock:market_radar_diagnostic_state.update(payload)
+    finally:market_radar_diagnostic_thread=None
 
 
 def historical_boats_test() -> dict:
@@ -485,6 +503,7 @@ def control():
     <form method="post" action="/weekday/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze weekdays on all stored signals</button></form>
     <form method="post" action="/market-radar/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume Market Radar backtest</button></form>
     <form method="post" action="/market-radar/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause Market Radar backtest</button></form>
+    <form method="post" action="/market-radar/diagnostic/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze stored Market Radar results</button></form>
     <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a></p></body></html>
     """
 
@@ -700,6 +719,31 @@ def market_radar_start():
 def market_radar_pause():
     if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
     market_radar_stop.set();return jsonify({"ok":True,"status":"pause_requested","status_url":"/market-radar/status"})
+
+
+@app.get("/market-radar/diagnostic/status")
+def market_radar_diagnostic_status():
+    engine=MarketRadarBacktest();stored=engine.stored_diagnostic_status()
+    with lock:payload=dict(stored or market_radar_diagnostic_state)
+    payload["result_ready"]=engine.stored_diagnostic_result() is not None;payload["result_url"]="/market-radar/diagnostic/result";return jsonify(payload)
+
+
+@app.get("/market-radar/diagnostic/result")
+def market_radar_diagnostic_result():
+    result=MarketRadarBacktest().stored_diagnostic_result();return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/market-radar/diagnostic/status"}),202)
+
+
+@app.post("/market-radar/diagnostic/start")
+def market_radar_diagnostic_start():
+    global market_radar_diagnostic_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=MarketRadarBacktest()
+    if engine.report() is None:return jsonify({"ok":False,"error":"market_radar_backtest_not_completed"}),409
+    with lock:
+        if engine.stored_diagnostic_result() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/market-radar/diagnostic/result"})
+        if market_radar_diagnostic_thread and market_radar_diagnostic_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/market-radar/diagnostic/status"})
+        payload={"status":"RUNNING","message":"Starting stored Market Radar diagnostic","rows_scanned":0,"updated_at":stamp()};engine.redis.set_json(engine.key("stored_diagnostic:status"),payload);market_radar_diagnostic_state.update(payload);market_radar_diagnostic_thread=threading.Thread(target=market_radar_diagnostic_loop,name="market-radar-stored-diagnostic",daemon=True);market_radar_diagnostic_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/market-radar/diagnostic/status","result_url":"/market-radar/diagnostic/result"})
 
 
 if __name__ == "__main__":
