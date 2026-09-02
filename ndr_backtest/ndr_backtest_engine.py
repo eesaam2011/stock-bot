@@ -505,8 +505,7 @@ class BacktestCollector:
             symbols=list({x["symbol"] for x in items})
             earliest_t=min(parse_dt(x["t"]) for x in items)
             fetch_start_dt=min(parse_dt(session_open),earliest_t-timedelta(minutes=60))
-            fetch_start=fetch_start_dt.isoformat().replace("+00:00","Z")
-            sip=self.alpaca.bars(symbols,fetch_start,end,"sip")
+            sip=self.alpaca.bars(symbols,fetch_start_dt,end,"sip")
             writes=[]
             for c in items:
                 bars=sorted(sip.get(c["symbol"],[]),key=lambda b:b["t"])
