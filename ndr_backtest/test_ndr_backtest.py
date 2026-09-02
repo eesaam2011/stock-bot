@@ -270,5 +270,61 @@ class ReplayTests(unittest.TestCase):
         result=engine.build_big_move_review()
         self.assertEqual(result["raw_candidate_count"],1);self.assertEqual(result["clean_case_count"],0);self.assertEqual(result["excluded_after_split_adjustment"],1);self.assertTrue(result["excluded_cases"][0]["corporate_action_contaminated"])
 
+    def test_pcprofit_case_excludes_bars_after_t_plus_60(self):
+        # a bar just after T+60 has an enormous high that must NOT leak into the recomputed outcome
+        c={"symbol":"AAA","session":"2026-08-28","partition":"development","t":"2026-08-28T14:00:00Z","price":10.0}
+        past=[{"t":f"2026-08-28T13:{15+i:02d}:00Z","o":10,"h":10.2,"l":9.9,"c":10.05+i*0.01,"v":500} for i in range(45)]
+        within_window=[{"t":f"2026-08-28T14:{5*i+5:02d}:00Z","o":10.4,"h":10.6,"l":10.3,"c":10.5,"v":500} for i in range(6)]
+        after_t60=[{"t":"2026-08-28T15:05:00Z","o":10.5,"h":999.0,"l":10.4,"c":10.5,"v":500}]  # 5 min after the T+60 boundary
+        row=BacktestCollector._pcprofit_compute_case(c,past+within_window+after_t60)
+        self.assertIsNotNone(row)
+        self.assertLess(row["recomputed_mfe_pct"],10)  # would be >9800% if the T+65 bar leaked in
+
+    def test_pcprofit_cost_is_applied_per_trade_before_profit_factor(self):
+        rows=[{"symbol":f"S{i}","session":"2026-08-28","t":"x","partition":"development","has_plan":True,
+               "price_change_pct_last45m":0.0,"status":"t1_exit" if i%2==0 else "stop_after_entry",
+               "return_pct":2.0 if i%2==0 else -1.0,"recomputed_mfe_pct":2.0,"recomputed_mae_pct":-1.0} for i in range(200)]
+        result=BacktestCollector._pcprofit_analyze(rows)
+        base=result["development"]["baseline_no_filter"]
+        pf_0=base["cost_0_0pct"]["summary"]["profit_factor"];pf_50=base["cost_0_5pct"]["summary"]["profit_factor"]
+        self.assertGreater(pf_0,pf_50)  # a flat 0.50pp round-trip cost per trade must strictly reduce PF
+        self.assertAlmostEqual(base["cost_0_0pct"]["summary"]["avg_return_pct"]-0.5,base["cost_0_5pct"]["summary"]["avg_return_pct"],places=6)
+
+    def test_pcprofit_selection_uses_development_only_and_respects_min_sample(self):
+        rows=[]
+        for i in range(300):
+            partition="development" if i<250 else "holdout"
+            pc=5.0 if i%3==0 else 0.0  # only ~1/3 of rows clear a threshold of e.g. 3
+            rows.append({"symbol":f"S{i}","session":"2026-08-28","t":"x","partition":partition,"has_plan":True,
+                "price_change_pct_last45m":pc,"status":"t1_exit","return_pct":1.0,
+                "recomputed_mfe_pct":1.0,"recomputed_mae_pct":-0.5})
+        result=BacktestCollector._pcprofit_analyze(rows)
+        baseline_n=result["development"]["baseline_no_filter"]["cost_0_0pct"]["n_tradable"]
+        self.assertEqual(baseline_n,250)
+        self.assertEqual(result["frozen_threshold_selection"]["min_n_required"],max(100,int(round(0.10*baseline_n))))
+        # a threshold with fewer tradable development rows than min_n must never be eligible
+        for th in result["frozen_threshold_selection"]["eligible_thresholds"]:
+            self.assertGreaterEqual(result["development"][f"threshold_{th}pct"]["cost_0_25pct"]["n_tradable"],result["frozen_threshold_selection"]["min_n_required"])
+        # holdout rows must never influence eligibility/selection
+        holdout_n_at_threshold_5=len([r for r in rows if r["partition"]=="holdout" and r["price_change_pct_last45m"]>=5])
+        self.assertNotEqual(result["frozen_threshold_selection"]["min_n_required"],holdout_n_at_threshold_5)
+
+    def test_pcprofit_rejects_threshold_that_beats_baseline_but_is_still_unprofitable(self):
+        rows=[]
+        for i in range(400):
+            partition="development" if i<300 else "holdout"
+            pc=4.0 if i%2==0 else 0.0
+            # baseline: mostly losers (PF well below 1). Filtered subset (pc>=some threshold) is LESS bad but still losing.
+            ret=-0.5 if i%2==0 else -3.0
+            rows.append({"symbol":f"S{i}","session":"2026-08-28","t":"x","partition":partition,"has_plan":True,
+                "price_change_pct_last45m":pc,"status":"stop_after_entry","return_pct":ret,
+                "recomputed_mfe_pct":0.5,"recomputed_mae_pct":-2.0})
+        result=BacktestCollector._pcprofit_analyze(rows)
+        for th in [0,1,2,3,4]:
+            stats=result["development"][f"threshold_{th}pct"]["cost_0_25pct"]["summary"]
+            if stats:self.assertLess(stats["profit_factor"],1.0)
+        self.assertIsNone(result["frozen_threshold_selection"]["frozen_threshold_pct"])
+        self.assertNotIn("holdout_validation",result)
+
 
 if __name__ == "__main__": unittest.main()
