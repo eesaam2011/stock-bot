@@ -80,5 +80,25 @@ class MarketRadarBacktestTests(unittest.TestCase):
         self.assertFalse(result["methodology"]["entry_quality_ab_test_available"])
         self.assertIsNotNone(self.engine.stored_diagnostic_result())
 
+    def test_technical_only_scores_exclude_unavailable_feature_points(self):
+        signal={"rvol":8,"volume_acceleration":4,"atr_pct":8,"above_vwap":True,"obv_rising":True,"trend_15m_ok":True,"breakout":True,"resistance_distance_pct":0}
+        core,final=self.engine.technical_only_scores(signal)
+        self.assertEqual(core,86);self.assertEqual(final,98.9)
+
+    def test_stored_ablation_uses_common_timestamp_and_development_ranking(self):
+        def row(session,symbol,partition,score,trade_return):
+            signal={"ts":session+"T14:00:00Z","score":score,"trade_status":"t1" if trade_return>0 else "stop","trade_return_pct":trade_return,"mfe_pct":5 if trade_return>0 else 0,"mae_pct":-2,"rvol":8,"volume_acceleration":4,"atr_pct":8,"above_vwap":True,"obv_rising":True,"trend_15m_ok":True,"breakout":True,"resistance_distance_pct":0}
+            return {"session":session,"symbol":symbol,"partition":partition,"signals":{"technical_upper":{"78":signal}}}
+        rows=[row("2026-06-04","AAA","development",90,2),row("2026-06-05","BBB","development",80,-1),row("2026-08-20","CCC","holdout",90,2),row("2026-08-21","DDD","holdout",80,-1)]
+        self.engine.iter_results=lambda:iter(rows);result=self.engine.stored_ablation_report()
+        policies={x["id"]:x for x in result["policies"]}
+        self.assertEqual(result["common_timestamp_cohort"],4)
+        self.assertEqual(policies["hard_safety_only"]["all"]["signals"],4)
+        self.assertEqual(policies["technical_core_86"]["all"]["signals"],4)
+        self.assertEqual(policies["current_optimistic_policy"]["all"]["signals"],2)
+        self.assertTrue(result["conclusion"]["holdout_not_used_for_ranking"])
+        self.assertIn("Entry Quality delay gate",result["methodology"]["layers_still_present"])
+        self.assertIsNotNone(self.engine.stored_ablation_result())
+
 
 if __name__=="__main__":unittest.main()
