@@ -39,6 +39,8 @@ market_radar_thread = None
 market_radar_stop = threading.Event()
 market_radar_diagnostic_thread = None
 market_radar_diagnostic_state = {"status":"IDLE","message":"Stored Market Radar diagnostic has not started.","rows_scanned":0,"updated_at":None}
+market_radar_ablation_thread = None
+market_radar_ablation_state = {"status":"IDLE","message":"Market Radar scoring-layer ablation has not started.","rows_scanned":0,"updated_at":None}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -275,6 +277,22 @@ def market_radar_diagnostic_loop():
         with lock:market_radar_diagnostic_state.update(payload)
     finally:market_radar_diagnostic_thread=None
 
+def market_radar_ablation_loop():
+    global market_radar_ablation_thread
+    engine=MarketRadarBacktest()
+    try:
+        def progress(rows):
+            payload={"status":"RUNNING","message":"Comparing simplified Market Radar scoring layers","rows_scanned":rows,"updated_at":stamp()};engine.redis.set_json(engine.key("stored_ablation:status"),payload)
+            with lock:market_radar_ablation_state.update(payload)
+        result=engine.stored_ablation_report(progress);payload={"status":"COMPLETED","message":"Market Radar scoring-layer ablation completed","rows_scanned":result["source_rows_scanned"],"updated_at":stamp()};engine.redis.set_json(engine.key("stored_ablation:status"),payload)
+        with lock:market_radar_ablation_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("stored_ablation:status"),{**market_radar_ablation_state,**payload})
+        except Exception:pass
+        with lock:market_radar_ablation_state.update(payload)
+    finally:market_radar_ablation_thread=None
+
 
 def historical_boats_test() -> dict:
     # A liquid symbol and a completed overnight interval. Access is proven only
@@ -504,6 +522,7 @@ def control():
     <form method="post" action="/market-radar/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume Market Radar backtest</button></form>
     <form method="post" action="/market-radar/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause Market Radar backtest</button></form>
     <form method="post" action="/market-radar/diagnostic/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze stored Market Radar results</button></form>
+    <form method="post" action="/market-radar/ablation/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare simplified Market Radar layers</button></form>
     <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a></p></body></html>
     """
 
@@ -744,6 +763,31 @@ def market_radar_diagnostic_start():
         if market_radar_diagnostic_thread and market_radar_diagnostic_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/market-radar/diagnostic/status"})
         payload={"status":"RUNNING","message":"Starting stored Market Radar diagnostic","rows_scanned":0,"updated_at":stamp()};engine.redis.set_json(engine.key("stored_diagnostic:status"),payload);market_radar_diagnostic_state.update(payload);market_radar_diagnostic_thread=threading.Thread(target=market_radar_diagnostic_loop,name="market-radar-stored-diagnostic",daemon=True);market_radar_diagnostic_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/market-radar/diagnostic/status","result_url":"/market-radar/diagnostic/result"})
+
+
+@app.get("/market-radar/ablation/status")
+def market_radar_ablation_status():
+    engine=MarketRadarBacktest();stored=engine.stored_ablation_status()
+    with lock:payload=dict(stored or market_radar_ablation_state)
+    payload["result_ready"]=engine.stored_ablation_result() is not None;payload["result_url"]="/market-radar/ablation/result";return jsonify(payload)
+
+
+@app.get("/market-radar/ablation/result")
+def market_radar_ablation_result():
+    result=MarketRadarBacktest().stored_ablation_result();return (jsonify(result),200) if result else (jsonify({"ready":False,"status_url":"/market-radar/ablation/status"}),202)
+
+
+@app.post("/market-radar/ablation/start")
+def market_radar_ablation_start():
+    global market_radar_ablation_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=MarketRadarBacktest()
+    if engine.report() is None:return jsonify({"ok":False,"error":"market_radar_backtest_not_completed"}),409
+    with lock:
+        if engine.stored_ablation_result() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/market-radar/ablation/result"})
+        if market_radar_ablation_thread and market_radar_ablation_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/market-radar/ablation/status"})
+        payload={"status":"RUNNING","message":"Starting Market Radar scoring-layer ablation","rows_scanned":0,"updated_at":stamp()};engine.redis.set_json(engine.key("stored_ablation:status"),payload);market_radar_ablation_state.update(payload);market_radar_ablation_thread=threading.Thread(target=market_radar_ablation_loop,name="market-radar-stored-ablation",daemon=True);market_radar_ablation_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/market-radar/ablation/status","result_url":"/market-radar/ablation/result"})
 
 
 if __name__ == "__main__":
