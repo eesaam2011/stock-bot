@@ -291,58 +291,6 @@ class BacktestCollector:
         if progress:progress(scanned)
         return report
     def threshold_analysis_result(self):return self.redis.get_json(self.key("analysis:threshold:93:35"),None)
-    @staticmethod
-    def _weekday_signal_summary(signals,session_count):
-        mfes=sorted(float(x.get("mfe_pct") or 0) for x in signals);maes=sorted(float(x.get("mae_pct") or 0) for x in signals);n=len(mfes)
-        def median(values):
-            if not values:return 0.0
-            mid=len(values)//2
-            return values[mid] if len(values)%2 else (values[mid-1]+values[mid])/2
-        trim=int(n*.01);trimmed=mfes[trim:n-trim] if trim and n>2*trim else mfes
-        out={"sessions":session_count,"signals":n,"signals_per_session":round(n/max(1,session_count),3),"median_mfe_pct":round(median(mfes),4),"trimmed_mean_mfe_pct":round(avg(trimmed),4),"median_mae_pct":round(median(maes),4),"phases":dict(Counter(str(x.get("phase") or "UNKNOWN") for x in signals).most_common())}
-        for threshold in (0,2,5,10,20):
-            count=sum(value>=threshold for value in mfes);key=f"mfe_ge_{threshold}"
-            out[f"{key}_count"]=count;out[f"{key}_rate"]=round(count/max(1,n)*100,2)
-        out["corporate_action_risk_count"]=sum(abs(value)>100 for value in mfes)
-        return out
-    def weekday_signal_report(self,progress=None):
-        """Robust weekday study over every stored approx READY/ENTRY signal, not a winner-only catalog."""
-        manifest=self.redis.get_json(self.key("manifest"),{})
-        sessions=list(manifest.get("sessions",[]));dev=set(manifest.get("development_sessions",sessions[:45]));hold=set(manifest.get("holdout_sessions",sessions[45:]))
-        partition_sessions={"development":dev,"holdout":hold,"all":set(sessions)};day_names=("Monday","Tuesday","Wednesday","Thursday","Friday")
-        session_counts={part:Counter(day_names[date.fromisoformat(s).weekday()] for s in values if date.fromisoformat(s).weekday()<5) for part,values in partition_sessions.items()}
-        thresholds=(88,90,93);signal_names=("breakout_ready","confirmed_entry")
-        selected={(threshold,part,name,day):[] for threshold in thresholds for part in partition_sessions for name in signal_names for day in day_names};scanned=0
-        for row in self.iter_results():
-            scanned+=1
-            if row.get("mode")!="approx" or row.get("partition") not in ("development","holdout"):continue
-            session=str(row.get("session") or "");weekday=date.fromisoformat(session).weekday()
-            if weekday>=5:continue
-            day=day_names[weekday];parts=(row["partition"],"all")
-            for name in signal_names:
-                signal=row.get(name)
-                if not signal:continue
-                opportunity=float(signal.get("opportunity",-1));failure=float(signal.get("failure_pressure",101))
-                for threshold in thresholds:
-                    if opportunity>=threshold and failure<=35:
-                        item=dict(signal,session=session,symbol=row.get("symbol"))
-                        for part in parts:selected[(threshold,part,name,day)].append(item)
-            if progress and scanned%5000==0:progress(scanned,session)
-        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"source_rows_scanned":scanned,"mode":"approx","failure_max":35,"thresholds":{},"methodology":{"population":"All stored approx BREAKOUT_READY and CONFIRMED_ENTRY signals, including signals with MFE below 5%.","minimum_evaluable_opportunity":88,"profit_factor_available":False,"reason_no_profit_factor":"Stored signal outcomes contain MFE/MAE, not an executable exit return for every signal.","winner_only_explosions_file_used":False,"unit":"one signal per symbol/session/signal_type","corporate_action_guard":"Medians and 1%-trimmed means are reported; abs(MFE)>100% is flagged."}}
-        for threshold in thresholds:
-            report["thresholds"][f"{threshold}/35"]={}
-            for part in ("development","holdout","all"):
-                block={}
-                for day in day_names:
-                    block[day]={name:self._weekday_signal_summary(selected[(threshold,part,name,day)],session_counts[part][day]) for name in signal_names}
-                    ready=block[day]["breakout_ready"]["signals"];entry=block[day]["confirmed_entry"]["signals"]
-                    block[day]["entry_conversion_rate"]=round(entry/max(1,ready)*100,2)
-                report["thresholds"][f"{threshold}/35"][part]=block
-        self.redis.set_json(self.key("weekday:signals:report"),report)
-        if progress:progress(scanned,None)
-        return report
-    def weekday_signal_result(self):return self.redis.get_json(self.key("weekday:signals:report"),None)
-    def weekday_signal_status(self):return self.redis.get_json(self.key("weekday:signals:status"),None)
     def simulation_candidates(self):
         cached=self.redis.get_json(self.key("simulation:93:35:candidates"),None)
         if cached is not None:return cached
@@ -452,6 +400,186 @@ class BacktestCollector:
         self.redis.set_json(self.key("stopwidth:93:35:report"),report);return report
     def stop_width_result(self):return self.redis.get_json(self.key("stopwidth:93:35:report"),None)
     def stop_width_status(self):return self.redis.get_json(self.key("stopwidth:93:35:status"),None)
+    MICRO_FEATURE_CASES=[
+        {"group":"1_clean_explosion","symbol":"MF","session":"2026-07-09","t":"2026-07-09T13:32:00Z","price":4.02,"mfe":38.68,"mae":-1.49},
+        {"group":"1_clean_explosion","symbol":"SDOT","session":"2026-06-15","t":"2026-06-15T16:33:00Z","price":22.74,"mfe":18.43,"mae":-0.57},
+        {"group":"1_clean_explosion","symbol":"BXBL","session":"2026-06-22","t":"2026-06-22T19:13:00Z","price":12.75,"mfe":19.62,"mae":-0.55},
+        {"group":"1_clean_explosion","symbol":"CAST","session":"2026-07-17","t":"2026-07-17T18:10:00Z","price":2.46,"mfe":17.89,"mae":-0.61},
+        {"group":"1_clean_explosion","symbol":"COCH","session":"2026-06-30","t":"2026-06-30T14:20:00Z","price":0.7298,"mfe":16.47,"mae":-1.32},
+        {"group":"1_clean_explosion","symbol":"KITT","session":"2026-08-03","t":"2026-08-03T14:04:00Z","price":0.92,"mfe":15.22,"mae":0.01},
+        {"group":"1_clean_explosion","symbol":"TURB","session":"2026-07-07","t":"2026-07-07T18:49:00Z","price":1.55,"mfe":10.96,"mae":-0.97},
+        {"group":"1_clean_explosion","symbol":"VEEE","session":"2026-08-10","t":"2026-08-10T19:13:00Z","price":10.0498,"mfe":24.28,"mae":0.50},
+        {"group":"1_clean_explosion","symbol":"ZYBT","session":"2026-08-19","t":"2026-08-19T13:43:00Z","price":1.60,"mfe":34.71,"mae":-1.25},
+        {"group":"1_clean_explosion","symbol":"RDGT","session":"2026-08-26","t":"2026-08-26T16:58:00Z","price":0.8999,"mfe":20.01,"mae":-2.21},
+        {"group":"2_similar_no_explosion","symbol":"BLDP","session":"2026-06-16","t":"2026-06-16T13:35:00Z","price":4.195,"mfe":5.60,"mae":-3.46},
+        {"group":"2_similar_no_explosion","symbol":"ASYS","session":"2026-06-12","t":"2026-06-12T16:49:00Z","price":24.37,"mfe":5.49,"mae":-1.89},
+        {"group":"2_similar_no_explosion","symbol":"ANL","session":"2026-07-06","t":"2026-07-06T18:59:00Z","price":10.47,"mfe":5.06,"mae":-1.10},
+        {"group":"2_similar_no_explosion","symbol":"PCSA","session":"2026-08-07","t":"2026-08-07T18:17:00Z","price":2.51,"mfe":5.18,"mae":-0.40},
+        {"group":"2_similar_no_explosion","symbol":"RKTO","session":"2026-07-29","t":"2026-07-29T14:54:00Z","price":0.7463,"mfe":6.57,"mae":-2.18},
+        {"group":"2_similar_no_explosion","symbol":"ORIO","session":"2026-06-08","t":"2026-06-08T14:09:00Z","price":0.92,"mfe":6.52,"mae":-3.47},
+        {"group":"2_similar_no_explosion","symbol":"INMB","session":"2026-06-18","t":"2026-06-18T19:08:00Z","price":1.375,"mfe":5.45,"mae":0.00},
+        {"group":"2_similar_no_explosion","symbol":"PAVS","session":"2026-08-10","t":"2026-08-10T18:13:00Z","price":7.2581,"mfe":6.78,"mae":0.03},
+        {"group":"2_similar_no_explosion","symbol":"CNDT","session":"2026-08-11","t":"2026-08-11T14:10:00Z","price":1.535,"mfe":5.54,"mae":-0.98},
+        {"group":"2_similar_no_explosion","symbol":"AGIG","session":"2026-08-20","t":"2026-08-20T15:23:00Z","price":0.9895,"mfe":5.10,"mae":-4.47},
+        {"group":"3_exploded_no_confirm","symbol":"PDC","session":"2026-07-14","t":"2026-07-14T13:59:00Z","price":3.80,"mfe":10.26,"mae":-6.58},
+        {"group":"3_exploded_no_confirm","symbol":"EFOR","session":"2026-07-30","t":"2026-07-30T13:30:00Z","price":25.39,"mfe":11.70,"mae":1.57},
+        {"group":"3_exploded_no_confirm","symbol":"OESX","session":"2026-08-05","t":"2026-08-05T13:34:00Z","price":14.21,"mfe":23.15,"mae":-0.42},
+        {"group":"3_exploded_no_confirm","symbol":"CMMB","session":"2026-07-07","t":"2026-07-07T18:59:00Z","price":2.50,"mfe":13.20,"mae":-2.80},
+        {"group":"3_exploded_no_confirm","symbol":"ZONE","session":"2026-06-29","t":"2026-06-29T14:10:00Z","price":0.76,"mfe":15.78,"mae":-1.34},
+        {"group":"3_exploded_no_confirm","symbol":"GWH","session":"2026-06-29","t":"2026-06-29T13:39:00Z","price":0.89,"mfe":23.60,"mae":0.00},
+        {"group":"3_exploded_no_confirm","symbol":"MASK","session":"2026-08-06","t":"2026-08-06T19:05:00Z","price":1.495,"mfe":13.71,"mae":-2.34},
+        {"group":"3_exploded_no_confirm","symbol":"XHLD","session":"2026-08-27","t":"2026-08-27T15:37:00Z","price":8.64,"mfe":10.53,"mae":-6.25},
+        {"group":"3_exploded_no_confirm","symbol":"AIRE","session":"2026-08-25","t":"2026-08-25T13:36:00Z","price":1.69,"mfe":10.06,"mae":-2.37},
+        {"group":"3_exploded_no_confirm","symbol":"APRE","session":"2026-08-24","t":"2026-08-24T14:01:00Z","price":0.70,"mfe":21.43,"mae":-1.43},
+    ]
+    @staticmethod
+    def extract_micro_features(bars,t_iso,session_open_iso):
+        """كل الميزات تُحسب بشرط زمني صريح T-45m <= bar_time <= T (وقت الشمعة، مو عدد الشموع)،
+        بدون أي معلومة بعد T. VWAP يُحسب حصراً من افتتاح الجلسة الرسمي (09:30 ET) إلى T،
+        حتى لو امتدت نافذة الميزات الأخرى قبل الافتتاح (لالتقاط نشاط ما قبل السوق بالحالات القريبة من الافتتاح)."""
+        t_dt=parse_dt(t_iso);window45_start=(t_dt-timedelta(minutes=45)).isoformat().replace("+00:00","Z")
+        full_window=[b for b in bars if b["t"]<=t_iso]
+        last45=[b for b in full_window if b["t"]>=window45_start]
+        if len(last45)<5:return None
+        vwap_bars=[b for b in full_window if b["t"]>=session_open_iso]
+        cum_pv=0.0;cum_v=0.0
+        for b in vwap_bars:
+            typical=(float(b["h"])+float(b["l"])+float(b["c"]))/3.0;v=float(b["v"])
+            cum_pv+=typical*v;cum_v+=v
+        vwap_at_t=(cum_pv/cum_v) if cum_v>0 else None
+        last_price=float(last45[-1]["c"])
+        n=len(last45);mid=max(1,n//2);first_half=last45[:mid];second_half=last45[mid:]
+        vol_first=sum(float(b["v"]) for b in first_half)/max(1,len(first_half))
+        vol_second=sum(float(b["v"]) for b in second_half)/max(1,len(second_half))
+        volume_acceleration=round(vol_second/vol_first,3) if vol_first>0 else None
+        def dollar_vol(minutes):
+            cutoff=(t_dt-timedelta(minutes=minutes)).isoformat().replace("+00:00","Z")
+            recent=[b for b in last45 if b["t"]>=cutoff]
+            return round(sum(float(b["v"])*float(b["c"]) for b in recent),2)
+        range_first=[float(b["h"])-float(b["l"]) for b in first_half];range_second=[float(b["h"])-float(b["l"]) for b in second_half]
+        avg_range_first=sum(range_first)/max(1,len(range_first));avg_range_second=sum(range_second)/max(1,len(range_second))
+        range_expansion_ratio=round(avg_range_second/avg_range_first,3) if avg_range_first>0 else None
+        bars_above_vwap=sum(1 for b in last45 if vwap_at_t is not None and float(b["c"])>=vwap_at_t)
+        pct_time_above_vwap=round(bars_above_vwap/len(last45)*100,1) if vwap_at_t is not None else None
+        lows=[float(b["l"]) for b in last45];window_low=min(lows);low_idx=lows.index(window_low)
+        higher_lows_streak=0;prev_low=window_low
+        for l in lows[low_idx+1:]:
+            if l>=prev_low:higher_lows_streak+=1;prev_low=l
+            else:break
+        bars_since_window_low=len(last45)-1-low_idx
+        highs=[float(b["h"]) for b in last45]
+        resistance=max(highs[:-1]) if len(highs)>1 else highs[-1]
+        distance_to_resistance_pct=round((resistance-last_price)/last_price*100,3) if last_price>0 else None
+        touches=sum(1 for h in highs if resistance>0 and h>=resistance*0.995)
+        close_locations=[];upper_wicks=[]
+        for b in last45:
+            o,h,l,c=float(b["o"]),float(b["h"]),float(b["l"]),float(b["c"]);rng=h-l
+            close_locations.append((c-l)/rng if rng>0 else 0.5);upper_wicks.append((h-max(o,c))/rng if rng>0 else 0.0)
+        avg_close_location=round(sum(close_locations)/len(close_locations),3);avg_upper_wick=round(sum(upper_wicks)/len(upper_wicks),3)
+        up_vol=sum(float(b["v"]) for b in last45 if float(b["c"])>=float(b["o"]));down_vol=sum(float(b["v"]) for b in last45 if float(b["c"])<float(b["o"]))
+        up_down_vol_ratio=round(up_vol/down_vol,3) if down_vol>0 else None
+        first_open=float(last45[0]["o"])
+        price_change_pct=round((last_price-first_open)/first_open*100,3) if first_open>0 else None
+        avg_vol_45=sum(float(b["v"]) for b in last45)/len(last45)
+        price_to_volume_efficiency=round(price_change_pct/(avg_vol_45/1000),6) if price_change_pct is not None and avg_vol_45>0 else None
+        t_ny=t_dt.astimezone(NY);minutes_since_open=t_ny.hour*60+t_ny.minute-9*60-30;minutes_remaining_in_session=max(0,390-minutes_since_open)
+        return {"bars_used_for_45m_window":len(last45),"window45_start_ts":window45_start,
+            "vwap_bars_from_session_open":len(vwap_bars),
+            "volume_acceleration_2nd_half_vs_1st_half":volume_acceleration,
+            "dollar_volume_last_5m":dollar_vol(5),"dollar_volume_last_15m":dollar_vol(15),"dollar_volume_last_30m":dollar_vol(30),
+            "range_expansion_ratio_2nd_half_vs_1st_half":range_expansion_ratio,
+            "pct_time_above_vwap_last45m":pct_time_above_vwap,"vwap_at_t":round(vwap_at_t,4) if vwap_at_t else None,
+            "bars_since_window_low":bars_since_window_low,"consecutive_higher_lows_after_window_low":higher_lows_streak,
+            "resistance_proxy_price":round(resistance,4),"distance_to_resistance_pct":distance_to_resistance_pct,"resistance_touch_count_last45m":touches,
+            "avg_close_location_in_candle_0to1":avg_close_location,"avg_upper_wick_ratio":avg_upper_wick,
+            "up_volume_to_down_volume_ratio_last45m":up_down_vol_ratio,
+            "price_change_pct_last45m":price_change_pct,"price_to_volume_efficiency":price_to_volume_efficiency,
+            "minutes_remaining_in_regular_session":minutes_remaining_in_session}
+    def micro_feature_report(self,progress=None):
+        cases=self.MICRO_FEATURE_CASES;grouped={}
+        for c in cases:grouped.setdefault(c["session"],[]).append(c)
+        rows=[];raw_bars_key=self.key("micro_features:raw_bars");processed=0
+        for session,items in sorted(grouped.items()):
+            _,end=self.session_window(session)
+            session_open=datetime.combine(date.fromisoformat(session),dtime(9,30),tzinfo=NY).astimezone(UTC).isoformat().replace("+00:00","Z")
+            symbols=list({x["symbol"] for x in items})
+            earliest_t=min(parse_dt(x["t"]) for x in items)
+            fetch_start_dt=min(parse_dt(session_open),earliest_t-timedelta(minutes=60))
+            fetch_start=fetch_start_dt.isoformat().replace("+00:00","Z")
+            sip=self.alpaca.bars(symbols,fetch_start,end,"sip")
+            writes=[]
+            for c in items:
+                bars=sorted(sip.get(c["symbol"],[]),key=lambda b:b["t"])
+                writes.append((f"{c['session']}|{c['symbol']}|{c['t']}",json.dumps(bars,separators=(",",":"))))
+                features=self.extract_micro_features(bars,c["t"],session_open)
+                rows.append({"group":c["group"],"symbol":c["symbol"],"session":c["session"],"t":c["t"],"signal_price":c["price"],
+                    "outcome_mfe_pct":c["mfe"],"outcome_mae_pct":c["mae"],"features":features})
+                processed+=1
+                if progress:progress(processed,len(cases),session)
+            self.hset_bounded(raw_bars_key,writes)
+            time.sleep(self.delay)
+        report={"schema":1,"generated_at":now_iso(),"note":"Exploratory 30-case time-series feature extraction. Feature window is time-based (T-45m<=bar_time<=T), VWAP is the true regular-session VWAP from 09:30 ET to T, and near-open cases correctly include pre-market bars fetched back to T-60m. Raw bars are cached under 'micro_features:raw_bars' for audit. Not a statistical proof; a shape-checking pass before scaling. A fresh temporal holdout must be built before any rule is adopted.","cases":len(cases),"rows":rows}
+        self.redis.set_json(self.key("micro_features:report"),report);return report
+    def micro_feature_result(self):return self.redis.get_json(self.key("micro_features:report"),None)
+    def micro_feature_status(self):return self.redis.get_json(self.key("micro_features:status"),None)
+    OVERNIGHT_FOLLOWTHROUGH_CASES=[
+        {"symbol":"OTLK","session":"2026-06-16","signal_ts":"2026-06-16T00:14:00Z","signal_price":1.17},
+        {"symbol":"RXT","session":"2026-06-17","signal_ts":"2026-06-17T03:50:00Z","signal_price":6.30},
+        {"symbol":"CDT","session":"2026-06-22","signal_ts":"2026-06-22T05:05:00Z","signal_price":1.28},
+        {"symbol":"SOC","session":"2026-07-01","signal_ts":"2026-07-01T07:00:00Z","signal_price":3.34},
+        {"symbol":"BJDX","session":"2026-07-07","signal_ts":"2026-07-07T01:59:00Z","signal_price":1.32},
+        {"symbol":"BATL","session":"2026-07-08","signal_ts":"2026-07-08T02:07:00Z","signal_price":1.78},
+        {"symbol":"BRNX","session":"2026-07-08","signal_ts":"2026-07-08T06:30:00Z","signal_price":1.07},
+        {"symbol":"EHGO","session":"2026-07-13","signal_ts":"2026-07-13T05:58:00Z","signal_price":1.96},
+        {"symbol":"IREN","session":"2026-07-20","signal_ts":"2026-07-20T03:51:00Z","signal_price":34.18},
+        {"symbol":"VIVK","session":"2026-07-23","signal_ts":"2026-07-23T06:47:00Z","signal_price":1.58},
+        {"symbol":"LESL","session":"2026-07-23","signal_ts":"2026-07-23T06:01:00Z","signal_price":1.42},
+        {"symbol":"VIVK","session":"2026-07-24","signal_ts":"2026-07-24T07:25:00Z","signal_price":2.51},
+        {"symbol":"SKHU","session":"2026-07-30","signal_ts":"2026-07-30T01:50:00Z","signal_price":12.83},
+        {"symbol":"APLD","session":"2026-07-30","signal_ts":"2026-07-30T01:24:00Z","signal_price":23.70},
+        {"symbol":"HYFM","session":"2026-08-05","signal_ts":"2026-08-05T02:47:00Z","signal_price":1.93},
+        {"symbol":"AREC","session":"2026-08-07","signal_ts":"2026-08-07T02:43:00Z","signal_price":2.29},
+        {"symbol":"SION","session":"2026-08-11","signal_ts":"2026-08-11T00:06:00Z","signal_price":4.45},
+        {"symbol":"SCKT","session":"2026-08-12","signal_ts":"2026-08-12T03:46:00Z","signal_price":1.48},
+        {"symbol":"BRNX","session":"2026-08-17","signal_ts":"2026-08-17T02:11:00Z","signal_price":3.70},
+        {"symbol":"TRUG","session":"2026-08-17","signal_ts":"2026-08-17T07:35:00Z","signal_price":1.62},
+        {"symbol":"BRNX","session":"2026-08-28","signal_ts":"2026-08-28T03:55:00Z","signal_price":3.65},
+    ]
+    def overnight_followthrough_report(self):
+        cached=self.redis.get_json(self.key("overnight_followthrough:report"),None)
+        if cached is not None:return cached
+        cases=self.OVERNIGHT_FOLLOWTHROUGH_CASES;grouped={}
+        for c in cases:grouped.setdefault(c["session"],[]).append(c)
+        rows=[]
+        for session,items in sorted(grouped.items()):
+            start,end=self.session_window(session);symbols=list({x["symbol"] for x in items})
+            sip=self.alpaca.bars(symbols,start,end,"sip")
+            for c in items:
+                bars=sorted(sip.get(c["symbol"],[]),key=lambda b:b["t"])
+                pm_open_utc=datetime.combine(date.fromisoformat(session),dtime(4,0),tzinfo=NY).astimezone(UTC).isoformat().replace("+00:00","Z")
+                mkt_open_utc=datetime.combine(date.fromisoformat(session),dtime(9,30),tzinfo=NY).astimezone(UTC).isoformat().replace("+00:00","Z")
+                mkt_close_utc=datetime.combine(date.fromisoformat(session),dtime(16,0),tzinfo=NY).astimezone(UTC).isoformat().replace("+00:00","Z")
+                overnight_bars=[b for b in bars if b["t"]<pm_open_utc]
+                premarket_bars=[b for b in bars if pm_open_utc<=b["t"]<mkt_open_utc]
+                regular_bars=[b for b in bars if mkt_open_utc<=b["t"]<mkt_close_utc]
+                price=c["signal_price"]
+                overnight_close=float(overnight_bars[-1]["c"]) if overnight_bars else None
+                premarket_high=max((float(b["h"]) for b in premarket_bars),default=None)
+                premarket_close=float(premarket_bars[-1]["c"]) if premarket_bars else None
+                regular_open=float(regular_bars[0]["o"]) if regular_bars else None
+                regular_high=max((float(b["h"]) for b in regular_bars),default=None)
+                regular_close=float(regular_bars[-1]["c"]) if regular_bars else None
+                day_high=max([v for v in [premarket_high,regular_high] if v is not None],default=None)
+                def pct(x):return round((x/price-1)*100,2) if x is not None else None
+                rows.append({"symbol":c["symbol"],"session":session,"signal_ts":c["signal_ts"],"signal_price":price,
+                    "overnight_close_pct":pct(overnight_close),
+                    "premarket_high_pct":pct(premarket_high),"premarket_close_pct":pct(premarket_close),
+                    "regular_open_pct":pct(regular_open),"regular_high_pct":pct(regular_high),"regular_close_pct":pct(regular_close),
+                    "day_high_pct":pct(day_high),
+                    "had_premarket_bars":len(premarket_bars)>0,"had_regular_bars":len(regular_bars)>0})
+            time.sleep(self.delay)
+        report={"schema":1,"generated_at":now_iso(),"note":"For each overnight explosion, shows % move (relative to the overnight signal price) reached by end of premarket and by end of the regular session, plus each segment's high.","rows":rows}
+        self.redis.set_json(self.key("overnight_followthrough:report"),report);return report
     @staticmethod
     def synth_entry_plan(price,past_bars,entry_max_stop_pct=6.0,entry_min_rr_t1=1.4):
         """يعيد نفس منطق build_entry_plan/calculate_atr من next_day_explosion_radar.py
