@@ -304,7 +304,7 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(result["frozen_threshold_selection"]["min_n_required"],max(100,int(round(0.10*baseline_n))))
         # a threshold with fewer tradable development rows than min_n must never be eligible
         for th in result["frozen_threshold_selection"]["eligible_thresholds"]:
-            self.assertGreaterEqual(result["development"][f"threshold_{th}pct"]["cost_0_25pct"]["n_tradable"],result["frozen_threshold_selection"]["min_n_required"])
+            self.assertGreaterEqual(result["development"][f"threshold_{th}"]["cost_0_25pct"]["n_tradable"],result["frozen_threshold_selection"]["min_n_required"])
         # holdout rows must never influence eligibility/selection
         holdout_n_at_threshold_5=len([r for r in rows if r["partition"]=="holdout" and r["price_change_pct_last45m"]>=5])
         self.assertNotEqual(result["frozen_threshold_selection"]["min_n_required"],holdout_n_at_threshold_5)
@@ -321,10 +321,29 @@ class ReplayTests(unittest.TestCase):
                 "recomputed_mfe_pct":0.5,"recomputed_mae_pct":-2.0})
         result=BacktestCollector._pcprofit_analyze(rows)
         for th in [0,1,2,3,4]:
-            stats=result["development"][f"threshold_{th}pct"]["cost_0_25pct"]["summary"]
+            stats=result["development"][f"threshold_{th}"]["cost_0_25pct"]["summary"]
             if stats:self.assertLess(stats["profit_factor"],1.0)
-        self.assertIsNone(result["frozen_threshold_selection"]["frozen_threshold_pct"])
+        self.assertIsNone(result["frozen_threshold_selection"]["frozen_threshold"])
         self.assertNotIn("holdout_validation",result)
+
+    def test_er45_distinguishes_clean_uptrend_from_choppy_path(self):
+        def bars_from_closes(closes,start_min):
+            out=[]
+            for i,c in enumerate(closes):
+                m=start_min+i;hh=13+m//60;mm=m%60
+                out.append({"t":f"2026-08-28T{hh:02d}:{mm:02d}:00Z","o":c,"h":c+0.05,"l":c-0.05,"c":c,"v":1000})
+            return out
+        clean=[10+i*0.02 for i in range(46)]
+        c1={"symbol":"AAA","session":"2026-08-28","partition":"development","t":"2026-08-28T13:45:00Z","price":clean[-1]}
+        bars1=bars_from_closes(clean,0)+bars_from_closes([clean[-1]+0.1]*6,46)
+        row1=BacktestCollector._er45_compute_case(c1,bars1)
+        self.assertAlmostEqual(row1["er45"],1.0,places=3)
+        choppy=[10.0,10.05,10.0,10.06,10.0,10.05,10.0]*7
+        choppy=choppy[:46]
+        c2={"symbol":"BBB","session":"2026-08-28","partition":"development","t":"2026-08-28T13:45:00Z","price":choppy[-1]}
+        bars2=bars_from_closes(choppy,0)+bars_from_closes([choppy[-1]+0.1]*6,46)
+        row2=BacktestCollector._er45_compute_case(c2,bars2)
+        self.assertLess(abs(row2["er45"]),0.2)  # choppy path with near-zero net displacement -> ER45 near 0
 
 
 if __name__ == "__main__": unittest.main()
