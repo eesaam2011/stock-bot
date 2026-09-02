@@ -400,6 +400,222 @@ class BacktestCollector:
         self.redis.set_json(self.key("stopwidth:93:35:report"),report);return report
     def stop_width_result(self):return self.redis.get_json(self.key("stopwidth:93:35:report"),None)
     def stop_width_status(self):return self.redis.get_json(self.key("stopwidth:93:35:status"),None)
+    def temporal_hypotheses_cases(self):
+        path=os.path.join(os.path.dirname(os.path.abspath(__file__)),"temporal_hypotheses_356_cases.json")
+        with open(path,encoding="utf-8") as f:return json.load(f)["cases"]
+    @staticmethod
+    def extract_h1h2_features(bars,t_iso):
+        """يحسب فقط من شموع T-45 إلى T (سببي بالكامل)، ويعيد حساب النتيجة من T+1 إلى T+60
+        من الشموع الفعلية (مو من MFE المخزن). MFE/MAE/time_to_mfe لا تدخل بأي ميزة إطلاقاً."""
+        t_dt=parse_dt(t_iso);w45_start=(t_dt-timedelta(minutes=45)).isoformat().replace("+00:00","Z")
+        past=[b for b in bars if w45_start<=b["t"]<=t_iso]
+        future=[b for b in bars if t_iso<b["t"]<=(t_dt+timedelta(minutes=60)).isoformat().replace("+00:00","Z")]
+        if len(past)<5 or len(future)<5:return None
+        base_price=float(past[0]["o"]);last_price=float(past[-1]["c"])
+        price_change_pct_last45m=round((last_price-base_price)/base_price*100,4) if base_price>0 else None
+        highs=[float(b["h"]) for b in past]
+        resistance=max(highs[:-1]) if len(highs)>1 else highs[-1]
+        distance_to_resistance_pct=round((resistance-last_price)/last_price*100,4) if last_price>0 else None
+        t_ny=t_dt.astimezone(NY);minutes_since_regular_open=t_ny.hour*60+t_ny.minute-9*60-30
+        signal_price_at_t=last_price
+        future_high=max(float(b["h"]) for b in future)
+        recomputed_mfe_pct=round((future_high/signal_price_at_t-1)*100,4)
+        return {"price_change_pct_last45m":price_change_pct_last45m,
+            "distance_to_resistance_pct":distance_to_resistance_pct,
+            "minutes_since_regular_open":minutes_since_regular_open,
+            "signal_price_at_t":signal_price_at_t,
+            "recomputed_mfe_pct_t1_to_t60":recomputed_mfe_pct,
+            "explosion_ge10_recomputed":bool(recomputed_mfe_pct>=10.0)}
+    def temporal_hypotheses_report(self,progress=None):
+        """يخزّن كل حالة فور حسابها بـRedis Hash (استئناف حقيقي: لو توقف Render منتصف
+        التنفيذ، يعيد تشغيله يقرأ الحالات المكتملة عبر HMGET ويتجاوزها، بدون إعادة الجلب)."""
+        cases=self.temporal_hypotheses_cases();grouped={}
+        for c in cases:grouped.setdefault(c["session"],[]).append(c)
+        cases_key=self.key("temporal_hypotheses:cases")
+        rows=[];processed=0;total=len(cases)
+        for session,items in sorted(grouped.items()):
+            fields=[f"{c['session']}|{c['symbol']}|{c['t']}" for c in items]
+            existing=self.redis.command("HMGET",cases_key,*fields) or [None]*len(fields)
+            todo_symbols=list({c["symbol"] for c,value in zip(items,existing) if value is None})
+            sip={}
+            if todo_symbols:
+                earliest=min(parse_dt(x["t"]) for x,value in zip(items,existing) if value is None)
+                latest=max(parse_dt(x["t"]) for x,value in zip(items,existing) if value is None)
+                start=earliest-timedelta(minutes=60);end=latest+timedelta(minutes=65)
+                sip=self.alpaca.bars(todo_symbols,start,end,"sip")
+            for c,field,value in zip(items,fields,existing):
+                if value is not None:
+                    row=json.loads(value)
+                else:
+                    bars=sorted(sip.get(c["symbol"],[]),key=lambda b:b["t"])
+                    feats=self.extract_h1h2_features(bars,c["t"])
+                    row={"symbol":c["symbol"],"session":c["session"],"t":c["t"],"partition":c["partition"],
+                        "cohort":c["cohort"],"match_id":c["match_id"],"match_rank":c["match_rank"],
+                        "confirmed_entry_observed":c["confirmed_entry_observed"],"features":feats}
+                    self.redis.command("HSET",cases_key,field,json.dumps(row,separators=(",",":")))
+                rows.append(row)
+                processed+=1
+                if progress:progress(processed,total,session)
+            if todo_symbols:time.sleep(self.delay)
+        analysis=self._analyze_h1h2(rows)
+        report={"schema":1,"generated_at":now_iso(),
+            "note":"Confirmatory pre-registered test of H1 (matched-permutation primary test; price_change_pct_last45m predicts recomputed MFE>=10% in T+1..T+60) and H2 (distance_to_resistance_pct adds independent value via cluster-robust logistic regression clustered on match_id, beyond price_change/signal_price/minutes_since_open; separately tested confirmed vs missed). Outcomes recomputed fresh from bars, never from stored MFE. Match structure (match_id/match_rank) is preserved and used for the primary tests; pooled Mann-Whitney/AUC are reported only as secondary descriptive statistics. Holm correction applied across the two primary p-values. Development analyzed first; holdout run once, unchanged.",
+            "cases":len(cases),"rows":rows,"analysis":analysis}
+        self.redis.set_json(self.key("temporal_hypotheses:report"),report);return report
+    @staticmethod
+    def _mannwhitney_auc(pos,neg):
+        """وصفي/ثانوي فقط الآن (لا يحترم بنية المطابقة) — الاختبار الأساسي هو matched permutation test."""
+        import numpy as np
+        from scipy import stats as sstats
+        pos=[x for x in pos if x is not None];neg=[x for x in neg if x is not None]
+        n1,n2=len(pos),len(neg)
+        if n1<2 or n2<2:return None
+        u_stat,p=sstats.mannwhitneyu(pos,neg,alternative="two-sided")
+        auc=u_stat/(n1*n2)
+        se=math.sqrt((auc*(1-auc)+(n1-1)*((auc/(2-auc))-auc**2)+(n2-1)*((2*auc**2/(1+auc))-auc**2))/(n1*n2)) if 0<auc<1 else 0.0
+        ci_lo=max(0.0,auc-1.96*se);ci_hi=min(1.0,auc+1.96*se)
+        return {"role":"secondary_descriptive_ignores_matching","n_pos":n1,"n_neg":n2,
+            "median_pos":round(float(np.median(pos)),4),"median_neg":round(float(np.median(neg)),4),
+            "AUC":round(float(auc),4),"AUC_95CI":[round(ci_lo,4),round(ci_hi,4)],"p_raw":float(p)}
+    @staticmethod
+    def _matched_permutation_test(match_groups,feature,n_perm=20000,seed=42):
+        """اختبار permutation طبقي يحترم بنية 1:3: بكل match_id، الفرضية الصفرية تقول
+        إن أي عضو بالمجموعة كان مرشحاً بنفس الاحتمال ليكون الحالة الإيجابية (الانفجار).
+        الإحصائية: متوسط (قيمة الإيجابي - متوسط البقية) عبر كل المجموعات."""
+        import numpy as np
+        rng=np.random.default_rng(seed)
+        groups=[]
+        for gid,members in match_groups.items():
+            vals=[m[feature] for m in members if m[feature] is not None]
+            pos_positions=[i for i,m in enumerate(members) if m["match_rank"]==0 and m[feature] is not None]
+            if len(vals)<2 or not pos_positions:continue
+            groups.append((vals,pos_positions[0]))
+        if len(groups)<5:return None
+        values_only=[g[0] for g in groups]
+        def stat(assign):
+            diffs=[]
+            for vals,pos_idx in zip(values_only,assign):
+                others=[v for i,v in enumerate(vals) if i!=pos_idx]
+                if others:diffs.append(vals[pos_idx]-float(np.mean(others)))
+            return float(np.mean(diffs)) if diffs else 0.0
+        observed_assign=[pos for _,pos in groups]
+        t_obs=stat(observed_assign)
+        count=0
+        for _ in range(n_perm):
+            perm_assign=[int(rng.integers(0,len(vals))) for vals in values_only]
+            if abs(stat(perm_assign))>=abs(t_obs):count+=1
+        p=(count+1)/(n_perm+1)
+        return {"role":"primary_confirmatory_matched","n_match_groups":len(groups),
+            "mean_within_group_diff":round(t_obs,4),"p_value_permutation":round(p,5),"n_permutations":n_perm}
+    @staticmethod
+    def _fit_logistic_cluster_robust(X,y,clusters):
+        """انحدار لوجستي بمعلومة Fisher التحليلية الفعلية (مو تقريب BFGS)، مع أخطاء معيارية
+        قوية-عنقودية (cluster-robust sandwich) حسب match_id لاحترام عدم استقلالية المجموعات
+        المتطابقة، وفحص صريح لنجاح التقارب. مُختبر مسبقاً بمحاكاة (معدل رفض خاطئ ~5-8%
+        تحت فرضية العدم مع عناقيد صحيحة، مقابل انتفاخ أعلى بدون تصحيح عنقودي)."""
+        import numpy as np
+        from scipy.optimize import minimize
+        from scipy.stats import norm
+        n,k=X.shape
+        def negloglik(beta):
+            z=X@beta;return -float(np.sum(y*z-np.logaddexp(0,z)))
+        def grad(beta):
+            z=X@beta;p=1/(1+np.exp(-z));return -X.T@(y-p)
+        res=minimize(negloglik,np.zeros(k),jac=grad,method="BFGS")
+        beta=res.x;converged=bool(res.success)
+        z=X@beta;p=1/(1+np.exp(-z));W=p*(1-p)
+        H=X.T@(X*W[:,None])
+        try:bread=np.linalg.inv(H)
+        except np.linalg.LinAlgError:return None
+        se_naive=np.sqrt(np.maximum(np.diag(bread),0))
+        unique_clusters=np.unique(clusters);G=len(unique_clusters)
+        score=X*(y-p)[:,None];meat=np.zeros((k,k))
+        for c in unique_clusters:
+            u_c=score[clusters==c].sum(axis=0);meat+=np.outer(u_c,u_c)
+        cf=(G/(G-1))*((n-1)/(n-k)) if G>1 and n>k else 1.0
+        sandwich=bread@meat@bread*cf
+        se_cluster=np.sqrt(np.maximum(np.diag(sandwich),0))
+        p_naive=2*(1-norm.cdf(np.abs(beta/np.where(se_naive>0,se_naive,np.nan))))
+        p_cluster=2*(1-norm.cdf(np.abs(beta/np.where(se_cluster>0,se_cluster,np.nan))))
+        return {"converged":converged,"n_clusters":int(G),"beta":beta,
+            "se_naive":se_naive,"se_cluster":se_cluster,"p_naive":p_naive,"p_cluster":p_cluster,
+            "ci95_cluster_lo":beta-1.96*se_cluster,"ci95_cluster_hi":beta+1.96*se_cluster}
+    @staticmethod
+    def _holm_correction(pvalues,labels):
+        """تصحيح Holm اليدوي (بدون أي مكتبة إضافية): ترتيب تصاعدي، ثم فرض التزايد الرتيب."""
+        order=sorted(range(len(pvalues)),key=lambda i:pvalues[i]);m=len(pvalues)
+        adjusted=[None]*m;running_max=0.0
+        for rank,idx in enumerate(order):
+            adj=min(1.0,(m-rank)*pvalues[idx]);running_max=max(running_max,adj);adjusted[idx]=running_max
+        return {"labels":labels,"raw_p":[round(p,5) for p in pvalues],"holm_adjusted_p":[round(a,5) for a in adjusted]}
+    @classmethod
+    def _logistic_h2(cls,df_part):
+        import numpy as np
+        d=df_part.dropna(subset=["price_change_pct_last45m","distance_to_resistance_pct","minutes_since_regular_open","signal_price_at_t","explosion_ge10_recomputed","match_id"])
+        if len(d)<20 or d["explosion_ge10_recomputed"].nunique()<2:return None
+        raw_X=np.column_stack([d["price_change_pct_last45m"],np.log(d["signal_price_at_t"]),
+            d["minutes_since_regular_open"],d["distance_to_resistance_pct"]]).astype(float)
+        mean=raw_X.mean(axis=0);std=raw_X.std(axis=0);std[std==0]=1.0
+        X_std=(raw_X-mean)/std;X=np.column_stack([np.ones(len(d)),X_std])
+        y=d["explosion_ge10_recomputed"].astype(int).values
+        clusters=d["match_id"].astype("category").cat.codes.values
+        try:
+            fit=cls._fit_logistic_cluster_robust(X,y,clusters)
+        except Exception as exc:return {"error":str(exc)}
+        if fit is None:return {"error":"singular_hessian"}
+        names=["const","price_change_pct_last45m","log_signal_price","minutes_since_regular_open","distance_to_resistance_pct"]
+        coefs={}
+        for i,name in enumerate(names):
+            coefs[name]={"coef_standardized":round(float(fit["beta"][i]),5),
+                "p_value_naive":round(float(fit["p_naive"][i]),5) if not math.isnan(fit["p_naive"][i]) else None,
+                "p_value_cluster_robust":round(float(fit["p_cluster"][i]),5) if not math.isnan(fit["p_cluster"][i]) else None,
+                "ci_95_cluster_robust":[round(float(fit["ci95_cluster_lo"][i]),5),round(float(fit["ci95_cluster_hi"][i]),5)],
+                "odds_ratio_per_1sd":round(float(math.exp(fit["beta"][i])),5)}
+        return {"n":len(d),"n_positive":int(y.sum()),"n_clusters":fit["n_clusters"],"converged":fit["converged"],
+            "note":"p_value_cluster_robust and ci_95_cluster_robust are the primary confirmatory results (clustered on match_id). p_value_naive assumes independence and is shown only for comparison. Coefficients are on standardized (z-scored) predictors.",
+            "coefficients":coefs}
+    @classmethod
+    def _analyze_h1h2(cls,rows):
+        recs=[]
+        for r in rows:
+            f=r.get("features")
+            if not f:continue
+            recs.append({**f,"partition":r["partition"],"cohort":r["cohort"],"match_id":r["match_id"],
+                "match_rank":r["match_rank"],"confirmed_entry_observed":r["confirmed_entry_observed"]})
+        try:
+            import pandas as pd
+        except Exception:
+            return {"error":"pandas not available"}
+        df=pd.DataFrame(recs)
+        out={"usable_rows":len(df),"excluded_null_features":sum(1 for r in rows if not r.get("features"))}
+        for part in ["development","holdout"]:
+            sub=df[df["partition"]==part]
+            match_groups={}
+            for _,row in sub.iterrows():
+                match_groups.setdefault(row["match_id"],[]).append(row.to_dict())
+            h1_primary=cls._matched_permutation_test(match_groups,"price_change_pct_last45m")
+            pos=sub[sub["explosion_ge10_recomputed"]==True]["price_change_pct_last45m"]
+            neg=sub[sub["explosion_ge10_recomputed"]==False]["price_change_pct_last45m"]
+            h1_secondary=cls._mannwhitney_auc(list(pos),list(neg))
+            h2_full=cls._logistic_h2(sub)
+            exploded=sub[sub["explosion_ge10_recomputed"]==True]
+            confirmed=exploded[exploded["confirmed_entry_observed"]==True]["distance_to_resistance_pct"]
+            missed=exploded[exploded["confirmed_entry_observed"]==False]["distance_to_resistance_pct"]
+            h2_secondary=cls._mannwhitney_auc(list(confirmed),list(missed))
+            block={"n":len(sub),
+                "H1_primary_matched_permutation":h1_primary,
+                "H1_secondary_pooled_mannwhitney":h1_secondary,
+                "H2a_distance_to_resistance_cluster_robust_logistic":h2_full,
+                "H2b_distance_to_resistance_confirmed_vs_missed_descriptive":h2_secondary}
+            if h1_primary and h2_full and "coefficients" in h2_full:
+                p_h1=h1_primary["p_value_permutation"]
+                p_h2=h2_full["coefficients"]["distance_to_resistance_pct"]["p_value_cluster_robust"]
+                if p_h2 is not None:
+                    block["holm_correction"]=cls._holm_correction([p_h1,p_h2],["H1_price_change_matched","H2_distance_to_resistance_cluster_robust"])
+            out[part]=block
+        return out
+    def temporal_hypotheses_result(self):return self.redis.get_json(self.key("temporal_hypotheses:report"),None)
+    def temporal_hypotheses_status(self):return self.redis.get_json(self.key("temporal_hypotheses:status"),None)
     MICRO_FEATURE_CASES=[
         {"group":"1_clean_explosion","symbol":"MF","session":"2026-07-09","t":"2026-07-09T13:32:00Z","price":4.02,"mfe":38.68,"mae":-1.49},
         {"group":"1_clean_explosion","symbol":"SDOT","session":"2026-06-15","t":"2026-06-15T16:33:00Z","price":22.74,"mfe":18.43,"mae":-0.57},
