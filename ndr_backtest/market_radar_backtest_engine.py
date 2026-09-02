@@ -267,3 +267,72 @@ class MarketRadarBacktest:
             report["variants"][variant]={part:{threshold:self.summarize(collected[(variant,part,threshold)]) for threshold in threshold_names} for part in ("development","holdout","all")}
         self.redis.set_json(self.key("report"),report);self.save_status(status="COMPLETED",phase="COMPLETED",message="Market Radar technical backtest completed",processed=rows,total=rows,progress_pct=100.0,report_ready=True);return self.status()
     def report(self):return self.redis.get_json(self.key("report"),None)
+    @staticmethod
+    def stop_recovery_summary(signals):
+        stopped=[x for x in signals if x.get("trade_status") in ("stop","gap_below_stop")];recovered=[];failed=[]
+        for signal in stopped:
+            entry=safe(signal.get("entry_price"));target=safe(signal.get("t1"));target_pct=(target/entry-1)*100 if entry>0 and target>0 else math.inf
+            (recovered if safe(signal.get("mfe_pct"))>=target_pct-1e-9 else failed).append(signal)
+        return {"signals":len(signals),"stopped":len(stopped),"stopped_rate":round(len(stopped)/max(1,len(signals))*100,2),"stopped_but_window_reached_t1_level":len(recovered),"stop_recovery_rate":round(len(recovered)/max(1,len(stopped))*100,2),"stopped_and_never_reached_t1_level":len(failed),"stopped_with_window_mfe_ge_2":sum(safe(x.get("mfe_pct"))>=2 for x in stopped),"stopped_with_window_mfe_ge_5":sum(safe(x.get("mfe_pct"))>=5 for x in stopped),"stopped_with_window_mfe_ge_10":sum(safe(x.get("mfe_pct"))>=10 for x in stopped)}
+    @staticmethod
+    def predefined_feature_rules():
+        return [
+            {"id":"rvol_ge_3","label":"RVOL >= 3","rvol_min":3},
+            {"id":"rvol_ge_4","label":"RVOL >= 4","rvol_min":4},
+            {"id":"rvol_ge_5","label":"RVOL >= 5","rvol_min":5},
+            {"id":"rvol_ge_6","label":"RVOL >= 6","rvol_min":6},
+            {"id":"accel_ge_1_5","label":"Volume acceleration >= 1.5","accel_min":1.5},
+            {"id":"accel_ge_2","label":"Volume acceleration >= 2","accel_min":2},
+            {"id":"accel_ge_3","label":"Volume acceleration >= 3","accel_min":3},
+            {"id":"atr_ge_1_5","label":"ATR% >= 1.5","atr_min":1.5},
+            {"id":"atr_ge_2","label":"ATR% >= 2","atr_min":2},
+            {"id":"atr_ge_3","label":"ATR% >= 3","atr_min":3},
+            {"id":"atr_1_5_to_4","label":"1.5 <= ATR% <= 4","atr_min":1.5,"atr_max":4},
+            {"id":"breakout","label":"Breakout = true","breakout":True},
+            {"id":"obv_rising","label":"OBV rising","obv":True},
+            {"id":"trend_15m","label":"15-minute trend supportive","trend":True},
+            {"id":"near_broken_resistance","label":"-2% <= resistance distance <= 0%","distance_min":-2,"distance_max":0},
+            {"id":"rvol4_accel2","label":"RVOL >= 4 and acceleration >= 2","rvol_min":4,"accel_min":2},
+            {"id":"rvol4_breakout","label":"RVOL >= 4 and breakout","rvol_min":4,"breakout":True},
+            {"id":"rvol4_obv_trend","label":"RVOL >= 4, OBV rising and 15m trend","rvol_min":4,"obv":True,"trend":True},
+            {"id":"breakout_near_level","label":"Breakout and -2% <= resistance distance <= 0%","breakout":True,"distance_min":-2,"distance_max":0},
+            {"id":"rvol4_accel2_breakout","label":"RVOL >= 4, acceleration >= 2 and breakout","rvol_min":4,"accel_min":2,"breakout":True},
+        ]
+    @staticmethod
+    def matches_rule(signal,rule):
+        checks=(("rvol_min",safe(signal.get("rvol")),lambda value,bound:value>=bound),("accel_min",safe(signal.get("volume_acceleration")),lambda value,bound:value>=bound),("atr_min",safe(signal.get("atr_pct")),lambda value,bound:value>=bound),("atr_max",safe(signal.get("atr_pct")),lambda value,bound:value<=bound),("distance_min",safe(signal.get("resistance_distance_pct"),999),lambda value,bound:value>=bound),("distance_max",safe(signal.get("resistance_distance_pct"),999),lambda value,bound:value<=bound))
+        if any(key in rule and not test(value,rule[key]) for key,value,test in checks):return False
+        if "breakout" in rule and bool(signal.get("breakout"))!=rule["breakout"]:return False
+        if "obv" in rule and bool(signal.get("obv_rising"))!=rule["obv"]:return False
+        if "trend" in rule and bool(signal.get("trend_15m_ok"))!=rule["trend"]:return False
+        return True
+    def stored_diagnostic_report(self,progress=None):
+        variants=("technical_lower","technical_upper");thresholds=("78","82","86","90","93","live_policy");selected={(variant,threshold,partition):[] for variant in variants for threshold in thresholds for partition in ("development","holdout","all")};rows=0
+        for row in self.iter_results():
+            rows+=1;partition=row.get("partition")
+            for variant in variants:
+                by_threshold=(row.get("signals") or {}).get(variant) or {}
+                for threshold in thresholds:
+                    signal=by_threshold.get(threshold)
+                    if signal:
+                        enriched=dict(signal,session=row.get("session"),symbol=row.get("symbol"),partition=partition)
+                        selected[(variant,threshold,partition)].append(enriched);selected[(variant,threshold,"all")].append(enriched)
+            if progress and rows%5000==0:progress(rows)
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"source_rows_scanned":rows,"methodology":{"data_source":"Stored causal Market Radar backtest signals only; no bars were downloaded.","rule_selection":"All feature rules were predefined. Ranking uses Development only; Holdout is displayed solely for validation.","stop_recovery_definition":"A stopped trade whose full remaining-window MFE reached its stored T1 price.","stop_recovery_limitation":"One-minute OHLC cannot determine intrabar ordering; T1 may have occurred later or in the same stop bar.","entry_quality_ab_test_available":False,"entry_quality_reason":"Blocked moments were stored only as counts, not as complete counterfactual signals."},"stop_diagnostics":{},"feature_rules":{},"conclusion":{}}
+        for variant in variants:
+            report["stop_diagnostics"][variant]={threshold:{partition:self.stop_recovery_summary(selected[(variant,threshold,partition)]) for partition in ("development","holdout","all")} for threshold in thresholds}
+            rules=[]
+            for rule in self.predefined_feature_rules():
+                development=[x for x in selected[(variant,"live_policy","development")] if self.matches_rule(x,rule)];holdout=[x for x in selected[(variant,"live_policy","holdout")] if self.matches_rule(x,rule)]
+                dev_summary=self.summarize(development);hold_summary=self.summarize(holdout);dev_pf=dev_summary.get("profit_factor");hold_pf=hold_summary.get("profit_factor")
+                validated=isinstance(dev_pf,(int,float)) and isinstance(hold_pf,(int,float)) and dev_pf>1 and hold_pf>1 and dev_summary["avg_trade_return_pct"]>0 and hold_summary["avg_trade_return_pct"]>0 and len(development)>=max(10,int(len(selected[(variant,"live_policy","development")])*.02)) and len(holdout)>=max(5,int(len(selected[(variant,"live_policy","holdout")])*.02))
+                rules.append({"id":rule["id"],"label":rule["label"],"development":dev_summary,"holdout":hold_summary,"validated":validated})
+            def dev_rank(item):
+                pf=item["development"].get("profit_factor");return pf if isinstance(pf,(int,float)) else -1
+            report["feature_rules"][variant]={"baseline":{"development":self.summarize(selected[(variant,"live_policy","development")]),"holdout":self.summarize(selected[(variant,"live_policy","holdout")])},"all_predefined_rules":rules,"top_by_development":[x for x in sorted(rules,key=dev_rank,reverse=True)[:10]],"validated_rules":[x for x in rules if x["validated"]]}
+        report["conclusion"]={"any_validated_rule":any(report["feature_rules"][variant]["validated_rules"] for variant in variants),"holdout_was_not_used_for_rule_ranking":True,"requires_new_bar_replay_for_entry_quality_ab_test":True}
+        self.redis.set_json(self.key("stored_diagnostic:report"),report)
+        if progress:progress(rows)
+        return report
+    def stored_diagnostic_result(self):return self.redis.get_json(self.key("stored_diagnostic:report"),None)
+    def stored_diagnostic_status(self):return self.redis.get_json(self.key("stored_diagnostic:status"),None)
