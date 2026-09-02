@@ -1,0 +1,63 @@
+{
+  "protocol_id": "EFB-PREREG-2026-09-02-A",
+  "created_at": "2026-09-02T00:00:00Z",
+  "purpose": "Development-only causal test of two entry architectures. No alerts, orders, or live adoption.",
+  "data_policy": {
+    "design_partition": "development",
+    "legacy_holdout_policy": "locked_during_development_then_secondary_sanity_only",
+    "final_holdout_policy": "20_new_unseen_sessions_with_point_in_time_quotes_float_and_news",
+    "one_trade_per_symbol_session_path": true,
+    "entry_fill": "next_one_minute_bar_open",
+    "intrabar_ordering": "stop_before_target",
+    "time_horizon_minutes": 60,
+    "round_trip_costs_pct": [0.0, 0.25, 0.5],
+    "decision_cost_pct": 0.25
+  },
+  "shared": {
+    "regular_session_only": true,
+    "price_min": 0.5,
+    "price_max": 40.0,
+    "opening_range_minutes": 5,
+    "latest_entry_ny": "11:30",
+    "breakout_buffer_pct": 0.2,
+    "breakout_close_location_min": 0.7,
+    "breakout_volume_ratio_min": 1.5,
+    "require_close_at_or_above_causal_vwap": true,
+    "minimum_stop_pct": 0.5,
+    "maximum_stop_pct": 6.0,
+    "target_r_multiple": 2.0,
+    "level_stop_buffer_pct": 0.3,
+    "bar_stop_buffer_pct": 0.1
+  },
+  "paths": {
+    "ORB_5M": {
+      "description": "First qualifying close above the completed 09:30-09:34 New York opening range high.",
+      "entry_event": "qualifying_breakout_close"
+    },
+    "BREAKOUT_RETEST_RECLAIM": {
+      "description": "Qualifying ORB, then a controlled retest of the opening-range high and a later reclaim close.",
+      "entry_event": "qualifying_reclaim_after_retest",
+      "retest_deadline_minutes": 20,
+      "reclaim_deadline_minutes": 10,
+      "retest_touch_above_level_pct": 0.4,
+      "retest_max_close_below_level_pct": 0.8,
+      "reclaim_buffer_pct": 0.2,
+      "reclaim_close_location_min": 0.6,
+      "reclaim_volume_ratio_min": 1.2
+    }
+  },
+  "development_gate": {
+    "minimum_trades_per_path": 100,
+    "minimum_active_sessions": 20,
+    "profit_factor_min_at_decision_cost": 1.15,
+    "average_return_must_be_positive": true,
+    "profit_factor_min_at_stress_cost": 1.0,
+    "session_cluster_bootstrap_positive_probability_min": 0.95,
+    "maximum_drawdown_pct": 20.0
+  },
+  "multiplicity_policy": {
+    "families": 2,
+    "parameter_search_allowed": false,
+    "post_result_parameter_changes_create_new_protocol": true
+  }
+}
