@@ -572,16 +572,23 @@ class BacktestCollector:
             adj=min(1.0,(m-rank)*pvalues[idx]);running_max=max(running_max,adj);adjusted[idx]=running_max
         return {"labels":labels,"raw_p":[round(p,5) for p in pvalues],"holm_adjusted_p":[round(a,5) for a in adjusted]}
     @classmethod
-    def _logistic_h2(cls,df_part):
+    def _logistic_h2(cls,recs):
+        """recs: قائمة قواميس (بدون pandas). كل قاموس يمثل صف واحد."""
         import numpy as np
-        d=df_part.dropna(subset=["price_change_pct_last45m","distance_to_resistance_pct","minutes_since_regular_open","signal_price_at_t","explosion_ge10_recomputed","match_id"])
-        if len(d)<20 or d["explosion_ge10_recomputed"].nunique()<2:return None
-        raw_X=np.column_stack([d["price_change_pct_last45m"],np.log(d["signal_price_at_t"]),
-            d["minutes_since_regular_open"],d["distance_to_resistance_pct"]]).astype(float)
+        needed=["price_change_pct_last45m","distance_to_resistance_pct","minutes_since_regular_open","signal_price_at_t","explosion_ge10_recomputed","match_id"]
+        d=[r for r in recs if all(r.get(k) is not None for k in needed)]
+        if len(d)<20:return None
+        outcomes=set(r["explosion_ge10_recomputed"] for r in d)
+        if len(outcomes)<2:return None
+        raw_X=np.array([[r["price_change_pct_last45m"],math.log(r["signal_price_at_t"]),
+            r["minutes_since_regular_open"],r["distance_to_resistance_pct"]] for r in d],dtype=float)
         mean=raw_X.mean(axis=0);std=raw_X.std(axis=0);std[std==0]=1.0
         X_std=(raw_X-mean)/std;X=np.column_stack([np.ones(len(d)),X_std])
-        y=d["explosion_ge10_recomputed"].astype(int).values
-        clusters=d["match_id"].astype("category").cat.codes.values
+        y=np.array([1 if r["explosion_ge10_recomputed"] else 0 for r in d])
+        cluster_ids={}
+        for r in d:
+            if r["match_id"] not in cluster_ids:cluster_ids[r["match_id"]]=len(cluster_ids)
+        clusters=np.array([cluster_ids[r["match_id"]] for r in d])
         try:
             fit=cls._fit_logistic_cluster_robust(X,y,clusters)
         except Exception as exc:return {"error":str(exc)}
@@ -605,26 +612,21 @@ class BacktestCollector:
             if not f:continue
             recs.append({**f,"partition":r["partition"],"cohort":r["cohort"],"match_id":r["match_id"],
                 "match_rank":r["match_rank"],"confirmed_entry_observed":r["confirmed_entry_observed"]})
-        try:
-            import pandas as pd
-        except Exception:
-            return {"error":"pandas not available"}
-        df=pd.DataFrame(recs)
-        out={"usable_rows":len(df),"excluded_null_features":sum(1 for r in rows if not r.get("features"))}
+        out={"usable_rows":len(recs),"excluded_null_features":sum(1 for r in rows if not r.get("features"))}
         for part in ["development","holdout"]:
-            sub=df[df["partition"]==part]
+            sub=[r for r in recs if r["partition"]==part]
             match_groups={}
-            for _,row in sub.iterrows():
-                match_groups.setdefault(row["match_id"],[]).append(row.to_dict())
+            for row in sub:
+                match_groups.setdefault(row["match_id"],[]).append(row)
             h1_primary=cls._matched_permutation_test(match_groups,"price_change_pct_last45m")
-            pos=sub[sub["explosion_ge10_recomputed"]==True]["price_change_pct_last45m"]
-            neg=sub[sub["explosion_ge10_recomputed"]==False]["price_change_pct_last45m"]
-            h1_secondary=cls._mannwhitney_auc(list(pos),list(neg))
+            pos=[r["price_change_pct_last45m"] for r in sub if r["explosion_ge10_recomputed"]]
+            neg=[r["price_change_pct_last45m"] for r in sub if not r["explosion_ge10_recomputed"]]
+            h1_secondary=cls._mannwhitney_auc(pos,neg)
             h2_full=cls._logistic_h2(sub)
-            exploded=sub[sub["explosion_ge10_recomputed"]==True]
-            confirmed=exploded[exploded["confirmed_entry_observed"]==True]["distance_to_resistance_pct"]
-            missed=exploded[exploded["confirmed_entry_observed"]==False]["distance_to_resistance_pct"]
-            h2_secondary=cls._mannwhitney_auc(list(confirmed),list(missed))
+            exploded=[r for r in sub if r["explosion_ge10_recomputed"]]
+            confirmed=[r["distance_to_resistance_pct"] for r in exploded if r["confirmed_entry_observed"]]
+            missed=[r["distance_to_resistance_pct"] for r in exploded if not r["confirmed_entry_observed"]]
+            h2_secondary=cls._mannwhitney_auc(confirmed,missed)
             block={"n":len(sub),
                 "H1_primary_matched_permutation":h1_primary,
                 "H1_secondary_pooled_mannwhitney":h1_secondary,
