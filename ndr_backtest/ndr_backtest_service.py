@@ -35,6 +35,8 @@ temporal_hypotheses_thread = None
 temporal_hypotheses_state = {"status":"IDLE","message":"H1/H2 confirmatory test has not started.","processed":0,"total":356,"session":None,"updated_at":None}
 pcprofit_thread = None
 pcprofit_state = {"status":"IDLE","message":"Price-change profitability simulation has not started.","processed":0,"total":0,"session":None,"updated_at":None}
+er45profit_thread = None
+er45profit_state = {"status":"IDLE","message":"ER45 profitability simulation has not started.","processed":0,"total":0,"session":None,"updated_at":None}
 entrycompare_thread = None
 entrycompare_state = {"status":"IDLE","message":"Entry comparison (ready vs confirmed) has not started.","processed":0,"total":0,"session":None,"updated_at":None}
 weekday_thread = None
@@ -254,6 +256,24 @@ def pcprofit_loop():
         except Exception:pass
         with lock:pcprofit_state.update(payload)
     finally:pcprofit_thread=None
+
+
+def er45profit_loop():
+    global er45profit_thread
+    try:
+        engine=BacktestCollector()
+        total_candidates=len(engine.price_change_profitability_candidates())
+        def progress(processed,total,session):
+            payload={"status":"RUNNING","message":"Fetching bars and simulating trades for the ER45 filter (same BREAKOUT_READY REGULAR universe)","processed":processed,"total":total,"session":session,"updated_at":stamp()};engine.redis.set_json(engine.key("pcprofit_er45:v1:status"),payload)
+            with lock:er45profit_state.update(payload)
+        engine.er45_profitability_report(progress=progress);payload={"status":"COMPLETED","message":"ER45 profitability simulation completed","processed":total_candidates,"total":total_candidates,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("pcprofit_er45:v1:status"),payload)
+        with lock:er45profit_state.update(payload)
+    except Exception as exc:
+        payload={"status":"ERROR","message":f"{type(exc).__name__}: {exc}","updated_at":stamp()}
+        try:engine.redis.set_json(engine.key("pcprofit_er45:v1:status"),{**er45profit_state,**payload})
+        except Exception:pass
+        with lock:er45profit_state.update(payload)
+    finally:er45profit_thread=None
 
 
 def entrycompare_loop():
@@ -558,13 +578,14 @@ def control():
     <form method="post" action="/stop-width/start"><input name="token" type="password" placeholder="Admin token" required><button>Run stop-width sensitivity test</button></form>
     <form method="post" action="/temporal-hypotheses/start"><input name="token" type="password" placeholder="Admin token" required><button>Run H1/H2 confirmatory test (356 cases)</button></form>
     <form method="post" action="/price-change-profitability/start"><input name="token" type="password" placeholder="Admin token" required><button>Run price-change profitability simulation (ALL BREAKOUT_READY)</button></form>
+    <form method="post" action="/er45-profitability/start"><input name="token" type="password" placeholder="Admin token" required><button>Run ER45 profitability simulation</button></form>
     <form method="post" action="/entry-compare/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare READY vs CONFIRMED entry</button></form>
     <form method="post" action="/weekday/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze weekdays on all stored signals</button></form>
     <form method="post" action="/market-radar/start"><input name="token" type="password" placeholder="Admin token" required><button>Start / Resume Market Radar backtest</button></form>
     <form method="post" action="/market-radar/pause"><input name="token" type="password" placeholder="Admin token" required><button>Pause Market Radar backtest</button></form>
     <form method="post" action="/market-radar/diagnostic/start"><input name="token" type="password" placeholder="Admin token" required><button>Analyze stored Market Radar results</button></form>
     <form method="post" action="/market-radar/ablation/start"><input name="token" type="password" placeholder="Admin token" required><button>Compare simplified Market Radar layers</button></form>
-    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a> · <a style="color:#a78bfa" href="/temporal-hypotheses/status">H1/H2 confirmatory test</a> · <a style="color:#a78bfa" href="/price-change-profitability/status">Price-change profitability</a></p></body></html>
+    <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a> · <a style="color:#a78bfa" href="/temporal-hypotheses/status">H1/H2 confirmatory test</a> · <a style="color:#a78bfa" href="/price-change-profitability/status">Price-change profitability</a> · <a style="color:#a78bfa" href="/er45-profitability/status">ER45 profitability</a></p></body></html>
     """
 
 
@@ -674,6 +695,32 @@ def start_big_moves():
         if big_moves_thread and big_moves_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/big-moves/status"})
         payload={"status":"RUNNING","message":"Starting focused +20% and +50% review","rows_scanned":0,"updated_at":stamp()};engine.redis.set_json(engine.key("big_moves:status"),payload);big_moves_state.update(payload);big_moves_thread=threading.Thread(target=big_moves_loop,name="ndr-big-moves",daemon=True);big_moves_thread.start()
     return jsonify({"ok":True,"status":"started","status_url":"/big-moves/status","result_url":"/big-moves/result"})
+
+
+@app.get("/er45-profitability/status")
+def er45profit_status():
+    engine=BacktestCollector();stored=engine.er45_profitability_status()
+    with lock:payload=dict(stored or er45profit_state)
+    payload["result_ready"]=engine.er45_profitability_result() is not None;payload["result_url"]="/er45-profitability/result";return jsonify(payload)
+
+
+@app.get("/er45-profitability/result")
+def er45profit_result():
+    result=BacktestCollector().er45_profitability_result()
+    if not result:return jsonify({"ready":False,"status_url":"/er45-profitability/status"}),202
+    return jsonify(result)
+
+
+@app.post("/er45-profitability/start")
+def start_er45profit():
+    global er45profit_thread
+    if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
+    engine=BacktestCollector()
+    with lock:
+        if engine.er45_profitability_result() is not None:return jsonify({"ok":True,"status":"already_completed","result_url":"/er45-profitability/result"})
+        if er45profit_thread and er45profit_thread.is_alive():return jsonify({"ok":True,"status":"already_running","status_url":"/er45-profitability/status"})
+        payload={"status":"RUNNING","message":"Starting ER45 profitability simulation","processed":0,"total":0,"session":None,"updated_at":stamp()};engine.redis.set_json(engine.key("pcprofit_er45:v1:status"),payload);er45profit_state.update(payload);er45profit_thread=threading.Thread(target=er45profit_loop,name="ndr-er45profit",daemon=True);er45profit_thread.start()
+    return jsonify({"ok":True,"status":"started","status_url":"/er45-profitability/status","result_url":"/er45-profitability/result"})
 
 
 @app.get("/price-change-profitability/status")
