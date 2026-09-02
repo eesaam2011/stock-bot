@@ -336,3 +336,55 @@ class MarketRadarBacktest:
         return report
     def stored_diagnostic_result(self):return self.redis.get_json(self.key("stored_diagnostic:report"),None)
     def stored_diagnostic_status(self):return self.redis.get_json(self.key("stored_diagnostic:status"),None)
+
+    @staticmethod
+    def technical_only_scores(signal):
+        """Rebuild scores without unavailable float, news or quote-spread inputs."""
+        rvol=safe(signal.get("rvol"));accel=safe(signal.get("volume_acceleration"));atr_pct=safe(signal.get("atr_pct"));distance=safe(signal.get("resistance_distance_pct"),999)
+        above=bool(signal.get("above_vwap"));obv=bool(signal.get("obv_rising"));trend=bool(signal.get("trend_15m_ok"));breakout=bool(signal.get("breakout"))
+        core=MarketRadarBacktest.core_score(1,0 if above else 2,rvol,accel,obv,atr_pct,trend,breakout,distance)
+        multiplier=1.0
+        if rvol>=4 and accel>=2:multiplier+=.06
+        if above and obv and trend:multiplier+=.04
+        if breakout and -2<=distance<=0 and atr_pct>=1.5:multiplier+=.05
+        penalties=5 if atr_pct<1.5 else 0
+        if not breakout and 0<=distance<=.3:penalties+=8
+        elif not breakout and distance<-.3:penalties+=6
+        final=min(100,max(0,core*min(multiplier,1.2)-penalties))
+        return round(core,4),round(final,4)
+
+    @staticmethod
+    def _numeric_pf(summary):
+        value=summary.get("profit_factor")
+        return value if isinstance(value,(int,float)) else (-1 if value is None else math.inf)
+
+    def stored_ablation_report(self,progress=None):
+        """Compare fixed scoring-layer simplifications using one stored signal timestamp."""
+        core_levels=(50,60,70,78,82,86);final_levels=(60,70,78,82,86)
+        policy_ids=["hard_safety_only"]+[f"technical_core_{x}" for x in core_levels]+[f"technical_final_{x}" for x in final_levels]+["current_optimistic_policy"]
+        selected={(policy,part):[] for policy in policy_ids for part in ("development","holdout","all")};rows=0;cohort=0
+        for row in self.iter_results():
+            rows+=1;partition=row.get("partition")
+            signal=(((row.get("signals") or {}).get("technical_upper") or {}).get("78"))
+            if signal:
+                cohort+=1;enriched=dict(signal,session=row.get("session"),symbol=row.get("symbol"),partition=partition)
+                core,final=self.technical_only_scores(enriched);et=parse_dt(enriched["ts"]).astimezone(NY);required=93 if et.hour*60+et.minute>=900 else 86
+                matches={"hard_safety_only":True,"current_optimistic_policy":safe(enriched.get("score"))>=required}
+                matches.update({f"technical_core_{level}":core>=level for level in core_levels});matches.update({f"technical_final_{level}":final>=level for level in final_levels})
+                for policy,matched in matches.items():
+                    if matched:selected[(policy,partition)].append(enriched);selected[(policy,"all")].append(enriched)
+            if progress and rows%5000==0:progress(rows)
+        policies=[]
+        for policy in policy_ids:
+            summaries={part:self.summarize(selected[(policy,part)]) for part in ("development","holdout","all")};dev=summaries["development"];hold=summaries["holdout"]
+            enough=dev["signals"]>=100 and hold["signals"]>=30
+            validated=enough and self._numeric_pf(dev)>1 and self._numeric_pf(hold)>1 and dev["avg_trade_return_pct"]>0 and hold["avg_trade_return_pct"]>0
+            policies.append({"id":policy,"development":dev,"holdout":hold,"all":summaries["all"],"minimum_sample_met":enough,"validated":validated})
+        ranked=sorted(policies,key=lambda x:(x["development"]["avg_trade_return_pct"],self._numeric_pf(x["development"])),reverse=True)
+        validated=[x for x in policies if x["validated"]]
+        report={"schema":1,"generated_at":now_iso(),"source_prefix":self.prefix,"source_rows_scanned":rows,"common_timestamp_cohort":cohort,"methodology":{"data_source":"Stored Market Radar causal results only; no market-data requests and no replay.","common_timestamp":"Every policy is evaluated from the earliest stored technical_upper score>=78 signal for each case.","fixed_policies":"All thresholds were declared before inspecting Holdout. Ranking uses Development only; Holdout is validation only.","layers_removed":"Technical score variants remove unavailable float, point-in-time news and historical quote-spread points.","layers_still_present":["price and liquidity hard gates","VWAP/RVOL/ATR hard gates","Entry Quality delay gate","trade-plan construction"],"limitation":"This isolates the scoring layer only. It cannot evaluate moments rejected before the stored score>=78 signal or remove Entry Quality without a new causal bar replay.","live_safety":"No bot changes, alerts or orders are performed."},"policies":policies,"ranking_by_development":[x["id"] for x in ranked],"conclusion":{"validated_policy_ids":[x["id"] for x in validated],"any_simplification_validated":any(x["id"]!="current_optimistic_policy" for x in validated),"holdout_not_used_for_ranking":True,"next_step":"Run a new causal replay only for the winning simplification before any live-bot change." if validated else "Do not simplify the live bot from this evidence; the scoring-layer ablation did not validate."}}
+        self.redis.set_json(self.key("stored_ablation:report"),report)
+        if progress:progress(rows)
+        return report
+    def stored_ablation_result(self):return self.redis.get_json(self.key("stored_ablation:report"),None)
+    def stored_ablation_status(self):return self.redis.get_json(self.key("stored_ablation:status"),None)
