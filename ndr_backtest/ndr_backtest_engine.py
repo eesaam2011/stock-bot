@@ -765,8 +765,8 @@ class BacktestCollector:
             "cases":len(candidates),"analysis":analysis}
         self.redis.set_json(self.key("pcprofit:v2:report"),report);return report
     @classmethod
-    def _pcprofit_analyze(cls,rows):
-        thresholds=[0,1,2,3,4,5]
+    def _pcprofit_analyze(cls,rows,feature_key="price_change_pct_last45m",thresholds=(0,1,2,3,4,5)):
+        thresholds=list(thresholds)
         cost_levels=[0.0,0.25,0.50]  # round-trip cost assumptions in percentage points, applied per trade
         decision_cost=0.25  # the single cost level used for threshold selection/eligibility; all three are still reported
         def subset_stats(recs,cost_pct):
@@ -783,15 +783,16 @@ class BacktestCollector:
                 "pct_stopped_before_target":round(stopped/len(tradable)*100,2) if tradable else None}
         def stats_all_costs(recs):
             return {f"cost_{c}pct".replace(".","_"):subset_stats(recs,c) for c in cost_levels}
-        out={"excluded_no_valid_plan":sum(1 for r in rows if not r.get("has_plan")),
+        out={"feature_key":feature_key,"thresholds_tested":thresholds,
+            "excluded_no_valid_plan":sum(1 for r in rows if not r.get("has_plan")),
             "excluded_insufficient_bars":sum(1 for r in rows if r.get("status")=="insufficient_bars"),
             "cost_levels_pct_round_trip":cost_levels,"decision_cost_pct":decision_cost}
         dev_all=[r for r in rows if r["partition"]=="development"]
         hold_all=[r for r in rows if r["partition"]=="holdout"]
         dev_table={};dev_table["baseline_no_filter"]=stats_all_costs(dev_all)
         for th in thresholds:
-            sub=[r for r in dev_all if r.get("price_change_pct_last45m") is not None and r["price_change_pct_last45m"]>=th]
-            dev_table[f"threshold_{th}pct"]=stats_all_costs(sub)
+            sub=[r for r in dev_all if r.get(feature_key) is not None and r[feature_key]>=th]
+            dev_table[f"threshold_{th}"]=stats_all_costs(sub)
         out["development"]=dev_table
         baseline_n=dev_table["baseline_no_filter"]["cost_0_0pct"]["n_tradable"]
         min_n=max(100,int(round(0.10*baseline_n)))
@@ -801,7 +802,7 @@ class BacktestCollector:
         eligible=[]
         beats_baseline=[]
         for th in thresholds:
-            stats=dev_table[f"threshold_{th}pct"][f"cost_{decision_cost}pct".replace(".","_")]
+            stats=dev_table[f"threshold_{th}"][f"cost_{decision_cost}pct".replace(".","_")]
             if stats["n_tradable"]>=min_n and stats["summary"] is not None:
                 eligible.append(th)
                 pf=stats["summary"]["profit_factor"];avg=stats["summary"]["avg_return_pct"]
@@ -810,16 +811,16 @@ class BacktestCollector:
                 if absolutely_profitable and relatively_better:beats_baseline.append(th)
         frozen=None
         if beats_baseline:
-            frozen=max(beats_baseline,key=lambda th:dev_table[f"threshold_{th}pct"][f"cost_{decision_cost}pct".replace(".","_")]["summary"]["profit_factor"])
+            frozen=max(beats_baseline,key=lambda th:dev_table[f"threshold_{th}"][f"cost_{decision_cost}pct".replace(".","_")]["summary"]["profit_factor"])
         out["frozen_threshold_selection"]={
             "rule":f"At decision_cost={decision_cost}% round-trip: eligible if n_tradable>=max(100,10% of baseline n={baseline_n})={min_n}; adopted only if it is BOTH absolutely profitable (profit_factor>1.0 AND avg_return_pct>0) AND beats the development no-filter baseline on both metrics at the same cost level; frozen = highest-PF threshold among those that qualify on both counts.",
             "min_n_required":min_n,"baseline_profit_factor":baseline_pf,"baseline_avg_return_pct":baseline_avg,
-            "eligible_thresholds":eligible,"thresholds_beating_baseline":beats_baseline,"frozen_threshold_pct":frozen}
+            "eligible_thresholds":eligible,"thresholds_beating_baseline":beats_baseline,"frozen_threshold":frozen}
         out["holdout"]={"baseline_no_filter":stats_all_costs(hold_all)}
         if frozen is not None:
-            sub=[r for r in hold_all if r.get("price_change_pct_last45m") is not None and r["price_change_pct_last45m"]>=frozen]
+            sub=[r for r in hold_all if r.get(feature_key) is not None and r[feature_key]>=frozen]
             holdout_stats=stats_all_costs(sub)
-            out["holdout"][f"frozen_threshold_{frozen}pct"]=holdout_stats
+            out["holdout"][f"frozen_threshold_{frozen}"]=holdout_stats
             hs=holdout_stats[f"cost_{decision_cost}pct".replace(".","_")]
             if hs["summary"] is not None:
                 h_pf=hs["summary"]["profit_factor"];h_avg=hs["summary"]["avg_return_pct"]
@@ -835,6 +836,72 @@ class BacktestCollector:
         return out
     def price_change_profitability_result(self):return self.redis.get_json(self.key("pcprofit:v2:report"),None)
     def price_change_profitability_status(self):return self.redis.get_json(self.key("pcprofit:v2:status"),None)
+    @classmethod
+    def _er45_compute_case(cls,c,bars):
+        """ER45 = |Close_T - Close_(T-45)| ... بالإشارة الأصلية (موجب=صعود) مقسومة على مجموع القيم
+        المطلقة للتغيرات لحظة بلحظة (Kaufman Efficiency Ratio). قريب من 1 = صعود نظيف متدرج،
+        قريب من 0 = تذبذب/ضوضاء، سالب = المسار هابط. نفس بروتوكول price_change_profitability
+        بالضبط (نفس المرشحين، نفس محاكاة الصفقة، حد T+60 صارم)، فقط الميزة المستخدمة للفلترة تتغيّر."""
+        t_iso=c["t"];t_dt=parse_dt(t_iso)
+        w45_start=(t_dt-timedelta(minutes=45)).isoformat().replace("+00:00","Z")
+        w60_end=(t_dt+timedelta(minutes=60)).isoformat().replace("+00:00","Z")
+        past45=[b for b in bars if w45_start<=b["t"]<=t_iso]
+        past_all=[b for b in bars if b["t"]<=t_iso]
+        future=[b for b in bars if t_iso<b["t"]<=w60_end]
+        if len(past45)<6 or len(future)<5:return None
+        closes=[float(b["c"]) for b in past45]
+        net_change=closes[-1]-closes[0]
+        path_sum=sum(abs(closes[i]-closes[i-1]) for i in range(1,len(closes)))
+        er45=round(net_change/path_sum,4) if path_sum>0 else None
+        plan=cls.synth_entry_plan(c["price"],past_all)
+        recomputed_mfe=round((max(float(b["h"]) for b in future)/c["price"]-1)*100,4)
+        recomputed_mae=round((min(float(b["l"]) for b in future)/c["price"]-1)*100,4)
+        row={"symbol":c["symbol"],"session":c["session"],"t":t_iso,"partition":c["partition"],
+            "er45":er45,"recomputed_mfe_pct":recomputed_mfe,"recomputed_mae_pct":recomputed_mae,"has_plan":plan is not None}
+        if plan is not None:
+            bars_until_t60=[b for b in bars if b["t"]<=w60_end]
+            sim_candidate={"session":c["session"],"partition":c["partition"],"symbol":c["symbol"],
+                "signal":{"ts":t_iso,"stop":plan["stop"]}}
+            run=cls.simulate_trade(sim_candidate,bars_until_t60,assumption="conservative",policy="full_t1")
+            row["return_pct"]=run["return_pct"];row["status"]=run["status"]
+        else:
+            row["return_pct"]=None;row["status"]="no_valid_stop_plan"
+        return row
+    def er45_profitability_report(self,progress=None):
+        candidates=self.price_change_profitability_candidates()  # identical candidate universe; no re-scan needed
+        cases_key=self.key("pcprofit_er45:v1:cases");grouped={}
+        for c in candidates:grouped.setdefault(c["session"],[]).append(c)
+        rows=[];processed=0;total=len(candidates)
+        for session,items in sorted(grouped.items()):
+            fields=[f"{c['session']}|{c['symbol']}|{c['t']}" for c in items]
+            existing=self.redis.command("HMGET",cases_key,*fields) or [None]*len(fields)
+            todo=[c for c,value in zip(items,existing) if value is None]
+            sip={}
+            if todo:
+                start=min(parse_dt(x["t"]) for x in todo)-timedelta(minutes=60)
+                end=max(parse_dt(x["t"]) for x in todo)+timedelta(minutes=65)
+                todo_symbols=list({x["symbol"] for x in todo})
+                sip=self.alpaca.bars(todo_symbols,start,end,"sip")
+            for c,field,value in zip(items,fields,existing):
+                if value is not None:
+                    row=json.loads(value)
+                else:
+                    bars=sorted(sip.get(c["symbol"],[]),key=lambda b:b["t"])
+                    row=self._er45_compute_case(c,bars)
+                    if row is None:row={"symbol":c["symbol"],"session":c["session"],"t":c["t"],"partition":c["partition"],
+                        "er45":None,"return_pct":None,"status":"insufficient_bars","has_plan":False}
+                    self.redis.command("HSET",cases_key,field,json.dumps(row,separators=(",",":")))
+                rows.append(row)
+                processed+=1
+                if progress:progress(processed,total,session)
+            if todo:time.sleep(self.delay)
+        analysis=self._pcprofit_analyze(rows,feature_key="er45",thresholds=(0.10,0.20,0.30,0.40,0.50))
+        report={"schema":1,"generated_at":now_iso(),
+            "note":"Decisive profitability simulation of an ER45 (Kaufman efficiency ratio over the 45 minutes before T) entry filter across the SAME universe of ALL BREAKOUT_READY REGULAR cases used for the price_change_pct_last45m test, tested independently and not mixed with it. Same T+60 cutoff, same synthesized stop/targets, same simulate_trade mechanics, same three cost levels, same development-only selection with the same minimum-sample and absolute+relative profitability gates, same one-time holdout check.",
+            "cases":len(candidates),"analysis":analysis}
+        self.redis.set_json(self.key("pcprofit_er45:v1:report"),report);return report
+    def er45_profitability_result(self):return self.redis.get_json(self.key("pcprofit_er45:v1:report"),None)
+    def er45_profitability_status(self):return self.redis.get_json(self.key("pcprofit_er45:v1:status"),None)
     MICRO_FEATURE_CASES=[
         {"group":"1_clean_explosion","symbol":"MF","session":"2026-07-09","t":"2026-07-09T13:32:00Z","price":4.02,"mfe":38.68,"mae":-1.49},
         {"group":"1_clean_explosion","symbol":"SDOT","session":"2026-06-15","t":"2026-06-15T16:33:00Z","price":22.74,"mfe":18.43,"mae":-0.57},
