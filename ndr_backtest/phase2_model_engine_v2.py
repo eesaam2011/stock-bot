@@ -213,6 +213,8 @@ class Phase2ModelEngine:
                 "t": str(pc["t"]),
                 "features": features,
                 "explosion_ge10": bool(float(pc["recomputed_mfe_pct"]) >= 10.0),
+                "recomputed_mfe_pct": float(pc["recomputed_mfe_pct"]),
+                "recomputed_mae_pct": float(pc.get("recomputed_mae_pct")) if pc.get("recomputed_mae_pct") is not None else None,
                 "gross_return_pct": float(pc["return_pct"]),
                 "net_return_pct": float(pc["return_pct"]) - float(self.protocol["data"]["decision_cost_pct_round_trip"]),
             })
