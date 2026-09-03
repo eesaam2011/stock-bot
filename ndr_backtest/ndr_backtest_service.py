@@ -18,6 +18,7 @@ from market_radar_backtest_engine import MarketRadarBacktest
 from evidence_first_engine import EvidenceFirstEngine
 from redis_audit_service import build_audit as build_redis_audit
 from phase2_model_engine_v2 import Phase2ModelEngine
+from phase3_execution_engine import Phase3ExecutionEngine
 
 app = Flask(__name__)
 UTC = timezone.utc
@@ -65,6 +66,16 @@ phase2_thread = None
 phase2_state = {
     "status": "IDLE",
     "message": "Phase-2 interpretable model has not started.",
+    "processed": 0,
+    "total": 0,
+    "session": None,
+    "updated_at": None,
+    "live_approved": False,
+}
+phase3_thread = None
+phase3_state = {
+    "status": "IDLE",
+    "message": "Phase-3 dual-head execution model has not started.",
     "processed": 0,
     "total": 0,
     "session": None,
@@ -607,6 +618,52 @@ def phase2_loop():
         phase2_thread = None
 
 
+def phase3_loop():
+    global phase3_thread
+    engine = Phase3ExecutionEngine()
+    try:
+        def progress(processed, total, session):
+            payload = {
+                "status": "RUNNING",
+                "message": "Running chronological dual-head opportunity and execution validation",
+                "processed": processed,
+                "total": total,
+                "session": session,
+                "protocol_sha256": engine.protocol_sha256,
+                "updated_at": stamp(),
+                "live_approved": False,
+            }
+            engine.redis.set_json(engine.key("status"), payload)
+            with lock:
+                phase3_state.update(payload)
+        result = engine.run_development(progress)
+        payload = {
+            "status": "COMPLETED",
+            "message": "Phase-3 dual-head development model completed",
+            "processed": result["dataset"]["joined_rows"],
+            "total": result["dataset"]["joined_rows"],
+            "session": None,
+            "development_candidate_found": result["development_candidate_found"],
+            "protocol_sha256": engine.protocol_sha256,
+            "result_url": "/phase3/result",
+            "updated_at": stamp(),
+            "live_approved": False,
+        }
+        engine.redis.set_json(engine.key("status"), payload)
+        with lock:
+            phase3_state.update(payload)
+    except Exception as exc:
+        payload = {"status": "ERROR", "message": f"{type(exc).__name__}: {exc}", "updated_at": stamp(), "live_approved": False}
+        try:
+            engine.redis.set_json(engine.key("status"), payload)
+        except Exception:
+            pass
+        with lock:
+            phase3_state.update(payload)
+    finally:
+        phase3_thread = None
+
+
 def historical_boats_test() -> dict:
     # A liquid symbol and a completed overnight interval. Access is proven only
     # by at least one returned bar, never by HTTP 200 alone.
@@ -667,6 +724,10 @@ def home():
         "phase2_readiness_url": "/phase2/readiness",
         "phase2_status_url": "/phase2/status",
         "phase2_result_url": "/phase2/result",
+        "phase3_protocol_url": "/phase3/protocol",
+        "phase3_readiness_url": "/phase3/readiness",
+        "phase3_status_url": "/phase3/status",
+        "phase3_result_url": "/phase3/result",
         "redis_audit_summary_start_url": "/redis-audit/summary/start",
         "redis_audit_status_url": "/redis-audit/status",
         "redis_audit_export_start_url": "/redis-audit/export/start",
@@ -859,6 +920,10 @@ def control():
     <p>Uses existing stored causal cases only. Logistic model, development-only tuning, historical holdout audit, no alerts or orders.</p>
     <form method="post" action="/phase2/start"><input name="token" type="password" placeholder="Admin token" required><button>Start Phase-2 model</button></form>
     <p><a style="color:#a78bfa" href="/phase2/readiness">Phase-2 readiness</a> · <a style="color:#a78bfa" href="/phase2/protocol">Phase-2 protocol</a> · <a style="color:#a78bfa" href="/phase2/status">Phase-2 status</a> · <a style="color:#a78bfa" href="/phase2/result">Phase-2 result</a></p>
+    <hr><h3>Phase 3 — Dual-Head Execution Model</h3>
+    <p>Combines explosion probability with probability of a profitable simulated execution after costs. Development research only.</p>
+    <form method="post" action="/phase3/start"><input name="token" type="password" placeholder="Admin token" required><button>Start Phase-3 dual-head model</button></form>
+    <p><a style="color:#a78bfa" href="/phase3/readiness">Phase-3 readiness</a> · <a style="color:#a78bfa" href="/phase3/protocol">Phase-3 protocol</a> · <a style="color:#a78bfa" href="/phase3/status">Phase-3 status</a> · <a style="color:#a78bfa" href="/phase3/result">Phase-3 result</a></p>
     <hr><h3>Redis Historical Audit — Read Only</h3>
     <p>Uses the current NDR admin token. It scans the Redis connections configured on this service and never changes or deletes data.</p>
     <form method="post" action="/redis-audit/summary/start"><input name="token" type="password" placeholder="Admin token" required><button>Start Redis audit summary</button></form>
@@ -1471,6 +1536,91 @@ def phase2_start():
         "status_url": "/phase2/status",
         "result_url": "/phase2/result",
         "protocol_url": "/phase2/protocol",
+        "live_approved": False,
+    })
+
+
+@app.get("/phase3/protocol")
+def phase3_protocol():
+    return jsonify(Phase3ExecutionEngine().protocol_record())
+
+
+@app.get("/phase3/readiness")
+def phase3_readiness():
+    try:
+        payload = Phase3ExecutionEngine().readiness()
+        return jsonify(payload), (200 if payload["ready_for_phase3_development"] else 409)
+    except Exception as exc:
+        return jsonify({
+            "ready_for_phase3_development": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "alerts_enabled": False,
+            "orders_enabled": False,
+            "live_approved": False,
+        }), 503
+
+
+@app.get("/phase3/status")
+def phase3_status():
+    engine = Phase3ExecutionEngine()
+    stored = engine.status()
+    with lock:
+        payload = dict(stored or phase3_state)
+    payload["result_ready"] = engine.result() is not None
+    payload["result_url"] = "/phase3/result"
+    payload["protocol_url"] = "/phase3/protocol"
+    payload["live_approved"] = False
+    return jsonify(payload)
+
+
+@app.get("/phase3/result")
+def phase3_result():
+    result = Phase3ExecutionEngine().result()
+    if result is None:
+        return jsonify({
+            "ready": False,
+            "status_url": "/phase3/status",
+            "protocol_url": "/phase3/protocol",
+            "live_approved": False,
+        }), 202
+    return jsonify(result)
+
+
+@app.post("/phase3/start")
+def phase3_start():
+    global phase3_thread
+    if not authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    engine = Phase3ExecutionEngine()
+    readiness = engine.readiness()
+    if not readiness["ready_for_phase3_development"]:
+        return jsonify({"ok": False, "error": "phase3_not_ready", "readiness": readiness}), 409
+    with lock:
+        if engine.result() is not None:
+            return jsonify({"ok": True, "status": "already_completed", "result_url": "/phase3/result"})
+        if phase3_thread and phase3_thread.is_alive():
+            return jsonify({"ok": True, "status": "already_running", "status_url": "/phase3/status"})
+        engine.lock_protocol()
+        payload = {
+            "status": "RUNNING",
+            "message": "Starting Phase-3 dual-head model from existing Redis cases",
+            "processed": 0,
+            "total": min(readiness["price_change_cases"], readiness["er45_cases"]),
+            "session": None,
+            "protocol_sha256": engine.protocol_sha256,
+            "updated_at": stamp(),
+            "live_approved": False,
+        }
+        engine.redis.set_json(engine.key("status"), payload)
+        phase3_state.update(payload)
+        phase3_thread = threading.Thread(target=phase3_loop, name="phase3-dual-head-development", daemon=True)
+        phase3_thread.start()
+    return jsonify({
+        "ok": True,
+        "status": "started",
+        "status_url": "/phase3/status",
+        "result_url": "/phase3/result",
+        "protocol_url": "/phase3/protocol",
         "live_approved": False,
     })
 
