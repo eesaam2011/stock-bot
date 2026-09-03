@@ -302,7 +302,7 @@ def _sample_records(r: redis.Redis, key: bytes, kind: str, size: int | None) -> 
     return records
 
 
-def audit_source(source_name: str, spec: dict[str, str], include_data: bool) -> dict[str, Any]:
+def audit_source(source_name: str, spec: dict[str, str], include_data: bool, progress=None) -> dict[str, Any]:
     r = _client_from_spec(spec)
     server = r.ping()
     items: list[dict[str, Any]] = []
@@ -335,6 +335,8 @@ def audit_source(source_name: str, spec: dict[str, str], include_data: bool) -> 
                 item["earliest_sampled_timestamp"] = found[0] if found else None
                 item["latest_sampled_timestamp"] = found[-1] if found else None
             items.append(item)
+        if progress:
+            progress(source_name, len(items), cursor)
         if cursor == 0:
             break
     items.sort(key=lambda x: x["key"].lower())
@@ -352,7 +354,7 @@ def audit_source(source_name: str, spec: dict[str, str], include_data: bool) -> 
     }
 
 
-def build_audit(include_data: bool) -> dict[str, Any]:
+def build_audit(include_data: bool, progress=None) -> dict[str, Any]:
     sources = _source_specs()
     report: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -370,7 +372,7 @@ def build_audit(include_data: bool) -> dict[str, Any]:
         return report
     for name, spec in sources.items():
         try:
-            report["sources"].append(audit_source(name, spec, include_data))
+            report["sources"].append(audit_source(name, spec, include_data, progress=progress))
         except Exception as exc:  # preserve other Redis sources if one fails
             report["sources"].append({"source_env": name, "connected": False, "error": f"{type(exc).__name__}: {exc}"})
     return report
