@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import fnmatch
 import json
 import os
 import re
@@ -302,7 +303,13 @@ def _sample_records(r: redis.Redis, key: bytes, kind: str, size: int | None) -> 
     return records
 
 
-def audit_source(source_name: str, spec: dict[str, str], include_data: bool, progress=None) -> dict[str, Any]:
+def audit_source(
+    source_name: str,
+    spec: dict[str, str],
+    include_data: bool,
+    progress=None,
+    key_patterns: list[str] | None = None,
+) -> dict[str, Any]:
     r = _client_from_spec(spec)
     server = r.ping()
     items: list[dict[str, Any]] = []
@@ -311,6 +318,8 @@ def audit_source(source_name: str, spec: dict[str, str], include_data: bool, pro
         cursor, keys = r.scan(cursor=cursor, count=SCAN_COUNT)
         for raw_key in keys:
             key = _text(raw_key)
+            if key_patterns and not any(fnmatch.fnmatchcase(key, pattern) for pattern in key_patterns):
+                continue
             kind = _text(r.type(raw_key))
             ttl_ms = r.pttl(raw_key)
             size = _key_size(r, raw_key, kind)
@@ -354,7 +363,7 @@ def audit_source(source_name: str, spec: dict[str, str], include_data: bool, pro
     }
 
 
-def build_audit(include_data: bool, progress=None) -> dict[str, Any]:
+def build_audit(include_data: bool, progress=None, key_patterns: list[str] | None = None) -> dict[str, Any]:
     sources = _source_specs()
     report: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -364,6 +373,7 @@ def build_audit(include_data: bool, progress=None) -> dict[str, Any]:
             "max_records_per_key": MAX_RECORDS_PER_KEY,
             "max_string_bytes": MAX_STRING_BYTES,
         },
+        "key_patterns": key_patterns,
         "sources": [],
         "warnings": [],
     }
@@ -372,7 +382,13 @@ def build_audit(include_data: bool, progress=None) -> dict[str, Any]:
         return report
     for name, spec in sources.items():
         try:
-            report["sources"].append(audit_source(name, spec, include_data, progress=progress))
+            report["sources"].append(audit_source(
+                name,
+                spec,
+                include_data,
+                progress=progress,
+                key_patterns=key_patterns,
+            ))
         except Exception as exc:  # preserve other Redis sources if one fails
             report["sources"].append({"source_env": name, "connected": False, "error": f"{type(exc).__name__}: {exc}"})
     return report
