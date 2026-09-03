@@ -16,6 +16,46 @@ from ndr_backtest_engine import BacktestCollector, now_iso, parse_dt
 
 NY = ZoneInfo("America/New_York")
 PROTOCOL_PATH = Path(__file__).with_name("phase2_model_protocol.json")
+EMBEDDED_PROTOCOL_JSON = r'''
+{
+  "protocol_id": "NDR-PHASE2-LOGIT-2026-09-03-A",
+  "created_at": "2026-09-03T00:00:00Z",
+  "purpose": "Build an interpretable explosion-opportunity model from existing causal NDR research cases. Research/shadow use only.",
+  "data": {
+    "universe": "All stored Approx BREAKOUT_READY signals in REGULAR with joined price-change and ER45 case records",
+    "development_partition": "The original 45 development sessions",
+    "legacy_holdout_partition": "Historical audit only because its aggregate results were previously inspected",
+    "final_validation": "At least 20 genuinely new chronological shadow sessions",
+    "decision_cost_pct_round_trip": 0.25,
+    "classification_label": "recomputed MFE at least 10 percent during T+1 through T+60",
+    "trading_label": "existing conservative full-T1 simulated return through T+60"
+  },
+  "model": {
+    "algorithm": "L2-regularized logistic regression",
+    "features": ["price_change_pct_last45m", "er45", "price_change_x_er45", "log_signal_price", "opportunity", "failure_pressure", "minutes_since_regular_open"],
+    "l2_penalties": [0.1, 1.0, 10.0],
+    "probability_thresholds": [0.5, 0.6, 0.7, 0.8],
+    "internal_validation": "three expanding-window chronological folds inside development only",
+    "holdout_used_for_selection": false
+  },
+  "selection_gate": {
+    "minimum_internal_validation_trades": 100,
+    "profit_factor_min_at_decision_cost": 1.15,
+    "average_net_return_must_be_positive": true,
+    "maximum_drawdown_pct": 20.0,
+    "session_cluster_bootstrap_positive_probability_min": 0.95
+  },
+  "final_forward_gate": {
+    "minimum_new_sessions": 20,
+    "minimum_trades": 100,
+    "profit_factor_min_at_decision_cost": 1.15,
+    "average_net_return_must_be_positive": true,
+    "maximum_drawdown_pct": 20.0,
+    "session_cluster_bootstrap_positive_probability_min": 0.95
+  },
+  "safety": {"alerts_enabled": false, "orders_enabled": false, "live_approved": false, "legacy_holdout_can_approve_live": false}
+}
+'''
 
 
 def _canonical_json(value: Any) -> str:
@@ -23,7 +63,16 @@ def _canonical_json(value: Any) -> str:
 
 
 def load_phase2_protocol(path: Path = PROTOCOL_PATH) -> tuple[dict[str, Any], str]:
-    protocol = json.loads(path.read_text(encoding="utf-8"))
+    # Android file pickers sometimes hide .json files. The exact frozen protocol
+    # is embedded so deployment remains reproducible even when the companion
+    # JSON file is not uploaded. If present, the file must match this copy.
+    embedded = json.loads(EMBEDDED_PROTOCOL_JSON)
+    if path.exists():
+        protocol = json.loads(path.read_text(encoding="utf-8"))
+        if _canonical_json(protocol) != _canonical_json(embedded):
+            raise RuntimeError("Phase-2 protocol file does not match the embedded frozen protocol")
+    else:
+        protocol = embedded
     fingerprint = hashlib.sha256(_canonical_json(protocol).encode("utf-8")).hexdigest()
     return protocol, fingerprint
 
