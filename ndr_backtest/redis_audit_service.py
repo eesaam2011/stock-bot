@@ -18,6 +18,7 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
+from urllib.request import Request, urlopen
 
 from flask import Flask, Response, jsonify, render_template_string, request
 import redis
@@ -141,6 +142,19 @@ def _source_urls() -> dict[str, str]:
     return dict(sorted(sources.items()))
 
 
+def _source_specs() -> dict[str, dict[str, str]]:
+    specs = {name: {"kind": "redis_url", "url": url} for name, url in _source_urls().items()}
+    rest_url = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+    rest_token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+    if rest_url and rest_token:
+        specs["UPSTASH_REDIS_REST_URL"] = {
+            "kind": "upstash_rest",
+            "url": rest_url,
+            "token": rest_token,
+        }
+    return dict(sorted(specs.items()))
+
+
 def _authorized() -> bool:
     expected = os.getenv("AUDIT_ADMIN_TOKEN", "")
     supplied = request.headers.get("X-Admin-Token", "") or request.form.get("token", "")
@@ -149,6 +163,77 @@ def _authorized() -> bool:
 
 def _client(url: str) -> redis.Redis:
     return redis.Redis.from_url(url, socket_connect_timeout=8, socket_timeout=20, health_check_interval=30)
+
+
+class UpstashRESTClient:
+    """Small read-only adapter for the Redis commands used by this audit."""
+
+    def __init__(self, url: str, token: str):
+        self.url = url.rstrip("/")
+        self.token = token
+
+    def command(self, *parts: Any) -> Any:
+        req = Request(
+            self.url,
+            data=json.dumps([_text(part) for part in parts]).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=90) as response:
+            payload = json.load(response)
+        if payload.get("error"):
+            raise RuntimeError(payload["error"])
+        return payload.get("result")
+
+    def ping(self): return self.command("PING")
+    def scan(self, cursor=0, count=1000):
+        result = self.command("SCAN", cursor, "COUNT", count) or [0, []]
+        return int(result[0]), result[1] or []
+    def type(self, key): return self.command("TYPE", key)
+    def pttl(self, key): return int(self.command("PTTL", key))
+    def strlen(self, key): return int(self.command("STRLEN", key))
+    def getrange(self, key, start, end): return self.command("GETRANGE", key, start, end)
+    def llen(self, key): return int(self.command("LLEN", key))
+    def lrange(self, key, start, end): return self.command("LRANGE", key, start, end) or []
+    def hlen(self, key): return int(self.command("HLEN", key))
+    def scard(self, key): return int(self.command("SCARD", key))
+    def zcard(self, key): return int(self.command("ZCARD", key))
+    def xlen(self, key): return int(self.command("XLEN", key))
+
+    def hscan(self, key, cursor=0, count=1000):
+        result = self.command("HSCAN", key, cursor, "COUNT", count) or [0, []]
+        flat = result[1] or []
+        return int(result[0]), {flat[i]: flat[i + 1] for i in range(0, len(flat) - 1, 2)}
+
+    def sscan(self, key, cursor=0, count=1000):
+        result = self.command("SSCAN", key, cursor, "COUNT", count) or [0, []]
+        return int(result[0]), result[1] or []
+
+    def zrange(self, key, start, end, withscores=False):
+        parts = ["ZRANGE", key, start, end]
+        if withscores:
+            parts.append("WITHSCORES")
+        flat = self.command(*parts) or []
+        if not withscores:
+            return flat
+        return [(flat[i], float(flat[i + 1])) for i in range(0, len(flat) - 1, 2)]
+
+    def xrange(self, key, min="-", max="+", count=None):
+        parts = ["XRANGE", key, min, max]
+        if count is not None:
+            parts.extend(["COUNT", count])
+        result = self.command(*parts) or []
+        rows = []
+        for row in result:
+            row_id, flat = row[0], row[1]
+            rows.append((row_id, {flat[i]: flat[i + 1] for i in range(0, len(flat) - 1, 2)}))
+        return rows
+
+
+def _client_from_spec(spec: dict[str, str]):
+    if spec["kind"] == "upstash_rest":
+        return UpstashRESTClient(spec["url"], spec["token"])
+    return _client(spec["url"])
 
 
 def _key_size(r: redis.Redis, key: bytes, kind: str) -> int | None:
@@ -217,8 +302,8 @@ def _sample_records(r: redis.Redis, key: bytes, kind: str, size: int | None) -> 
     return records
 
 
-def audit_source(source_name: str, url: str, include_data: bool) -> dict[str, Any]:
-    r = _client(url)
+def audit_source(source_name: str, spec: dict[str, str], include_data: bool) -> dict[str, Any]:
+    r = _client_from_spec(spec)
     server = r.ping()
     items: list[dict[str, Any]] = []
     cursor = 0
@@ -268,7 +353,7 @@ def audit_source(source_name: str, url: str, include_data: bool) -> dict[str, An
 
 
 def build_audit(include_data: bool) -> dict[str, Any]:
-    sources = _source_urls()
+    sources = _source_specs()
     report: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "read_only": True,
@@ -283,9 +368,9 @@ def build_audit(include_data: bool) -> dict[str, Any]:
     if not sources:
         report["warnings"].append("No environment variable matching REDIS_URL was found")
         return report
-    for name, url in sources.items():
+    for name, spec in sources.items():
         try:
-            report["sources"].append(audit_source(name, url, include_data))
+            report["sources"].append(audit_source(name, spec, include_data))
         except Exception as exc:  # preserve other Redis sources if one fails
             report["sources"].append({"source_env": name, "connected": False, "error": f"{type(exc).__name__}: {exc}"})
     return report
@@ -298,7 +383,7 @@ def index() -> str:
 
 @app.get("/health")
 def health() -> Response:
-    return jsonify({"ok": True, "read_only": True, "redis_sources_detected": list(_source_urls())})
+    return jsonify({"ok": True, "read_only": True, "redis_sources_detected": list(_source_specs())})
 
 
 @app.post("/audit/summary")
