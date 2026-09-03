@@ -17,7 +17,7 @@ from ndr_backtest_engine import BacktestCollector
 from market_radar_backtest_engine import MarketRadarBacktest
 from evidence_first_engine import EvidenceFirstEngine
 from redis_audit_service import build_audit as build_redis_audit
-from phase2_model_engine import Phase2ModelEngine
+from phase2_model_engine_v2 import Phase2ModelEngine
 
 app = Flask(__name__)
 UTC = timezone.utc
