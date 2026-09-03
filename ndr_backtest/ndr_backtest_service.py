@@ -74,6 +74,49 @@ redis_audit_export_state = {
     "message": "Redis export has not started.",
     "updated_at": None,
 }
+REDIS_RESEARCH_EXPORT_PATTERNS = [
+    "elite_catalyst:alerts",
+    "elite_catalyst:blocked_news",
+    "elite_catalyst:history",
+    "elite_catalyst:runtime",
+    "elite_explosion:active_monitoring",
+    "elite_explosion:daily_statistics",
+    "elite_explosion:runtime_stats",
+    "elite_explosion:score_history",
+    "elite_explosion:sent_alerts",
+    "elite_explosion:state",
+    "live_trade_manager:*",
+    "market_radar:alerts",
+    "market_radar:history",
+    "market_radar:patterns",
+    "market_radar:runtime",
+    "market_radar:watchlist",
+    "next_day_explosion_radar:candidates",
+    "next_day_explosion_radar:research_history",
+    "next_day_explosion_radar:runtime_stats",
+    "next_day_explosion_radar:sent_entry_alerts",
+    "next_day_explosion_radar:sent_state_alerts",
+    "market_radar_backtest_v1:report",
+    "market_radar_backtest_v1:stored_ablation:*",
+    "market_radar_backtest_v1:stored_diagnostic:*",
+    "next_day_radar_backtest_v3:analysis:*",
+    "next_day_radar_backtest_v3:diagnostic:*",
+    "next_day_radar_backtest_v3:entrycompare:93:35:*",
+    "next_day_radar_backtest_v3:evidence_first_v1:development_report",
+    "next_day_radar_backtest_v3:evidence_first_v1:protocol_lock",
+    "next_day_radar_backtest_v3:evidence_first_v1:status",
+    "next_day_radar_backtest_v3:explosions:catalog",
+    "next_day_radar_backtest_v3:manifest",
+    "next_day_radar_backtest_v3:micro_features:report",
+    "next_day_radar_backtest_v3:pcprofit:v2:*",
+    "next_day_radar_backtest_v3:pcprofit_er45:v1:*",
+    "next_day_radar_backtest_v3:report",
+    "next_day_radar_backtest_v3:simulation:93:35:*",
+    "next_day_radar_backtest_v3:stopwidth:93:35:*",
+    "next_day_radar_backtest_v3:temporal_hypotheses:*",
+    "next_day_radar_backtest_v3:weekday:signals:*",
+    "paper_active_trades",
+]
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -155,7 +198,11 @@ def redis_audit_export_loop():
                     scan_cursor=cursor,
                     updated_at=stamp(),
                 )
-        report = build_redis_audit(include_data=True, progress=progress)
+        report = build_redis_audit(
+            include_data=True,
+            progress=progress,
+            key_patterns=REDIS_RESEARCH_EXPORT_PATTERNS,
+        )
         payload = json.dumps(report, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         with tempfile.NamedTemporaryFile(prefix="redis_audit_", suffix=".json.gz", delete=False) as output:
             output.write(gzip.compress(payload, compresslevel=6))
@@ -164,7 +211,7 @@ def redis_audit_export_loop():
             redis_audit_export_path = completed_path
             redis_audit_export_state.update(
                 status="COMPLETED",
-                message="Redis historical export completed and is ready to download.",
+                message="Focused Redis research export completed and is ready to download.",
                 compressed_bytes=os.path.getsize(completed_path),
                 updated_at=stamp(),
             )
@@ -746,7 +793,7 @@ def control():
     <form method="post" action="/redis-audit/summary/start"><input name="token" type="password" placeholder="Admin token" required><button>Start Redis audit summary</button></form>
     <p><a style="color:#a78bfa" href="/redis-audit/status">Redis audit status</a></p>
     <form method="post" action="/redis-audit/result"><input name="token" type="password" placeholder="Admin token" required><button>View completed Redis audit summary</button></form>
-    <form method="post" action="/redis-audit/export/start"><input name="token" type="password" placeholder="Admin token" required><button>Start full Redis historical export</button></form>
+    <form method="post" action="/redis-audit/export/start"><input name="token" type="password" placeholder="Admin token" required><button>Start focused Redis research export</button></form>
     <p><a style="color:#a78bfa" href="/redis-audit/export/status">Redis export status</a></p>
     <form method="post" action="/redis-audit/export/download"><input name="token" type="password" placeholder="Admin token" required><button>Download completed Redis export (JSON.GZ)</button></form>
     <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a> · <a style="color:#a78bfa" href="/temporal-hypotheses/status">H1/H2 confirmatory test</a> · <a style="color:#a78bfa" href="/price-change-profitability/status">Price-change profitability</a> · <a style="color:#a78bfa" href="/er45-profitability/status">ER45 profitability</a></p></body></html>
@@ -811,7 +858,7 @@ def redis_audit_export_start():
         redis_audit_export_state.clear()
         redis_audit_export_state.update(
             status="RUNNING",
-            message="Exporting Redis data in the background.",
+            message="Exporting the focused Redis research bundle in the background.",
             updated_at=stamp(),
         )
         redis_audit_export_thread = threading.Thread(
@@ -841,7 +888,7 @@ def redis_audit_export_download():
         path = redis_audit_export_path
     if not path or not os.path.isfile(path):
         return jsonify({"ready": False, "status_url": "/redis-audit/export/status"}), 202
-    filename = f"redis_audit_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json.gz"
+    filename = f"redis_research_export_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json.gz"
     return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
 
 
