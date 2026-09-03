@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from flask import Flask, jsonify, request, Response
 from ndr_backtest_engine import BacktestCollector
 from market_radar_backtest_engine import MarketRadarBacktest
 from evidence_first_engine import EvidenceFirstEngine
+from redis_audit_service import build_audit as build_redis_audit
 
 app = Flask(__name__)
 UTC = timezone.utc
@@ -469,6 +471,8 @@ def home():
         "evidence_first_readiness_url": "/evidence-first/readiness",
         "evidence_first_status_url": "/evidence-first/status",
         "evidence_first_result_url": "/evidence-first/result",
+        "redis_audit_summary_url": "/redis-audit/summary",
+        "redis_audit_export_url": "/redis-audit/export",
         "raw_case_url_template": "/api/results/case/YYYY-MM-DD/SYMBOL/approx",
         "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
@@ -653,8 +657,48 @@ def control():
     <p>Check readiness first. This run is Development-only and can never send alerts or orders.</p>
     <form method="post" action="/evidence-first/start"><input name="token" type="password" placeholder="Admin token" required><button>Start frozen ORB / Retest research</button></form>
     <p><a style="color:#a78bfa" href="/evidence-first/readiness">Evidence-First readiness</a> · <a style="color:#a78bfa" href="/evidence-first/protocol">Frozen protocol</a> · <a style="color:#a78bfa" href="/evidence-first/status">Evidence-First status</a> · <a style="color:#a78bfa" href="/evidence-first/result">Evidence-First result</a></p>
+    <hr><h3>Redis Historical Audit — Read Only</h3>
+    <p>Uses the current NDR admin token. It scans the Redis connections configured on this service and never changes or deletes data.</p>
+    <form method="post" action="/redis-audit/summary"><input name="token" type="password" placeholder="Admin token" required><button>View Redis audit summary</button></form>
+    <form method="post" action="/redis-audit/export"><input name="token" type="password" placeholder="Admin token" required><button>Download Redis historical data (JSON.GZ)</button></form>
     <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a> · <a style="color:#a78bfa" href="/temporal-hypotheses/status">H1/H2 confirmatory test</a> · <a style="color:#a78bfa" href="/price-change-profitability/status">Price-change profitability</a> · <a style="color:#a78bfa" href="/er45-profitability/status">ER45 profitability</a></p></body></html>
     """
+
+
+@app.post("/redis-audit/summary")
+def redis_audit_summary():
+    if not authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    try:
+        return jsonify(build_redis_audit(include_data=False))
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "read_only": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }), 503
+
+
+@app.post("/redis-audit/export")
+def redis_audit_export():
+    if not authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    try:
+        report = build_redis_audit(include_data=True)
+        payload = json.dumps(report, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        compressed = gzip.compress(payload, compresslevel=6)
+        filename = f"redis_audit_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json.gz"
+        return Response(
+            compressed,
+            mimetype="application/gzip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "read_only": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }), 503
 
 
 @app.route("/test/boats", methods=["GET", "POST"])
