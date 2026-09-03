@@ -4,6 +4,7 @@ import gzip
 import json
 import os
 import re
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, send_file
 from ndr_backtest_engine import BacktestCollector
 from market_radar_backtest_engine import MarketRadarBacktest
 from evidence_first_engine import EvidenceFirstEngine
@@ -59,6 +60,20 @@ evidence_first_state = {
     "session": None,
     "updated_at": None,
 }
+redis_audit_summary_thread = None
+redis_audit_summary_result_data = None
+redis_audit_summary_state = {
+    "status": "IDLE",
+    "message": "Redis summary audit has not started.",
+    "updated_at": None,
+}
+redis_audit_export_thread = None
+redis_audit_export_path = None
+redis_audit_export_state = {
+    "status": "IDLE",
+    "message": "Redis export has not started.",
+    "updated_at": None,
+}
 state = {
     "status": "IDLE",
     "phase": "SETUP",
@@ -95,6 +110,73 @@ def collector_status():
         return BacktestCollector().status()
     except Exception as exc:
         return {"phase": "REDIS_UNAVAILABLE", "message": f"{type(exc).__name__}: {exc}"}
+
+
+def redis_audit_summary_loop():
+    global redis_audit_summary_thread, redis_audit_summary_result_data
+    try:
+        def progress(source, keys_scanned, cursor):
+            with lock:
+                redis_audit_summary_state.update(
+                    source=source,
+                    keys_scanned=keys_scanned,
+                    scan_cursor=cursor,
+                    updated_at=stamp(),
+                )
+        result = build_redis_audit(include_data=False, progress=progress)
+        with lock:
+            redis_audit_summary_result_data = result
+            redis_audit_summary_state.update(
+                status="COMPLETED",
+                message="Redis summary audit completed.",
+                source_count=len(result.get("sources") or []),
+                warning_count=len(result.get("warnings") or []),
+                updated_at=stamp(),
+            )
+    except Exception as exc:
+        with lock:
+            redis_audit_summary_state.update(
+                status="ERROR",
+                message=f"{type(exc).__name__}: {exc}",
+                updated_at=stamp(),
+            )
+    finally:
+        redis_audit_summary_thread = None
+
+
+def redis_audit_export_loop():
+    global redis_audit_export_thread, redis_audit_export_path
+    try:
+        def progress(source, keys_scanned, cursor):
+            with lock:
+                redis_audit_export_state.update(
+                    source=source,
+                    keys_scanned=keys_scanned,
+                    scan_cursor=cursor,
+                    updated_at=stamp(),
+                )
+        report = build_redis_audit(include_data=True, progress=progress)
+        payload = json.dumps(report, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        with tempfile.NamedTemporaryFile(prefix="redis_audit_", suffix=".json.gz", delete=False) as output:
+            output.write(gzip.compress(payload, compresslevel=6))
+            completed_path = output.name
+        with lock:
+            redis_audit_export_path = completed_path
+            redis_audit_export_state.update(
+                status="COMPLETED",
+                message="Redis historical export completed and is ready to download.",
+                compressed_bytes=os.path.getsize(completed_path),
+                updated_at=stamp(),
+            )
+    except Exception as exc:
+        with lock:
+            redis_audit_export_state.update(
+                status="ERROR",
+                message=f"{type(exc).__name__}: {exc}",
+                updated_at=stamp(),
+            )
+    finally:
+        redis_audit_export_thread = None
 
 
 def worker_loop():
@@ -471,8 +553,10 @@ def home():
         "evidence_first_readiness_url": "/evidence-first/readiness",
         "evidence_first_status_url": "/evidence-first/status",
         "evidence_first_result_url": "/evidence-first/result",
-        "redis_audit_summary_url": "/redis-audit/summary",
-        "redis_audit_export_url": "/redis-audit/export",
+        "redis_audit_summary_start_url": "/redis-audit/summary/start",
+        "redis_audit_status_url": "/redis-audit/status",
+        "redis_audit_export_start_url": "/redis-audit/export/start",
+        "redis_audit_export_status_url": "/redis-audit/export/status",
         "raw_case_url_template": "/api/results/case/YYYY-MM-DD/SYMBOL/approx",
         "next_step": "Use /start to index and resume the existing v3 detail replay.",
     })
@@ -659,46 +743,106 @@ def control():
     <p><a style="color:#a78bfa" href="/evidence-first/readiness">Evidence-First readiness</a> · <a style="color:#a78bfa" href="/evidence-first/protocol">Frozen protocol</a> · <a style="color:#a78bfa" href="/evidence-first/status">Evidence-First status</a> · <a style="color:#a78bfa" href="/evidence-first/result">Evidence-First result</a></p>
     <hr><h3>Redis Historical Audit — Read Only</h3>
     <p>Uses the current NDR admin token. It scans the Redis connections configured on this service and never changes or deletes data.</p>
-    <form method="post" action="/redis-audit/summary"><input name="token" type="password" placeholder="Admin token" required><button>View Redis audit summary</button></form>
-    <form method="post" action="/redis-audit/export"><input name="token" type="password" placeholder="Admin token" required><button>Download Redis historical data (JSON.GZ)</button></form>
+    <form method="post" action="/redis-audit/summary/start"><input name="token" type="password" placeholder="Admin token" required><button>Start Redis audit summary</button></form>
+    <p><a style="color:#a78bfa" href="/redis-audit/status">Redis audit status</a></p>
+    <form method="post" action="/redis-audit/result"><input name="token" type="password" placeholder="Admin token" required><button>View completed Redis audit summary</button></form>
+    <form method="post" action="/redis-audit/export/start"><input name="token" type="password" placeholder="Admin token" required><button>Start full Redis historical export</button></form>
+    <p><a style="color:#a78bfa" href="/redis-audit/export/status">Redis export status</a></p>
+    <form method="post" action="/redis-audit/export/download"><input name="token" type="password" placeholder="Admin token" required><button>Download completed Redis export (JSON.GZ)</button></form>
     <p><a style="color:#a78bfa" href="/status">View status</a> · <a style="color:#a78bfa" href="/report">View report</a> · <a style="color:#a78bfa" href="/analysis/status">Analysis status</a> · <a style="color:#a78bfa" href="/simulation/status">Simulation status</a> · <a style="color:#a78bfa" href="/diagnostic/status">Diagnostic status</a> · <a style="color:#a78bfa" href="/explosions/status">Explosion catalog</a> · <a style="color:#a78bfa" href="/big-moves/status">Big moves</a> · <a style="color:#a78bfa" href="/stop-width/status">Stop-width test</a> · <a style="color:#a78bfa" href="/entry-compare/status">Entry compare</a> · <a style="color:#a78bfa" href="/weekday/status">Weekday analysis</a> · <a style="color:#a78bfa" href="/market-radar/status">Market Radar backtest</a> · <a style="color:#a78bfa" href="/explosions/download">Download full explosions JSON</a> · <a style="color:#a78bfa" href="/temporal-hypotheses/status">H1/H2 confirmatory test</a> · <a style="color:#a78bfa" href="/price-change-profitability/status">Price-change profitability</a> · <a style="color:#a78bfa" href="/er45-profitability/status">ER45 profitability</a></p></body></html>
     """
 
 
-@app.post("/redis-audit/summary")
-def redis_audit_summary():
+@app.post("/redis-audit/summary/start")
+def redis_audit_summary_start():
+    global redis_audit_summary_thread, redis_audit_summary_result_data
     if not authorized():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    try:
-        return jsonify(build_redis_audit(include_data=False))
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "read_only": True,
-            "error": f"{type(exc).__name__}: {exc}",
-        }), 503
-
-
-@app.post("/redis-audit/export")
-def redis_audit_export():
-    if not authorized():
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    try:
-        report = build_redis_audit(include_data=True)
-        payload = json.dumps(report, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        compressed = gzip.compress(payload, compresslevel=6)
-        filename = f"redis_audit_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json.gz"
-        return Response(
-            compressed,
-            mimetype="application/gzip",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    with lock:
+        if redis_audit_summary_thread and redis_audit_summary_thread.is_alive():
+            return jsonify({"ok": True, "status": "already_running", "status_url": "/redis-audit/status"})
+        redis_audit_summary_result_data = None
+        redis_audit_summary_state.clear()
+        redis_audit_summary_state.update(
+            status="RUNNING",
+            message="Scanning Redis in the background. The web request is free to return immediately.",
+            updated_at=stamp(),
         )
-    except Exception as exc:
-        return jsonify({
-            "ok": False,
-            "read_only": True,
-            "error": f"{type(exc).__name__}: {exc}",
-        }), 503
+        redis_audit_summary_thread = threading.Thread(
+            target=redis_audit_summary_loop,
+            name="redis-audit-summary",
+            daemon=True,
+        )
+        redis_audit_summary_thread.start()
+    return jsonify({"ok": True, "status": "started", "status_url": "/redis-audit/status", "result_url": "/redis-audit/result"}), 202
+
+
+@app.get("/redis-audit/status")
+def redis_audit_status():
+    with lock:
+        payload = dict(redis_audit_summary_state)
+        payload["result_ready"] = redis_audit_summary_result_data is not None
+    payload["result_url"] = "/redis-audit/result"
+    payload["read_only"] = True
+    return jsonify(payload)
+
+
+@app.post("/redis-audit/result")
+def redis_audit_result():
+    if not authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    with lock:
+        result = redis_audit_summary_result_data
+        status_payload = dict(redis_audit_summary_state)
+    if result is None:
+        return jsonify({"ready": False, "status": status_payload.get("status"), "status_url": "/redis-audit/status"}), 202
+    return jsonify(result)
+
+
+@app.post("/redis-audit/export/start")
+def redis_audit_export_start():
+    global redis_audit_export_thread, redis_audit_export_path
+    if not authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    with lock:
+        if redis_audit_export_thread and redis_audit_export_thread.is_alive():
+            return jsonify({"ok": True, "status": "already_running", "status_url": "/redis-audit/export/status"})
+        redis_audit_export_path = None
+        redis_audit_export_state.clear()
+        redis_audit_export_state.update(
+            status="RUNNING",
+            message="Exporting Redis data in the background.",
+            updated_at=stamp(),
+        )
+        redis_audit_export_thread = threading.Thread(
+            target=redis_audit_export_loop,
+            name="redis-audit-export",
+            daemon=True,
+        )
+        redis_audit_export_thread.start()
+    return jsonify({"ok": True, "status": "started", "status_url": "/redis-audit/export/status", "download_url": "/redis-audit/export/download"}), 202
+
+
+@app.get("/redis-audit/export/status")
+def redis_audit_export_status():
+    with lock:
+        payload = dict(redis_audit_export_state)
+        payload["download_ready"] = bool(redis_audit_export_path and os.path.isfile(redis_audit_export_path))
+    payload["download_url"] = "/redis-audit/export/download"
+    payload["read_only"] = True
+    return jsonify(payload)
+
+
+@app.post("/redis-audit/export/download")
+def redis_audit_export_download():
+    if not authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    with lock:
+        path = redis_audit_export_path
+    if not path or not os.path.isfile(path):
+        return jsonify({"ready": False, "status_url": "/redis-audit/export/status"}), 202
+    filename = f"redis_audit_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json.gz"
+    return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
 
 
 @app.route("/test/boats", methods=["GET", "POST"])
