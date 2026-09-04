@@ -34,8 +34,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.0.0"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-03-A"
+VERSION = "1.1.0"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-04-B"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -64,6 +64,16 @@ PROTOCOL = {
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
+
+# Runtime sampling is deliberately outside PROTOCOL. It does not alter the
+# frozen quality model, its cutoff, or the official minute-bar outcome rules.
+MONITORING_SPEC = {
+    "market_scan_seconds": 30,
+    "pending_confirmation_seconds": 10,
+    "confirmed_live_sample_seconds": 5,
+    "live_sample_source": "Alpaca latestTrade snapshot",
+    "official_outcome_source": "Alpaca one-minute bars",
+}
 
 
 def now_utc() -> datetime:
@@ -426,13 +436,47 @@ def outcome_metrics(bars: list[dict[str, Any]], start: datetime, entry_price: fl
     return result
 
 
+def update_live_tracking(
+    tracking: dict[str, Any] | None,
+    entry_price: float,
+    price: float,
+    captured_at: str,
+    market_ts: str | None,
+) -> tuple[dict[str, Any], bool]:
+    """Update supplemental 5-second extrema; official MFE/MAE stays minute-bar based."""
+    current = dict(tracking or {})
+    if entry_price <= 0 or price <= 0:
+        return current, False
+    if current.get("last_market_ts") == market_ts and current.get("last_price") == price:
+        return current, False
+    gain_pct = (price / entry_price - 1) * 100
+    samples = int(current.get("samples") or 0) + 1
+    current.update({
+        "official": False,
+        "source": "Alpaca latestTrade snapshot sampled every 5 seconds",
+        "samples_key": current.get("samples_key"),
+        "samples": samples,
+        "last_sample_at": captured_at,
+        "last_market_ts": market_ts,
+        "last_price": price,
+        "last_return_pct": round(gain_pct, 5),
+    })
+    if current.get("peak_price") is None or price > float(current["peak_price"]):
+        current.update({"peak_price": price, "peak_ts": market_ts or captured_at, "peak_gain_pct": round(gain_pct, 5)})
+    if current.get("trough_price") is None or price < float(current["trough_price"]):
+        current.update({"trough_price": price, "trough_ts": market_ts or captured_at, "drawdown_pct": round(gain_pct, 5)})
+    return current, True
+
+
 class IndependentPriorityRadar:
     def __init__(self, redis_client: RedisREST | None = None, alpaca: AlpacaClient | None = None):
         self.redis = redis_client or RedisREST()
         self.alpaca = alpaca or AlpacaClient()
         self.prefix = os.getenv("IPR_REDIS_PREFIX", "independent_priority_radar:v1")
         self.source_prefix = os.getenv("NDR_BT_REDIS_PREFIX", "next_day_radar_backtest_v3")
-        self.scan_interval = max(30, int(os.getenv("IPR_SCAN_INTERVAL_SEC", "90")))
+        self.scan_interval = max(15, int(os.getenv("IPR_SCAN_INTERVAL_SEC", "30")))
+        self.pending_interval = max(5, int(os.getenv("IPR_PENDING_INTERVAL_SEC", "10")))
+        self.live_sample_interval = max(5, int(os.getenv("IPR_LIVE_SAMPLE_INTERVAL_SEC", "5")))
         self.universe_refresh = max(300, int(os.getenv("IPR_UNIVERSE_REFRESH_SEC", "14400")))
         self.snapshot_refresh = max(60, int(os.getenv("IPR_SNAPSHOT_REFRESH_SEC", "300")))
         self.confirmation_window = max(1, int(os.getenv("IPR_CONFIRMATION_WINDOW_MIN", "15")))
@@ -456,11 +500,17 @@ class IndependentPriorityRadar:
         self.last_snapshot_refresh: datetime | None = None
         self.stop_event = threading.Event()
         self.lock = threading.RLock()
+        self.record_lock = threading.RLock()
+        self.monitor_thread: threading.Thread | None = None
+        self.live_sample_thread: threading.Thread | None = None
         self.state = {
             "status": "STARTING", "message": "Waiting for model bootstrap",
             "version": VERSION, "build": BUILD, "protocol_id": PROTOCOL_ID,
             "protocol_sha256": PROTOCOL_SHA256, "orders_enabled": False,
             "updated_at": iso(), "last_scan_at": None, "last_error": None,
+            "scan_interval_seconds": self.scan_interval,
+            "pending_interval_seconds": self.pending_interval,
+            "live_sample_interval_seconds": self.live_sample_interval,
         }
 
     def key(self, suffix: str) -> str:
@@ -728,7 +778,8 @@ class IndependentPriorityRadar:
             },
             "confirmation": {"status": "PENDING", "deadline": iso(parse_dt(bar["t"]) + timedelta(minutes=self.confirmation_window))},
             "candidate_outcome_60m": None, "confirmation_outcome_60m": None,
-            "session_close_outcome": None, "telegram": {"sent": False},
+            "live_5s_tracking": None, "session_close_outcome": None,
+            "telegram": {"sent": False},
         }
         created = int(self.redis.command("HSETNX", self.key("samples"), candidate_id, json_compact(record)) or 0)
         if not created:
@@ -841,6 +892,9 @@ class IndependentPriorityRadar:
             )
             if moment >= confirmation_time + timedelta(minutes=61) and record["confirmation_outcome_60m"].get("forward_bars"):
                 record["confirmation_outcome_60m"]["complete"] = True
+                if record.get("live_5s_tracking"):
+                    record["live_5s_tracking"]["complete"] = True
+                    record["live_5s_tracking"]["completed_at"] = iso(moment)
         if moment.astimezone(NY).time() >= dtime(16, 0):
             same_session = [bar for bar in bars if parse_dt(bar["t"]).astimezone(NY).date().isoformat() == record["session"]]
             if same_session:
@@ -879,10 +933,7 @@ class IndependentPriorityRadar:
         moment = (moment or now_utc()).astimezone(UTC)
         local = moment.astimezone(NY)
         if local.weekday() >= 5 or not (dtime(9, 30) <= local.time() < dtime(16, 0)):
-            monitored = 0
-            if local.weekday() < 5 and dtime(4, 0) <= local.time() <= dtime(17, 30):
-                monitored = self.monitor_open_candidates(moment)
-            return {"scanned": 0, "priority_saved": 0, "monitored": monitored, "reason": "outside_regular_session"}
+            return {"scanned": 0, "priority_saved": 0, "reason": "outside_regular_session"}
         if self.model is None:
             raise RuntimeError("Quality model is not loaded")
         if not self.universe or self.last_universe_refresh is None or moment - self.last_universe_refresh >= timedelta(seconds=self.universe_refresh):
@@ -907,7 +958,6 @@ class IndependentPriorityRadar:
             completed = [bar for bar in history if parse_dt(bar["t"]) + timedelta(minutes=1) <= moment]
             if completed and self._save_candidate(symbol, completed[-1], completed, features, diagnostics, probability):
                 saved += 1
-        self.monitor_open_candidates(moment, bars_by_symbol)
         self.save_state(
             status="RUNNING", message="Independent scan completed", last_scan_at=iso(moment),
             hot_symbols=len(self.hot_symbols), base_ready=ready_count, priority_saved=saved, last_error=None,
@@ -928,9 +978,120 @@ class IndependentPriorityRadar:
             earliest = min(parse_dt(record["candidate_ts"]) for record in records if record["symbol"] in missing)
             bars_by_symbol.update(self._bars_for_symbols(missing, moment, earliest - timedelta(minutes=60)))
         for record in records:
-            updated = self._process_candidate_record(record, bars_by_symbol.get(record["symbol"], []), moment)
-            self.redis.hset_json(self.key("samples"), record["candidate_id"], updated)
+            candidate_id = record["candidate_id"]
+            with self.record_lock:
+                latest = self.redis.hget_json(self.key("samples"), candidate_id, record)
+                updated = self._process_candidate_record(
+                    latest,
+                    bars_by_symbol.get(latest["symbol"], []),
+                    moment,
+                )
+                self.redis.hset_json(self.key("samples"), candidate_id, updated)
         return len(records)
+
+    @staticmethod
+    def _snapshot_price(snapshot: dict[str, Any]) -> tuple[float, str | None]:
+        trade = snapshot.get("latestTrade") or {}
+        minute = snapshot.get("minuteBar") or {}
+        daily = snapshot.get("dailyBar") or {}
+        price = float(trade.get("p") or minute.get("c") or daily.get("c") or 0)
+        market_ts = trade.get("t") or minute.get("t") or daily.get("t")
+        return price, str(market_ts) if market_ts else None
+
+    def sample_confirmed_live(self, moment: datetime | None = None) -> int:
+        """Save supplemental five-second samples for confirmed alerts for 60 minutes."""
+        moment = (moment or now_utc()).astimezone(UTC)
+        candidate_ids = list(self.redis.command("SMEMBERS", self.key("open_candidates")) or [])
+        records = [self.redis.hget_json(self.key("samples"), candidate_id) for candidate_id in candidate_ids]
+        records = [
+            record for record in records
+            if record and (record.get("confirmation") or {}).get("status") == "CONFIRMED"
+            and moment <= parse_dt(record["confirmation"]["confirmed_at"]) + timedelta(minutes=61)
+        ]
+        if not records:
+            return 0
+        snapshots: dict[str, Any] = {}
+        symbols = sorted({record["symbol"] for record in records})
+        for batch in chunks(symbols, 400):
+            snapshots.update(self.alpaca.snapshots(batch))
+        saved = 0
+        for record in records:
+            snapshot = snapshots.get(record["symbol"]) or {}
+            price, market_ts = self._snapshot_price(snapshot)
+            if price <= 0:
+                continue
+            candidate_id = record["candidate_id"]
+            sample_key = self.key(f"live5s:{candidate_id}")
+            captured_at = iso(moment)
+            with self.record_lock:
+                latest = self.redis.hget_json(self.key("samples"), candidate_id, record)
+                tracking = dict(latest.get("live_5s_tracking") or {})
+                tracking.setdefault("samples_key", sample_key)
+                updated_tracking, changed = update_live_tracking(
+                    tracking,
+                    float(latest["confirmation"]["price"]),
+                    price,
+                    captured_at,
+                    market_ts,
+                )
+                if not changed:
+                    continue
+                sample = {
+                    "captured_at": captured_at,
+                    "market_ts": market_ts,
+                    "price": price,
+                    "return_pct": updated_tracking["last_return_pct"],
+                }
+                self.redis.command("RPUSH", sample_key, json_compact(sample))
+                self.redis.command("LTRIM", sample_key, -1000, -1)
+                latest["live_5s_tracking"] = updated_tracking
+                self.redis.hset_json(self.key("samples"), candidate_id, latest)
+                saved += 1
+                logging.info(
+                    "LIVE_5S_SAMPLE symbol=%s price=%.4f return_pct=%.5f samples=%s",
+                    latest["symbol"],
+                    price,
+                    updated_tracking["last_return_pct"],
+                    updated_tracking["samples"],
+                )
+        return saved
+
+    @staticmethod
+    def _within_monitoring_hours(moment: datetime) -> bool:
+        local = moment.astimezone(NY)
+        return local.weekday() < 5 and dtime(4, 0) <= local.time() <= dtime(17, 30)
+
+    def _monitor_forever(self) -> None:
+        while not self.stop_event.is_set():
+            moment = now_utc()
+            try:
+                monitored = self.monitor_open_candidates(moment) if self._within_monitoring_hours(moment) else 0
+                with self.lock:
+                    self.state["last_pending_check_at"] = iso(moment)
+                    self.state["pending_records_checked"] = monitored
+                if monitored:
+                    logging.info("PENDING_MONITOR checked=%s", monitored)
+            except Exception as exc:
+                logging.exception("Pending confirmation monitor failed")
+                with self.lock:
+                    self.state["last_monitor_error"] = f"{type(exc).__name__}: {exc}"
+            self.stop_event.wait(self.pending_interval)
+
+    def _live_sample_forever(self) -> None:
+        while not self.stop_event.is_set():
+            moment = now_utc()
+            try:
+                saved = self.sample_confirmed_live(moment) if self._within_monitoring_hours(moment) else 0
+                with self.lock:
+                    self.state["last_live_sample_check_at"] = iso(moment)
+                    self.state["live_samples_saved"] = saved
+                if saved:
+                    logging.info("LIVE_5S_CYCLE saved=%s", saved)
+            except Exception as exc:
+                logging.exception("Confirmed live sampler failed")
+                with self.lock:
+                    self.state["last_live_sample_error"] = f"{type(exc).__name__}: {exc}"
+            self.stop_event.wait(self.live_sample_interval)
 
     @staticmethod
     def _group_stats(records: list[dict[str, Any]], confirmed_only: bool) -> dict[str, Any]:
@@ -1053,6 +1214,24 @@ class IndependentPriorityRadar:
     def run_forever(self) -> None:
         try:
             self.load_or_bootstrap_model()
+            self.monitor_thread = threading.Thread(
+                target=self._monitor_forever,
+                name="independent-priority-pending-monitor",
+                daemon=True,
+            )
+            self.live_sample_thread = threading.Thread(
+                target=self._live_sample_forever,
+                name="independent-priority-live-sampler",
+                daemon=True,
+            )
+            self.monitor_thread.start()
+            self.live_sample_thread.start()
+            logging.info(
+                "RUNTIME_LOOPS_STARTED scan=%ss pending=%ss live=%ss official_outcomes=one-minute-bars",
+                self.scan_interval,
+                self.pending_interval,
+                self.live_sample_interval,
+            )
             while not self.stop_event.is_set():
                 try:
                     moment = now_utc()
@@ -1090,13 +1269,21 @@ def home():
         "purpose": "Priority ranking + simple confirmation + complete shadow samples",
         "telegram_policy": "Only confirmed alerts and the Friday weekly summary",
         "orders_enabled": False,
+        "monitoring": MONITORING_SPEC,
         "links": {"health": "/health", "ready": "/ready", "status": "/status", "recent": "/api/candidates/recent", "weekly": "/api/weekly/latest", "protocol": "/protocol"},
     })
 
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "version": VERSION, "build": BUILD, "worker_alive": bool(worker and worker.is_alive())})
+    return jsonify({
+        "ok": True,
+        "version": VERSION,
+        "build": BUILD,
+        "worker_alive": bool(worker and worker.is_alive()),
+        "pending_monitor_alive": bool(radar.monitor_thread and radar.monitor_thread.is_alive()),
+        "live_sampler_alive": bool(radar.live_sample_thread and radar.live_sample_thread.is_alive()),
+    })
 
 
 @app.get("/ready")
@@ -1116,14 +1303,21 @@ def status():
         payload = dict(radar.state)
     payload.update({
         "worker_alive": bool(worker and worker.is_alive()), "universe_count": len(radar.universe),
+        "pending_monitor_alive": bool(radar.monitor_thread and radar.monitor_thread.is_alive()),
+        "live_sampler_alive": bool(radar.live_sample_thread and radar.live_sample_thread.is_alive()),
         "hot_symbols": len(radar.hot_symbols), "model": radar.model_artifact,
+        "monitoring": MONITORING_SPEC,
     })
     return jsonify(payload)
 
 
 @app.get("/protocol")
 def protocol():
-    return jsonify({"protocol": PROTOCOL, "protocol_sha256": PROTOCOL_SHA256})
+    return jsonify({
+        "protocol": PROTOCOL,
+        "protocol_sha256": PROTOCOL_SHA256,
+        "runtime_monitoring": MONITORING_SPEC,
+    })
 
 
 @app.get("/api/candidates/recent")
@@ -1138,6 +1332,19 @@ def recent_candidates():
 def candidate_detail(candidate_id: str):
     record = radar.redis.hget_json(radar.key("samples"), candidate_id)
     return (jsonify(record), 200) if record else (jsonify({"error": "not_found"}), 404)
+
+
+@app.get("/api/live-samples/<path:candidate_id>")
+def candidate_live_samples(candidate_id: str):
+    limit = min(1000, max(1, int(request.args.get("limit", "1000"))))
+    raw = radar.redis.command("LRANGE", radar.key(f"live5s:{candidate_id}"), -limit, -1) or []
+    samples = []
+    for item in raw:
+        try:
+            samples.append(json.loads(item))
+        except (TypeError, json.JSONDecodeError):
+            continue
+    return jsonify({"candidate_id": candidate_id, "count": len(samples), "official": False, "samples": samples})
 
 
 @app.get("/api/weekly/latest")
