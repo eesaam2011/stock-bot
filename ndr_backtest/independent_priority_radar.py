@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import fnmatch
+import gzip
 import json
 import logging
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 from collections import defaultdict
@@ -18,7 +21,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import numpy as np
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 
 
 UTC = timezone.utc
@@ -34,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.1.0"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-04-B"
+VERSION = "1.3.0"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-04-D"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -75,6 +78,25 @@ MONITORING_SPEC = {
     "official_outcome_source": "Alpaca one-minute bars",
 }
 
+# This audit is deliberately outside the frozen live protocol. It never changes
+# the live model/cutoff and never sends Telegram alerts or orders.
+HISTORICAL_CONFIRMATION_AUDIT_SPEC = {
+    "audit_id": "IPR-HISTORICAL-CONFIRMATION-2026-09-04-A",
+    "development_selection": "three expanding-window OOF folds; top 5 percent ranked independently in each fold",
+    "legacy_holdout_selection": "full-development frozen model and frozen probability cutoff; audit only",
+    "confirmation_window_minutes": 15,
+    "outcome_window_minutes": 60,
+    "targets_pct": [2.0, 5.0, 10.0],
+    "stops_pct": [1.0, 2.0, 3.0, 4.0, 5.0],
+    "same_minute_stop_target": "AMBIGUOUS",
+    "market_data": "Alpaca SIP one-minute raw bars fetched after hours",
+    "safety": {
+        "alerts_enabled": False,
+        "orders_enabled": False,
+        "changes_live_model": False,
+        "legacy_holdout_can_approve_live": False,
+    },
+}
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
@@ -436,6 +458,69 @@ def outcome_metrics(bars: list[dict[str, Any]], start: datetime, entry_price: fl
     return result
 
 
+def stop_target_path_metrics(
+    bars: list[dict[str, Any]],
+    start: datetime,
+    entry_price: float,
+    minutes: int = 60,
+    stops: tuple[float, ...] = (1.0, 2.0, 3.0, 4.0, 5.0),
+    targets: tuple[float, ...] = (2.0, 5.0, 10.0),
+) -> dict[str, Any]:
+    """Minute-causal path audit; a stop and target in one bar has unknown order."""
+    end = start + timedelta(minutes=minutes)
+    future = [
+        bar for bar in sorted(bars, key=lambda item: item["t"])
+        if start < parse_dt(bar["t"]) <= end
+    ]
+    if not future or entry_price <= 0:
+        return {"complete": False, "forward_bars": len(future), "pairs": {}}
+
+    first_stop: dict[float, dict[str, Any] | None] = {}
+    first_target: dict[float, dict[str, Any] | None] = {}
+    for level in stops:
+        threshold = entry_price * (1.0 - level / 100.0)
+        first_stop[level] = next((bar for bar in future if float(bar["l"]) <= threshold), None)
+    for level in targets:
+        threshold = entry_price * (1.0 + level / 100.0)
+        first_target[level] = next((bar for bar in future if float(bar["h"]) >= threshold), None)
+
+    pairs: dict[str, Any] = {}
+    for stop in stops:
+        for target in targets:
+            stop_bar = first_stop[stop]
+            target_bar = first_target[target]
+            stop_ts = parse_dt(stop_bar["t"]) if stop_bar else None
+            target_ts = parse_dt(target_bar["t"]) if target_bar else None
+            if stop_ts is not None and target_ts is not None and stop_ts == target_ts:
+                order = "AMBIGUOUS"
+            elif stop_ts is not None and (target_ts is None or stop_ts < target_ts):
+                order = "STOP_FIRST"
+            elif target_ts is not None and (stop_ts is None or target_ts < stop_ts):
+                order = "TARGET_FIRST"
+            else:
+                order = "NEITHER"
+            pairs[f"stop_{int(stop)}_target_{int(target)}"] = {
+                "order": order,
+                "stop_ts": stop_bar["t"] if stop_bar else None,
+                "target_ts": target_bar["t"] if target_bar else None,
+            }
+
+    highest = max(future, key=lambda bar: float(bar["h"]))
+    highest_ts = parse_dt(highest["t"])
+    through_peak = [bar for bar in future if parse_dt(bar["t"]) <= highest_ts]
+    lowest_before_peak = min(through_peak, key=lambda bar: float(bar["l"]))
+    return {
+        "complete": len(future) >= minutes or parse_dt(future[-1]["t"]) >= end - timedelta(minutes=1),
+        "forward_bars": len(future),
+        "highest_price": float(highest["h"]),
+        "highest_ts": highest["t"],
+        "lowest_before_peak_price": float(lowest_before_peak["l"]),
+        "lowest_before_peak_ts": lowest_before_peak["t"],
+        "drawdown_before_peak_pct": round((float(lowest_before_peak["l"]) / entry_price - 1.0) * 100.0, 5),
+        "pairs": pairs,
+    }
+
+
 def update_live_tracking(
     tracking: dict[str, Any] | None,
     entry_price: float,
@@ -503,6 +588,27 @@ class IndependentPriorityRadar:
         self.record_lock = threading.RLock()
         self.monitor_thread: threading.Thread | None = None
         self.live_sample_thread: threading.Thread | None = None
+        self.export_lock = threading.RLock()
+        self.export_thread: threading.Thread | None = None
+        self.export_path: str | None = None
+        self.export_state: dict[str, Any] = {
+            "status": "IDLE",
+            "message": "Historical export has not started",
+            "read_only": True,
+            "updated_at": iso(),
+        }
+        self.audit_lock = threading.RLock()
+        self.audit_thread: threading.Thread | None = None
+        self.audit_stop_event = threading.Event()
+        self.audit_path: str | None = None
+        self.audit_state: dict[str, Any] = {
+            "status": "IDLE",
+            "message": "Historical confirmation audit has not started",
+            "audit_id": HISTORICAL_CONFIRMATION_AUDIT_SPEC["audit_id"],
+            "alerts_enabled": False,
+            "orders_enabled": False,
+            "updated_at": iso(),
+        }
         self.state = {
             "status": "STARTING", "message": "Waiting for model bootstrap",
             "version": VERSION, "build": BUILD, "protocol_id": PROTOCOL_ID,
@@ -516,6 +622,9 @@ class IndependentPriorityRadar:
     def key(self, suffix: str) -> str:
         return f"{self.prefix}:{suffix}"
 
+    def audit_key(self, suffix: str) -> str:
+        return self.key(f"historical_confirmation:v1:{suffix}")
+
     def save_state(self, **updates: Any) -> None:
         with self.lock:
             self.state.update(updates)
@@ -526,6 +635,602 @@ class IndependentPriorityRadar:
                 self.redis.set_json(self.key("status"), snapshot)
             except Exception:
                 logging.exception("Unable to persist service state")
+
+    @staticmethod
+    def _decode_redis_value(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return value
+
+    def _historical_export_patterns(self) -> tuple[str, ...]:
+        return (
+            f"{self.source_prefix}:manifest",
+            f"{self.source_prefix}:results",
+            f"{self.source_prefix}:results:*",
+            f"{self.source_prefix}:pcprofit:v2:cases",
+            f"{self.source_prefix}:pcprofit_er45:v1:cases",
+            f"{self.source_prefix}:micro_features:raw_bars",
+            f"{self.prefix}:quality_model",
+            f"{self.prefix}:protocol_lock",
+            f"{self.prefix}:samples",
+            f"{self.prefix}:sample_index",
+            f"{self.prefix}:live5s:*",
+        )
+
+    def _matching_historical_keys(self) -> list[str]:
+        patterns = self._historical_export_patterns()
+        cursor = "0"
+        keys: set[str] = set()
+        while True:
+            result = self.redis.command("SCAN", cursor, "COUNT", 1000) or ["0", []]
+            cursor = str(result[0])
+            for raw_key in result[1] or []:
+                key = str(raw_key)
+                if any(fnmatch.fnmatchcase(key, pattern) for pattern in patterns):
+                    keys.add(key)
+            if cursor == "0":
+                return sorted(keys)
+
+    def _set_export_progress(self, **updates: Any) -> None:
+        with self.export_lock:
+            self.export_state.update(updates)
+            self.export_state["updated_at"] = iso()
+
+    def _write_export_record(self, output: Any, value: Any, first: bool) -> bool:
+        if not first:
+            output.write(",")
+        output.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+        return False
+
+    def _write_export_key(self, output: Any, key: str) -> int:
+        kind = str(self.redis.command("TYPE", key) or "none")
+        output.write("{")
+        output.write(f'"key":{json.dumps(key)},"type":{json.dumps(kind)},"records":[')
+        first = True
+        count = 0
+        if kind == "string":
+            raw = self.redis.command("GET", key)
+            if raw is not None:
+                first = self._write_export_record(output, self._decode_redis_value(raw), first)
+                count = 1
+        elif kind == "hash":
+            cursor = "0"
+            while True:
+                result = self.redis.command("HSCAN", key, cursor, "COUNT", 500) or ["0", []]
+                cursor = str(result[0])
+                values = result[1] or []
+                for index in range(0, len(values) - 1, 2):
+                    row = {
+                        "field": str(values[index]),
+                        "value": self._decode_redis_value(values[index + 1]),
+                    }
+                    first = self._write_export_record(output, row, first)
+                    count += 1
+                self._set_export_progress(current_key=key, current_key_records=count)
+                if cursor == "0":
+                    break
+        elif kind == "list":
+            length = int(self.redis.command("LLEN", key) or 0)
+            for start in range(0, length, 500):
+                for raw in self.redis.command("LRANGE", key, start, min(length - 1, start + 499)) or []:
+                    first = self._write_export_record(output, self._decode_redis_value(raw), first)
+                    count += 1
+                self._set_export_progress(current_key=key, current_key_records=count)
+        elif kind == "set":
+            cursor = "0"
+            while True:
+                result = self.redis.command("SSCAN", key, cursor, "COUNT", 500) or ["0", []]
+                cursor = str(result[0])
+                for raw in result[1] or []:
+                    first = self._write_export_record(output, self._decode_redis_value(raw), first)
+                    count += 1
+                self._set_export_progress(current_key=key, current_key_records=count)
+                if cursor == "0":
+                    break
+        elif kind == "zset":
+            cursor = "0"
+            while True:
+                result = self.redis.command("ZSCAN", key, cursor, "COUNT", 500) or ["0", []]
+                cursor = str(result[0])
+                values = result[1] or []
+                for index in range(0, len(values) - 1, 2):
+                    row = {
+                        "value": self._decode_redis_value(values[index]),
+                        "score": float(values[index + 1]),
+                    }
+                    first = self._write_export_record(output, row, first)
+                    count += 1
+                self._set_export_progress(current_key=key, current_key_records=count)
+                if cursor == "0":
+                    break
+        output.write(f'],"record_count":{count}}}')
+        return count
+
+    def historical_export_loop(self) -> None:
+        temporary_path: str | None = None
+        try:
+            keys = self._matching_historical_keys()
+            self._set_export_progress(
+                status="RUNNING",
+                message="Exporting complete targeted historical data",
+                total_keys=len(keys),
+                completed_keys=0,
+                total_records=0,
+            )
+            with tempfile.NamedTemporaryFile(
+                prefix="independent_priority_history_",
+                suffix=".json.gz",
+                delete=False,
+            ) as temporary:
+                temporary_path = temporary.name
+            total_records = 0
+            with gzip.open(temporary_path, "wt", encoding="utf-8", compresslevel=6) as output:
+                output.write("{")
+                output.write(f'"generated_at":{json.dumps(iso())},')
+                output.write('"read_only":true,"complete_values":true,')
+                output.write(f'"patterns":{json.dumps(list(self._historical_export_patterns()))},"keys":[')
+                for index, key in enumerate(keys):
+                    if index:
+                        output.write(",")
+                    count = self._write_export_key(output, key)
+                    total_records += count
+                    self._set_export_progress(
+                        completed_keys=index + 1,
+                        total_records=total_records,
+                    )
+                output.write("]}")
+            with self.export_lock:
+                old_path = self.export_path
+                self.export_path = temporary_path
+            if old_path and old_path != temporary_path and os.path.isfile(old_path):
+                try:
+                    os.unlink(old_path)
+                except OSError:
+                    logging.warning("Unable to remove previous temporary export: %s", old_path)
+            self._set_export_progress(
+                status="COMPLETED",
+                message="Historical export is ready to download",
+                completed_keys=len(keys),
+                total_records=total_records,
+                compressed_bytes=os.path.getsize(temporary_path),
+                download_ready=True,
+                current_key=None,
+            )
+        except Exception as exc:
+            logging.exception("Historical export failed")
+            if temporary_path and temporary_path != self.export_path and os.path.isfile(temporary_path):
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
+            self._set_export_progress(
+                status="ERROR",
+                message=f"{type(exc).__name__}: {exc}",
+                download_ready=False,
+            )
+        finally:
+            with self.export_lock:
+                self.export_thread = None
+
+    def start_historical_export(self) -> tuple[bool, str]:
+        moment = now_utc()
+        if self._within_monitoring_hours(moment):
+            return False, "Export is blocked during monitoring hours; retry after 17:30 New York time"
+        with self.export_lock:
+            if self.export_thread and self.export_thread.is_alive():
+                return True, "already_running"
+            self.export_state = {
+                "status": "STARTING",
+                "message": "Preparing targeted historical export",
+                "read_only": True,
+                "download_ready": False,
+                "updated_at": iso(),
+            }
+            self.export_thread = threading.Thread(
+                target=self.historical_export_loop,
+                name="independent-priority-history-export",
+                daemon=True,
+            )
+            self.export_thread.start()
+        return True, "started"
+
+    def _set_audit_progress(self, **updates: Any) -> None:
+        with self.audit_lock:
+            self.audit_state.update(updates)
+            self.audit_state["updated_at"] = iso()
+            snapshot = dict(self.audit_state)
+        if self.redis.configured:
+            self.redis.set_json(self.audit_key("status"), snapshot)
+
+    @staticmethod
+    def _audit_folds(rows: list[dict[str, Any]]) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+        sessions = sorted({row["session"] for row in rows})
+        if len(sessions) < 12:
+            raise RuntimeError("At least 12 development sessions are required for OOF audit")
+        boundaries = [int(round(len(sessions) * ratio)) for ratio in (0.55, 0.70, 0.85, 1.0)]
+        boundaries = [max(1, min(len(sessions), value)) for value in boundaries]
+        folds = []
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            train_sessions = set(sessions[:start])
+            valid_sessions = set(sessions[start:end])
+            train = [row for row in rows if row["session"] in train_sessions]
+            valid = [row for row in rows if row["session"] in valid_sessions]
+            if train and valid:
+                folds.append((train, valid))
+        if len(folds) != 3:
+            raise RuntimeError("Unable to construct the frozen three chronological folds")
+        return folds
+
+    @staticmethod
+    def _audit_matrix(rows: list[dict[str, Any]]) -> np.ndarray:
+        return np.asarray([[float(row["features"][name]) for name in FEATURE_NAMES] for row in rows], dtype=float)
+
+    @staticmethod
+    def _audit_predict(fitted: dict[str, Any], rows: list[dict[str, Any]]) -> np.ndarray:
+        X = IndependentPriorityRadar._audit_matrix(rows)
+        Z = (X - fitted["mean"]) / fitted["scale"]
+        return 1.0 / (1.0 + np.exp(-np.clip(fitted["beta"][0] + Z @ fitted["beta"][1:], -35, 35)))
+
+    def _historical_audit_rows(self) -> list[dict[str, Any]]:
+        """Join immutable stored signal/features; no market data is fetched here."""
+        manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {})
+        development_sessions = set(manifest.get("development_sessions") or [])
+        holdout_sessions = set(manifest.get("holdout_sessions") or [])
+        if not development_sessions or not holdout_sessions:
+            raise RuntimeError("Historical development/holdout session manifest is incomplete")
+        pc_rows = dict(self.redis.scan_hash_json(f"{self.source_prefix}:pcprofit:v2:cases"))
+        er_rows = dict(self.redis.scan_hash_json(f"{self.source_prefix}:pcprofit_er45:v1:cases"))
+        common = set(pc_rows) & set(er_rows)
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        result_keys = [f"{self.source_prefix}:results"] + [
+            f"{self.source_prefix}:results:{session}" for session in manifest.get("sessions", [])
+        ]
+        for result_key in result_keys:
+            for _, result in self.redis.scan_hash_json(result_key):
+                signal = result.get("breakout_ready")
+                if result.get("mode") != "approx" or not signal or signal.get("phase") != "REGULAR":
+                    continue
+                case_id = f"{result.get('session')}|{result.get('symbol')}|{signal.get('ts')}"
+                if case_id in seen or case_id not in common:
+                    continue
+                pc = pc_rows[case_id]
+                er = er_rows[case_id]
+                if not pc.get("has_plan") or not er.get("has_plan"):
+                    continue
+                required = (
+                    pc.get("price_change_pct_last45m"), er.get("er45"), pc.get("recomputed_mfe_pct"),
+                    signal.get("price"), signal.get("opportunity"), signal.get("failure_pressure"),
+                    signal.get("ts"), signal.get("resistance"),
+                )
+                if any(value is None for value in required) or float(signal["price"]) <= 0:
+                    continue
+                session = str(result.get("session"))
+                partition = "development" if session in development_sessions else "holdout" if session in holdout_sessions else None
+                if partition is None:
+                    continue
+                stamp = parse_dt(str(signal["ts"])).astimezone(NY)
+                change = float(pc["price_change_pct_last45m"])
+                efficiency = float(er["er45"])
+                rows.append({
+                    "case_id": case_id,
+                    "session": session,
+                    "partition": partition,
+                    "symbol": str(result.get("symbol")),
+                    "signal_ts": str(signal["ts"]),
+                    "signal_price": float(signal["price"]),
+                    "frozen_resistance": float(signal["resistance"]),
+                    "stored_recomputed_mfe_pct": float(pc["recomputed_mfe_pct"]),
+                    "stored_recomputed_mae_pct": float(pc["recomputed_mae_pct"]) if pc.get("recomputed_mae_pct") is not None else None,
+                    "features": {
+                        "price_change_pct_last45m": change,
+                        "er45": efficiency,
+                        "price_change_x_er45": change * efficiency,
+                        "log_signal_price": math.log(float(signal["price"])),
+                        "opportunity": float(signal["opportunity"]),
+                        "failure_pressure": float(signal["failure_pressure"]),
+                        "minutes_since_regular_open": float(stamp.hour * 60 + stamp.minute - 570),
+                    },
+                    "explosion_ge10": float(pc["recomputed_mfe_pct"]) >= 10.0,
+                })
+                seen.add(case_id)
+        rows.sort(key=lambda row: (row["session"], row["signal_ts"], row["symbol"]))
+        return rows
+
+    def _historical_audit_candidates(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rows = self._historical_audit_rows()
+        development = [row for row in rows if row["partition"] == "development"]
+        holdout = [row for row in rows if row["partition"] == "holdout"]
+        if len(development) != 16894 or sum(row["explosion_ge10"] for row in development) != 160:
+            raise RuntimeError(
+                "Frozen development join mismatch: "
+                f"rows={len(development)}, positives={sum(row['explosion_ge10'] for row in development)}"
+            )
+
+        selected: list[dict[str, Any]] = []
+        fold_report = []
+        for fold_index, (train, valid) in enumerate(self._audit_folds(development), 1):
+            fitted = fit_logistic(
+                self._audit_matrix(train),
+                np.asarray([float(row["explosion_ge10"]) for row in train], dtype=float),
+                l2=1.0,
+            )
+            probabilities = self._audit_predict(fitted, valid)
+            cutoff = float(np.quantile(probabilities, 0.95))
+            chosen = []
+            for row, probability in zip(valid, probabilities.tolist()):
+                if probability >= cutoff:
+                    item = dict(row)
+                    item.update({"selection": "development_oof_top5", "fold": fold_index, "probability": float(probability), "fold_cutoff": cutoff})
+                    chosen.append(item)
+            selected.extend(chosen)
+            fold_report.append({
+                "fold": fold_index,
+                "train_first_session": train[0]["session"],
+                "train_last_session": train[-1]["session"],
+                "validation_first_session": valid[0]["session"],
+                "validation_last_session": valid[-1]["session"],
+                "train_rows": len(train),
+                "validation_rows": len(valid),
+                "probability_cutoff": cutoff,
+                "selected_rows": len(chosen),
+            })
+
+        artifact = self.model_artifact or self.redis.get_json(self.key("quality_model"), None)
+        if not artifact or artifact.get("protocol_sha256") != PROTOCOL_SHA256:
+            artifact = self._fit_artifact(development)
+        frozen_model = QualityModel(artifact)
+        for row in holdout:
+            probability = frozen_model.probability(row["features"])
+            if probability >= frozen_model.cutoff:
+                item = dict(row)
+                item.update({"selection": "legacy_holdout_frozen_cutoff", "fold": None, "probability": probability, "fold_cutoff": frozen_model.cutoff})
+                selected.append(item)
+        selected.sort(key=lambda row: (row["session"], row["signal_ts"], row["symbol"]))
+        context = {
+            "joined_rows": len(rows),
+            "development_rows": len(development),
+            "development_positive_count": int(sum(row["explosion_ge10"] for row in development)),
+            "legacy_holdout_rows": len(holdout),
+            "development_oof_candidates": sum(row["partition"] == "development" for row in selected),
+            "legacy_holdout_candidates": sum(row["partition"] == "holdout" for row in selected),
+            "folds": fold_report,
+            "frozen_holdout_cutoff": frozen_model.cutoff,
+        }
+        return selected, context
+
+    @staticmethod
+    def _historical_candidate_result(candidate: dict[str, Any], bars: list[dict[str, Any]]) -> dict[str, Any]:
+        signal_time = parse_dt(candidate["signal_ts"])
+        eligible = [
+            bar for bar in sorted(bars, key=lambda item: item["t"])
+            if signal_time <= parse_dt(bar["t"]) <= signal_time + timedelta(minutes=15)
+        ]
+        record = dict(candidate)
+        record["market_data"] = {
+            "source": "Alpaca SIP one-minute raw bars",
+            "bars_received": len(bars),
+            "confirmation_window_bars": len(eligible),
+        }
+        if not eligible:
+            record.update({
+                "coverage": "MISSING_BARS",
+                "confirmation": {"status": "MISSING_BARS", "confirmed": False},
+                "candidate_outcome_60m": outcome_metrics(bars, signal_time, float(candidate["signal_price"]), 60),
+                "candidate_path_60m": stop_target_path_metrics(bars, signal_time, float(candidate["signal_price"]), 60),
+                "confirmation_outcome_60m": None,
+                "confirmation_path_60m": None,
+            })
+            return record
+
+        confirmation = None
+        for bar in eligible:
+            metrics = confirmation_metrics(bar, float(candidate["frozen_resistance"]))
+            if metrics["confirmed"]:
+                confirmation = metrics
+                break
+        if confirmation is None:
+            record.update({
+                "coverage": "AVAILABLE",
+                "confirmation": {"status": "UNCONFIRMED", "confirmed": False, "bars_evaluated": len(eligible)},
+                "candidate_outcome_60m": outcome_metrics(bars, signal_time, float(candidate["signal_price"]), 60),
+                "candidate_path_60m": stop_target_path_metrics(bars, signal_time, float(candidate["signal_price"]), 60),
+                "confirmation_outcome_60m": None,
+                "confirmation_path_60m": None,
+            })
+            return record
+
+        confirmation_time = parse_dt(confirmation["bar_ts"])
+        entry_price = float(confirmation["close"])
+        confirmation["status"] = "CONFIRMED"
+        confirmation["entry_price"] = entry_price
+        record.update({
+            "coverage": "AVAILABLE",
+            "confirmation": confirmation,
+            "candidate_outcome_60m": outcome_metrics(bars, signal_time, float(candidate["signal_price"]), 60),
+            "candidate_path_60m": stop_target_path_metrics(bars, signal_time, float(candidate["signal_price"]), 60),
+            "confirmation_outcome_60m": outcome_metrics(bars, confirmation_time, entry_price, 60),
+            "confirmation_path_60m": stop_target_path_metrics(bars, confirmation_time, entry_price, 60),
+        })
+        return record
+
+    @staticmethod
+    def _summarize_audit_group(records: list[dict[str, Any]]) -> dict[str, Any]:
+        available = [row for row in records if row.get("coverage") == "AVAILABLE"]
+        confirmed = [row for row in available if (row.get("confirmation") or {}).get("confirmed")]
+
+        def outcome_summary(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
+            outcomes = [row.get(field) for row in rows if (row.get(field) or {}).get("forward_bars")]
+            return {
+                "count": len(outcomes),
+                "complete_count": sum(bool(item.get("complete")) for item in outcomes),
+                "mfe_median_pct": round(float(median(item["mfe_pct"] for item in outcomes)), 5) if outcomes else None,
+                "mae_median_pct": round(float(median(item["mae_pct"] for item in outcomes)), 5) if outcomes else None,
+                "reached_2pct": sum(bool(item.get("reached_2pct")) for item in outcomes),
+                "reached_5pct": sum(bool(item.get("reached_5pct")) for item in outcomes),
+                "reached_10pct": sum(bool(item.get("reached_10pct")) for item in outcomes),
+            }
+
+        pair_counts: dict[str, dict[str, int]] = {}
+        for row in confirmed:
+            for pair, detail in ((row.get("confirmation_path_60m") or {}).get("pairs") or {}).items():
+                counts = pair_counts.setdefault(pair, {"TARGET_FIRST": 0, "STOP_FIRST": 0, "AMBIGUOUS": 0, "NEITHER": 0})
+                counts[str(detail.get("order") or "NEITHER")] += 1
+        return {
+            "selected_candidates": len(records),
+            "available_bars": len(available),
+            "missing_bars": len(records) - len(available),
+            "confirmed": len(confirmed),
+            "unconfirmed": len(available) - len(confirmed),
+            "confirmation_rate_pct": round(len(confirmed) / len(available) * 100.0, 4) if available else None,
+            "candidate_entry_outcomes": outcome_summary(available, "candidate_outcome_60m"),
+            "confirmed_entry_outcomes": outcome_summary(confirmed, "confirmation_outcome_60m"),
+            "confirmed_entry_stop_target_order": pair_counts,
+        }
+
+    def _build_historical_audit_report(self, context: dict[str, Any]) -> dict[str, Any]:
+        records = [value for _, value in self.redis.scan_hash_json(self.audit_key("cases"))]
+        records.sort(key=lambda row: (row["session"], row["signal_ts"], row["symbol"]))
+        development = [row for row in records if row["partition"] == "development"]
+        holdout = [row for row in records if row["partition"] == "holdout"]
+        return {
+            "schema": 1,
+            "generated_at": iso(),
+            "version": VERSION,
+            "build": BUILD,
+            "protocol_id": PROTOCOL_ID,
+            "protocol_sha256": PROTOCOL_SHA256,
+            "audit_spec": HISTORICAL_CONFIRMATION_AUDIT_SPEC,
+            "selection_context": context,
+            "development_oof": self._summarize_audit_group(development),
+            "legacy_holdout_historical_audit_only": self._summarize_audit_group(holdout),
+            "safety": {
+                "alerts_enabled": False,
+                "orders_enabled": False,
+                "live_model_or_cutoff_changed": False,
+                "note": "Historical audit is diagnostic and cannot approve live trading.",
+            },
+        }
+
+    def _materialize_historical_audit_download(self, report: dict[str, Any] | None = None) -> str:
+        report = report or self.redis.get_json(self.audit_key("report"), None)
+        if not report:
+            raise RuntimeError("Historical confirmation report is not ready")
+        records = [value for _, value in self.redis.scan_hash_json(self.audit_key("cases"))]
+        with tempfile.NamedTemporaryFile(prefix="ipr_historical_confirmation_", suffix=".json.gz", delete=False) as temporary:
+            path = temporary.name
+        with gzip.open(path, "wt", encoding="utf-8", compresslevel=6) as output:
+            json.dump({"report": report, "cases": records}, output, ensure_ascii=False, separators=(",", ":"))
+        with self.audit_lock:
+            old_path = self.audit_path
+            self.audit_path = path
+        if old_path and old_path != path and os.path.isfile(old_path):
+            try:
+                os.unlink(old_path)
+            except OSError:
+                pass
+        return path
+
+    def historical_confirmation_audit_loop(self) -> None:
+        try:
+            candidates, context = self._historical_audit_candidates()
+            self.redis.set_json(self.audit_key("selection_context"), context)
+            completed = set(self.redis.command("SMEMBERS", self.audit_key("completed")) or [])
+            self._set_audit_progress(
+                status="RUNNING",
+                message="Fetching causal historical minute bars from Alpaca",
+                total_candidates=len(candidates),
+                completed_candidates=len(completed),
+                selection_context=context,
+            )
+            by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for candidate in candidates:
+                if candidate["case_id"] not in completed:
+                    by_session[candidate["session"]].append(candidate)
+
+            for session_index, (session, session_candidates) in enumerate(sorted(by_session.items()), 1):
+                if self.audit_stop_event.is_set():
+                    self._set_audit_progress(status="PAUSED", message="Paused safely; press start to resume")
+                    return
+                symbols = sorted({row["symbol"] for row in session_candidates})
+                start = min(parse_dt(row["signal_ts"]) for row in session_candidates) - timedelta(minutes=1)
+                end = max(parse_dt(row["signal_ts"]) for row in session_candidates) + timedelta(minutes=77)
+                bars_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+                for symbol_batch in chunks(symbols, 100):
+                    fetched = self.alpaca.bars(symbol_batch, start, end, feed="sip", adjustment="raw")
+                    for symbol, bars in fetched.items():
+                        bars_by_symbol.setdefault(symbol, []).extend(bars)
+                for candidate in session_candidates:
+                    result = self._historical_candidate_result(candidate, bars_by_symbol.get(candidate["symbol"], []))
+                    self.redis.hset_json(self.audit_key("cases"), candidate["case_id"], result)
+                    self.redis.command("SADD", self.audit_key("completed"), candidate["case_id"])
+                    completed.add(candidate["case_id"])
+                self._set_audit_progress(
+                    status="RUNNING",
+                    message=f"Completed historical session {session}",
+                    completed_candidates=len(completed),
+                    completed_sessions=session_index,
+                    remaining_sessions=len(by_session) - session_index,
+                )
+
+            report = self._build_historical_audit_report(context)
+            self.redis.set_json(self.audit_key("report"), report)
+            path = self._materialize_historical_audit_download(report)
+            self._set_audit_progress(
+                status="COMPLETED",
+                message="Historical confirmation audit is complete",
+                completed_candidates=len(candidates),
+                total_candidates=len(candidates),
+                result_ready=True,
+                download_ready=True,
+                compressed_bytes=os.path.getsize(path),
+            )
+        except Exception as exc:
+            logging.exception("Historical confirmation audit failed")
+            self._set_audit_progress(status="ERROR", message=f"{type(exc).__name__}: {exc}", result_ready=False)
+        finally:
+            with self.audit_lock:
+                self.audit_thread = None
+
+    def start_historical_confirmation_audit(self) -> tuple[bool, str]:
+        if self._within_monitoring_hours(now_utc()):
+            return False, "Audit is blocked during monitoring hours; retry after 17:30 New York time"
+        if not self.redis.configured or not self.alpaca.configured:
+            return False, "Redis and Alpaca credentials are required"
+        with self.audit_lock:
+            if self.audit_thread and self.audit_thread.is_alive():
+                return True, "already_running"
+            self.audit_stop_event.clear()
+            stored = self.redis.get_json(self.audit_key("status"), None)
+            if stored and stored.get("status") == "COMPLETED":
+                self.audit_state = stored
+                return False, "already_completed"
+            self.audit_state = {
+                "status": "STARTING",
+                "message": "Joining frozen historical cases and preparing OOF selection",
+                "audit_id": HISTORICAL_CONFIRMATION_AUDIT_SPEC["audit_id"],
+                "alerts_enabled": False,
+                "orders_enabled": False,
+                "result_ready": False,
+                "updated_at": iso(),
+            }
+            self.audit_thread = threading.Thread(
+                target=self.historical_confirmation_audit_loop,
+                name="independent-priority-historical-confirmation-audit",
+                daemon=True,
+            )
+            self.audit_thread.start()
+        return True, "started"
+
+    def pause_historical_confirmation_audit(self) -> tuple[bool, str]:
+        with self.audit_lock:
+            if not self.audit_thread or not self.audit_thread.is_alive():
+                return False, "not_running"
+            self.audit_stop_event.set()
+        return True, "pause_requested"
 
     @staticmethod
     def _fit_artifact(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1262,6 +1967,17 @@ def start_worker() -> None:
     worker.start()
 
 
+def export_authorized() -> bool:
+    expected = os.getenv("IPR_ADMIN_TOKEN", os.getenv("NDR_BT_ADMIN_TOKEN", ""))
+    supplied = (
+        request.headers.get("X-Admin-Token")
+        or request.form.get("token")
+        or request.args.get("token")
+        or ""
+    )
+    return bool(expected and supplied and supplied == expected)
+
+
 @app.get("/")
 def home():
     return jsonify({
@@ -1270,8 +1986,196 @@ def home():
         "telegram_policy": "Only confirmed alerts and the Friday weekly summary",
         "orders_enabled": False,
         "monitoring": MONITORING_SPEC,
-        "links": {"health": "/health", "ready": "/ready", "status": "/status", "recent": "/api/candidates/recent", "weekly": "/api/weekly/latest", "protocol": "/protocol"},
+        "links": {
+            "health": "/health", "ready": "/ready", "status": "/status",
+            "recent": "/api/candidates/recent", "weekly": "/api/weekly/latest",
+            "protocol": "/protocol", "historical_export": "/historical-export",
+            "historical_confirmation_audit": "/historical-confirmation",
+        },
     })
+
+
+@app.get("/historical-export")
+def historical_export_page():
+    return """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>تصدير بيانات Independent Priority Radar</title>
+    <style>
+        body { font-family: system-ui; background: #101114; color: #eee; max-width: 760px; margin: 30px auto; padding: 18px; }
+        .box { background: #191b20; border: 1px solid #343741; border-radius: 14px; padding: 20px; margin: 14px 0; }
+        input, button { width: 100%; box-sizing: border-box; font-size: 17px; padding: 13px; margin: 7px 0; border-radius: 9px; border: 1px solid #555; }
+        button { background: #6d28d9; color: white; font-weight: 700; }
+        a { color: #a78bfa; }
+    </style>
+</head>
+<body>
+    <h1>تصدير تاريخي موجّه — قراءة فقط</h1>
+    <div class="box">
+        <p>التصدير ممنوع أثناء فترة مراقبة السوق، ويعمل بعد 17:30 بتوقيت نيويورك أو خلال الويكند.</p>
+        <form method="post" action="/historical-export/start">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">ابدأ التصدير التاريخي</button>
+        </form>
+        <p><a href="/historical-export/status">متابعة حالة التصدير</a></p>
+        <form method="post" action="/historical-export/download">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">تنزيل الملف المكتمل JSON.GZ</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.post("/historical-export/start")
+def historical_export_start():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    started, message = radar.start_historical_export()
+    payload = {
+        "ok": started,
+        "status": message,
+        "read_only": True,
+        "status_url": "/historical-export/status",
+        "download_url": "/historical-export/download",
+    }
+    return jsonify(payload), (202 if started else 409)
+
+
+@app.get("/historical-export/status")
+def historical_export_status():
+    with radar.export_lock:
+        payload = dict(radar.export_state)
+        payload["worker_alive"] = bool(radar.export_thread and radar.export_thread.is_alive())
+        payload["download_ready"] = bool(
+            radar.export_path
+            and os.path.isfile(radar.export_path)
+            and payload.get("status") == "COMPLETED"
+        )
+    payload["read_only"] = True
+    payload["download_url"] = "/historical-export/download"
+    return jsonify(payload)
+
+
+@app.post("/historical-export/download")
+def historical_export_download():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    with radar.export_lock:
+        path = radar.export_path
+        ready = radar.export_state.get("status") == "COMPLETED"
+    if not ready or not path or not os.path.isfile(path):
+        return jsonify({"ready": False, "status_url": "/historical-export/status"}), 202
+    filename = f"independent_priority_history_{now_utc().strftime('%Y%m%dT%H%M%SZ')}.json.gz"
+    return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
+
+
+@app.get("/historical-confirmation")
+def historical_confirmation_page():
+    return """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>اختبار التأكيد التاريخي</title>
+    <style>
+        body { font-family: system-ui; background: #101114; color: #eee; max-width: 760px; margin: 30px auto; padding: 18px; }
+        .box { background: #191b20; border: 1px solid #343741; border-radius: 14px; padding: 20px; margin: 14px 0; }
+        input, button { width: 100%; box-sizing: border-box; font-size: 17px; padding: 13px; margin: 7px 0; border-radius: 9px; border: 1px solid #555; }
+        button { background: #6d28d9; color: white; font-weight: 700; }
+        a { color: #a78bfa; }
+    </style>
+</head>
+<body>
+    <h1>اختبار التأكيد التاريخي المستقل</h1>
+    <div class="box">
+        <p>يستخدم مرشحي OOF التاريخيين وبيانات Alpaca الدقيقة. لا يرسل تنبيهات ولا أوامر ولا يغيّر النموذج الحي.</p>
+        <p>يُمنع البدء أثناء مراقبة السوق. التقدم محفوظ في مساحة Redis جديدة ويمكن استكماله.</p>
+        <form method="post" action="/historical-confirmation/start">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">ابدأ أو استكمل الاختبار</button>
+        </form>
+        <p><a href="/historical-confirmation/status">متابعة التقدم</a> · <a href="/historical-confirmation/result">النتيجة المختصرة</a></p>
+        <form method="post" action="/historical-confirmation/pause">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">إيقاف آمن بعد الدفعة الحالية</button>
+        </form>
+        <form method="post" action="/historical-confirmation/download">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">تنزيل النتيجة الكاملة JSON.GZ</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.post("/historical-confirmation/start")
+def historical_confirmation_start():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    started, message = radar.start_historical_confirmation_audit()
+    return jsonify({
+        "ok": started,
+        "status": message,
+        "status_url": "/historical-confirmation/status",
+        "result_url": "/historical-confirmation/result",
+        "download_url": "/historical-confirmation/download",
+        "alerts_enabled": False,
+        "orders_enabled": False,
+    }), (202 if started else 409)
+
+
+@app.post("/historical-confirmation/pause")
+def historical_confirmation_pause():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    ok, message = radar.pause_historical_confirmation_audit()
+    return jsonify({"ok": ok, "status": message}), (202 if ok else 409)
+
+
+@app.get("/historical-confirmation/status")
+def historical_confirmation_status():
+    stored = radar.redis.get_json(radar.audit_key("status"), None) if radar.redis.configured else None
+    with radar.audit_lock:
+        payload = dict(stored or radar.audit_state)
+        payload["worker_alive"] = bool(radar.audit_thread and radar.audit_thread.is_alive())
+    payload.update({
+        "status_url": "/historical-confirmation/status",
+        "result_url": "/historical-confirmation/result",
+        "download_url": "/historical-confirmation/download",
+        "alerts_enabled": False,
+        "orders_enabled": False,
+    })
+    return jsonify(payload)
+
+
+@app.get("/historical-confirmation/result")
+def historical_confirmation_result():
+    report = radar.redis.get_json(radar.audit_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({"result_ready": False, "status_url": "/historical-confirmation/status"}), 202
+    return jsonify(report)
+
+
+@app.post("/historical-confirmation/download")
+def historical_confirmation_download():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    report = radar.redis.get_json(radar.audit_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({"result_ready": False, "status_url": "/historical-confirmation/status"}), 202
+    with radar.audit_lock:
+        path = radar.audit_path
+    if not path or not os.path.isfile(path):
+        path = radar._materialize_historical_audit_download(report)
+    filename = f"ipr_historical_confirmation_{now_utc().strftime('%Y%m%dT%H%M%SZ')}.json.gz"
+    return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
 
 
 @app.get("/health")
@@ -1283,6 +2187,7 @@ def health():
         "worker_alive": bool(worker and worker.is_alive()),
         "pending_monitor_alive": bool(radar.monitor_thread and radar.monitor_thread.is_alive()),
         "live_sampler_alive": bool(radar.live_sample_thread and radar.live_sample_thread.is_alive()),
+        "historical_audit_alive": bool(radar.audit_thread and radar.audit_thread.is_alive()),
     })
 
 
