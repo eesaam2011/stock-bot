@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.3.0"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-04-D"
+VERSION = "1.4.0"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-E"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -94,6 +94,60 @@ HISTORICAL_CONFIRMATION_AUDIT_SPEC = {
         "alerts_enabled": False,
         "orders_enabled": False,
         "changes_live_model": False,
+        "legacy_holdout_can_approve_live": False,
+    },
+}
+
+# Isolated research only. These fields and labels are frozen before the run;
+# none of them is used by the live scanner, confirmation path, or Telegram.
+EARLY_CAUSAL_FEATURE_NAMES = (
+    "discovery_body_pct",
+    "discovery_range_pct",
+    "discovery_close_location",
+    "discovery_upper_wick_to_range",
+    "discovery_upper_wick_to_body",
+    "log_discovery_volume",
+    "volume_ratio_to_prior5",
+    "volume_acceleration_3v3",
+    "return_2m_pct",
+    "return_3m_pct",
+    "return_5m_pct",
+    "distance_to_resistance_pct",
+    "distance_above_vwap_pct",
+) + FEATURE_NAMES
+
+EARLY_CAUSAL_ENTRY_SPEC = {
+    "research_id": "IPR-EARLY-CAUSAL-ENTRY-2026-09-05-A",
+    "purpose": "Test whether information available by discovery-bar close can select profitable early entries.",
+    "candidate_count_expected": 583,
+    "development_candidates_expected": 352,
+    "legacy_holdout_candidates_expected": 231,
+    "primary_outcome": "60-minute time-exit net return from discovery price",
+    "decision_cost_pct_round_trip": 0.25,
+    "primary_label": "net_time_exit_return_pct > 0",
+    "diagnostic_policies_only": [
+        {"stop_pct": 4.0, "target_pct": 2.0},
+        {"stop_pct": 5.0, "target_pct": 2.0},
+    ],
+    "feature_availability": "end of completed discovery candle only",
+    "model": {
+        "algorithm": "L2 logistic regression",
+        "l2_penalty": 1.0,
+        "outer_evaluation": "three expanding chronological Development folds",
+        "feature_screen": "same signed profitable-minus-losing standardized mean difference in three training-only temporal blocks",
+        "minimum_median_absolute_effect": 0.10,
+        "maximum_features": 6,
+        "selection_threshold": "training probability median; no threshold search",
+    },
+    "judgment": {
+        "PROMISING": "selected net PF > 1 and selected average net return > 0 in every outer fold",
+        "NO_STABLE_SIGNAL": "otherwise",
+    },
+    "safety": {
+        "alerts_enabled": False,
+        "orders_enabled": False,
+        "changes_live_model": False,
+        "changes_live_cutoff": False,
         "legacy_holdout_can_approve_live": False,
     },
 }
@@ -521,6 +575,140 @@ def stop_target_path_metrics(
     }
 
 
+def early_causal_features(
+    bars: list[dict[str, Any]],
+    candidate: dict[str, Any],
+) -> tuple[dict[str, float], dict[str, Any]] | None:
+    """Build features using only bars known by the discovery-bar close."""
+    signal_time = parse_dt(str(candidate["signal_ts"]))
+    local_signal = signal_time.astimezone(NY)
+    session_open_local = datetime.combine(local_signal.date(), dtime(9, 30), tzinfo=NY)
+    session_open = session_open_local.astimezone(UTC)
+    causal = sorted(
+        [
+            bar for bar in bars
+            if bar.get("t") and session_open <= parse_dt(str(bar["t"])) <= signal_time
+        ],
+        key=lambda item: item["t"],
+    )
+    if len(causal) < 6:
+        return None
+    discovery = causal[-1]
+    if parse_dt(str(discovery["t"])) != signal_time:
+        return None
+
+    open_price = float(discovery["o"])
+    high = float(discovery["h"])
+    low = float(discovery["l"])
+    close = float(discovery["c"])
+    if min(open_price, high, low, close) <= 0:
+        return None
+    full_range = max(0.0, high - low)
+    body = abs(close - open_price)
+    upper_wick = max(0.0, high - max(open_price, close))
+    close_location = (close - low) / full_range if full_range > 1e-12 else 0.5
+    volumes = [float(bar.get("v") or 0.0) for bar in causal]
+    prior_five = volumes[-6:-1]
+    recent_three = volumes[-3:]
+    prior_three = volumes[-6:-3]
+    vwap_denominator = sum(volumes)
+    causal_vwap = (
+        sum(float(bar.get("vw") or bar["c"]) * volume for bar, volume in zip(causal, volumes))
+        / vwap_denominator
+        if vwap_denominator > 0
+        else mean(float(bar["c"]) for bar in causal)
+    )
+    closes = [float(bar["c"]) for bar in causal]
+
+    def trailing_return(minutes: int) -> float:
+        if len(closes) <= minutes or closes[-1 - minutes] <= 0:
+            return 0.0
+        return (closes[-1] / closes[-1 - minutes] - 1.0) * 100.0
+
+    frozen = candidate.get("features") or {}
+    if any(name not in frozen for name in FEATURE_NAMES):
+        return None
+    signal_price = float(candidate["signal_price"])
+    resistance = float(candidate["frozen_resistance"])
+    features = {
+        "discovery_body_pct": (close - open_price) / open_price * 100.0,
+        "discovery_range_pct": full_range / open_price * 100.0,
+        "discovery_close_location": clamp(close_location, 0.0, 1.0),
+        "discovery_upper_wick_to_range": upper_wick / full_range if full_range > 1e-12 else 0.0,
+        "discovery_upper_wick_to_body": min(10.0, upper_wick / body) if body > 1e-12 else (10.0 if upper_wick else 0.0),
+        "log_discovery_volume": math.log1p(max(0.0, volumes[-1])),
+        "volume_ratio_to_prior5": volumes[-1] / max(1.0, mean(prior_five)),
+        "volume_acceleration_3v3": mean(recent_three) / max(1.0, mean(prior_three)),
+        "return_2m_pct": trailing_return(2),
+        "return_3m_pct": trailing_return(3),
+        "return_5m_pct": trailing_return(5),
+        "distance_to_resistance_pct": (resistance / signal_price - 1.0) * 100.0,
+        "distance_above_vwap_pct": (signal_price / max(causal_vwap, 1e-12) - 1.0) * 100.0,
+    }
+    features.update({name: float(frozen[name]) for name in FEATURE_NAMES})
+    if any(not math.isfinite(float(value)) for value in features.values()):
+        return None
+    diagnostics = {
+        "bars_available_at_discovery": len(causal),
+        "discovery_bar_ts": discovery["t"],
+        "causal_vwap": round(float(causal_vwap), 8),
+        "discovery_close": close,
+        "last_six_causal_bars": causal[-6:],
+    }
+    return {name: float(features[name]) for name in EARLY_CAUSAL_FEATURE_NAMES}, diagnostics
+
+
+def exact_policy_return(
+    path: dict[str, Any],
+    outcome: dict[str, Any],
+    stop_pct: float,
+    target_pct: float,
+    cost_pct: float = 0.25,
+) -> float | None:
+    """Conservative exact return: same-bar ambiguity is treated as stop first."""
+    if not outcome.get("complete"):
+        return None
+    detail = (path.get("pairs") or {}).get(f"stop_{int(stop_pct)}_target_{int(target_pct)}") or {}
+    order = detail.get("order")
+    if order == "TARGET_FIRST":
+        gross = float(target_pct)
+    elif order in {"STOP_FIRST", "AMBIGUOUS"}:
+        gross = -float(stop_pct)
+    else:
+        gross = float(outcome.get("close_return_pct") or 0.0)
+    return gross - float(cost_pct)
+
+
+def return_statistics(returns: list[float]) -> dict[str, Any]:
+    values = [float(value) for value in returns if value is not None and math.isfinite(float(value))]
+    if not values:
+        return {
+            "count": 0, "profit_factor": None, "average_return_pct": None,
+            "median_return_pct": None, "total_return_points": None,
+            "win_rate_pct": None, "maximum_drawdown_points": None,
+        }
+    gross_profit = sum(value for value in values if value > 0)
+    gross_loss = -sum(value for value in values if value < 0)
+    equity = 0.0
+    peak = 0.0
+    maximum_drawdown = 0.0
+    for value in values:
+        equity += value
+        peak = max(peak, equity)
+        maximum_drawdown = max(maximum_drawdown, peak - equity)
+    return {
+        "count": len(values),
+        "wins": sum(value > 0 for value in values),
+        "losses": sum(value < 0 for value in values),
+        "profit_factor": round(gross_profit / gross_loss, 6) if gross_loss > 0 else None,
+        "average_return_pct": round(float(mean(values)), 6),
+        "median_return_pct": round(float(median(values)), 6),
+        "total_return_points": round(float(sum(values)), 6),
+        "win_rate_pct": round(sum(value > 0 for value in values) / len(values) * 100.0, 4),
+        "maximum_drawdown_points": round(maximum_drawdown, 6),
+    }
+
+
 def update_live_tracking(
     tracking: dict[str, Any] | None,
     entry_price: float,
@@ -609,6 +797,18 @@ class IndependentPriorityRadar:
             "orders_enabled": False,
             "updated_at": iso(),
         }
+        self.early_lock = threading.RLock()
+        self.early_thread: threading.Thread | None = None
+        self.early_stop_event = threading.Event()
+        self.early_path: str | None = None
+        self.early_state: dict[str, Any] = {
+            "status": "IDLE",
+            "message": "Early causal entry research has not started",
+            "research_id": EARLY_CAUSAL_ENTRY_SPEC["research_id"],
+            "alerts_enabled": False,
+            "orders_enabled": False,
+            "updated_at": iso(),
+        }
         self.state = {
             "status": "STARTING", "message": "Waiting for model bootstrap",
             "version": VERSION, "build": BUILD, "protocol_id": PROTOCOL_ID,
@@ -624,6 +824,9 @@ class IndependentPriorityRadar:
 
     def audit_key(self, suffix: str) -> str:
         return self.key(f"historical_confirmation:v1:{suffix}")
+
+    def early_key(self, suffix: str) -> str:
+        return self.key(f"early_causal_entry:v1:{suffix}")
 
     def save_state(self, **updates: Any) -> None:
         with self.lock:
@@ -819,6 +1022,8 @@ class IndependentPriorityRadar:
         moment = now_utc()
         if self._within_monitoring_hours(moment):
             return False, "Export is blocked during monitoring hours; retry after 17:30 New York time"
+        if self.early_thread and self.early_thread.is_alive():
+            return False, "Early Causal Entry Research is running"
         with self.export_lock:
             if self.export_thread and self.export_thread.is_alive():
                 return True, "already_running"
@@ -1200,6 +1405,8 @@ class IndependentPriorityRadar:
             return False, "Audit is blocked during monitoring hours; retry after 17:30 New York time"
         if not self.redis.configured or not self.alpaca.configured:
             return False, "Redis and Alpaca credentials are required"
+        if self.early_thread and self.early_thread.is_alive():
+            return False, "Early Causal Entry Research is running"
         with self.audit_lock:
             if self.audit_thread and self.audit_thread.is_alive():
                 return True, "already_running"
@@ -1230,6 +1437,484 @@ class IndependentPriorityRadar:
             if not self.audit_thread or not self.audit_thread.is_alive():
                 return False, "not_running"
             self.audit_stop_event.set()
+        return True, "pause_requested"
+
+    def _set_early_progress(self, **updates: Any) -> None:
+        with self.early_lock:
+            self.early_state.update(updates)
+            self.early_state["updated_at"] = iso()
+            snapshot = dict(self.early_state)
+        if self.redis.configured:
+            self.redis.set_json(self.early_key("status"), snapshot)
+
+    @staticmethod
+    def _early_temporal_folds(records: list[dict[str, Any]]) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+        ordered = sorted(records, key=lambda row: (row["session"], row["signal_ts"], row["symbol"]))
+        sessions = sorted({row["session"] for row in ordered})
+        if len(sessions) < 10:
+            raise RuntimeError("At least 10 Development sessions are required for early-entry OOF research")
+        initial = max(4, int(round(len(sessions) * 0.40)))
+        remaining = len(sessions) - initial
+        if remaining < 6:
+            raise RuntimeError("Insufficient later Development sessions for three validation folds")
+        cuts = [initial + int(round(remaining * ratio)) for ratio in (0.0, 1 / 3, 2 / 3, 1.0)]
+        cuts[0] = initial
+        cuts[-1] = len(sessions)
+        folds = []
+        for start, end in zip(cuts[:-1], cuts[1:]):
+            if end <= start:
+                continue
+            train_sessions = set(sessions[:start])
+            valid_sessions = set(sessions[start:end])
+            train = [row for row in ordered if row["session"] in train_sessions]
+            valid = [row for row in ordered if row["session"] in valid_sessions]
+            if train and valid:
+                folds.append((train, valid))
+        if len(folds) != 3:
+            raise RuntimeError("Unable to create three expanding early-entry validation folds")
+        return folds
+
+    @staticmethod
+    def _early_feature_screen(records: list[dict[str, Any]]) -> dict[str, Any]:
+        ordered = sorted(records, key=lambda row: (row["session"], row["signal_ts"], row["symbol"]))
+        sessions = sorted({row["session"] for row in ordered})
+        session_blocks = [list(block) for block in np.array_split(np.asarray(sessions, dtype=object), 3) if len(block)]
+        feature_report: dict[str, Any] = {}
+        stable: list[tuple[str, float]] = []
+        for name in EARLY_CAUSAL_FEATURE_NAMES:
+            effects = []
+            blocks = []
+            for session_block in session_blocks:
+                allowed = set(str(value) for value in session_block)
+                rows = [row for row in ordered if row["session"] in allowed]
+                positive = [float(row["early_features"][name]) for row in rows if row["primary_profitable"]]
+                negative = [float(row["early_features"][name]) for row in rows if not row["primary_profitable"]]
+                all_values = positive + negative
+                scale = float(np.std(np.asarray(all_values, dtype=float))) if all_values else 0.0
+                effect = (float(mean(positive)) - float(mean(negative))) / scale if positive and negative and scale > 1e-12 else 0.0
+                effects.append(effect)
+                blocks.append({
+                    "first_session": min(allowed),
+                    "last_session": max(allowed),
+                    "profitable": len(positive),
+                    "not_profitable": len(negative),
+                    "standardized_mean_difference": round(effect, 6),
+                })
+            pooled_positive = [float(row["early_features"][name]) for row in ordered if row["primary_profitable"]]
+            pooled_negative = [float(row["early_features"][name]) for row in ordered if not row["primary_profitable"]]
+            pooled_values = pooled_positive + pooled_negative
+            pooled_scale = float(np.std(np.asarray(pooled_values, dtype=float))) if pooled_values else 0.0
+            pooled_effect = (
+                (float(mean(pooled_positive)) - float(mean(pooled_negative))) / pooled_scale
+                if pooled_positive and pooled_negative and pooled_scale > 1e-12 else 0.0
+            )
+            nonzero = all(abs(value) > 1e-12 for value in effects)
+            same_direction = nonzero and (all(value > 0 for value in effects) or all(value < 0 for value in effects))
+            median_abs_effect = float(median(abs(value) for value in effects)) if effects else 0.0
+            is_stable = same_direction and median_abs_effect >= 0.10
+            feature_report[name] = {
+                "blocks": blocks,
+                "pooled_standardized_mean_difference": round(pooled_effect, 6),
+                "median_absolute_block_effect": round(median_abs_effect, 6),
+                "same_direction_all_blocks": same_direction,
+                "stable": is_stable,
+            }
+            if is_stable:
+                stable.append((name, abs(pooled_effect)))
+        stable.sort(key=lambda item: (-item[1], item[0]))
+        return {
+            "features": feature_report,
+            "stable_features": [name for name, _ in stable[:6]],
+            "stable_feature_count_before_cap": len(stable),
+            "maximum_features": 6,
+        }
+
+    @staticmethod
+    def _fit_early_model(records: list[dict[str, Any]], feature_names: list[str]) -> dict[str, Any]:
+        if not feature_names:
+            raise RuntimeError("No stable early features are available")
+        X = np.asarray([[float(row["early_features"][name]) for name in feature_names] for row in records], dtype=float)
+        y = np.asarray([1.0 if row["primary_profitable"] else 0.0 for row in records], dtype=float)
+        if len(set(y.tolist())) < 2:
+            raise RuntimeError("Early-entry training data contains only one class")
+        fitted = fit_logistic(X, y, l2=1.0)
+        Z = (X - fitted["mean"]) / fitted["scale"]
+        probabilities = 1.0 / (1.0 + np.exp(-np.clip(fitted["beta"][0] + Z @ fitted["beta"][1:], -35, 35)))
+        return {
+            "feature_names": list(feature_names),
+            "mean": fitted["mean"],
+            "scale": fitted["scale"],
+            "beta": fitted["beta"],
+            "threshold": float(np.median(probabilities)),
+            "converged": bool(fitted["converged"]),
+            "iterations": int(fitted["iterations"]),
+        }
+
+    @staticmethod
+    def _predict_early_model(model: dict[str, Any], records: list[dict[str, Any]]) -> np.ndarray:
+        names = model["feature_names"]
+        X = np.asarray([[float(row["early_features"][name]) for name in names] for row in records], dtype=float)
+        Z = (X - model["mean"]) / model["scale"]
+        return 1.0 / (1.0 + np.exp(-np.clip(model["beta"][0] + Z @ model["beta"][1:], -35, 35)))
+
+    @staticmethod
+    def _serializable_early_model(model: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "feature_names": list(model["feature_names"]),
+            "standardization_mean": [float(value) for value in model["mean"]],
+            "standardization_scale": [float(value) for value in model["scale"]],
+            "intercept_and_standardized_coefficients": [float(value) for value in model["beta"]],
+            "selection_threshold": float(model["threshold"]),
+            "threshold_rule": "median training probability; no threshold search",
+            "l2_penalty": 1.0,
+            "converged": bool(model["converged"]),
+            "iterations": int(model["iterations"]),
+        }
+
+    @staticmethod
+    def _early_case_result(candidate: dict[str, Any], bars: list[dict[str, Any]]) -> dict[str, Any]:
+        record = dict(candidate)
+        calculated = early_causal_features(bars, candidate)
+        signal_time = parse_dt(candidate["signal_ts"])
+        outcome = outcome_metrics(bars, signal_time, float(candidate["signal_price"]), 60)
+        path = stop_target_path_metrics(bars, signal_time, float(candidate["signal_price"]), 60)
+        confirmation_benchmark = IndependentPriorityRadar._historical_candidate_result(candidate, bars)
+        record["candidate_outcome_60m"] = outcome
+        record["candidate_path_60m"] = path
+        record["current_confirmation_benchmark"] = {
+            "confirmation": confirmation_benchmark.get("confirmation"),
+            "outcome_60m": confirmation_benchmark.get("confirmation_outcome_60m"),
+            "path_60m": confirmation_benchmark.get("confirmation_path_60m"),
+        }
+        if calculated is None:
+            record.update({"coverage": "MISSING_CAUSAL_BARS", "early_features": None})
+            return record
+        features, diagnostics = calculated
+        record.update({
+            "coverage": "AVAILABLE" if outcome.get("forward_bars") else "MISSING_FORWARD_BARS",
+            "early_features": features,
+            "early_diagnostics": diagnostics,
+        })
+        if outcome.get("complete"):
+            net_return = float(outcome["close_return_pct"]) - 0.25
+            record["net_time_exit_return_pct"] = round(net_return, 6)
+            record["primary_profitable"] = net_return > 0
+            record["diagnostic_policy_returns"] = {
+                "stop_4_target_2": exact_policy_return(path, outcome, 4.0, 2.0, 0.25),
+                "stop_5_target_2": exact_policy_return(path, outcome, 5.0, 2.0, 0.25),
+            }
+        else:
+            record.update({
+                "net_time_exit_return_pct": None,
+                "primary_profitable": None,
+                "diagnostic_policy_returns": {},
+            })
+        return record
+
+    @staticmethod
+    def _early_policy_summaries(records: list[dict[str, Any]]) -> dict[str, Any]:
+        complete = [row for row in records if row.get("primary_profitable") is not None]
+        return {
+            "primary_time_exit_after_cost": return_statistics([row["net_time_exit_return_pct"] for row in complete]),
+            "diagnostic_stop_4_target_2": return_statistics([
+                row["diagnostic_policy_returns"]["stop_4_target_2"] for row in complete
+            ]),
+            "diagnostic_stop_5_target_2": return_statistics([
+                row["diagnostic_policy_returns"]["stop_5_target_2"] for row in complete
+            ]),
+        }
+
+    @staticmethod
+    def _current_confirmation_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+        confirmed = [
+            row for row in records
+            if ((row.get("current_confirmation_benchmark") or {}).get("confirmation") or {}).get("confirmed")
+        ]
+        exact = [
+            row for row in confirmed
+            if (((row.get("current_confirmation_benchmark") or {}).get("outcome_60m") or {}).get("complete"))
+        ]
+        time_returns = [
+            float(row["current_confirmation_benchmark"]["outcome_60m"]["close_return_pct"]) - 0.25
+            for row in exact
+        ]
+        stop4 = [
+            exact_policy_return(
+                row["current_confirmation_benchmark"]["path_60m"],
+                row["current_confirmation_benchmark"]["outcome_60m"],
+                4.0, 2.0, 0.25,
+            )
+            for row in exact
+        ]
+        stop5 = [
+            exact_policy_return(
+                row["current_confirmation_benchmark"]["path_60m"],
+                row["current_confirmation_benchmark"]["outcome_60m"],
+                5.0, 2.0, 0.25,
+            )
+            for row in exact
+        ]
+        return {
+            "candidate_count": len(records),
+            "confirmed_count": len(confirmed),
+            "confirmation_rate_pct": round(len(confirmed) / len(records) * 100.0, 4) if records else None,
+            "complete_confirmation_outcomes": len(exact),
+            "primary_time_exit_after_cost": return_statistics(time_returns),
+            "diagnostic_stop_4_target_2": return_statistics(stop4),
+            "diagnostic_stop_5_target_2": return_statistics(stop5),
+        }
+
+    def _evaluate_early_development(self, development: list[dict[str, Any]]) -> dict[str, Any]:
+        complete = [row for row in development if row.get("primary_profitable") is not None]
+        outer_reports = []
+        selected_oof: list[dict[str, Any]] = []
+        validation_oof: list[dict[str, Any]] = []
+        for fold_index, (train, valid) in enumerate(self._early_temporal_folds(complete), 1):
+            screen = self._early_feature_screen(train)
+            feature_names = screen["stable_features"]
+            fold: dict[str, Any] = {
+                "fold": fold_index,
+                "train_first_session": train[0]["session"],
+                "train_last_session": train[-1]["session"],
+                "validation_first_session": valid[0]["session"],
+                "validation_last_session": valid[-1]["session"],
+                "train_count": len(train),
+                "validation_count": len(valid),
+                "training_only_stable_features": feature_names,
+                "baseline": return_statistics([row["net_time_exit_return_pct"] for row in valid]),
+                "current_confirmation_benchmark": self._current_confirmation_summary(valid),
+            }
+            validation_oof.extend(valid)
+            if not feature_names:
+                fold.update({"model_built": False, "selected_count": 0, "selected": return_statistics([])})
+                outer_reports.append(fold)
+                continue
+            model = self._fit_early_model(train, feature_names)
+            probabilities = self._predict_early_model(model, valid)
+            selected = [row for row, probability in zip(valid, probabilities.tolist()) if probability >= model["threshold"]]
+            selected_oof.extend(selected)
+            fold.update({
+                "model_built": True,
+                "training_probability_threshold": round(float(model["threshold"]), 8),
+                "selected_count": len(selected),
+                "selection_rate_pct": round(len(selected) / len(valid) * 100.0, 4) if valid else None,
+                "selected": return_statistics([row["net_time_exit_return_pct"] for row in selected]),
+            })
+            outer_reports.append(fold)
+
+        pooled_baseline = return_statistics([row["net_time_exit_return_pct"] for row in validation_oof])
+        pooled_selected = return_statistics([row["net_time_exit_return_pct"] for row in selected_oof])
+        all_folds_profitable = bool(outer_reports) and all(
+            fold.get("model_built")
+            and fold["selected"].get("profit_factor") is not None
+            and float(fold["selected"]["profit_factor"]) > 1.0
+            and float(fold["selected"]["average_return_pct"]) > 0.0
+            for fold in outer_reports
+        )
+        full_screen = self._early_feature_screen(complete)
+        final_model = None
+        if full_screen["stable_features"]:
+            final_model = self._fit_early_model(complete, full_screen["stable_features"])
+        judgment = "PROMISING" if all_folds_profitable else "NO_STABLE_SIGNAL"
+        return {
+            "complete_development_count": len(complete),
+            "incomplete_development_count": len(development) - len(complete),
+            "full_development_descriptive_screen": full_screen,
+            "outer_folds": outer_reports,
+            "pooled_outer_validation_baseline": pooled_baseline,
+            "pooled_outer_validation_selected": pooled_selected,
+            "pooled_outer_validation_current_confirmation": self._current_confirmation_summary(validation_oof),
+            "all_three_outer_folds_profitable_after_cost": all_folds_profitable,
+            "judgment": judgment,
+            "final_shadow_model": self._serializable_early_model(final_model) if final_model else None,
+            "_runtime_model": final_model,
+        }
+
+    def _build_early_report(self, context: dict[str, Any]) -> dict[str, Any]:
+        records = [value for _, value in self.redis.scan_hash_json(self.early_key("cases"))]
+        records.sort(key=lambda row: (row["session"], row["signal_ts"], row["symbol"]))
+        development = [row for row in records if row["partition"] == "development"]
+        holdout = [row for row in records if row["partition"] == "holdout"]
+        evaluation = self._evaluate_early_development(development)
+        runtime_model = evaluation.pop("_runtime_model")
+        complete_holdout = [row for row in holdout if row.get("primary_profitable") is not None]
+        holdout_selected: list[dict[str, Any]] = []
+        if runtime_model and complete_holdout:
+            probabilities = self._predict_early_model(runtime_model, complete_holdout)
+            holdout_selected = [
+                row for row, probability in zip(complete_holdout, probabilities.tolist())
+                if probability >= runtime_model["threshold"]
+            ]
+        return {
+            "schema": 1,
+            "generated_at": iso(),
+            "version": VERSION,
+            "build": BUILD,
+            "protocol_id": PROTOCOL_ID,
+            "protocol_sha256": PROTOCOL_SHA256,
+            "research_spec": EARLY_CAUSAL_ENTRY_SPEC,
+            "selection_context": context,
+            "coverage": {
+                "total_cases": len(records),
+                "development_cases": len(development),
+                "legacy_holdout_cases": len(holdout),
+                "available_early_features": sum(row.get("early_features") is not None for row in records),
+                "complete_primary_outcomes": sum(row.get("primary_profitable") is not None for row in records),
+            },
+            "development_only_research": {
+                "all_candidate_policies": self._early_policy_summaries(development),
+                "current_confirmation_benchmark": self._current_confirmation_summary(development),
+                "causal_model_evaluation": evaluation,
+            },
+            "legacy_holdout_audit_only": {
+                "can_approve_live": False,
+                "all_candidate_policies": self._early_policy_summaries(holdout),
+                "current_confirmation_benchmark": self._current_confirmation_summary(holdout),
+                "shadow_model_selected_count": len(holdout_selected),
+                "shadow_model_selected": return_statistics([
+                    row["net_time_exit_return_pct"] for row in holdout_selected
+                ]),
+                "note": "Previously inspected Legacy Holdout is descriptive only and cannot approve this model.",
+            },
+            "final_judgment": evaluation["judgment"],
+            "safety": {
+                "alerts_enabled": False,
+                "orders_enabled": False,
+                "live_model_or_cutoff_changed": False,
+                "live_confirmation_changed": False,
+                "deployment_approved": False,
+            },
+        }
+
+    def _materialize_early_download(self, report: dict[str, Any] | None = None) -> str:
+        report = report or self.redis.get_json(self.early_key("report"), None)
+        if not report:
+            raise RuntimeError("Early causal entry report is not ready")
+        records = [value for _, value in self.redis.scan_hash_json(self.early_key("cases"))]
+        with tempfile.NamedTemporaryFile(prefix="ipr_early_causal_entry_", suffix=".json.gz", delete=False) as temporary:
+            path = temporary.name
+        with gzip.open(path, "wt", encoding="utf-8", compresslevel=6) as output:
+            json.dump({"report": report, "cases": records}, output, ensure_ascii=False, separators=(",", ":"))
+        with self.early_lock:
+            old_path = self.early_path
+            self.early_path = path
+        if old_path and old_path != path and os.path.isfile(old_path):
+            try:
+                os.unlink(old_path)
+            except OSError:
+                pass
+        return path
+
+    def early_causal_entry_loop(self) -> None:
+        try:
+            candidates, context = self._historical_audit_candidates()
+            expected = (
+                EARLY_CAUSAL_ENTRY_SPEC["candidate_count_expected"],
+                EARLY_CAUSAL_ENTRY_SPEC["development_candidates_expected"],
+                EARLY_CAUSAL_ENTRY_SPEC["legacy_holdout_candidates_expected"],
+            )
+            actual = (
+                len(candidates),
+                sum(row["partition"] == "development" for row in candidates),
+                sum(row["partition"] == "holdout" for row in candidates),
+            )
+            if actual != expected:
+                raise RuntimeError(f"Frozen early-entry candidate mismatch: expected={expected}, actual={actual}")
+            self.redis.set_json(self.early_key("selection_context"), context)
+            completed = set(self.redis.command("SMEMBERS", self.early_key("completed")) or [])
+            self._set_early_progress(
+                status="RUNNING",
+                message="Fetching causal discovery and forward minute bars from Alpaca",
+                total_candidates=len(candidates),
+                completed_candidates=len(completed),
+                selection_context=context,
+            )
+            by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for candidate in candidates:
+                if candidate["case_id"] not in completed:
+                    by_session[candidate["session"]].append(candidate)
+            for session_index, (session, session_candidates) in enumerate(sorted(by_session.items()), 1):
+                if self.early_stop_event.is_set():
+                    self._set_early_progress(status="PAUSED", message="Paused safely; press start to resume")
+                    return
+                symbols = sorted({row["symbol"] for row in session_candidates})
+                local_day = parse_dt(session_candidates[0]["signal_ts"]).astimezone(NY).date()
+                start = datetime.combine(local_day, dtime(9, 30), tzinfo=NY).astimezone(UTC)
+                end = max(parse_dt(row["signal_ts"]) for row in session_candidates) + timedelta(minutes=77)
+                bars_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+                for symbol_batch in chunks(symbols, 100):
+                    fetched = self.alpaca.bars(symbol_batch, start, end, feed="sip", adjustment="raw")
+                    for symbol, bars in fetched.items():
+                        bars_by_symbol.setdefault(symbol, []).extend(bars)
+                for candidate in session_candidates:
+                    result = self._early_case_result(candidate, bars_by_symbol.get(candidate["symbol"], []))
+                    self.redis.hset_json(self.early_key("cases"), candidate["case_id"], result)
+                    self.redis.command("SADD", self.early_key("completed"), candidate["case_id"])
+                    completed.add(candidate["case_id"])
+                self._set_early_progress(
+                    status="RUNNING",
+                    message=f"Completed early-entry historical session {session}",
+                    completed_candidates=len(completed),
+                    completed_sessions=session_index,
+                    remaining_sessions=len(by_session) - session_index,
+                )
+            report = self._build_early_report(context)
+            self.redis.set_json(self.early_key("report"), report)
+            path = self._materialize_early_download(report)
+            self._set_early_progress(
+                status="COMPLETED",
+                message="Early Causal Entry Research is complete",
+                completed_candidates=len(candidates),
+                total_candidates=len(candidates),
+                result_ready=True,
+                download_ready=True,
+                final_judgment=report["final_judgment"],
+                compressed_bytes=os.path.getsize(path),
+            )
+        except Exception as exc:
+            logging.exception("Early causal entry research failed")
+            self._set_early_progress(status="ERROR", message=f"{type(exc).__name__}: {exc}", result_ready=False)
+        finally:
+            with self.early_lock:
+                self.early_thread = None
+
+    def start_early_causal_entry(self) -> tuple[bool, str]:
+        if self._within_monitoring_hours(now_utc()):
+            return False, "Research is blocked during monitoring hours; retry after 17:30 New York time"
+        if not self.redis.configured or not self.alpaca.configured:
+            return False, "Redis and Alpaca credentials are required"
+        with self.early_lock:
+            if self.early_thread and self.early_thread.is_alive():
+                return True, "already_running"
+            if (self.audit_thread and self.audit_thread.is_alive()) or (self.export_thread and self.export_thread.is_alive()):
+                return False, "another historical job is running"
+            self.early_stop_event.clear()
+            stored = self.redis.get_json(self.early_key("status"), None)
+            if stored and stored.get("status") == "COMPLETED":
+                self.early_state = stored
+                return False, "already_completed"
+            self.early_state = {
+                "status": "STARTING",
+                "message": "Reconstructing the frozen 583 historical candidates",
+                "research_id": EARLY_CAUSAL_ENTRY_SPEC["research_id"],
+                "alerts_enabled": False,
+                "orders_enabled": False,
+                "result_ready": False,
+                "updated_at": iso(),
+            }
+            self.early_thread = threading.Thread(
+                target=self.early_causal_entry_loop,
+                name="independent-priority-early-causal-entry",
+                daemon=True,
+            )
+            self.early_thread.start()
+        return True, "started"
+
+    def pause_early_causal_entry(self) -> tuple[bool, str]:
+        with self.early_lock:
+            if not self.early_thread or not self.early_thread.is_alive():
+                return False, "not_running"
+            self.early_stop_event.set()
         return True, "pause_requested"
 
     @staticmethod
@@ -1991,6 +2676,7 @@ def home():
             "recent": "/api/candidates/recent", "weekly": "/api/weekly/latest",
             "protocol": "/protocol", "historical_export": "/historical-export",
             "historical_confirmation_audit": "/historical-confirmation",
+            "early_causal_entry_research": "/early-causal-entry",
         },
     })
 
@@ -2178,6 +2864,110 @@ def historical_confirmation_download():
     return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
 
 
+@app.get("/early-causal-entry")
+def early_causal_entry_page():
+    return """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>بحث الدخول السببي المبكر</title>
+    <style>
+        body { font-family: system-ui; background: #101114; color: #eee; max-width: 760px; margin: 30px auto; padding: 18px; }
+        .box { background: #191b20; border: 1px solid #343741; border-radius: 14px; padding: 20px; margin: 14px 0; }
+        input, button { width: 100%; box-sizing: border-box; font-size: 17px; padding: 13px; margin: 7px 0; border-radius: 9px; border: 1px solid #555; }
+        button { background: #0f766e; color: white; font-weight: 700; }
+        a { color: #5eead4; }
+    </style>
+</head>
+<body>
+    <h1>Early Causal Entry Research</h1>
+    <div class="box">
+        <p>يفحص معلومات كانت متاحة بنهاية شمعة الاكتشاف فقط، ويقيّم العائد الصافي بعد تكلفة 0.25% عبر Development زمنيًا.</p>
+        <p>لا يغيّر البوت الحي أو التأكيد أو Telegram، ولا يرسل أوامر. يبدأ بعد 17:30 نيويورك أو خلال الويكند.</p>
+        <form method="post" action="/early-causal-entry/start">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">ابدأ أو استكمل البحث</button>
+        </form>
+        <p><a href="/early-causal-entry/status">متابعة التقدم</a> · <a href="/early-causal-entry/result">النتيجة المختصرة</a></p>
+        <form method="post" action="/early-causal-entry/pause">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">إيقاف آمن بعد الجلسة الحالية</button>
+        </form>
+        <form method="post" action="/early-causal-entry/download">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">تنزيل النتيجة الكاملة JSON.GZ</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.post("/early-causal-entry/start")
+def early_causal_entry_start():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    started, message = radar.start_early_causal_entry()
+    return jsonify({
+        "ok": started,
+        "status": message,
+        "status_url": "/early-causal-entry/status",
+        "result_url": "/early-causal-entry/result",
+        "download_url": "/early-causal-entry/download",
+        "alerts_enabled": False,
+        "orders_enabled": False,
+    }), (202 if started else 409)
+
+
+@app.post("/early-causal-entry/pause")
+def early_causal_entry_pause():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    ok, message = radar.pause_early_causal_entry()
+    return jsonify({"ok": ok, "status": message}), (202 if ok else 409)
+
+
+@app.get("/early-causal-entry/status")
+def early_causal_entry_status():
+    stored = radar.redis.get_json(radar.early_key("status"), None) if radar.redis.configured else None
+    with radar.early_lock:
+        payload = dict(stored or radar.early_state)
+        payload["worker_alive"] = bool(radar.early_thread and radar.early_thread.is_alive())
+    payload.update({
+        "status_url": "/early-causal-entry/status",
+        "result_url": "/early-causal-entry/result",
+        "download_url": "/early-causal-entry/download",
+        "alerts_enabled": False,
+        "orders_enabled": False,
+    })
+    return jsonify(payload)
+
+
+@app.get("/early-causal-entry/result")
+def early_causal_entry_result():
+    report = radar.redis.get_json(radar.early_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({"result_ready": False, "status_url": "/early-causal-entry/status"}), 202
+    return jsonify(report)
+
+
+@app.post("/early-causal-entry/download")
+def early_causal_entry_download():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    report = radar.redis.get_json(radar.early_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({"result_ready": False, "status_url": "/early-causal-entry/status"}), 202
+    with radar.early_lock:
+        path = radar.early_path
+    if not path or not os.path.isfile(path):
+        path = radar._materialize_early_download(report)
+    filename = f"ipr_early_causal_entry_{now_utc().strftime('%Y%m%dT%H%M%SZ')}.json.gz"
+    return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
+
+
 @app.get("/health")
 def health():
     return jsonify({
@@ -2188,6 +2978,7 @@ def health():
         "pending_monitor_alive": bool(radar.monitor_thread and radar.monitor_thread.is_alive()),
         "live_sampler_alive": bool(radar.live_sample_thread and radar.live_sample_thread.is_alive()),
         "historical_audit_alive": bool(radar.audit_thread and radar.audit_thread.is_alive()),
+        "early_causal_entry_alive": bool(radar.early_thread and radar.early_thread.is_alive()),
     })
 
 
