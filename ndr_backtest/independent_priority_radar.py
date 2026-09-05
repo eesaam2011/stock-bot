@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-HISTORICAL-UNIVERSE-RECONSTRUCTION"
+VERSION = "1.7.2"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-HISTORICAL-CENSUS-2019-2026"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -122,6 +122,31 @@ HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC = {
     "safety": {"historical_census_runs": False, "phase0b_runs": False, "feature_discovery_runs": False, "orders_enabled": False},
 }
 HISTORICAL_UNIVERSE_RECONSTRUCTION_SHA256 = hashlib.sha256(json.dumps(HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+HISTORICAL_CENSUS_SPEC = {
+    "census_id": "IPR-HISTORICAL-EXPLOSION-CENSUS-2019-2026-A",
+    "period": ["2019-01-01", "2026-08-31"],
+    "universe_source": "historical_universe_reconstruction:v1:records",
+    "universe_reconstruction_sha256": HISTORICAL_UNIVERSE_RECONSTRUCTION_SHA256,
+    "identity": "symbol x trading_cycle; ticker text is never treated as a permanent company identity",
+    "year_presence_gate": "scan a symbol in a target year only when reconstruction recorded SIP presence in that year",
+    "trading_cycle": "previous official regular close -> target official regular close using Alpaca market calendar",
+    "coarse_timeframe": "1Hour",
+    "sources": ["Alpaca SIP raw", "Alpaca BOATS raw when the overnight venue existed"],
+    "boats_market_structure": "BOATS went live in June 2021; pre-launch cycles have no BOATS overnight segment by market structure, not missing-data imputation",
+    "boats_launch_date": "2021-06-01",
+    "candidate_rule": "optimistic chronological coarse low/high envelope for high recall; same-bar order remains ambiguous and must be verified at 1-minute in Phase 0B",
+    "primary_threshold_pct": 20.0,
+    "retained_ladders_pct": [5.0, 10.0, 15.0, 20.0, 30.0, 50.0],
+    "request_batch_size": 500,
+    "max_events_per_symbol_cycle": 1,
+    "corporate_action_policy": "coarse discontinuities are flagged and excluded from Phase 0B eligibility; strict corporate-action exclusion remains mandatory in Phase 0B",
+    "ticker_recycling_policy": "recycling-risk symbols remain separate symbol x cycle observations; no cross-era entity merge",
+    "resume": "completed trading sessions and per-session candidates/quality are persisted in Redis",
+    "safety": {"phase0b_runs": False, "feature_discovery_runs": False, "alerts_enabled": False, "orders_enabled": False},
+}
+HISTORICAL_CENSUS_SHA256 = hashlib.sha256(json.dumps(HISTORICAL_CENSUS_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1400,6 +1425,10 @@ class IndependentPriorityRadar:
         self.universe_reconstruction_thread: threading.Thread | None = None
         self.universe_reconstruction_stop_event = threading.Event()
         self.universe_reconstruction_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Historical-universe reconstruction has not started","historical_census_allowed":False,"updated_at":iso()}
+        self.historical_census_lock = threading.RLock()
+        self.historical_census_thread: threading.Thread | None = None
+        self.historical_census_stop_event = threading.Event()
+        self.historical_census_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"2019-2026 historical census has not started","phase0b_allowed":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -1798,6 +1827,138 @@ class IndependentPriorityRadar:
             self.universe_reconstruction_stop_event.clear()
             self.universe_reconstruction_state={"status":"STARTING","phase":"GATE","message":"Starting historical-universe reconstruction","historical_census_allowed":False,"updated_at":iso()}
             self.universe_reconstruction_thread=threading.Thread(target=self.historical_universe_reconstruction_loop,name="historical-universe-reconstruction",daemon=True); self.universe_reconstruction_thread.start()
+        return True,"started"
+
+    def historical_census_key(self, suffix: str) -> str:
+        return self.key(f"historical_census:v1:{suffix}")
+
+    def _set_historical_census_state(self, **updates: Any) -> None:
+        with self.historical_census_lock:
+            self.historical_census_state.update(updates)
+            self.historical_census_state["updated_at"] = iso()
+            snapshot = dict(self.historical_census_state)
+        if self.redis.configured:
+            self.redis.set_json(self.historical_census_key("status"), snapshot)
+
+    def _historical_census_gate(self) -> tuple[bool, str]:
+        if not (self.redis.configured and self.alpaca.configured):
+            return False, "Alpaca and Redis are required"
+        report = self.redis.get_json(self.universe_reconstruction_key("report"), None)
+        if not report or report.get("status") != "COMPLETED":
+            return False, "Completed historical-universe reconstruction is required"
+        if str(report.get("reconstruction_sha256")) != HISTORICAL_UNIVERSE_RECONSTRUCTION_SHA256:
+            return False, "Historical-universe reconstruction SHA does not match frozen v1.7.1"
+        records = self.redis.get_json(self.universe_reconstruction_key("records"), None)
+        if not isinstance(records, dict) or len(records) < 10000:
+            return False, "Historical-universe records are missing or incomplete"
+        return True, "allowed"
+
+    @staticmethod
+    def _historical_year_symbols(records: dict[str, Any], year: int) -> list[str]:
+        return sorted(sym for sym, rec in records.items()
+                      if SYMBOL_RE.fullmatch(str(sym).upper()) and year in (rec.get("years_with_sip") or []))
+
+    @staticmethod
+    def _coarse_ladder(rows: list[dict[str, Any]], ladders: list[float]) -> dict[str, Any]:
+        ordered = sorted(rows, key=lambda x: str(x.get("t") or ""))
+        running_min = None; running_min_ts = None
+        hits = {str(int(x)): False for x in ladders}
+        first = {str(int(x)): None for x in ladders}
+        max_gain = 0.0; max_high = None; max_high_ts = None; same_bar = False
+        for row in ordered:
+            try: lo, hi = float(row.get("l")), float(row.get("h"))
+            except (TypeError, ValueError): continue
+            if not (math.isfinite(lo) and math.isfinite(hi) and lo > 0 and hi > 0): continue
+            ts = str(row.get("t") or "")
+            if running_min is None or lo < running_min:
+                running_min, running_min_ts = lo, ts
+            gain = (hi / running_min - 1.0) * 100.0
+            if gain > max_gain:
+                max_gain, max_high, max_high_ts = gain, hi, ts
+            for level in ladders:
+                key = str(int(level))
+                if not hits[key] and gain + 1e-12 >= level:
+                    hits[key] = True
+                    first[key] = ts
+                    if level == 20.0 and running_min_ts == ts: same_bar = True
+        return {"max_coarse_gain_pct":max_gain,"running_min_low":running_min,"running_min_ts":running_min_ts,
+                "max_high":max_high,"max_high_ts":max_high_ts,"ladder_hits":hits,"ladder_first_ts":first,
+                "same_bar_order_ambiguous_ge20":same_bar}
+
+    def _historical_fetch_cycle(self, symbols: list[str], target: date) -> dict[str, list[dict[str, Any]]]:
+        start, end = self._probe_cycle_bounds(target); out = {s: [] for s in symbols}
+        batch_size = int(HISTORICAL_CENSUS_SPEC["request_batch_size"])
+        boats_launch = date.fromisoformat(HISTORICAL_CENSUS_SPEC["boats_launch_date"])
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i:i+batch_size]
+            sip = self.alpaca.bars(batch,start,end,feed="sip",adjustment="raw",timeframe=HISTORICAL_CENSUS_SPEC["coarse_timeframe"])
+            boats = ({s: [] for s in batch} if target < boats_launch else
+                     self.alpaca.bars(batch,start,end,feed="boats",adjustment="raw",timeframe=HISTORICAL_CENSUS_SPEC["coarse_timeframe"]))
+            for symbol in batch:
+                merged = {}
+                for source, source_rows in (("sip",sip.get(symbol,[])),("boats",boats.get(symbol,[]))):
+                    for row in source_rows:
+                        ts = str(row.get("t") or "")
+                        if not ts: continue
+                        sess = self._probe_session(ts,target)
+                        if source == "boats" and sess != "Overnight": continue
+                        if ts not in merged or source == "sip": merged[ts] = {**row,"source":source,"session":sess}
+                out[symbol] = [merged[k] for k in sorted(merged)]
+        return out
+
+    def historical_census_loop(self) -> None:
+        try:
+            allowed, reason = self._historical_census_gate()
+            if not allowed: raise RuntimeError(reason)
+            records = self.redis.get_json(self.universe_reconstruction_key("records"), {})
+            cal = self.alpaca.calendar(date(2018,12,15), date(2026,8,31))
+            sessions = sorted(date.fromisoformat(str(x["date"])) for x in cal if x.get("date") and date(2019,1,1) <= date.fromisoformat(str(x["date"])) <= date(2026,8,31))
+            if len(sessions) < 1800: raise RuntimeError(f"Historical calendar unexpectedly short: {len(sessions)}")
+            completed = set(self.redis.get_json(self.historical_census_key("completed_sessions"),[]) or [])
+            total_candidates = int(self.redis.get_json(self.historical_census_key("candidate_count"),0) or 0)
+            self._set_historical_census_state(status="RUNNING",phase="CENSUS",message="Historical 2019-2026 high-recall census",session_count=len(sessions),completed_sessions=len(completed),remaining_sessions=len(sessions)-len(completed),candidate_count=total_candidates,phase0b_allowed=False)
+            for target in sessions:
+                key = target.isoformat()
+                if key in completed: continue
+                if self.historical_census_stop_event.is_set():
+                    self._set_historical_census_state(status="PAUSED",phase="CENSUS",message="Paused safely at trading-session boundary",completed_sessions=len(completed),remaining_sessions=len(sessions)-len(completed),candidate_count=total_candidates,phase0b_allowed=False); return
+                symbols = self._historical_year_symbols(records,target.year)
+                bars_by_symbol = self._historical_fetch_cycle(symbols,target)
+                candidates=[]; quality={"symbols_expected":len(symbols),"symbols_with_bars":0,"symbols_without_bars":0,"split_suspects":0,"same_bar_ambiguous":0,"ticker_recycling_risk":0,"boats_market_structure_active":target>=date.fromisoformat(HISTORICAL_CENSUS_SPEC["boats_launch_date"])}
+                for symbol in symbols:
+                    rows=bars_by_symbol.get(symbol,[])
+                    if not rows: quality["symbols_without_bars"]+=1; continue
+                    quality["symbols_with_bars"]+=1
+                    ladder=self._coarse_ladder(rows,list(HISTORICAL_CENSUS_SPEC["retained_ladders_pct"]))
+                    if not ladder["ladder_hits"].get("20"): continue
+                    split=self._phase0a_split_suspect(rows)
+                    recycle=bool((records.get(symbol) or {}).get("ticker_recycling_risk"))
+                    if split.get("suspect"): quality["split_suspects"]+=1
+                    if recycle: quality["ticker_recycling_risk"]+=1
+                    if ladder.get("same_bar_order_ambiguous_ge20"): quality["same_bar_ambiguous"]+=1
+                    candidates.append({"symbol":symbol,"target_session":key,**ladder,"corporate_action_screen":split,"ticker_recycling_risk":recycle,"eligible_for_phase0b":not split.get("suspect"),"verified_ge20":False})
+                self.redis.set_json(self.historical_census_key(f"candidates:{key}"),candidates)
+                self.redis.set_json(self.historical_census_key(f"quality:{key}"),quality)
+                completed.add(key); total_candidates += len(candidates)
+                self.redis.set_json(self.historical_census_key("completed_sessions"),sorted(completed)); self.redis.set_json(self.historical_census_key("candidate_count"),total_candidates)
+                self._set_historical_census_state(status="RUNNING",phase="CENSUS",message=f"Completed historical census session {key}",current_session=key,current_year=target.year,year_symbol_count=len(symbols),completed_sessions=len(completed),remaining_sessions=len(sessions)-len(completed),candidate_count=total_candidates,last_session_candidates=len(candidates),last_session_quality=quality,phase0b_allowed=False)
+            report={"version":VERSION,"build":BUILD,"census_id":HISTORICAL_CENSUS_SPEC["census_id"],"historical_census_sha256":HISTORICAL_CENSUS_SHA256,"reconstruction_sha256":HISTORICAL_UNIVERSE_RECONSTRUCTION_SHA256,"status":"COMPLETED","period":HISTORICAL_CENSUS_SPEC["period"],"sessions":len(sessions),"completed_sessions":len(completed),"coarse_candidates":total_candidates,"verified_ge20_count":0,"phase0b_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            self.redis.set_json(self.historical_census_key("report"),report)
+            self._set_historical_census_state(status="COMPLETED",phase="STOP_REVIEW",message="Historical Census completed; STOP and audit before Phase 0B",completed_sessions=len(completed),remaining_sessions=0,candidate_count=total_candidates,phase0b_allowed=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Historical Census failed")
+            self._set_historical_census_state(status="ERROR",phase="BLOCKED",message="Historical Census failed closed",phase0b_allowed=False,last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.historical_census_lock: self.historical_census_thread=None
+
+    def start_historical_census(self) -> tuple[bool,str]:
+        allowed,reason=self._historical_census_gate()
+        if not allowed:return False,reason
+        with self.historical_census_lock:
+            if self.historical_census_thread and self.historical_census_thread.is_alive():return False,"already_running"
+            self.historical_census_stop_event.clear()
+            self.historical_census_thread=threading.Thread(target=self.historical_census_loop,name="historical-census-2019-2026",daemon=True)
+            self.historical_census_thread.start()
         return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
@@ -5550,6 +5711,39 @@ def universe_reconstruction_status():
 def universe_reconstruction_result():
     report=radar.redis.get_json(radar.universe_reconstruction_key("report"),None) if radar.redis.configured else None
     if not report: return jsonify({"result_ready":False,"status_url":"/phase0/universe-reconstruction/status","historical_census_allowed":False}),202
+    return jsonify(report)
+
+@app.get("/phase0/historical-census")
+def historical_census_home():
+    allowed,reason=radar._historical_census_gate()
+    return jsonify({"purpose":"2019-2026 reconstructed-universe high-recall Historical Census","census_id":HISTORICAL_CENSUS_SPEC["census_id"],"historical_census_sha256":HISTORICAL_CENSUS_SHA256,"gate_allowed":allowed,"gate_reason":reason,"protocol_url":"/phase0/historical-census/protocol","start_url":"/phase0/historical-census/start","status_url":"/phase0/historical-census/status","result_url":"/phase0/historical-census/result","pause_url":"/phase0/historical-census/pause","phase0b_allowed":False})
+
+@app.get("/phase0/historical-census/protocol")
+def historical_census_protocol():
+    return jsonify({"version":VERSION,"build":BUILD,"spec":HISTORICAL_CENSUS_SPEC,"historical_census_sha256":HISTORICAL_CENSUS_SHA256})
+
+@app.get("/phase0/historical-census/start")
+@app.post("/phase0/historical-census/start")
+def historical_census_start():
+    started,message=radar.start_historical_census()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/historical-census/status","result_url":"/phase0/historical-census/result","phase0b_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/historical-census/pause")
+@app.post("/phase0/historical-census/pause")
+def historical_census_pause():
+    radar.historical_census_stop_event.set(); return jsonify({"ok":True,"message":"pause_requested","phase0b_allowed":False})
+
+@app.get("/phase0/historical-census/status")
+def historical_census_status():
+    stored=radar.redis.get_json(radar.historical_census_key("status"),None) if radar.redis.configured else None
+    with radar.historical_census_lock:
+        payload=dict(stored or radar.historical_census_state); payload["worker_alive"]=bool(radar.historical_census_thread and radar.historical_census_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/historical-census/result")
+def historical_census_result():
+    report=radar.redis.get_json(radar.historical_census_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/status","phase0b_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0a")
