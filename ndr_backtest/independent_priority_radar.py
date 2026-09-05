@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.6.2"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0-PROBE-B"
+VERSION = "1.6.3"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0-PROBE-C-BROWSER-START"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -5059,9 +5059,12 @@ def phase0_probe_home():
 def phase0_probe_protocol():
     return jsonify({"version": VERSION, "build": BUILD, "probe_spec": PHASE0_PROBE_SPEC, "probe_sha256": PHASE0_PROBE_SHA256})
 
+@app.get("/phase0/probe/start")
 @app.post("/phase0/probe/start")
 def phase0_probe_start():
-    if not export_authorized():
+    # Browser-friendly GET is intentionally allowed for this diagnostic probe only.
+    # POST retains the admin-token guard used by the service's mutation endpoints.
+    if request.method == "POST" and not export_authorized():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     started, message = radar.start_phase0_probe()
     return jsonify({"ok": started, "status": message, "status_url": "/phase0/probe/status", "result_url": "/phase0/probe/result", "phase0a_allowed": False}), (202 if started else 409)
