@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.6.3"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0-PROBE-C-BROWSER-START"
+VERSION = "1.6.5"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0-REFERENCE-DISCOVERY"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -74,6 +74,7 @@ PHASE0_PROBE_SPEC = {
     "acceptance": {
         "all_frozen_reference_cases_must_be_detected": True,
         "all_expected_extended_sessions_must_have_coverage": True,
+        "detected_t1_must_match_expected_start_session": True,
         "synthetic_streaming_detector_tests_must_pass": True,
         "phase0a_is_fail_closed": True,
     },
@@ -1362,6 +1363,13 @@ class IndependentPriorityRadar:
             "updated_at": iso(),
         }
         self.phase0_probe_report: dict[str, Any] | None = None
+        self.phase0_reference_lock = threading.RLock()
+        self.phase0_reference_thread: threading.Thread | None = None
+        self.phase0_reference_state: dict[str, Any] = {
+            "status": "IDLE", "message": "Reference-candidate discovery has not started",
+            "selection_uses_session_detector": False, "phase0a_allowed": False, "updated_at": iso(),
+        }
+        self.phase0_reference_report: dict[str, Any] | None = None
         self.state = {
             "status": "STARTING", "message": "Waiting for model bootstrap",
             "version": VERSION, "build": BUILD, "protocol_id": PROTOCOL_ID,
@@ -1487,12 +1495,17 @@ class IndependentPriorityRadar:
         expected_session = str(case.get("expected_start_session") or "")
         coverage_ok = bool(session_counts.get(expected_session, 0)) if expected_session else True
         explosion_ok = detector["detected"] == bool(case.get("expected_ge20_in_cycle", True))
-        passed = coverage_ok and explosion_ok
+        actual_start_session = None
+        if detector.get("detected") and detector.get("t1"):
+            actual_start_session = self._probe_session(str(detector["t1"]), target)
+        start_session_match = (actual_start_session == expected_session) if expected_session else True
+        passed = coverage_ok and explosion_ok and start_session_match
         return {
             **case, "cycle_start": iso(start), "cycle_end": iso(end),
             "sip_bars": len(sip), "boats_bars": len(boats), "merged_bars": len(rows),
             "session_counts": dict(session_counts), "source_counts": dict(source_counts),
             "coverage_ok": coverage_ok, "explosion_expectation_ok": explosion_ok,
+            "actual_start_session": actual_start_session, "start_session_match": start_session_match,
             "detector": detector, "passed": passed,
         }
 
@@ -1574,6 +1587,102 @@ class IndependentPriorityRadar:
             }
             self.phase0_probe_thread = threading.Thread(target=self.phase0_probe_loop, name="independent-priority-phase0-probe", daemon=True)
             self.phase0_probe_thread.start()
+        return True, "started"
+
+    def phase0_reference_key(self, suffix: str) -> str:
+        return self.key(f"phase0_reference_discovery:v1:{suffix}")
+
+    def _set_phase0_reference_state(self, **updates: Any) -> None:
+        with self.phase0_reference_lock:
+            self.phase0_reference_state.update(updates)
+            self.phase0_reference_state["updated_at"] = iso()
+            snapshot = dict(self.phase0_reference_state)
+        if self.redis.configured:
+            self.redis.set_json(self.phase0_reference_key("status"), snapshot)
+
+    @staticmethod
+    def _reference_phase_name(value: Any) -> str:
+        text = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+        if text in {"OVERNIGHT", "BOATS"}: return "Overnight"
+        if text in {"PREMARKET", "PRE_MARKET", "PM"}: return "Premarket"
+        return ""
+
+    @staticmethod
+    def _compact_raw_bar(row: dict[str, Any]) -> dict[str, Any]:
+        return {k: row.get(k) for k in ("t", "o", "h", "l", "c", "v") if row.get(k) is not None}
+
+    def phase0_reference_discovery_loop(self) -> None:
+        try:
+            self._set_phase0_reference_state(status="RUNNING", message="Reading frozen NDR explosion catalog; detector is not used for selection", phase0a_allowed=False)
+            catalog = self.redis.get_json(f"{self.source_prefix}:explosions:catalog", None)
+            if not isinstance(catalog, dict) or not isinstance(catalog.get("cases"), list):
+                raise RuntimeError(f"Missing historical catalog: {self.source_prefix}:explosions:catalog")
+            pools = {"Overnight": [], "Premarket": []}
+            seen = set()
+            for item in catalog.get("cases") or []:
+                phase = self._reference_phase_name(item.get("phase"))
+                if phase not in pools or float(item.get("mfe_pct") or 0.0) < 20.0:
+                    continue
+                key = (phase, str(item.get("session")), str(item.get("symbol")))
+                if key in seen: continue
+                seen.add(key)
+                pools[phase].append(dict(item))
+            for phase in pools:
+                pools[phase].sort(key=lambda x: -float(x.get("mfe_pct") or 0.0))
+                pools[phase] = pools[phase][:8]
+            detailed = {"Overnight": [], "Premarket": []}
+            for phase, candidates in pools.items():
+                for item in candidates:
+                    target = date.fromisoformat(str(item["session"]))
+                    start, end = self._probe_cycle_bounds(target)
+                    symbol = str(item["symbol"]).upper()
+                    sip = self.alpaca.bars([symbol], start, end, feed="sip", adjustment="raw", timeframe="1Min").get(symbol, [])
+                    boats = self.alpaca.bars([symbol], start, end, feed="boats", adjustment="raw", timeframe="1Min").get(symbol, [])
+                    merged = {}
+                    source = {}
+                    for feed, rows in (("sip", sip), ("boats", boats)):
+                        for row in rows:
+                            ts = str(row.get("t") or "")
+                            if not ts: continue
+                            sess = self._probe_session(ts, target)
+                            if feed == "boats" and sess != "Overnight": continue
+                            if ts not in merged or feed == "sip":
+                                merged[ts] = row; source[ts] = feed
+                    session_rows = []
+                    for ts in sorted(merged):
+                        if self._probe_session(ts, target) == phase:
+                            r = self._compact_raw_bar(merged[ts]); r["source"] = source.get(ts); session_rows.append(r)
+                    detailed[phase].append({
+                        "symbol": symbol, "target_session": target.isoformat(), "catalog_phase": phase,
+                        "catalog_signal_ts": item.get("signal_ts"), "catalog_mfe_pct": item.get("mfe_pct"),
+                        "catalog_signal_type": item.get("signal_type"), "raw_bar_count": len(session_rows),
+                        "raw_session_bars": session_rows,
+                    })
+            report = {
+                "version": VERSION, "build": BUILD, "source_prefix": self.source_prefix,
+                "purpose": "Independent visual reference-candidate pack before freezing final Overnight/Premarket probe cases",
+                "selection_rule": "Frozen NDR explosion catalog only: catalog phase is Overnight/Premarket and stored MFE >=20%; top 8 unique symbol-sessions by stored MFE per phase",
+                "selection_uses_session_detector": False,
+                "warning": "Do not freeze a reference from catalog metadata alone. Inspect raw_session_bars first; only after manual freeze may session_detector be run.",
+                "phase0a_allowed": False, "candidate_counts": {k: len(v) for k,v in detailed.items()},
+                "candidates": detailed, "completed_at": iso(),
+            }
+            self.phase0_reference_report = report
+            self.redis.set_json(self.phase0_reference_key("report"), report)
+            self._set_phase0_reference_state(status="COMPLETED", message="Candidate pack ready for independent raw-bar inspection", phase0a_allowed=False, candidate_counts=report["candidate_counts"])
+        except Exception as exc:
+            logging.exception("Phase 0 reference discovery failed")
+            self._set_phase0_reference_state(status="ERROR", message="Reference discovery failed", phase0a_allowed=False, last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.phase0_reference_lock: self.phase0_reference_thread = None
+
+    def start_phase0_reference_discovery(self) -> tuple[bool, str]:
+        if not (self.redis.configured and self.alpaca.configured): return False, "Redis and Alpaca credentials are required"
+        with self.phase0_reference_lock:
+            if self.phase0_reference_thread and self.phase0_reference_thread.is_alive(): return False, "already_running"
+            self.phase0_reference_state = {"status":"STARTING","message":"Starting independent reference-candidate discovery","selection_uses_session_detector":False,"phase0a_allowed":False,"updated_at":iso()}
+            self.phase0_reference_thread = threading.Thread(target=self.phase0_reference_discovery_loop, name="ipr-phase0-reference-discovery", daemon=True)
+            self.phase0_reference_thread.start()
         return True, "started"
 
     def save_state(self, **updates: Any) -> None:
@@ -5045,6 +5154,31 @@ def daily_breakout_download():
     filename = f"ipr_daily_breakout_volume_{now_utc().strftime('%Y%m%dT%H%M%SZ')}.json.gz"
     return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
 
+
+
+@app.get("/phase0/reference-candidates")
+def phase0_reference_candidates_home():
+    return jsonify({"purpose":"Find candidates only; no detector-based selection and no Phase 0A start","start_url":"/phase0/reference-candidates/start","status_url":"/phase0/reference-candidates/status","result_url":"/phase0/reference-candidates/result","phase0a_allowed":False})
+
+@app.get("/phase0/reference-candidates/start")
+@app.post("/phase0/reference-candidates/start")
+def phase0_reference_candidates_start():
+    if request.method == "POST" and not export_authorized(): return jsonify({"ok":False,"error":"unauthorized"}),401
+    started,message=radar.start_phase0_reference_discovery()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/reference-candidates/status","result_url":"/phase0/reference-candidates/result","phase0a_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/reference-candidates/status")
+def phase0_reference_candidates_status():
+    stored=radar.redis.get_json(radar.phase0_reference_key("status"),None) if radar.redis.configured else None
+    with radar.phase0_reference_lock:
+        payload=dict(stored or radar.phase0_reference_state); payload["worker_alive"]=bool(radar.phase0_reference_thread and radar.phase0_reference_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/reference-candidates/result")
+def phase0_reference_candidates_result():
+    report=radar.redis.get_json(radar.phase0_reference_key("report"),None) if radar.redis.configured else radar.phase0_reference_report
+    if not report: return jsonify({"result_ready":False,"phase0a_allowed":False,"status_url":"/phase0/reference-candidates/status"}),202
+    return jsonify(report)
 
 @app.get("/phase0/probe")
 def phase0_probe_home():
