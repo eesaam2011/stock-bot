@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.5.0"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-F"
+VERSION = "1.6.0"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-G"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -202,6 +202,80 @@ LIQUID_DAILY_ORB_SPEC = {
         "primary_judgment": "Top-3 must have PF > 1, average daily return > 0, and at least five active days in every Development block",
         "legacy_holdout_can_approve_live": False,
         "promising_wording": "PROMISING_SHADOW_ONLY",
+        "failure_wording": "NO_STABLE_EDGE",
+    },
+    "safety": {
+        "alerts_enabled": False,
+        "orders_enabled": False,
+        "changes_live_model": False,
+        "changes_live_cutoff": False,
+        "changes_live_confirmation": False,
+    },
+}
+
+# A separate end-of-day signal research path.  Both holding policies are
+# frozen before the run and receive independent judgments; neither is selected
+# merely because it looks better after the fact.
+DAILY_BREAKOUT_SPEC = {
+    "research_id": "IPR-DAILY-BREAKOUT-VOLUME-2026-09-05-A",
+    "signal": {
+        "direction": "LONG_ONLY",
+        "signal_time": "after the completed regular-session daily bar",
+        "price_min_inclusive": 10.0,
+        "price_max_inclusive": 60.0,
+        "breakout": "signal close strictly above every high in the previous 20 sessions",
+        "volume": "signal volume at least 1.5 times the previous 20-session average",
+        "minimum_volume_ratio": 1.5,
+        "minimum_average_dollar_volume_60_sessions": 20_000_000,
+        "ranking": "descending signal-volume ratio, then symbol",
+        "daily_rank_count": 3,
+    },
+    "universe": {
+        "source": "frozen manifest symbols intersected with current active tradable Alpaca assets",
+        "allowed": "ordinary operating-company shares and ADR descriptions",
+        "excluded": "ETF, ETN, fund, trust, preferred, warrant, right, unit, blank-check/SPAC and explicit prohibited-business keywords",
+        "classification_is_point_in_time": False,
+        "sharia_scope": "explicit product and business-name exclusions only; not a full financial-ratio Sharia audit",
+        "historical_market_cap_filter_applied": False,
+        "market_cap_note": "No historical point-in-time market cap is available; average dollar volume is the causal liquidity screen.",
+        "explicit_symbol_exclusions": [
+            "ACB", "ACEL", "BALY", "BF.A", "BF.B", "BTI", "BUD", "BYD",
+            "CGC", "CHDN", "CNTY", "CRON", "CZR", "DEO", "DKNG", "EVRI",
+            "FLUT", "FLL", "GAN", "GDEN", "GENI", "HRL", "IGT", "JBS",
+            "LNW", "LVS", "MGM", "MO", "NAPA", "OGI", "PENN", "PM",
+            "RRR", "RSI", "SAM", "SEAT", "SGHC", "SNDL", "SRAD", "STZ",
+            "TAP", "TLRY", "TPB", "TSN", "UVV", "VFF", "VWE", "WYNN",
+        ],
+    },
+    "execution": {
+        "entry": "next regular session 09:30 New York opening print",
+        "entry_price_must_remain_between_10_and_60": True,
+        "out_of_range_entry": "cancel selected slot; it remains cash and is not replaced",
+        "stop": "one signal-day ATR14 below actual entry",
+        "decision_cost_pct_round_trip": 0.25,
+        "allocation": "Daily-1 uses three equal slots; Daily-2 uses six equal slots for two overlapping three-stock cohorts; unused or cancelled slots remain cash",
+        "target": None,
+        "gap_handling": "exit at worse opening print when a later session opens below the stop",
+        "same_bar_entry_stop": "STOP",
+    },
+    "policies": {
+        "daily_1": "enter next session open; exit that session close unless stopped",
+        "daily_2": "enter next session open; exit the following session close unless stopped",
+        "independent_judgments": True,
+        "best_policy_selection_after_results": False,
+    },
+    "evaluation": {
+        "sessions": "the frozen 60 signal-session source manifest",
+        "development_sessions": 45,
+        "legacy_holdout_sessions": 15,
+        "development_blocks": "three consecutive 15-signal-session blocks",
+        "minimum_active_days_per_block": 8,
+        "minimum_active_days_full_development": 30,
+        "minimum_pooled_profit_factor": 1.20,
+        "minimum_pooled_average_net_return_pct": 0.10,
+        "block_rule": "PF > 1 and average net return > 0 in every Development block",
+        "legacy_holdout_can_approve_live": False,
+        "forward_sessions_required_after_promising_result": 20,
         "failure_wording": "NO_STABLE_EDGE",
     },
     "safety": {
@@ -928,6 +1002,190 @@ def daily_return_statistics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def daily_breakout_signal_metrics(
+    bars: list[dict[str, Any]],
+    signal_session: str,
+) -> dict[str, Any] | None:
+    """Build a completed-day breakout signal without reading a future row."""
+    target = date.fromisoformat(signal_session)
+    dated: list[tuple[date, dict[str, Any]]] = []
+    for bar in bars:
+        if not bar.get("t"):
+            continue
+        local_date = parse_dt(str(bar["t"])).astimezone(NY).date()
+        if local_date <= target:
+            dated.append((local_date, bar))
+    dated.sort(key=lambda item: item[0])
+    current_matches = [bar for row_date, bar in dated if row_date == target]
+    prior = [bar for row_date, bar in dated if row_date < target]
+    if len(current_matches) != 1 or len(prior) < 60:
+        return None
+    current = current_matches[0]
+    previous60 = prior[-60:]
+    previous20 = prior[-20:]
+    signal_close = float(current["c"])
+    signal_volume = float(current.get("v") or 0.0)
+    if signal_close <= 0 or signal_volume < 0:
+        return None
+    average_volume20 = mean(float(row.get("v") or 0.0) for row in previous20)
+    if average_volume20 <= 0:
+        return None
+    prior_high20 = max(float(row["h"]) for row in previous20)
+    average_dollar_volume60 = mean(
+        float(row.get("v") or 0.0) * float(row.get("c") or 0.0)
+        for row in previous60
+    )
+    atr_rows = prior[-14:] + [current]
+    true_ranges = []
+    for previous, row in zip(atr_rows, atr_rows[1:]):
+        previous_close = float(previous["c"])
+        high = float(row["h"])
+        low = float(row["l"])
+        true_ranges.append(max(high - low, abs(high - previous_close), abs(low - previous_close)))
+    if len(true_ranges) != 14:
+        return None
+    volume_ratio = signal_volume / average_volume20
+    return {
+        "signal_session": signal_session,
+        "signal_open": float(current["o"]),
+        "signal_high": float(current["h"]),
+        "signal_low": float(current["l"]),
+        "signal_close": signal_close,
+        "signal_volume": signal_volume,
+        "prior_high20": prior_high20,
+        "average_volume20": average_volume20,
+        "volume_ratio20": volume_ratio,
+        "average_dollar_volume60": average_dollar_volume60,
+        "atr14": float(mean(true_ranges)),
+        "price_pass": (
+            DAILY_BREAKOUT_SPEC["signal"]["price_min_inclusive"]
+            <= signal_close
+            <= DAILY_BREAKOUT_SPEC["signal"]["price_max_inclusive"]
+        ),
+        "liquidity_pass": (
+            average_dollar_volume60
+            >= DAILY_BREAKOUT_SPEC["signal"]["minimum_average_dollar_volume_60_sessions"]
+        ),
+        "breakout_pass": signal_close > prior_high20,
+        "volume_pass": volume_ratio >= DAILY_BREAKOUT_SPEC["signal"]["minimum_volume_ratio"],
+    }
+
+
+def daily_breakout_trade_result(
+    bars: list[dict[str, Any]],
+    entry_session: str,
+    final_session: str,
+    atr14: float,
+    session_closes: dict[str, dtime],
+    cost_pct_round_trip: float = 0.25,
+) -> dict[str, Any]:
+    """Enter at the next regular open and follow a one-ATR stop minute by minute."""
+    if atr14 <= 0 or entry_session > final_session:
+        return {"complete": False, "triggered": False, "reason": "invalid_trade_definition"}
+    entry_day = date.fromisoformat(entry_session)
+    final_day = date.fromisoformat(final_session)
+    by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for bar in sorted(bars, key=lambda item: str(item.get("t") or "")):
+        if not bar.get("t"):
+            continue
+        local = parse_dt(str(bar["t"])).astimezone(NY)
+        session = local.date().isoformat()
+        close = session_closes.get(session)
+        if close is None or not (entry_day <= local.date() <= final_day):
+            continue
+        minute = local.hour * 60 + local.minute
+        close_minute = close.hour * 60 + close.minute
+        if 570 <= minute < close_minute:
+            by_session[session].append(bar)
+    required_sessions = sorted(
+        session for session in session_closes
+        if entry_session <= session <= final_session
+    )
+    if not required_sessions or required_sessions[0] != entry_session or required_sessions[-1] != final_session:
+        return {"complete": False, "triggered": False, "reason": "missing_calendar_session"}
+    for session in required_sessions:
+        rows = by_session.get(session, [])
+        close = session_closes[session]
+        expected_last = close.hour * 60 + close.minute - 1
+        if not rows:
+            return {"complete": False, "triggered": False, "reason": f"missing_session_bars:{session}"}
+        first_local = parse_dt(str(rows[0]["t"])).astimezone(NY)
+        last_local = parse_dt(str(rows[-1]["t"])).astimezone(NY)
+        if session == entry_session and first_local.hour * 60 + first_local.minute != 570:
+            return {
+                "complete": True,
+                "triggered": False,
+                "reason": "no_executable_0930_opening_print",
+            }
+        if last_local.hour * 60 + last_local.minute < expected_last:
+            return {"complete": False, "triggered": False, "reason": f"incomplete_session:{session}"}
+
+    entry_bar = by_session[entry_session][0]
+    entry_price = float(entry_bar["o"])
+    if not (
+        DAILY_BREAKOUT_SPEC["signal"]["price_min_inclusive"]
+        <= entry_price
+        <= DAILY_BREAKOUT_SPEC["signal"]["price_max_inclusive"]
+    ):
+        return {
+            "complete": True,
+            "triggered": False,
+            "reason": "entry_open_outside_price_range",
+            "entry_open": entry_price,
+        }
+    stop_price = entry_price - float(atr14)
+    exit_price = None
+    exit_ts = None
+    exit_reason = None
+    for session in required_sessions:
+        for bar in by_session[session]:
+            open_price = float(bar["o"])
+            low = float(bar["l"])
+            if low <= stop_price:
+                exit_price = min(stop_price, open_price)
+                exit_ts = str(bar["t"])
+                exit_reason = "STOP"
+                break
+        if exit_price is not None:
+            break
+    if exit_price is None:
+        final_bar = by_session[final_session][-1]
+        exit_price = float(final_bar["c"])
+        exit_ts = str(final_bar["t"])
+        exit_reason = "TIME_EXIT"
+    gross_per_share = exit_price - entry_price
+    cost_per_share = entry_price * float(cost_pct_round_trip) / 100.0
+    net_per_share = gross_per_share - cost_per_share
+    return {
+        "complete": True,
+        "triggered": True,
+        "direction": "LONG",
+        "entry_session": entry_session,
+        "final_session": final_session,
+        "entry_price": round(entry_price, 8),
+        "entry_ts": str(entry_bar["t"]),
+        "stop_price": round(stop_price, 8),
+        "stop_distance": round(float(atr14), 8),
+        "exit_price": round(float(exit_price), 8),
+        "exit_ts": exit_ts,
+        "exit_reason": exit_reason,
+        "gross_pnl_per_share": round(float(gross_per_share), 8),
+        "cost_per_share": round(float(cost_per_share), 8),
+        "cost_rule": f"{float(cost_pct_round_trip):g}% round trip",
+        "net_pnl_per_share": round(float(net_per_share), 8),
+        "net_return_pct": round(float(net_per_share / entry_price * 100.0), 6),
+        "net_r_multiple": round(float(net_per_share / atr14), 6),
+    }
+
+
+def daily_breakout_policy_slots(policy: str) -> int:
+    if policy == "daily_1":
+        return int(DAILY_BREAKOUT_SPEC["signal"]["daily_rank_count"])
+    if policy == "daily_2":
+        return int(DAILY_BREAKOUT_SPEC["signal"]["daily_rank_count"]) * 2
+    raise ValueError(f"Unknown daily-breakout policy: {policy}")
+
+
 def update_live_tracking(
     tracking: dict[str, Any] | None,
     entry_price: float,
@@ -1041,6 +1299,19 @@ class IndependentPriorityRadar:
             "orders_enabled": False,
             "updated_at": iso(),
         }
+        self.breakout_lock = threading.RLock()
+        self.breakout_thread: threading.Thread | None = None
+        self.breakout_stop_event = threading.Event()
+        self.breakout_path: str | None = None
+        self.breakout_state: dict[str, Any] = {
+            "status": "IDLE",
+            "phase": "NOT_STARTED",
+            "message": "Daily breakout with volume research has not started",
+            "research_id": DAILY_BREAKOUT_SPEC["research_id"],
+            "alerts_enabled": False,
+            "orders_enabled": False,
+            "updated_at": iso(),
+        }
         self.state = {
             "status": "STARTING", "message": "Waiting for model bootstrap",
             "version": VERSION, "build": BUILD, "protocol_id": PROTOCOL_ID,
@@ -1062,6 +1333,9 @@ class IndependentPriorityRadar:
 
     def orb_key(self, suffix: str) -> str:
         return self.key(f"liquid_daily_orb:v1:{suffix}")
+
+    def breakout_key(self, suffix: str) -> str:
+        return self.key(f"daily_breakout_volume:v1:{suffix}")
 
     def save_state(self, **updates: Any) -> None:
         with self.lock:
@@ -1261,6 +1535,8 @@ class IndependentPriorityRadar:
             return False, "Early Causal Entry Research is running"
         if self.orb_thread and self.orb_thread.is_alive():
             return False, "Liquid Daily ORB Research is running"
+        if self.breakout_thread and self.breakout_thread.is_alive():
+            return False, "Daily Breakout Research is running"
         with self.export_lock:
             if self.export_thread and self.export_thread.is_alive():
                 return True, "already_running"
@@ -1646,6 +1922,8 @@ class IndependentPriorityRadar:
             return False, "Early Causal Entry Research is running"
         if self.orb_thread and self.orb_thread.is_alive():
             return False, "Liquid Daily ORB Research is running"
+        if self.breakout_thread and self.breakout_thread.is_alive():
+            return False, "Daily Breakout Research is running"
         with self.audit_lock:
             if self.audit_thread and self.audit_thread.is_alive():
                 return True, "already_running"
@@ -2129,6 +2407,7 @@ class IndependentPriorityRadar:
                 (self.audit_thread and self.audit_thread.is_alive())
                 or (self.export_thread and self.export_thread.is_alive())
                 or (self.orb_thread and self.orb_thread.is_alive())
+                or (self.breakout_thread and self.breakout_thread.is_alive())
             ):
                 return False, "another historical job is running"
             self.early_stop_event.clear()
@@ -2732,7 +3011,7 @@ class IndependentPriorityRadar:
                 return True, "already_running"
             if any(
                 thread and thread.is_alive()
-                for thread in (self.audit_thread, self.export_thread, self.early_thread)
+                for thread in (self.audit_thread, self.export_thread, self.early_thread, self.breakout_thread)
             ):
                 return False, "another historical job is running"
             self.orb_stop_event.clear()
@@ -2763,6 +3042,483 @@ class IndependentPriorityRadar:
             if not self.orb_thread or not self.orb_thread.is_alive():
                 return False, "not_running"
             self.orb_stop_event.set()
+        return True, "pause_requested"
+
+    def _set_breakout_progress(self, **updates: Any) -> None:
+        with self.breakout_lock:
+            self.breakout_state.update(updates)
+            self.breakout_state["updated_at"] = iso()
+            snapshot = dict(self.breakout_state)
+        if self.redis.configured:
+            self.redis.set_json(self.breakout_key("status"), snapshot)
+
+    @staticmethod
+    def _daily_breakout_allowed_asset(asset: dict[str, Any]) -> bool:
+        """Conservative current security-master screen; ADR wording is allowed."""
+        symbol = str(asset.get("symbol") or "").upper()
+        if not SYMBOL_RE.fullmatch(symbol) or not asset.get("tradable", False):
+            return False
+        if symbol in set(DAILY_BREAKOUT_SPEC["universe"]["explicit_symbol_exclusions"]):
+            return False
+        name = " ".join(str(asset.get("name") or "").lower().replace("-", " ").split())
+        product_issuers = (
+            "proshares", "direxion", "ishares", "vanguard", "spdr", "invesco",
+            "wisdomtree", "vaneck", "global x", "graniteshares", "yieldmax",
+            "roundhill", "defiance", "innovator", "first trust", "flexshares",
+            "pimco", "t rex", "simplify", "volatility shares", "rex shares",
+        )
+        product_terms = (
+            " etf", "exchange traded fund", " etn", " exchange traded note",
+            " index fund", " income fund", " bond fund", " closed end fund",
+            " ultrashort", " ultra short", " leveraged", " inverse",
+            " 2x ", " 3x ", " daily bull", " daily bear",
+        )
+        security_terms = (
+            " warrant", " rights", " unit", " preferred", " depositary preferred",
+            " acquisition corp", " acquisition co", " blank check", " spac",
+        )
+        prohibited_business = (
+            "casino", "gaming", "betting", "wager", "sportsbook", "fantasy sports",
+            "alcohol", "brew", "distill", "spirits", "winery", "tobacco",
+            "cannabis", "marijuana", "pork", "swine",
+            " bank", "bancorp", "financial services", "insurance", "mortgage",
+            "consumer credit", "lending", "real estate investment trust", " reit",
+        )
+        padded = f" {name} "
+        return not any(term in padded for term in product_issuers + product_terms + security_terms + prohibited_business)
+
+    def _daily_breakout_batches(
+        self,
+        symbols: list[str],
+        sessions: list[str],
+    ) -> list[dict[str, list[dict[str, Any]]]]:
+        batches = list(chunks(symbols, 100))
+        first_day = date.fromisoformat(sessions[0])
+        last_day = date.fromisoformat(sessions[-1])
+        start = datetime.combine(first_day - timedelta(days=150), dtime(0, 0), tzinfo=NY).astimezone(UTC)
+        end = datetime.combine(last_day + timedelta(days=10), dtime(0, 0), tzinfo=NY).astimezone(UTC)
+        payloads: list[dict[str, list[dict[str, Any]]]] = []
+        for batch_index, symbol_batch in enumerate(batches):
+            if self.breakout_stop_event.is_set():
+                raise InterruptedError("pause_requested")
+            key = self.breakout_key(f"daily_batch:{batch_index}")
+            stored = self.redis.get_json(key, None)
+            if stored is not None:
+                payloads.append(stored)
+                continue
+            fetched = self.alpaca.bars(
+                symbol_batch, start, end, feed="sip", adjustment="raw", timeframe="1Day"
+            )
+            payload: dict[str, list[dict[str, Any]]] = {session: [] for session in sessions}
+            for symbol in symbol_batch:
+                rows = fetched.get(symbol, [])
+                for session in sessions:
+                    metrics = daily_breakout_signal_metrics(rows, session)
+                    if metrics is None:
+                        continue
+                    if all(metrics[name] for name in ("price_pass", "liquidity_pass", "breakout_pass", "volume_pass")):
+                        payload[session].append({"symbol": symbol, **metrics})
+            self.redis.set_json(key, payload)
+            payloads.append(payload)
+            self._set_breakout_progress(
+                status="RUNNING",
+                phase="DAILY_SIGNALS",
+                message="Building causal completed-day breakout and volume signals",
+                completed_daily_batches=batch_index + 1,
+                total_daily_batches=len(batches),
+            )
+        return payloads
+
+    @staticmethod
+    def _breakout_session_map(
+        evaluation_sessions: list[str],
+        calendar: list[dict[str, Any]],
+    ) -> tuple[dict[str, dict[str, str]], dict[str, dtime]]:
+        calendar_sessions = sorted(str(item.get("date")) for item in calendar if item.get("date"))
+        closes: dict[str, dtime] = {}
+        for item in calendar:
+            session = str(item.get("date") or "")
+            close_text = str(item.get("close") or "16:00")
+            hour, minute = [int(value) for value in close_text.split(":")[:2]]
+            closes[session] = dtime(hour, minute)
+        mapping = {}
+        for signal_session in evaluation_sessions:
+            if signal_session not in calendar_sessions:
+                raise RuntimeError(f"Signal session missing from Alpaca calendar: {signal_session}")
+            index = calendar_sessions.index(signal_session)
+            if index + 2 >= len(calendar_sessions):
+                raise RuntimeError(f"Two forward sessions unavailable after {signal_session}")
+            mapping[signal_session] = {
+                "entry_session": calendar_sessions[index + 1],
+                "daily_2_final_session": calendar_sessions[index + 2],
+            }
+        return mapping, closes
+
+    def _daily_breakout_session_result(
+        self,
+        signal_session: str,
+        candidates: list[dict[str, Any]],
+        session_map: dict[str, dict[str, str]],
+        closes: dict[str, dtime],
+    ) -> dict[str, Any]:
+        candidates = sorted(candidates, key=lambda row: (-float(row["volume_ratio20"]), row["symbol"]))
+        selected = candidates[:DAILY_BREAKOUT_SPEC["signal"]["daily_rank_count"]]
+        entry_session = session_map[signal_session]["entry_session"]
+        daily_2_final = session_map[signal_session]["daily_2_final_session"]
+        local_start = date.fromisoformat(entry_session)
+        local_end = date.fromisoformat(daily_2_final)
+        start = datetime.combine(local_start, dtime(9, 30), tzinfo=NY).astimezone(UTC)
+        end = datetime.combine(local_end, closes[daily_2_final], tzinfo=NY).astimezone(UTC)
+        symbols = [row["symbol"] for row in selected]
+        full_bars: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in symbols}
+        for symbol_batch in chunks(symbols, 100):
+            fetched = self.alpaca.bars(
+                symbol_batch, start, end, feed="sip", adjustment="raw", timeframe="1Min"
+            )
+            for symbol, bars in fetched.items():
+                full_bars[symbol] = bars
+        session_closes = {
+            session: closes[session]
+            for session in sorted(closes)
+            if entry_session <= session <= daily_2_final
+        }
+        trades = []
+        daily_1_results = []
+        daily_2_results = []
+        for rank, candidate in enumerate(selected, 1):
+            bars = full_bars.get(candidate["symbol"], [])
+            daily_1 = daily_breakout_trade_result(
+                bars,
+                entry_session,
+                entry_session,
+                float(candidate["atr14"]),
+                {entry_session: closes[entry_session]},
+                DAILY_BREAKOUT_SPEC["execution"]["decision_cost_pct_round_trip"],
+            )
+            daily_2 = daily_breakout_trade_result(
+                bars,
+                entry_session,
+                daily_2_final,
+                float(candidate["atr14"]),
+                session_closes,
+                DAILY_BREAKOUT_SPEC["execution"]["decision_cost_pct_round_trip"],
+            )
+            daily_1_results.append(daily_1)
+            daily_2_results.append(daily_2)
+            trades.append({
+                "symbol": candidate["symbol"],
+                "rank": rank,
+                "signal": {
+                    key: round(float(candidate[key]), 6)
+                    for key in (
+                        "signal_open", "signal_high", "signal_low", "signal_close",
+                        "signal_volume", "prior_high20", "average_volume20",
+                        "volume_ratio20", "average_dollar_volume60", "atr14",
+                    )
+                },
+                "daily_1": daily_1,
+                "daily_2": daily_2,
+            })
+        return {
+            "signal_session": signal_session,
+            "entry_session": entry_session,
+            "daily_2_final_session": daily_2_final,
+            "eligible_count": len(candidates),
+            "selected_count": len(selected),
+            "trades": trades,
+            "daily_1": {
+                "portfolio_slots": daily_breakout_policy_slots("daily_1"),
+                "daily_return_pct": orb_slot_daily_return(
+                    daily_1_results, daily_breakout_policy_slots("daily_1")
+                ),
+            },
+            "daily_2": {
+                "portfolio_slots": daily_breakout_policy_slots("daily_2"),
+                "daily_return_pct": orb_slot_daily_return(
+                    daily_2_results, daily_breakout_policy_slots("daily_2")
+                ),
+            },
+        }
+
+    @staticmethod
+    def _breakout_policy_rows(results: list[dict[str, Any]], policy: str) -> list[dict[str, Any]]:
+        return [
+            {"session": row["signal_session"], "daily_return_pct": row[policy].get("daily_return_pct")}
+            for row in results
+        ]
+
+    @staticmethod
+    def _profit_factor_pass(stats: dict[str, Any], threshold: float) -> bool:
+        value = stats.get("profit_factor")
+        return bool(
+            (value is not None and float(value) >= threshold)
+            or (value is None and stats.get("positive_days", 0) > 0 and stats.get("negative_days", 0) == 0)
+        )
+
+    def _evaluate_breakout_policy(
+        self,
+        policy: str,
+        development_sessions: list[str],
+        holdout_sessions: list[str],
+        by_session: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        block_reports = []
+        block_passes = []
+        final_field = "entry_session" if policy == "daily_1" else "daily_2_final_session"
+        for index in range(3):
+            sessions = development_sessions[index * 15:(index + 1) * 15]
+            all_rows = [by_session[session] for session in sessions if session in by_session]
+            rows = [row for row in all_rows if str(row.get(final_field) or row["signal_session"]) <= sessions[-1]]
+            stats = daily_return_statistics(self._breakout_policy_rows(rows, policy))
+            passed = bool(
+                self._profit_factor_pass(stats, 1.0 + 1e-12)
+                and float(stats.get("average_return_pct") or 0.0) > 0.0
+                and int(stats.get("active_days") or 0)
+                >= DAILY_BREAKOUT_SPEC["evaluation"]["minimum_active_days_per_block"]
+            )
+            block_passes.append(passed)
+            block_reports.append({
+                "block": index + 1,
+                "passed": passed,
+                "purged_boundary_signals": len(all_rows) - len(rows),
+                **stats,
+            })
+        all_development = [by_session[session] for session in development_sessions if session in by_session]
+        development = [
+            row for row in all_development
+            if str(row.get(final_field) or row["signal_session"]) <= development_sessions[-1]
+        ]
+        holdout = [by_session[session] for session in holdout_sessions if session in by_session]
+        development_stats = daily_return_statistics(self._breakout_policy_rows(development, policy))
+        holdout_stats = daily_return_statistics(self._breakout_policy_rows(holdout, policy))
+        pooled_pass = bool(
+            self._profit_factor_pass(
+                development_stats,
+                DAILY_BREAKOUT_SPEC["evaluation"]["minimum_pooled_profit_factor"],
+            )
+            and float(development_stats.get("average_return_pct") or 0.0)
+            >= DAILY_BREAKOUT_SPEC["evaluation"]["minimum_pooled_average_net_return_pct"]
+            and int(development_stats.get("active_days") or 0)
+            >= DAILY_BREAKOUT_SPEC["evaluation"]["minimum_active_days_full_development"]
+        )
+        promising = len(block_passes) == 3 and all(block_passes) and pooled_pass
+        return {
+            "policy": policy,
+            "development_blocks": block_reports,
+            "development": development_stats,
+            "purged_development_boundary_signals": len(all_development) - len(development),
+            "pooled_thresholds_passed": pooled_pass,
+            "all_development_blocks_passed": len(block_passes) == 3 and all(block_passes),
+            "legacy_holdout_audit_only": holdout_stats,
+            "judgment": f"PROMISING_{policy.upper()}_SHADOW_ONLY" if promising else "NO_STABLE_EDGE",
+            "promising_shadow_only": promising,
+            "deployment_approved": False,
+        }
+
+    def _build_daily_breakout_report(
+        self,
+        development_sessions: list[str],
+        holdout_sessions: list[str],
+        results: list[dict[str, Any]],
+        source_universe_count: int,
+        clean_universe_count: int,
+    ) -> dict[str, Any]:
+        by_session = {row["signal_session"]: row for row in results}
+        daily_1 = self._evaluate_breakout_policy("daily_1", development_sessions, holdout_sessions, by_session)
+        daily_2 = self._evaluate_breakout_policy("daily_2", development_sessions, holdout_sessions, by_session)
+        promising = [name for name, report in (("DAILY_1", daily_1), ("DAILY_2", daily_2)) if report["promising_shadow_only"]]
+        final_judgment = (
+            "NO_STABLE_EDGE" if not promising
+            else f"PROMISING_{'_AND_'.join(promising)}_SHADOW_ONLY"
+        )
+        selected = [trade for row in results for trade in row.get("trades", [])]
+        return {
+            "schema": 1,
+            "generated_at": iso(),
+            "version": VERSION,
+            "build": BUILD,
+            "live_protocol_id": PROTOCOL_ID,
+            "live_protocol_sha256": PROTOCOL_SHA256,
+            "research_spec": DAILY_BREAKOUT_SPEC,
+            "coverage": {
+                "source_universe_symbols": source_universe_count,
+                "clean_current_asset_universe_symbols": clean_universe_count,
+                "completed_signal_sessions": len(results),
+                "development_sessions": sum(session in by_session for session in development_sessions),
+                "legacy_holdout_sessions": sum(session in by_session for session in holdout_sessions),
+                "eligible_signals": sum(int(row.get("eligible_count") or 0) for row in results),
+                "selected_slots": len(selected),
+                "daily_1_valid_entries": sum(bool(trade["daily_1"].get("triggered")) for trade in selected),
+                "cancelled_entry_price_slots": sum(
+                    trade["daily_1"].get("reason") == "entry_open_outside_price_range" for trade in selected
+                ),
+                "cancelled_missing_0930_print_slots": sum(
+                    trade["daily_1"].get("reason") == "no_executable_0930_opening_print" for trade in selected
+                ),
+                "current_classification_note": "Current Alpaca asset descriptions are used only to remove products/prohibited names; this is not a historical point-in-time or full Sharia ratio screen.",
+            },
+            "daily_1_primary": daily_1,
+            "daily_2_independent": daily_2,
+            "capital_reference": {
+                "sar": 2000.0,
+                "daily_1_development_simple_pnl_sar": round(
+                    2000.0 * float(daily_1["development"].get("total_return_points") or 0.0) / 100.0, 2
+                ),
+                "daily_2_development_simple_pnl_sar": round(
+                    2000.0 * float(daily_2["development"].get("total_return_points") or 0.0) / 100.0, 2
+                ),
+                "note": "Simple non-compounded reference; no leverage and no assumed fractional-share support.",
+            },
+            "final_judgment": final_judgment,
+            "deployment_approved": False,
+            "legacy_holdout_can_approve_live": False,
+            "forward_sessions_required_after_promising_result": 20,
+            "safety": DAILY_BREAKOUT_SPEC["safety"],
+        }
+
+    def _materialize_daily_breakout_download(self, report: dict[str, Any]) -> str:
+        manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {})
+        _, development_sessions, holdout_sessions = self._orb_manifest_parts(manifest)
+        sessions = development_sessions + holdout_sessions
+        results = [self.redis.get_json(self.breakout_key(f"session:{session}"), None) for session in sessions]
+        results = [row for row in results if row is not None]
+        with tempfile.NamedTemporaryFile(prefix="ipr_daily_breakout_volume_", suffix=".json.gz", delete=False) as temporary:
+            path = temporary.name
+        with gzip.open(path, "wt", encoding="utf-8", compresslevel=6) as output:
+            json.dump({"report": report, "sessions": results}, output, ensure_ascii=False, separators=(",", ":"))
+        with self.breakout_lock:
+            old_path = self.breakout_path
+            self.breakout_path = path
+        if old_path and old_path != path and os.path.isfile(old_path):
+            try:
+                os.unlink(old_path)
+            except OSError:
+                pass
+        return path
+
+    def daily_breakout_loop(self) -> None:
+        try:
+            manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {})
+            source_universe, development_sessions, holdout_sessions = self._orb_manifest_parts(manifest)
+            sessions = development_sessions + holdout_sessions
+            assets = self.alpaca.assets()
+            clean_assets = {
+                str(asset.get("symbol") or "").upper()
+                for asset in assets
+                if self._daily_breakout_allowed_asset(asset)
+            }
+            universe = sorted(set(source_universe) & clean_assets)
+            if not universe:
+                raise RuntimeError("Clean daily-breakout universe is empty")
+            first_day = date.fromisoformat(sessions[0])
+            last_day = date.fromisoformat(sessions[-1])
+            calendar = self.alpaca.calendar(first_day, last_day + timedelta(days=14))
+            session_map, closes = self._breakout_session_map(sessions, calendar)
+            self.redis.set_json(self.breakout_key("calendar"), {
+                "mapping": session_map,
+                "closes": {session: close.strftime("%H:%M") for session, close in closes.items()},
+            })
+            self._set_breakout_progress(
+                status="RUNNING",
+                phase="DAILY_SIGNALS",
+                message="Loading causal daily bars for the clean operating-company universe",
+                source_universe_symbols=len(source_universe),
+                clean_universe_symbols=len(universe),
+                total_sessions=len(sessions),
+            )
+            daily_payloads = self._daily_breakout_batches(universe, sessions)
+            results = []
+            for index, session in enumerate(sessions):
+                if self.breakout_stop_event.is_set():
+                    self._set_breakout_progress(
+                        status="PAUSED", phase="SESSION_EVALUATION",
+                        message="Paused safely; press start to resume",
+                    )
+                    return
+                key = self.breakout_key(f"session:{session}")
+                result = self.redis.get_json(key, None)
+                if result is None:
+                    candidates = [row for payload in daily_payloads for row in payload.get(session, [])]
+                    result = self._daily_breakout_session_result(
+                        session, candidates, session_map, closes
+                    )
+                    self.redis.set_json(key, result)
+                results.append(result)
+                self._set_breakout_progress(
+                    status="RUNNING",
+                    phase="SESSION_EVALUATION",
+                    message=f"Completed daily breakout signal session {session}",
+                    completed_sessions=index + 1,
+                    total_sessions=len(sessions),
+                    remaining_sessions=len(sessions) - index - 1,
+                )
+            report = self._build_daily_breakout_report(
+                development_sessions, holdout_sessions, results,
+                len(source_universe), len(universe),
+            )
+            self.redis.set_json(self.breakout_key("report"), report)
+            path = self._materialize_daily_breakout_download(report)
+            self._set_breakout_progress(
+                status="COMPLETED",
+                phase="COMPLETED",
+                message="Daily breakout with volume research is complete",
+                completed_sessions=len(sessions),
+                total_sessions=len(sessions),
+                result_ready=True,
+                download_ready=True,
+                final_judgment=report["final_judgment"],
+                compressed_bytes=os.path.getsize(path),
+            )
+        except InterruptedError:
+            self._set_breakout_progress(status="PAUSED", message="Paused safely; press start to resume")
+        except Exception as exc:
+            logging.exception("Daily breakout research failed")
+            self._set_breakout_progress(status="ERROR", message=f"{type(exc).__name__}: {exc}", result_ready=False)
+        finally:
+            with self.breakout_lock:
+                self.breakout_thread = None
+
+    def start_daily_breakout(self) -> tuple[bool, str]:
+        if self._within_monitoring_hours(now_utc()):
+            return False, "Research is blocked during monitoring hours; retry after 17:30 New York time"
+        if not self.redis.configured or not self.alpaca.configured:
+            return False, "Redis and Alpaca credentials are required"
+        with self.breakout_lock:
+            if self.breakout_thread and self.breakout_thread.is_alive():
+                return True, "already_running"
+            if any(
+                thread and thread.is_alive()
+                for thread in (self.audit_thread, self.export_thread, self.early_thread, self.orb_thread)
+            ):
+                return False, "another historical job is running"
+            self.breakout_stop_event.clear()
+            stored = self.redis.get_json(self.breakout_key("status"), None)
+            if stored and stored.get("status") == "COMPLETED":
+                self.breakout_state = stored
+                return False, "already_completed"
+            self.breakout_state = {
+                "status": "STARTING",
+                "phase": "DAILY_SIGNALS",
+                "message": "Preparing frozen Daily-1 and Daily-2 breakout research",
+                "research_id": DAILY_BREAKOUT_SPEC["research_id"],
+                "alerts_enabled": False,
+                "orders_enabled": False,
+                "result_ready": False,
+                "updated_at": iso(),
+            }
+            self.breakout_thread = threading.Thread(
+                target=self.daily_breakout_loop,
+                name="independent-priority-daily-breakout-volume",
+                daemon=True,
+            )
+            self.breakout_thread.start()
+        return True, "started"
+
+    def pause_daily_breakout(self) -> tuple[bool, str]:
+        with self.breakout_lock:
+            if not self.breakout_thread or not self.breakout_thread.is_alive():
+                return False, "not_running"
+            self.breakout_stop_event.set()
         return True, "pause_requested"
 
     @staticmethod
@@ -3526,6 +4282,7 @@ def home():
             "historical_confirmation_audit": "/historical-confirmation",
             "early_causal_entry_research": "/early-causal-entry",
             "liquid_daily_orb_research": "/liquid-daily-orb",
+            "daily_breakout_volume_research": "/daily-breakout",
         },
     })
 
@@ -3933,6 +4690,122 @@ def liquid_daily_orb_download():
     return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
 
 
+@app.get("/daily-breakout")
+def daily_breakout_page():
+    return """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>بحث الاختراق اليومي بالحجم</title>
+    <style>
+        body { font-family: system-ui; background: #101114; color: #eee; max-width: 760px; margin: 30px auto; padding: 18px; }
+        .box { background: #191b20; border: 1px solid #343741; border-radius: 14px; padding: 20px; margin: 14px 0; }
+        input, button { width: 100%; box-sizing: border-box; font-size: 17px; padding: 13px; margin: 7px 0; border-radius: 9px; border: 1px solid #555; }
+        button { background: #1d4ed8; color: white; font-weight: 700; }
+        a { color: #93c5fd; }
+    </style>
+</head>
+<body>
+    <h1>Daily Breakout with Volume</h1>
+    <div class="box">
+        <p>إشارة بعد الإغلاق: اختراق أعلى 20 جلسة، حجم 1.5×، سعر 10–60 دولار، سيولة 60 جلسة لا تقل عن 20 مليون دولار، وTop-3.</p>
+        <p>Daily-1 يخرج نهاية يوم الدخول، وDaily-2 يخرج نهاية اليوم التالي. لكل سياسة حكم مستقل بعد تكلفة 0.25% ووقف 1 ATR.</p>
+        <p>الكون يستبعد الصناديق والمنتجات والقطاعات المحظورة بالأسماء. البحث قراءة فقط ولا يرسل تنبيهات أو أوامر.</p>
+        <form method="post" action="/daily-breakout/start">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">ابدأ أو استكمل البحث</button>
+        </form>
+        <p><a href="/daily-breakout/protocol">البروتوكول المجمد</a> · <a href="/daily-breakout/status">متابعة التقدم</a> · <a href="/daily-breakout/result">النتيجة المختصرة</a></p>
+        <form method="post" action="/daily-breakout/pause">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">إيقاف آمن بعد الدفعة الحالية</button>
+        </form>
+        <form method="post" action="/daily-breakout/download">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">تنزيل النتيجة الكاملة JSON.GZ</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.get("/daily-breakout/protocol")
+def daily_breakout_protocol():
+    return jsonify({
+        "version": VERSION,
+        "build": BUILD,
+        "research_spec": DAILY_BREAKOUT_SPEC,
+        "live_protocol_sha256": PROTOCOL_SHA256,
+    })
+
+
+@app.post("/daily-breakout/start")
+def daily_breakout_start():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    started, message = radar.start_daily_breakout()
+    return jsonify({
+        "ok": started,
+        "status": message,
+        "status_url": "/daily-breakout/status",
+        "protocol_url": "/daily-breakout/protocol",
+        "result_url": "/daily-breakout/result",
+        "download_url": "/daily-breakout/download",
+        "alerts_enabled": False,
+        "orders_enabled": False,
+    }), (202 if started else 409)
+
+
+@app.post("/daily-breakout/pause")
+def daily_breakout_pause():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    ok, message = radar.pause_daily_breakout()
+    return jsonify({"ok": ok, "status": message}), (202 if ok else 409)
+
+
+@app.get("/daily-breakout/status")
+def daily_breakout_status():
+    stored = radar.redis.get_json(radar.breakout_key("status"), None) if radar.redis.configured else None
+    with radar.breakout_lock:
+        payload = dict(stored or radar.breakout_state)
+        payload["worker_alive"] = bool(radar.breakout_thread and radar.breakout_thread.is_alive())
+    payload.update({
+        "status_url": "/daily-breakout/status",
+        "result_url": "/daily-breakout/result",
+        "download_url": "/daily-breakout/download",
+        "alerts_enabled": False,
+        "orders_enabled": False,
+    })
+    return jsonify(payload)
+
+
+@app.get("/daily-breakout/result")
+def daily_breakout_result():
+    report = radar.redis.get_json(radar.breakout_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({"result_ready": False, "status_url": "/daily-breakout/status"}), 202
+    return jsonify(report)
+
+
+@app.post("/daily-breakout/download")
+def daily_breakout_download():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    report = radar.redis.get_json(radar.breakout_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({"result_ready": False, "status_url": "/daily-breakout/status"}), 202
+    with radar.breakout_lock:
+        path = radar.breakout_path
+    if not path or not os.path.isfile(path):
+        path = radar._materialize_daily_breakout_download(report)
+    filename = f"ipr_daily_breakout_volume_{now_utc().strftime('%Y%m%dT%H%M%SZ')}.json.gz"
+    return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
+
+
 @app.get("/health")
 def health():
     return jsonify({
@@ -3945,6 +4818,7 @@ def health():
         "historical_audit_alive": bool(radar.audit_thread and radar.audit_thread.is_alive()),
         "early_causal_entry_alive": bool(radar.early_thread and radar.early_thread.is_alive()),
         "liquid_daily_orb_alive": bool(radar.orb_thread and radar.orb_thread.is_alive()),
+        "daily_breakout_alive": bool(radar.breakout_thread and radar.breakout_thread.is_alive()),
     })
 
 
