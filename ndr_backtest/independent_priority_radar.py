@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.6.6"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0-DUAL-DETECTOR-PROBE"
+VERSION = "1.6.8"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0A-CENSUS-TEST-DISCOVERY-FIX"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -90,6 +90,25 @@ PHASE0_PROBE_SPEC = {
 PHASE0_PROBE_SHA256 = hashlib.sha256(
     json.dumps(PHASE0_PROBE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
+
+
+PHASE0A_SPEC = {
+    "census_id": "IPR-HISTORICAL-EXPLOSION-PHASE0A-2026-09-05-A",
+    "purpose": "Cheap high-recall historical explosion candidate census only; Phase 0B performs one-minute verification.",
+    "source_manifest": "next_day_radar_backtest_v3:manifest",
+    "scope": "frozen 60-session full universe from the legacy NDR manifest",
+    "trading_cycle": "previous official regular close -> target session official regular close",
+    "coarse_timeframe": "30Min",
+    "sources": ["Alpaca SIP raw", "Alpaca BOATS raw for Overnight"],
+    "candidate_rule": "chronological running minimum of coarse bar lows; candidate when a later-or-same coarse bar high reaches >=20%; same-bar ordering is intentionally unresolved for high recall and must be verified in Phase 0B",
+    "primary_threshold_pct": 20.0,
+    "retained_ladders_pct": [5.0, 10.0, 15.0, 20.0, 30.0, 50.0],
+    "max_events_per_symbol_cycle": 1,
+    "corporate_action_policy": "flag coarse split/corporate-action suspects; never promote a flagged case to verified explosion; Phase 0B must perform strict exclusion",
+    "resume": "session checkpoint persisted in Redis; completed sessions are never rescanned unless reset explicitly",
+    "safety": {"feature_discovery_runs": False, "phase0b_runs": False, "alerts_enabled": False, "orders_enabled": False},
+}
+PHASE0A_SHA256 = hashlib.sha256(json.dumps(PHASE0A_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1354,6 +1373,13 @@ class IndependentPriorityRadar:
             "selection_uses_session_detector": False, "phase0a_allowed": False, "updated_at": iso(),
         }
         self.phase0_reference_report: dict[str, Any] | None = None
+        self.phase0a_lock = threading.RLock()
+        self.phase0a_thread: threading.Thread | None = None
+        self.phase0a_stop_event = threading.Event()
+        self.phase0a_state: dict[str, Any] = {
+            "status": "IDLE", "phase": "NOT_STARTED", "message": "Phase 0A census has not started",
+            "census_id": PHASE0A_SPEC["census_id"], "phase0b_allowed": False, "updated_at": iso(),
+        }
         self.state = {
             "status": "STARTING", "message": "Waiting for model bootstrap",
             "version": VERSION, "build": BUILD, "protocol_id": PROTOCOL_ID,
@@ -1565,6 +1591,117 @@ class IndependentPriorityRadar:
             }
             self.phase0_probe_thread = threading.Thread(target=self.phase0_probe_loop, name="independent-priority-phase0-probe", daemon=True)
             self.phase0_probe_thread.start()
+        return True, "started"
+
+    def phase0a_key(self, suffix: str) -> str:
+        return self.key(f"phase0a:v1:{suffix}")
+
+    def _set_phase0a_state(self, **updates: Any) -> None:
+        with self.phase0a_lock:
+            self.phase0a_state.update(updates); self.phase0a_state["updated_at"] = iso(); snapshot = dict(self.phase0a_state)
+        if self.redis.configured:
+            self.redis.set_json(self.phase0a_key("status"), snapshot)
+
+    def _phase0a_gate(self) -> tuple[bool, str]:
+        if not self.redis.configured: return False, "Redis is required for fail-closed Phase 0A"
+        report = self.redis.get_json(self.phase0_probe_key("report"), None)
+        if not report or not report.get("probe_passed") or not report.get("phase0a_allowed"):
+            return False, "Phase 0 capability probe is not PASSED in Redis"
+        if str(report.get("probe_sha256")) != PHASE0_PROBE_SHA256:
+            return False, "Stored capability probe does not match the frozen v1.6.6/v1.6.7 probe"
+        return True, "allowed"
+
+    @staticmethod
+    def _phase0a_coarse_event(rows: list[dict[str, Any]], threshold_pct: float = 20.0) -> dict[str, Any] | None:
+        threshold = 1.0 + threshold_pct / 100.0; running_min = None; running_min_ts = None
+        for row in sorted(rows, key=lambda x: str(x.get("t") or "")):
+            try: lo, hi = float(row.get("l")), float(row.get("h"))
+            except (TypeError, ValueError): continue
+            if not (math.isfinite(lo) and math.isfinite(hi) and lo > 0 and hi > 0): continue
+            ts = str(row.get("t") or "")
+            if running_min is None or lo < running_min: running_min, running_min_ts = lo, ts
+            if running_min and hi >= running_min * threshold:
+                return {"t1_coarse": running_min_ts, "t1_low": running_min, "t2_coarse": ts, "t2_high": hi,
+                        "coarse_gain_pct": (hi / running_min - 1.0) * 100.0, "same_bar_order_ambiguous": running_min_ts == ts}
+        return None
+
+    @staticmethod
+    def _phase0a_split_suspect(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        # Conservative coarse screen only. A >3.5x adjacent-bar discontinuity is flagged; Phase 0B performs strict corporate-action exclusion.
+        ordered = sorted(rows, key=lambda x: str(x.get("t") or "")); prev = None
+        for row in ordered:
+            try: close = float(row.get("c"))
+            except (TypeError, ValueError): continue
+            if close <= 0: continue
+            if prev and max(close / prev, prev / close) >= 3.5:
+                return {"suspect": True, "reason": "adjacent_coarse_close_ratio_ge_3.5", "ratio": max(close / prev, prev / close), "t": str(row.get("t") or "")}
+            prev = close
+        return {"suspect": False}
+
+    def _phase0a_fetch_cycle(self, symbols: list[str], target: date) -> dict[str, list[dict[str, Any]]]:
+        start, end = self._probe_cycle_bounds(target); out = {s: [] for s in symbols}
+        for i in range(0, len(symbols), 200):
+            batch = symbols[i:i+200]
+            sip = self.alpaca.bars(batch, start, end, feed="sip", adjustment="raw", timeframe="30Min")
+            boats = self.alpaca.bars(batch, start, end, feed="boats", adjustment="raw", timeframe="30Min")
+            for symbol in batch:
+                merged = {}
+                for source, source_rows in (("sip", sip.get(symbol, [])), ("boats", boats.get(symbol, []))):
+                    for row in source_rows:
+                        ts = str(row.get("t") or "")
+                        if not ts: continue
+                        session = self._probe_session(ts, target)
+                        if source == "boats" and session != "Overnight": continue
+                        if ts not in merged or source == "sip": merged[ts] = {**row, "source": source}
+                out[symbol] = [merged[k] for k in sorted(merged)]
+        return out
+
+    def phase0a_loop(self) -> None:
+        try:
+            allowed, reason = self._phase0a_gate()
+            if not allowed: raise RuntimeError(reason)
+            manifest = self.redis.get_json(str(PHASE0A_SPEC["source_manifest"]), {})
+            symbols = sorted({str(x).upper() for x in manifest.get("symbols", []) if SYMBOL_RE.fullmatch(str(x).upper())})
+            sessions = [str(x) for x in manifest.get("sessions", [])]
+            if len(symbols) < 1000 or len(sessions) != 60: raise RuntimeError(f"Frozen full-universe manifest invalid: symbols={len(symbols)} sessions={len(sessions)}")
+            completed = set(self.redis.get_json(self.phase0a_key("completed_sessions"), []) or [])
+            total_candidates = int(self.redis.get_json(self.phase0a_key("candidate_count"), 0) or 0)
+            self._set_phase0a_state(status="RUNNING", phase="CENSUS", message="Phase 0A coarse high-recall census", universe_count=len(symbols), session_count=len(sessions), completed_sessions=len(completed), candidate_count=total_candidates, phase0b_allowed=False)
+            for idx, session in enumerate(sessions):
+                if self.phase0a_stop_event.is_set():
+                    self._set_phase0a_state(status="PAUSED", message="Phase 0A paused at a session boundary", phase0b_allowed=False); return
+                if session in completed: continue
+                target = date.fromisoformat(session); bars_by_symbol = self._phase0a_fetch_cycle(symbols, target); session_candidates = []
+                quality = {"symbols_with_bars":0,"symbols_without_bars":0,"split_suspects":0,"same_bar_ambiguous":0}
+                for symbol in symbols:
+                    rows = bars_by_symbol.get(symbol, [])
+                    if not rows: quality["symbols_without_bars"] += 1; continue
+                    quality["symbols_with_bars"] += 1
+                    event = self._phase0a_coarse_event(rows, float(PHASE0A_SPEC["primary_threshold_pct"]))
+                    if not event: continue
+                    split = self._phase0a_split_suspect(rows)
+                    if split.get("suspect"): quality["split_suspects"] += 1
+                    if event.get("same_bar_order_ambiguous"): quality["same_bar_ambiguous"] += 1
+                    session_candidates.append({"symbol":symbol,"target_session":session,**event,"corporate_action_screen":split,"eligible_for_phase0b":not split.get("suspect"),"verified_ge20":False})
+                self.redis.set_json(self.phase0a_key(f"candidates:{session}"), session_candidates)
+                self.redis.set_json(self.phase0a_key(f"quality:{session}"), quality)
+                completed.add(session); total_candidates += len(session_candidates)
+                self.redis.set_json(self.phase0a_key("completed_sessions"), sorted(completed)); self.redis.set_json(self.phase0a_key("candidate_count"), total_candidates)
+                self._set_phase0a_state(status="RUNNING", phase="CENSUS", message=f"Completed coarse census session {session}", current_session=session, completed_sessions=len(completed), remaining_sessions=len(sessions)-len(completed), candidate_count=total_candidates, last_session_candidates=len(session_candidates), last_session_quality=quality, phase0b_allowed=False)
+            summary = {"version":VERSION,"build":BUILD,"census_id":PHASE0A_SPEC["census_id"],"phase0a_sha256":PHASE0A_SHA256,"probe_sha256":PHASE0_PROBE_SHA256,"status":"COMPLETED","universe_count":len(symbols),"sessions":len(sessions),"completed_sessions":len(completed),"coarse_candidates":total_candidates,"phase0a_is_candidate_census_only":True,"verified_ge20_count":0,"phase0b_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            self.redis.set_json(self.phase0a_key("report"), summary)
+            self._set_phase0a_state(status="COMPLETED", phase="STOP_REVIEW", message="Phase 0A completed; STOP and review counts before Phase 0B", candidate_count=total_candidates, completed_sessions=len(completed), phase0b_allowed=False, stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Phase 0A census failed"); self._set_phase0a_state(status="ERROR", phase="BLOCKED", message="Phase 0A failed closed", phase0b_allowed=False, last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.phase0a_lock: self.phase0a_thread = None
+
+    def start_phase0a(self) -> tuple[bool, str]:
+        allowed, reason = self._phase0a_gate()
+        if not allowed: return False, reason
+        with self.phase0a_lock:
+            if self.phase0a_thread and self.phase0a_thread.is_alive(): return False, "already_running"
+            self.phase0a_stop_event.clear(); self.phase0a_thread = threading.Thread(target=self.phase0a_loop, name="independent-priority-phase0a", daemon=True); self.phase0a_thread.start()
         return True, "started"
 
     def phase0_reference_key(self, suffix: str) -> str:
@@ -5156,6 +5293,38 @@ def phase0_reference_candidates_status():
 def phase0_reference_candidates_result():
     report=radar.redis.get_json(radar.phase0_reference_key("report"),None) if radar.redis.configured else radar.phase0_reference_report
     if not report: return jsonify({"result_ready":False,"phase0a_allowed":False,"status_url":"/phase0/reference-candidates/status"}),202
+    return jsonify(report)
+
+@app.get("/phase0a")
+def phase0a_home():
+    allowed, reason = radar._phase0a_gate()
+    return jsonify({"census_id":PHASE0A_SPEC["census_id"],"phase0a_sha256":PHASE0A_SHA256,"gate_allowed":allowed,"gate_reason":reason,"protocol_url":"/phase0a/protocol","start_url":"/phase0a/start","status_url":"/phase0a/status","result_url":"/phase0a/result","pause_url":"/phase0a/pause","phase0b_allowed":False})
+
+@app.get("/phase0a/protocol")
+def phase0a_protocol(): return jsonify({"version":VERSION,"build":BUILD,"spec":PHASE0A_SPEC,"phase0a_sha256":PHASE0A_SHA256})
+
+@app.get("/phase0a/start")
+@app.post("/phase0a/start")
+def phase0a_start():
+    started, message = radar.start_phase0a()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0a/status","result_url":"/phase0a/result","phase0b_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0a/pause")
+@app.post("/phase0a/pause")
+def phase0a_pause():
+    radar.phase0a_stop_event.set(); return jsonify({"ok":True,"message":"pause_requested","phase0b_allowed":False})
+
+@app.get("/phase0a/status")
+def phase0a_status():
+    stored = radar.redis.get_json(radar.phase0a_key("status"), None) if radar.redis.configured else None
+    with radar.phase0a_lock:
+        payload = dict(stored or radar.phase0a_state); payload["worker_alive"] = bool(radar.phase0a_thread and radar.phase0a_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0a/result")
+def phase0a_result():
+    report = radar.redis.get_json(radar.phase0a_key("report"), None) if radar.redis.configured else None
+    if not report: return jsonify({"result_ready":False,"status_url":"/phase0a/status","phase0b_allowed":False}), 202
     return jsonify(report)
 
 @app.get("/phase0/probe")
