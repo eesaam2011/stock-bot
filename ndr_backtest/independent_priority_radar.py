@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.0"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-HISTORICAL-UNIVERSE-CAPABILITY-PROBE"
+VERSION = "1.7.1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-HISTORICAL-UNIVERSE-RECONSTRUCTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -109,6 +109,19 @@ PHASE0A_SPEC = {
     "safety": {"feature_discovery_runs": False, "phase0b_runs": False, "alerts_enabled": False, "orders_enabled": False},
 }
 PHASE0A_SHA256 = hashlib.sha256(json.dumps(PHASE0A_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC = {
+    "reconstruction_id": "IPR-HISTORICAL-UNIVERSE-RECONSTRUCTION-2026-09-05-A",
+    "period": ["2019-01-01", "2026-08-31"],
+    "sources": ["Alpaca all US-equity assets", "legacy NDR manifest", "legacy NDR explosion catalog", "frozen historical probe references"],
+    "presence_index": "Alpaca SIP raw 1Month bars; presence is indexed by symbol-year and is not an economic-entity identity",
+    "ticker_recycling_policy": "Never assume ticker==same company across time. Census identity remains symbol x trading_cycle. Long gaps are flagged as recycling risk; no cross-era entity merge is performed.",
+    "dedup_policy": "Exact ticker text is deduplicated only for request efficiency while source provenance is retained. This is not entity deduplication.",
+    "recycling_gap_days": 730,
+    "batch_size": 200,
+    "safety": {"historical_census_runs": False, "phase0b_runs": False, "feature_discovery_runs": False, "orders_enabled": False},
+}
+HISTORICAL_UNIVERSE_RECONSTRUCTION_SHA256 = hashlib.sha256(json.dumps(HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1383,6 +1396,10 @@ class IndependentPriorityRadar:
         self.universe_probe_thread: threading.Thread | None = None
         self.universe_probe_state: dict[str, Any] = {"status":"IDLE","message":"Historical-universe capability probe has not started","historical_census_allowed":False,"updated_at":iso()}
         self.universe_probe_report: dict[str, Any] | None = None
+        self.universe_reconstruction_lock = threading.RLock()
+        self.universe_reconstruction_thread: threading.Thread | None = None
+        self.universe_reconstruction_stop_event = threading.Event()
+        self.universe_reconstruction_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Historical-universe reconstruction has not started","historical_census_allowed":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -1686,6 +1703,101 @@ class IndependentPriorityRadar:
             self.universe_probe_state={"status":"STARTING","message":"Starting historical-universe capability probe","historical_census_allowed":False,"updated_at":iso()}
             self.universe_probe_thread=threading.Thread(target=self.historical_universe_probe_loop,name="historical-universe-probe",daemon=True)
             self.universe_probe_thread.start()
+        return True,"started"
+
+    def universe_reconstruction_key(self, suffix: str) -> str:
+        return self.key(f"historical_universe_reconstruction:v1:{suffix}")
+
+    def _set_universe_reconstruction_state(self, **updates: Any) -> None:
+        with self.universe_reconstruction_lock:
+            self.universe_reconstruction_state.update(updates)
+            self.universe_reconstruction_state["updated_at"] = iso()
+            snapshot = dict(self.universe_reconstruction_state)
+        if self.redis.configured:
+            self.redis.set_json(self.universe_reconstruction_key("status"), snapshot)
+
+    @staticmethod
+    def _reconstruction_sources(all_syms: set[str], manifest_syms: set[str], catalog_syms: set[str]) -> dict[str, list[str]]:
+        refs = {"CELG", "TWTR", "SIVB", "ATVI", "BBBY", "META"}
+        union = sorted(all_syms | manifest_syms | catalog_syms | refs)
+        out = {}
+        for sym in union:
+            prov = []
+            if sym in all_syms: prov.append("alpaca_all_assets")
+            if sym in manifest_syms: prov.append("legacy_manifest")
+            if sym in catalog_syms: prov.append("legacy_ndr_catalog")
+            if sym in refs: prov.append("frozen_probe_reference")
+            out[sym] = prov
+        return out
+
+    @staticmethod
+    def _presence_summary(rows: list[dict[str, Any]], recycling_gap_days: int = 730) -> dict[str, Any]:
+        dates = []
+        for row in rows:
+            raw = str(row.get("t") or "")[:10]
+            try: dates.append(date.fromisoformat(raw))
+            except ValueError: continue
+        dates = sorted(set(dates))
+        years = sorted({d.year for d in dates})
+        max_gap = max(((b-a).days for a,b in zip(dates, dates[1:])), default=0)
+        return {"months_with_sip":len(dates),"years_with_sip":years,"first_sip_month":dates[0].isoformat() if dates else None,"last_sip_month":dates[-1].isoformat() if dates else None,"max_observed_month_gap_days":max_gap,"ticker_recycling_risk":bool(max_gap >= recycling_gap_days)}
+
+    def historical_universe_reconstruction_loop(self) -> None:
+        try:
+            probe = self.redis.get_json(self.universe_probe_key("report"), None)
+            if not probe or probe.get("decision") != "PARTIAL":
+                raise RuntimeError("Historical-universe capability probe PARTIAL report is required")
+            self._set_universe_reconstruction_state(status="RUNNING",phase="SOURCE_UNION",message="Building source union with provenance; no entity merge",historical_census_allowed=False)
+            all_assets = self.alpaca.assets_by_status(None)
+            all_syms = self._asset_symbol_set(all_assets)
+            manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {})
+            manifest_syms = {str(x).upper() for x in (manifest.get("symbols") or []) if SYMBOL_RE.fullmatch(str(x).upper())}
+            catalog = self.redis.get_json(f"{self.source_prefix}:explosions:catalog", {})
+            catalog_syms = {str(x.get("symbol") or "").upper() for x in (catalog.get("cases") or []) if SYMBOL_RE.fullmatch(str(x.get("symbol") or "").upper())}
+            provenance = self._reconstruction_sources(all_syms, manifest_syms, catalog_syms)
+            symbols = sorted(provenance)
+            self.redis.set_json(self.universe_reconstruction_key("source_provenance"), provenance)
+            completed = set(self.redis.get_json(self.universe_reconstruction_key("completed_batches"), []))
+            batch_size = int(HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC["batch_size"])
+            total_batches = math.ceil(len(symbols)/batch_size)
+            start = datetime(2019,1,1,tzinfo=UTC); end = datetime(2026,9,1,tzinfo=UTC)
+            self._set_universe_reconstruction_state(status="RUNNING",phase="SIP_PRESENCE_INDEX",message="Indexing monthly SIP presence",symbol_count=len(symbols),total_batches=total_batches,completed_batches=len(completed),historical_census_allowed=False)
+            for bi in range(total_batches):
+                if self.universe_reconstruction_stop_event.is_set():
+                    self._set_universe_reconstruction_state(status="PAUSED",phase="SIP_PRESENCE_INDEX",message="Paused safely between batches",completed_batches=len(completed),total_batches=total_batches,historical_census_allowed=False); return
+                if bi in completed: continue
+                batch = symbols[bi*batch_size:(bi+1)*batch_size]
+                bars = self.alpaca.bars(batch,start,end,feed="sip",adjustment="raw",timeframe="1Month")
+                summaries = {sym:self._presence_summary(bars.get(sym,[]), int(HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC["recycling_gap_days"])) for sym in batch}
+                self.redis.set_json(self.universe_reconstruction_key(f"batch:{bi}"), summaries)
+                completed.add(bi); self.redis.set_json(self.universe_reconstruction_key("completed_batches"), sorted(completed))
+                self._set_universe_reconstruction_state(status="RUNNING",phase="SIP_PRESENCE_INDEX",message=f"Completed presence batch {bi+1}/{total_batches}",symbol_count=len(symbols),completed_batches=len(completed),total_batches=total_batches,historical_census_allowed=False)
+            year_counts={str(y):0 for y in range(2019,2027)}; observed=0; recycling=0; records={}
+            for bi in range(total_batches):
+                chunk=self.redis.get_json(self.universe_reconstruction_key(f"batch:{bi}"), {})
+                for sym, info in chunk.items():
+                    rec={"symbol":sym,"sources":provenance.get(sym,[]),**info}; records[sym]=rec
+                    if info.get("months_with_sip",0)>0: observed += 1
+                    if info.get("ticker_recycling_risk"): recycling += 1
+                    for y in info.get("years_with_sip",[]):
+                        if str(y) in year_counts: year_counts[str(y)] += 1
+            report={"version":VERSION,"build":BUILD,"reconstruction_id":HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC["reconstruction_id"],"reconstruction_sha256":HISTORICAL_UNIVERSE_RECONSTRUCTION_SHA256,"status":"COMPLETED","period":HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC["period"],"source_counts":{"alpaca_all_assets":len(all_syms),"legacy_manifest":len(manifest_syms),"legacy_ndr_catalog":len(catalog_syms),"union_symbols":len(symbols)},"symbols_with_sip_presence_2019_2026":observed,"symbols_without_sip_presence_2019_2026":len(symbols)-observed,"year_presence_counts":year_counts,"ticker_recycling_risk_count":recycling,"ticker_recycling_policy":HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC["ticker_recycling_policy"],"dedup_policy":HISTORICAL_UNIVERSE_RECONSTRUCTION_SPEC["dedup_policy"],"historical_census_allowed":False,"stop_and_review_required":True,"records_key":self.universe_reconstruction_key("records"),"completed_at":iso()}
+            self.redis.set_json(self.universe_reconstruction_key("records"), records)
+            self.redis.set_json(self.universe_reconstruction_key("report"), report)
+            self._set_universe_reconstruction_state(status="COMPLETED",phase="STOP_REVIEW",message="Historical universe reconstructed; STOP and review before census",historical_census_allowed=False,stop_and_review_required=True,symbol_count=len(symbols),symbols_with_sip_presence=observed,ticker_recycling_risk_count=recycling)
+        except Exception as exc:
+            logging.exception("Historical universe reconstruction failed")
+            self._set_universe_reconstruction_state(status="ERROR",phase="BLOCKED",message="Historical-universe reconstruction failed closed",historical_census_allowed=False,last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.universe_reconstruction_lock: self.universe_reconstruction_thread=None
+
+    def start_historical_universe_reconstruction(self) -> tuple[bool,str]:
+        if not (self.alpaca.configured and self.redis.configured): return False,"Alpaca and Redis are required"
+        with self.universe_reconstruction_lock:
+            if self.universe_reconstruction_thread and self.universe_reconstruction_thread.is_alive(): return False,"already_running"
+            self.universe_reconstruction_stop_event.clear()
+            self.universe_reconstruction_state={"status":"STARTING","phase":"GATE","message":"Starting historical-universe reconstruction","historical_census_allowed":False,"updated_at":iso()}
+            self.universe_reconstruction_thread=threading.Thread(target=self.historical_universe_reconstruction_loop,name="historical-universe-reconstruction",daemon=True); self.universe_reconstruction_thread.start()
         return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
@@ -5411,6 +5523,33 @@ def historical_universe_probe_status():
 def historical_universe_probe_result():
     report=radar.redis.get_json(radar.universe_probe_key("report"),None) if radar.redis.configured else radar.universe_probe_report
     if not report:return jsonify({"result_ready":False,"status_url":"/phase0/universe-probe/status","historical_census_allowed":False}),202
+    return jsonify(report)
+
+@app.get("/phase0/universe-reconstruction")
+def universe_reconstruction_home():
+    return jsonify({"purpose":"Reconstruct 2019-2026 symbol-time universe without assuming ticker identity continuity","start_url":"/phase0/universe-reconstruction/start","status_url":"/phase0/universe-reconstruction/status","result_url":"/phase0/universe-reconstruction/result","pause_url":"/phase0/universe-reconstruction/pause","historical_census_allowed":False})
+
+@app.get("/phase0/universe-reconstruction/start")
+@app.post("/phase0/universe-reconstruction/start")
+def universe_reconstruction_start():
+    started,message=radar.start_historical_universe_reconstruction(); return jsonify({"ok":started,"status":message,"status_url":"/phase0/universe-reconstruction/status","result_url":"/phase0/universe-reconstruction/result","historical_census_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/universe-reconstruction/pause")
+@app.post("/phase0/universe-reconstruction/pause")
+def universe_reconstruction_pause():
+    radar.universe_reconstruction_stop_event.set(); return jsonify({"ok":True,"message":"pause_requested","historical_census_allowed":False})
+
+@app.get("/phase0/universe-reconstruction/status")
+def universe_reconstruction_status():
+    stored=radar.redis.get_json(radar.universe_reconstruction_key("status"),None) if radar.redis.configured else None
+    with radar.universe_reconstruction_lock:
+        payload=dict(stored or radar.universe_reconstruction_state); payload["worker_alive"]=bool(radar.universe_reconstruction_thread and radar.universe_reconstruction_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/universe-reconstruction/result")
+def universe_reconstruction_result():
+    report=radar.redis.get_json(radar.universe_reconstruction_key("report"),None) if radar.redis.configured else None
+    if not report: return jsonify({"result_ready":False,"status_url":"/phase0/universe-reconstruction/status","historical_census_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0a")
