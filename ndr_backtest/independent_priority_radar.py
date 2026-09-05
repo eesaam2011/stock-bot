@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import base64
 import fnmatch
 import gzip
 import json
@@ -13,10 +12,9 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from statistics import mean, median
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -39,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.8.0"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-I"
+VERSION = "1.6.2"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0-PROBE-B"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -66,6 +64,48 @@ PROTOCOL = {
     "outcomes": {"primary_minutes": 60, "levels_pct": [2.0, 5.0, 10.0]},
     "safety": {"orders_enabled": False, "automatic_execution": False},
 }
+PHASE0_PROBE_SPEC = {
+    "probe_id": "IPR-HISTORICAL-EXPLOSION-PHASE0-PROBE-2026-09-05-A",
+    "purpose": "Fail-closed capability probe before any Phase 0A historical explosion census.",
+    "trading_cycle": "previous official regular close -> target session official regular close",
+    "primary_threshold_pct": 20.0,
+    "detector": "forward streaming running-min detector on chronologically merged one-minute closes",
+    "candidate_sources": ["Alpaca SIP 1Min raw", "Alpaca BOATS 1Min raw for overnight"],
+    "acceptance": {
+        "all_frozen_reference_cases_must_be_detected": True,
+        "all_expected_extended_sessions_must_have_coverage": True,
+        "synthetic_streaming_detector_tests_must_pass": True,
+        "phase0a_is_fail_closed": True,
+    },
+    "frozen_reference_cases": [
+        {
+            "symbol": "INHD",
+            "target_session": "2026-08-28",
+            "expected_start_session": "AH",
+            "expected_ge20_in_cycle": True,
+            "provenance": "pre-code observed case: move began after the 2026-08-27 regular close",
+        },
+        {
+            "symbol": "SDOT",
+            "target_session": "2026-08-24",
+            "expected_start_session": "Overnight",
+            "expected_ge20_in_cycle": True,
+            "provenance": "pre-code observed case from project log: active in overnight trading before the 2026-08-24 regular session and later exceeded +20%",
+        },
+        {
+            "symbol": "GME",
+            "target_session": "2021-01-27",
+            "expected_start_session": "Premarket",
+            "expected_ge20_in_cycle": True,
+            "provenance": "pre-code historical reference selected specifically to exercise SIP premarket coverage; detector must independently verify the >=20% path",
+        }
+    ],
+    "safety": {"phase0a_runs": False, "feature_discovery_runs": False, "alerts_enabled": False, "orders_enabled": False},
+}
+PHASE0_PROBE_SHA256 = hashlib.sha256(
+    json.dumps(PHASE0_PROBE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
+
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
 ).hexdigest()
@@ -289,129 +329,6 @@ DAILY_BREAKOUT_SPEC = {
     },
 }
 
-# Frozen before the first run.  This is an independent multi-year daily
-# reversal study; it never changes the live Phase-2 radar or sends alerts.
-RSI2_REVERSAL_SPEC = {
-    "research_id": "IPR-RSI2-REVERSAL-2026-09-05-A",
-    "data": {
-        "feed": "sip",
-        "timeframe": "1Day",
-        "warmup_start": "2019-08-15",
-        "minimum_warmup_sessions": 250,
-        "development_start": "2020-09-01",
-        "development_end": "2024-08-30",
-        "legacy_holdout_start": "2024-09-03",
-        "legacy_holdout_end": "2026-08-31",
-        "adjusted_stream": "split",
-        "raw_stream_role": "point-in-time price range and reported execution prices",
-        "historical_depth_source": "Alpaca documents US equity history since 2016",
-    },
-    "universe": {
-        "source": "frozen manifest symbols intersected with current active tradable Alpaca assets",
-        "price_min_inclusive": 10.0,
-        "price_max_inclusive": 60.0,
-        "minimum_average_dollar_volume_60_prior_sessions": 20_000_000,
-        "same_product_and_prohibited_business_exclusions_as_daily_breakout": True,
-        "historical_market_cap_filter_applied": False,
-        "survivorship_warning": "retrospective current-universe test; delisted historical securities are absent",
-    },
-    "signal": {
-        "direction": "LONG_ONLY",
-        "time": "after a completed regular-session daily bar",
-        "trend": "split-adjusted close strictly above inclusive SMA200",
-        "rsi_method": "Wilder RSI with period 2",
-        "primary_threshold": "RSI2 < 5",
-        "diagnostic_threshold": "RSI2 < 10; cannot rescue or replace the primary policy",
-        "ranking": "lowest RSI2, then highest prior-60-session average dollar volume, then symbol",
-        "daily_rank_count": 3,
-    },
-    "execution": {
-        "entry": "next regular session daily open",
-        "entry_price_must_remain_between_10_and_60": True,
-        "exit": "if entry-day completed close is above inclusive SMA5, exit next-session open; otherwise exit next-session close",
-        "maximum_holding_sessions": 2,
-        "fixed_stop": None,
-        "decision_cost_pct_round_trip": 0.25,
-        "capital_slots": 6,
-        "allocation": "three new equal candidates per signal day; six slots prevent hidden leverage across overlapping two-session cohorts",
-    },
-    "evaluation": {
-        "development_blocks": [
-            ["2020-09-01", "2021-08-31"],
-            ["2021-09-01", "2022-08-31"],
-            ["2022-09-01", "2023-08-31"],
-            ["2023-09-01", "2024-08-30"],
-        ],
-        "minimum_trades_per_development_block": 30,
-        "block_rule": "net PF > 1 and average net trade return > 0 in every Development block",
-        "pooled_rule": "net PF > 1, average net trade return > 0, and at least 200 completed Development trades",
-        "primary_policy_controls_final_judgment": True,
-        "legacy_holdout_can_approve_live": False,
-        "promising_wording": "PROMISING_SHADOW_ONLY",
-        "failure_wording": "NO_STABLE_EDGE",
-        "forward_minimum_sessions": 10,
-        "forward_minimum_completed_trades": 30,
-        "forward_maximum_sessions_if_trade_minimum_not_met": 15,
-    },
-    "throughput": {
-        "alpaca_page_limit": 10000,
-        "default_symbols_per_batch": 12,
-        "default_parallel_workers": 24,
-        "raw_daily_bars_saved_to_redis": False,
-        "resume_unit": "completed compact symbol batch",
-        "probe_before_full_run": True,
-    },
-    "safety": {
-        "alerts_enabled": False,
-        "orders_enabled": False,
-        "changes_live_model": False,
-        "changes_live_cutoff": False,
-        "changes_live_confirmation": False,
-    },
-}
-
-RSI2_SANITY_SPEC = {
-    "audit_id": "IPR-RSI2-SANITY-CHECK-2026-09-05-A",
-    "purpose": "Determine whether RSI2 adds value versus matched random selection and verify the daily-bar engine.",
-    "source_policy": RSI2_REVERSAL_SPEC["research_id"],
-    "matched_baseline": {
-        "same_signal_sessions": True,
-        "same_number_of_daily_slots": True,
-        "same_current_clean_universe": True,
-        "same_price_range": [10.0, 60.0],
-        "same_prior_average_dollar_volume_floor": 20_000_000,
-        "same_above_sma200_trend_filter": True,
-        "removed_condition_only": "RSI2 threshold and RSI-based ranking",
-        "same_entry_and_exit_policy": True,
-    },
-    "simulation": {
-        "iterations": 1000,
-        "seed": 20260905,
-        "sampling": "without replacement within each signal session",
-        "deterministic_uniform_reservoir_per_session": 64,
-        "cost_sensitivity_pct_round_trip": [0.0, 0.10, 0.25],
-        "primary_comparison_cost_pct": 0.25,
-    },
-    "integrity": {
-        "independent_rsi2_recomputation": True,
-        "direct_sma200_recomputation": True,
-        "return_identity_check": "net equals gross minus cost",
-        "maximum_allowed_indicator_difference": 1e-9,
-    },
-    "storage": {
-        "raw_daily_bars_saved_to_redis": False,
-        "checkpoint_every_completed_batches": 10,
-        "compressed_year_shards": True,
-    },
-    "interpretation": {
-        "rsi_below_random": "RSI filter/ranking harms selection under this policy",
-        "rsi_matches_random_both_lose_after_cost": "no edge large enough to pay execution cost",
-        "random_abnormally_negative_before_cost": "inspect simulation or execution engine before further research",
-        "diagnostic_only": True,
-    },
-    "safety": RSI2_REVERSAL_SPEC["safety"],
-}
-
 def now_utc() -> datetime:
     return datetime.now(UTC)
 
@@ -567,7 +484,6 @@ class AlpacaClient:
         feed: str = "sip",
         adjustment: str = "raw",
         timeframe: str = "1Min",
-        on_page: Callable[[int], None] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         output = {symbol: [] for symbol in symbols}
         page_token = None
@@ -580,12 +496,8 @@ class AlpacaClient:
             if page_token:
                 params["page_token"] = page_token
             page = self.get(f"{self.data_base}/v2/stocks/bars", params)
-            page_points = 0
             for symbol, rows in (page.get("bars") or {}).items():
                 output.setdefault(symbol, []).extend(rows or [])
-                page_points += len(rows or [])
-            if on_page is not None:
-                on_page(page_points)
             page_token = page.get("next_page_token")
             if not page_token:
                 return output
@@ -1316,460 +1228,6 @@ def daily_breakout_policy_slots(policy: str) -> int:
     raise ValueError(f"Unknown daily-breakout policy: {policy}")
 
 
-def wilder_rsi(values: list[float], period: int = 2) -> list[float | None]:
-    """Wilder RSI aligned to values; no future observation is consulted."""
-    output: list[float | None] = [None] * len(values)
-    if period < 1 or len(values) <= period:
-        return output
-    gains = [max(0.0, values[index] - values[index - 1]) for index in range(1, period + 1)]
-    losses = [max(0.0, values[index - 1] - values[index]) for index in range(1, period + 1)]
-    average_gain = sum(gains) / period
-    average_loss = sum(losses) / period
-
-    def value() -> float:
-        if average_loss <= 1e-15:
-            return 100.0 if average_gain > 1e-15 else 50.0
-        relative_strength = average_gain / average_loss
-        return 100.0 - 100.0 / (1.0 + relative_strength)
-
-    output[period] = value()
-    for index in range(period + 1, len(values)):
-        change = values[index] - values[index - 1]
-        average_gain = (average_gain * (period - 1) + max(change, 0.0)) / period
-        average_loss = (average_loss * (period - 1) + max(-change, 0.0)) / period
-        output[index] = value()
-    return output
-
-
-def _daily_bar_session(row: dict[str, Any]) -> str:
-    return str(row.get("t") or "")[:10]
-
-
-def rsi2_candidate_records(
-    symbol: str,
-    adjusted_rows: list[dict[str, Any]],
-    raw_rows: list[dict[str, Any]],
-    session_map: dict[str, dict[str, str]],
-    maximum_rsi_exclusive: float = 10.0,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Build compact causal RSI(2)<10 candidates; RSI<5 is filtered later."""
-    adjusted = sorted(adjusted_rows, key=lambda row: str(row.get("t") or ""))
-    raw_by_session = {_daily_bar_session(row): row for row in raw_rows}
-    adjusted_by_session = {_daily_bar_session(row): row for row in adjusted}
-    index_by_session = {_daily_bar_session(row): index for index, row in enumerate(adjusted)}
-    closes = [float(row["c"]) for row in adjusted]
-    close_prefix = [0.0]
-    dollar_volume_prefix = [0.0]
-    for row, close_value in zip(adjusted, closes):
-        close_prefix.append(close_prefix[-1] + close_value)
-        dollar_volume_prefix.append(
-            dollar_volume_prefix[-1] + close_value * float(row.get("v") or 0.0)
-        )
-    rsi_values = wilder_rsi(closes, 2)
-    price_min = float(RSI2_REVERSAL_SPEC["universe"]["price_min_inclusive"])
-    price_max = float(RSI2_REVERSAL_SPEC["universe"]["price_max_inclusive"])
-    minimum_dollar_volume = float(
-        RSI2_REVERSAL_SPEC["universe"]["minimum_average_dollar_volume_60_prior_sessions"]
-    )
-    minimum_history = int(RSI2_REVERSAL_SPEC["data"]["minimum_warmup_sessions"])
-    development_start = str(RSI2_REVERSAL_SPEC["data"]["development_start"])
-    holdout_end = str(RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"])
-    cost = float(RSI2_REVERSAL_SPEC["execution"]["decision_cost_pct_round_trip"])
-    counters = defaultdict(int)
-    records: list[dict[str, Any]] = []
-
-    for signal_session, mapping in session_map.items():
-        if signal_session < development_start or signal_session > holdout_end:
-            continue
-        index = index_by_session.get(signal_session)
-        if index is None:
-            counters["missing_signal_bar"] += 1
-            continue
-        if index + 1 < minimum_history or index < 199 or index < 60:
-            counters["insufficient_warmup"] += 1
-            continue
-        close = closes[index]
-        sma200 = (close_prefix[index + 1] - close_prefix[index - 199]) / 200.0
-        rsi2 = rsi_values[index]
-        if close <= sma200 or rsi2 is None or rsi2 >= maximum_rsi_exclusive:
-            continue
-        average_dollar_volume60 = (
-            dollar_volume_prefix[index] - dollar_volume_prefix[index - 60]
-        ) / 60.0
-        if average_dollar_volume60 < minimum_dollar_volume:
-            counters["liquidity_rejected"] += 1
-            continue
-
-        entry_session = mapping["entry_session"]
-        final_session = mapping["final_session"]
-        entry_index = index_by_session.get(entry_session)
-        final_index = index_by_session.get(final_session)
-        signal_raw = raw_by_session.get(signal_session)
-        entry_raw = raw_by_session.get(entry_session)
-        final_raw = raw_by_session.get(final_session)
-        entry_adjusted = adjusted_by_session.get(entry_session)
-        final_adjusted = adjusted_by_session.get(final_session)
-        if any(item is None for item in (signal_raw, entry_raw, final_raw, entry_adjusted, final_adjusted)):
-            counters["missing_execution_bar"] += 1
-            continue
-        if entry_index is None or final_index is None or entry_index < 4:
-            counters["missing_execution_index"] += 1
-            continue
-        signal_raw_close = float(signal_raw["c"])
-        entry_raw_open = float(entry_raw["o"])
-        if not (price_min <= signal_raw_close <= price_max):
-            counters["signal_price_rejected"] += 1
-            continue
-        if not (price_min <= entry_raw_open <= price_max):
-            counters["entry_price_rejected"] += 1
-            continue
-
-        entry_adjusted_open = float(entry_adjusted["o"])
-        entry_day_sma5 = (
-            close_prefix[entry_index + 1] - close_prefix[entry_index - 4]
-        ) / 5.0
-        exit_on_next_open = float(entry_adjusted["c"]) > entry_day_sma5
-        if exit_on_next_open:
-            exit_adjusted = float(final_adjusted["o"])
-            exit_raw = float(final_raw["o"])
-            exit_rule = "NEXT_OPEN_AFTER_ENTRY_CLOSE_ABOVE_SMA5"
-            observed_highs = [float(entry_adjusted["h"]), exit_adjusted]
-            observed_lows = [float(entry_adjusted["l"]), exit_adjusted]
-        else:
-            exit_adjusted = float(final_adjusted["c"])
-            exit_raw = float(final_raw["c"])
-            exit_rule = "FORCED_SECOND_SESSION_CLOSE"
-            observed_highs = [float(entry_adjusted["h"]), float(final_adjusted["h"])]
-            observed_lows = [float(entry_adjusted["l"]), float(final_adjusted["l"])]
-        if entry_adjusted_open <= 0 or exit_adjusted <= 0:
-            counters["invalid_execution_price"] += 1
-            continue
-        gross_return = (exit_adjusted / entry_adjusted_open - 1.0) * 100.0
-        records.append({
-            "symbol": symbol,
-            "signal_session": signal_session,
-            "entry_session": entry_session,
-            "exit_session": final_session,
-            "rsi2": round(float(rsi2), 8),
-            "signal_adjusted_close": round(close, 8),
-            "signal_raw_close": round(signal_raw_close, 8),
-            "sma200": round(sma200, 8),
-            "average_dollar_volume60": round(average_dollar_volume60, 2),
-            "entry_raw_open": round(entry_raw_open, 8),
-            "entry_adjusted_open": round(entry_adjusted_open, 8),
-            "entry_day_adjusted_close": round(float(entry_adjusted["c"]), 8),
-            "entry_day_sma5": round(entry_day_sma5, 8),
-            "exit_raw_price": round(exit_raw, 8),
-            "exit_adjusted_price": round(exit_adjusted, 8),
-            "exit_rule": exit_rule,
-            "gross_return_pct": round(gross_return, 8),
-            "net_return_pct": round(gross_return - cost, 8),
-            "mfe_pct": round((max(observed_highs) / entry_adjusted_open - 1.0) * 100.0, 8),
-            "mae_pct": round((min(observed_lows) / entry_adjusted_open - 1.0) * 100.0, 8),
-            "cost_pct_round_trip": cost,
-        })
-        counters["eligible_rsi_below_10"] += 1
-        if rsi2 < 5.0:
-            counters["eligible_rsi_below_5"] += 1
-    return records, dict(counters)
-
-
-def select_rsi2_trades(candidates: list[dict[str, Any]], threshold: float) -> list[dict[str, Any]]:
-    by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in candidates:
-        if float(row["rsi2"]) < threshold:
-            by_session[str(row["signal_session"])].append(row)
-    selected: list[dict[str, Any]] = []
-    limit = int(RSI2_REVERSAL_SPEC["signal"]["daily_rank_count"])
-    for session in sorted(by_session):
-        ordered = sorted(
-            by_session[session],
-            key=lambda row: (float(row["rsi2"]), -float(row["average_dollar_volume60"]), row["symbol"]),
-        )
-        for rank, row in enumerate(ordered[:limit], 1):
-            selected.append({**row, "rank": rank, "policy_rsi_threshold": threshold})
-    return selected
-
-
-def rsi2_trade_statistics(trades: list[dict[str, Any]], capital_slots: int = 6) -> dict[str, Any]:
-    returns = [float(row["net_return_pct"]) for row in trades]
-    wins = [value for value in returns if value > 0]
-    losses = [value for value in returns if value < 0]
-    gross_profit = sum(wins)
-    gross_loss = -sum(losses)
-    by_exit: dict[str, float] = defaultdict(float)
-    for row in trades:
-        by_exit[str(row["exit_session"])] += float(row["net_return_pct"]) / capital_slots
-    daily_values = list(by_exit.values())
-    return {
-        "trades": len(trades),
-        "winning_trades": len(wins),
-        "losing_trades": len(losses),
-        "win_rate_pct": round(len(wins) / len(returns) * 100.0, 6) if returns else None,
-        "average_net_trade_return_pct": round(mean(returns), 8) if returns else None,
-        "median_net_trade_return_pct": round(median(returns), 8) if returns else None,
-        "profit_factor": round(gross_profit / gross_loss, 8) if gross_loss > 1e-15 else None,
-        "gross_profit_points": round(gross_profit, 8),
-        "gross_loss_points": round(gross_loss, 8),
-        "active_exit_days": len(daily_values),
-        "average_active_day_portfolio_return_pct": round(mean(daily_values), 8) if daily_values else None,
-        "total_portfolio_return_points": round(sum(daily_values), 8),
-        "average_mfe_pct": round(mean(float(row["mfe_pct"]) for row in trades), 8) if trades else None,
-        "average_mae_pct": round(mean(float(row["mae_pct"]) for row in trades), 8) if trades else None,
-        "exit_rule_counts": {
-            "next_open_after_sma5": sum(row["exit_rule"] == "NEXT_OPEN_AFTER_ENTRY_CLOSE_ABOVE_SMA5" for row in trades),
-            "forced_second_close": sum(row["exit_rule"] == "FORCED_SECOND_SESSION_CLOSE" for row in trades),
-        },
-        "capital_slots": capital_slots,
-    }
-
-
-def sanity_hash_key(session: str, symbol: str) -> int:
-    digest = hashlib.sha256(f"IPR-RSI2-SANITY|{session}|{symbol}".encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big")
-
-
-def sanity_add_candidate(
-    reservoirs: dict[str, list[dict[str, Any]]],
-    moments: dict[str, dict[str, Any]],
-    row: dict[str, Any],
-    reservoir_size: int = 64,
-) -> None:
-    session = str(row["signal_session"])
-    gross = float(row["gross_return_pct"])
-    moment = moments.setdefault(session, {
-        "eligible_count": 0,
-        "sum_gross_return_pct": 0.0,
-        "sum_gross_return_sq": 0.0,
-        "costs": {
-            str(cost): {"sum": 0.0, "positive": 0.0, "negative": 0.0, "wins": 0}
-            for cost in RSI2_SANITY_SPEC["simulation"]["cost_sensitivity_pct_round_trip"]
-        },
-    })
-    moment["eligible_count"] += 1
-    moment["sum_gross_return_pct"] += gross
-    moment["sum_gross_return_sq"] += gross * gross
-    for cost in RSI2_SANITY_SPEC["simulation"]["cost_sensitivity_pct_round_trip"]:
-        net = gross - float(cost)
-        block = moment["costs"][str(cost)]
-        block["sum"] += net
-        if net > 0:
-            block["positive"] += net
-            block["wins"] += 1
-        elif net < 0:
-            block["negative"] += net
-
-    compact = {
-        "symbol": row["symbol"],
-        "signal_session": session,
-        "gross_return_pct": gross,
-        "rsi2": float(row["rsi2"]),
-        "exit_rule": row["exit_rule"],
-        "hash_key": sanity_hash_key(session, str(row["symbol"])),
-    }
-    current = {item["symbol"]: item for item in reservoirs.get(session, [])}
-    current[str(compact["symbol"])] = compact
-    reservoirs[session] = sorted(current.values(), key=lambda item: (item["hash_key"], item["symbol"]))[:reservoir_size]
-
-
-def sanity_exact_baseline_statistics(
-    moments: dict[str, dict[str, Any]],
-    slot_counts: dict[str, int],
-    start: str,
-    end: str,
-    cost: float,
-) -> dict[str, Any]:
-    draws = 0
-    expected_sum = 0.0
-    expected_positive = 0.0
-    expected_negative = 0.0
-    expected_wins = 0.0
-    missing_sessions = []
-    for session, slots in slot_counts.items():
-        if not (start <= session <= end):
-            continue
-        block = moments.get(session)
-        if not block or int(block.get("eligible_count") or 0) < slots:
-            missing_sessions.append(session)
-            continue
-        count = int(block["eligible_count"])
-        cost_block = block["costs"][str(cost)]
-        draws += slots
-        expected_sum += slots * float(cost_block["sum"]) / count
-        expected_positive += slots * float(cost_block["positive"]) / count
-        expected_negative += slots * float(cost_block["negative"]) / count
-        expected_wins += slots * int(cost_block["wins"]) / count
-    return {
-        "expected_draws": draws,
-        "missing_or_too_small_sessions": len(missing_sessions),
-        "average_net_trade_return_pct": round(expected_sum / draws, 8) if draws else None,
-        "expected_win_rate_pct": round(expected_wins / draws * 100.0, 8) if draws else None,
-        "expected_profit_factor": round(expected_positive / -expected_negative, 8) if expected_negative < -1e-15 else None,
-        "expected_total_six_slot_portfolio_points": round(expected_sum / 6.0, 8),
-    }
-
-
-def sanity_strategy_statistics(
-    records: list[dict[str, Any]], start: str, end: str, cost: float
-) -> dict[str, Any]:
-    values = [
-        float(row["gross_return_pct"]) - cost
-        for row in records
-        if start <= str(row["signal_session"]) <= end
-    ]
-    positives = [value for value in values if value > 0]
-    negatives = [value for value in values if value < 0]
-    return {
-        "trades": len(values),
-        "average_net_trade_return_pct": round(mean(values), 8) if values else None,
-        "win_rate_pct": round(len(positives) / len(values) * 100.0, 8) if values else None,
-        "profit_factor": round(sum(positives) / -sum(negatives), 8) if negatives else None,
-        "total_six_slot_portfolio_points": round(sum(values) / 6.0, 8),
-    }
-
-
-def sanity_monte_carlo(
-    reservoirs: dict[str, list[dict[str, Any]]],
-    slot_counts: dict[str, int],
-    strategy_records: list[dict[str, Any]],
-    start: str,
-    end: str,
-    iterations: int = 1000,
-    seed: int = 20260905,
-) -> dict[str, Any]:
-    sessions = [
-        session for session in sorted(slot_counts)
-        if start <= session <= end and len(reservoirs.get(session, [])) >= slot_counts[session]
-    ]
-    covered_sessions = set(sessions)
-    matched_strategy_records = [
-        row for row in strategy_records if str(row["signal_session"]) in covered_sessions
-    ]
-    costs = [float(value) for value in RSI2_SANITY_SPEC["simulation"]["cost_sensitivity_pct_round_trip"]]
-    simulated: dict[str, dict[str, list[float]]] = {
-        str(cost): {"average": [], "profit_factor": [], "portfolio_points": []} for cost in costs
-    }
-    rng = np.random.default_rng(seed)
-    for _ in range(iterations):
-        gross_returns = []
-        for session in sessions:
-            pool = reservoirs[session]
-            count = int(slot_counts[session])
-            indices = rng.choice(len(pool), size=count, replace=False)
-            gross_returns.extend(float(pool[int(index)]["gross_return_pct"]) for index in indices)
-        for cost in costs:
-            values = [value - cost for value in gross_returns]
-            positives = sum(value for value in values if value > 0)
-            negative = -sum(value for value in values if value < 0)
-            block = simulated[str(cost)]
-            block["average"].append(mean(values) if values else float("nan"))
-            block["profit_factor"].append(positives / negative if negative > 1e-15 else float("inf"))
-            block["portfolio_points"].append(sum(values) / 6.0)
-    output = {}
-    for cost in costs:
-        key = str(cost)
-        averages = np.asarray(simulated[key]["average"], dtype=float)
-        factors = np.asarray(simulated[key]["profit_factor"], dtype=float)
-        points = np.asarray(simulated[key]["portfolio_points"], dtype=float)
-        finite_factors = factors[np.isfinite(factors)]
-        observed = sanity_strategy_statistics(matched_strategy_records, start, end, cost)
-        observed_average = observed["average_net_trade_return_pct"]
-        observed_pf = observed["profit_factor"]
-        output[key] = {
-            "strategy_observed": observed,
-            "random_iterations": iterations,
-            "random_average_net_trade_return_pct": {
-                "mean": round(float(np.mean(averages)), 8),
-                "median": round(float(np.median(averages)), 8),
-                "p05": round(float(np.quantile(averages, .05)), 8),
-                "p95": round(float(np.quantile(averages, .95)), 8),
-            },
-            "random_profit_factor": {
-                "mean_finite": round(float(np.mean(finite_factors)), 8) if len(finite_factors) else None,
-                "median_finite": round(float(np.median(finite_factors)), 8) if len(finite_factors) else None,
-                "p05_finite": round(float(np.quantile(finite_factors, .05)), 8) if len(finite_factors) else None,
-                "p95_finite": round(float(np.quantile(finite_factors, .95)), 8) if len(finite_factors) else None,
-                "infinite_iterations": int(np.isinf(factors).sum()),
-            },
-            "random_total_six_slot_portfolio_points": {
-                "mean": round(float(np.mean(points)), 8),
-                "p05": round(float(np.quantile(points, .05)), 8),
-                "p95": round(float(np.quantile(points, .95)), 8),
-            },
-            "strategy_average_percentile_vs_random": round(
-                float(np.mean(averages <= float(observed_average))) * 100.0, 4
-            ) if observed_average is not None else None,
-            "strategy_pf_percentile_vs_random": round(
-                float(np.mean(factors <= float(observed_pf))) * 100.0, 4
-            ) if observed_pf is not None else None,
-        }
-    return {
-        "covered_signal_sessions": len(sessions),
-        "excluded_signal_sessions": sum(
-            start <= session <= end and session not in covered_sessions for session in slot_counts
-        ),
-        "reservoir_size": RSI2_SANITY_SPEC["simulation"]["deterministic_uniform_reservoir_per_session"],
-        "cost_sensitivity": output,
-    }
-
-
-def pack_checkpoint(value: Any) -> str:
-    raw = json_compact(value).encode("utf-8")
-    return base64.b64encode(gzip.compress(raw, compresslevel=6)).decode("ascii")
-
-
-def unpack_checkpoint(value: str) -> Any:
-    return json.loads(gzip.decompress(base64.b64decode(value)).decode("utf-8"))
-
-
-def reference_wilder_rsi_at(values: list[float], index: int, period: int = 2) -> float | None:
-    if index < period:
-        return None
-    gains = []
-    losses = []
-    for position in range(1, period + 1):
-        change = values[position] - values[position - 1]
-        gains.append(max(change, 0.0))
-        losses.append(max(-change, 0.0))
-    average_gain = sum(gains) / period
-    average_loss = sum(losses) / period
-    for position in range(period + 1, index + 1):
-        change = values[position] - values[position - 1]
-        average_gain = (average_gain * (period - 1) + max(change, 0.0)) / period
-        average_loss = (average_loss * (period - 1) + max(-change, 0.0)) / period
-    if average_loss <= 1e-15:
-        return 100.0 if average_gain > 1e-15 else 50.0
-    return 100.0 - 100.0 / (1.0 + average_gain / average_loss)
-
-
-def sanity_indicator_check(symbol: str, adjusted_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    rows = sorted(adjusted_rows, key=lambda row: str(row.get("t") or ""))
-    if len(rows) < 260:
-        return {"symbol": symbol, "checked_points": 0, "reason": "insufficient_rows"}
-    closes = [float(row["c"]) for row in rows]
-    production_rsi = wilder_rsi(closes, 2)
-    span = len(rows) - 250
-    base = sanity_hash_key("INDICATOR", symbol) % span
-    indices = sorted({249 + int((base + offset * 193) % span) for offset in range(3)})
-    rsi_differences = []
-    sma_differences = []
-    for index in indices:
-        reference_rsi = reference_wilder_rsi_at(closes, index, 2)
-        rsi_differences.append(abs(float(production_rsi[index]) - float(reference_rsi)))
-        direct_sma = sum(closes[index - 199:index + 1]) / 200.0
-        prefix = [0.0]
-        for value in closes[:index + 1]:
-            prefix.append(prefix[-1] + value)
-        prefix_sma = (prefix[index + 1] - prefix[index - 199]) / 200.0
-        sma_differences.append(abs(direct_sma - prefix_sma))
-    return {
-        "symbol": symbol,
-        "checked_points": len(indices),
-        "max_rsi2_difference": max(rsi_differences, default=None),
-        "max_sma200_difference": max(sma_differences, default=None),
-    }
-
-
 def update_live_tracking(
     tracking: dict[str, Any] | None,
     entry_price: float,
@@ -1896,34 +1354,14 @@ class IndependentPriorityRadar:
             "orders_enabled": False,
             "updated_at": iso(),
         }
-        self.rsi2_lock = threading.RLock()
-        self.rsi2_thread: threading.Thread | None = None
-        self.rsi2_stop_event = threading.Event()
-        self.rsi2_path: str | None = None
-        self.rsi2_request_pages = 0
-        self.rsi2_bar_points = 0
-        self.rsi2_state: dict[str, Any] = {
-            "status": "IDLE",
-            "phase": "NOT_STARTED",
-            "message": "Multi-year RSI(2) reversal research has not started",
-            "research_id": RSI2_REVERSAL_SPEC["research_id"],
-            "alerts_enabled": False,
-            "orders_enabled": False,
+        self.phase0_probe_lock = threading.RLock()
+        self.phase0_probe_thread: threading.Thread | None = None
+        self.phase0_probe_state: dict[str, Any] = {
+            "status": "IDLE", "message": "Phase 0 capability probe has not started",
+            "probe_id": PHASE0_PROBE_SPEC["probe_id"], "phase0a_allowed": False,
             "updated_at": iso(),
         }
-        self.sanity_lock = threading.RLock()
-        self.sanity_thread: threading.Thread | None = None
-        self.sanity_stop_event = threading.Event()
-        self.sanity_path: str | None = None
-        self.sanity_request_pages = 0
-        self.sanity_bar_points = 0
-        self.sanity_state: dict[str, Any] = {
-            "status": "IDLE", "phase": "NOT_STARTED",
-            "message": "RSI2 matched-random sanity check has not started",
-            "audit_id": RSI2_SANITY_SPEC["audit_id"],
-            "alerts_enabled": False, "orders_enabled": False,
-            "updated_at": iso(),
-        }
+        self.phase0_probe_report: dict[str, Any] | None = None
         self.state = {
             "status": "STARTING", "message": "Waiting for model bootstrap",
             "version": VERSION, "build": BUILD, "protocol_id": PROTOCOL_ID,
@@ -1937,6 +1375,9 @@ class IndependentPriorityRadar:
     def key(self, suffix: str) -> str:
         return f"{self.prefix}:{suffix}"
 
+    def phase0_probe_key(self, suffix: str) -> str:
+        return self.key(f"phase0_probe:v1:{suffix}")
+
     def audit_key(self, suffix: str) -> str:
         return self.key(f"historical_confirmation:v1:{suffix}")
 
@@ -1949,11 +1390,191 @@ class IndependentPriorityRadar:
     def breakout_key(self, suffix: str) -> str:
         return self.key(f"daily_breakout_volume:v1:{suffix}")
 
-    def rsi2_key(self, suffix: str) -> str:
-        return self.key(f"rsi2_short_term_reversal:v1:{suffix}")
+    def _set_phase0_probe_state(self, **updates: Any) -> None:
+        with self.phase0_probe_lock:
+            self.phase0_probe_state.update(updates)
+            self.phase0_probe_state["updated_at"] = iso()
+            snapshot = dict(self.phase0_probe_state)
+        if self.redis.configured:
+            try:
+                self.redis.set_json(self.phase0_probe_key("status"), snapshot)
+            except Exception:
+                logging.exception("Unable to persist Phase 0 probe state")
 
-    def sanity_key(self, suffix: str) -> str:
-        return self.key(f"rsi2_sanity_check:v1:{suffix}")
+    @staticmethod
+    def _streaming_ge20(rows: list[dict[str, Any]], threshold_pct: float = 20.0) -> dict[str, Any]:
+        threshold = 1.0 + threshold_pct / 100.0
+        running_min = None
+        running_min_ts = None
+        for row in sorted(rows, key=lambda x: str(x.get("t") or "")):
+            try:
+                price = float(row.get("c"))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(price) or price <= 0:
+                continue
+            ts = str(row.get("t") or "")
+            if running_min is None or price < running_min:
+                running_min, running_min_ts = price, ts
+            if running_min is not None and price >= running_min * threshold:
+                return {
+                    "detected": True, "threshold_pct": threshold_pct,
+                    "t1": running_min_ts, "t1_price": running_min,
+                    "t2": ts, "t2_price": price,
+                    "gain_pct": (price / running_min - 1.0) * 100.0,
+                }
+        return {"detected": False, "threshold_pct": threshold_pct}
+
+    @staticmethod
+    def _probe_session(ts_text: str, target_session: date) -> str:
+        dt = datetime.fromisoformat(ts_text.replace("Z", "+00:00")).astimezone(NY)
+        minutes = dt.hour * 60 + dt.minute
+        if dt.date() < target_session and 16 * 60 <= minutes < 20 * 60:
+            return "AH"
+        if (dt.date() < target_session and minutes >= 20 * 60) or (dt.date() == target_session and minutes < 4 * 60):
+            return "Overnight"
+        if dt.date() == target_session and 4 * 60 <= minutes < 9 * 60 + 30:
+            return "Premarket"
+        if dt.date() == target_session and 9 * 60 + 30 <= minutes <= 16 * 60:
+            return "Regular"
+        return "Other"
+
+    def _probe_cycle_bounds(self, target_session: date) -> tuple[datetime, datetime]:
+        cal = self.alpaca.calendar(target_session - timedelta(days=10), target_session)
+        sessions = sorted(date.fromisoformat(str(x["date"])) for x in cal if x.get("date"))
+        if target_session not in sessions:
+            raise RuntimeError(f"Target session missing from Alpaca calendar: {target_session}")
+        idx = sessions.index(target_session)
+        if idx == 0:
+            raise RuntimeError(f"Previous session unavailable for: {target_session}")
+        prev = sessions[idx - 1]
+        # Official close is normally 16:00 ET. Calendar close is used when supplied (early close).
+        by_date = {date.fromisoformat(str(x["date"])): x for x in cal if x.get("date")}
+        def close_dt(d: date) -> datetime:
+            text = str(by_date[d].get("close") or "16:00")
+            hh, mm = [int(v) for v in text.split(":")[:2]]
+            return datetime.combine(d, dtime(hh, mm), NY).astimezone(UTC)
+        return close_dt(prev), close_dt(target_session)
+
+    def _run_phase0_reference_case(self, case: dict[str, Any]) -> dict[str, Any]:
+        symbol = str(case["symbol"]).upper()
+        target = date.fromisoformat(str(case["target_session"]))
+        start, end = self._probe_cycle_bounds(target)
+        sip = self.alpaca.bars([symbol], start, end, feed="sip", adjustment="raw", timeframe="1Min").get(symbol, [])
+        boats = self.alpaca.bars([symbol], start, end, feed="boats", adjustment="raw", timeframe="1Min").get(symbol, [])
+        merged: dict[str, dict[str, Any]] = {}
+        source_by_ts: dict[str, str] = {}
+        for source, rows in (("sip", sip), ("boats", boats)):
+            for row in rows:
+                ts = str(row.get("t") or "")
+                if not ts:
+                    continue
+                # BOATS is only authoritative for the overnight window; SIP wins elsewhere.
+                session = self._probe_session(ts, target)
+                if source == "boats" and session != "Overnight":
+                    continue
+                if ts not in merged or source == "sip":
+                    merged[ts] = row
+                    source_by_ts[ts] = source
+        rows = [merged[k] for k in sorted(merged)]
+        session_counts: dict[str, int] = defaultdict(int)
+        source_counts: dict[str, int] = defaultdict(int)
+        for row in rows:
+            ts = str(row.get("t") or "")
+            session_counts[self._probe_session(ts, target)] += 1
+            source_counts[source_by_ts.get(ts, "unknown")] += 1
+        detector = self._streaming_ge20(rows, float(PHASE0_PROBE_SPEC["primary_threshold_pct"]))
+        expected_session = str(case.get("expected_start_session") or "")
+        coverage_ok = bool(session_counts.get(expected_session, 0)) if expected_session else True
+        explosion_ok = detector["detected"] == bool(case.get("expected_ge20_in_cycle", True))
+        passed = coverage_ok and explosion_ok
+        return {
+            **case, "cycle_start": iso(start), "cycle_end": iso(end),
+            "sip_bars": len(sip), "boats_bars": len(boats), "merged_bars": len(rows),
+            "session_counts": dict(session_counts), "source_counts": dict(source_counts),
+            "coverage_ok": coverage_ok, "explosion_expectation_ok": explosion_ok,
+            "detector": detector, "passed": passed,
+        }
+
+    @staticmethod
+    def _synthetic_phase0_probe_tests() -> dict[str, Any]:
+        def rows(prices: list[float]) -> list[dict[str, Any]]:
+            base = datetime(2026, 1, 2, 21, 0, tzinfo=UTC)
+            return [{"t": iso(base + timedelta(minutes=i)), "c": p} for i, p in enumerate(prices)]
+        cases = [
+            ("detect_after_new_running_min", [10, 9, 9.5, 10.8], True),
+            ("detect_first_causal_crossing", [10, 12, 9], True),
+            ("below_threshold", [10, 9, 10.79], False),
+        ]
+        results = []
+        for name, prices, expected in cases:
+            actual = IndependentPriorityRadar._streaming_ge20(rows(prices))["detected"]
+            results.append({"name": name, "expected": expected, "actual": actual, "passed": actual == expected})
+        return {"passed": all(x["passed"] for x in results), "cases": results}
+
+    @staticmethod
+    def _phase0_gate_decision(synthetic: dict[str, Any], reference_results: list[dict[str, Any]]) -> dict[str, Any]:
+        expected_sessions = {str(c.get("expected_start_session") or "") for c in PHASE0_PROBE_SPEC["frozen_reference_cases"]}
+        covered_sessions = {str(r.get("expected_start_session") or "") for r in reference_results if r.get("coverage_ok")}
+        refs_complete = len(reference_results) == len(PHASE0_PROBE_SPEC["frozen_reference_cases"])
+        refs_pass = refs_complete and bool(reference_results) and all(bool(r.get("passed")) for r in reference_results)
+        sessions_pass = bool(expected_sessions) and expected_sessions.issubset(covered_sessions)
+        probe_passed = bool(synthetic.get("passed") and refs_pass and sessions_pass)
+        return {
+            "probe_passed": probe_passed,
+            "phase0a_allowed": probe_passed,
+            "fail_closed": True,
+            "reference_cases_complete": refs_complete,
+            "reference_cases_passed": refs_pass,
+            "expected_extended_sessions": sorted(expected_sessions),
+            "covered_extended_sessions": sorted(covered_sessions),
+            "extended_session_coverage_passed": sessions_pass,
+        }
+
+    def phase0_probe_loop(self) -> None:
+        try:
+            self._set_phase0_probe_state(status="RUNNING", message="Testing Alpaca extended-hours capability", phase0a_allowed=False)
+            synthetic = self._synthetic_phase0_probe_tests()
+            reference_results = [self._run_phase0_reference_case(case) for case in PHASE0_PROBE_SPEC["frozen_reference_cases"]]
+            gate = self._phase0_gate_decision(synthetic, reference_results)
+            probe_passed = bool(gate["probe_passed"])
+            report = {
+                "version": VERSION, "build": BUILD, "probe_id": PHASE0_PROBE_SPEC["probe_id"],
+                "probe_sha256": PHASE0_PROBE_SHA256, **gate,
+                "synthetic_detector_validation": synthetic,
+                "reference_cases": reference_results,
+                "source_decision": "SIP+BOATS one-minute raw is eligible for Phase 0A" if probe_passed else "REJECTED: Phase 0A is blocked",
+                "completed_at": iso(),
+            }
+            self.phase0_probe_report = report
+            if self.redis.configured:
+                self.redis.set_json(self.phase0_probe_key("report"), report)
+            self._set_phase0_probe_state(
+                status="PASSED" if probe_passed else "FAILED",
+                message="Capability probe passed; Phase 0A may be designed" if probe_passed else "Capability probe failed; Phase 0A is blocked",
+                probe_passed=probe_passed, phase0a_allowed=probe_passed,
+            )
+        except Exception as exc:
+            logging.exception("Phase 0 capability probe failed")
+            self._set_phase0_probe_state(status="ERROR", message="Capability probe errored; Phase 0A is blocked", probe_passed=False, phase0a_allowed=False, last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.phase0_probe_lock:
+                self.phase0_probe_thread = None
+
+    def start_phase0_probe(self) -> tuple[bool, str]:
+        if not self.alpaca.configured:
+            return False, "Alpaca credentials are required"
+        with self.phase0_probe_lock:
+            if self.phase0_probe_thread and self.phase0_probe_thread.is_alive():
+                return False, "already_running"
+            self.phase0_probe_state = {
+                "status": "STARTING", "message": "Starting fail-closed Phase 0 capability probe",
+                "probe_id": PHASE0_PROBE_SPEC["probe_id"], "probe_sha256": PHASE0_PROBE_SHA256,
+                "probe_passed": False, "phase0a_allowed": False, "updated_at": iso(),
+            }
+            self.phase0_probe_thread = threading.Thread(target=self.phase0_probe_loop, name="independent-priority-phase0-probe", daemon=True)
+            self.phase0_probe_thread.start()
+        return True, "started"
 
     def save_state(self, **updates: Any) -> None:
         with self.lock:
@@ -2155,10 +1776,6 @@ class IndependentPriorityRadar:
             return False, "Liquid Daily ORB Research is running"
         if self.breakout_thread and self.breakout_thread.is_alive():
             return False, "Daily Breakout Research is running"
-        if self.rsi2_thread and self.rsi2_thread.is_alive():
-            return False, "RSI2 Reversal Research is running"
-        if self.sanity_thread and self.sanity_thread.is_alive():
-            return False, "RSI2 Sanity Check is running"
         with self.export_lock:
             if self.export_thread and self.export_thread.is_alive():
                 return True, "already_running"
@@ -2546,10 +2163,6 @@ class IndependentPriorityRadar:
             return False, "Liquid Daily ORB Research is running"
         if self.breakout_thread and self.breakout_thread.is_alive():
             return False, "Daily Breakout Research is running"
-        if self.rsi2_thread and self.rsi2_thread.is_alive():
-            return False, "RSI2 Reversal Research is running"
-        if self.sanity_thread and self.sanity_thread.is_alive():
-            return False, "RSI2 Sanity Check is running"
         with self.audit_lock:
             if self.audit_thread and self.audit_thread.is_alive():
                 return True, "already_running"
@@ -3034,8 +2647,6 @@ class IndependentPriorityRadar:
                 or (self.export_thread and self.export_thread.is_alive())
                 or (self.orb_thread and self.orb_thread.is_alive())
                 or (self.breakout_thread and self.breakout_thread.is_alive())
-                or (self.rsi2_thread and self.rsi2_thread.is_alive())
-                or (self.sanity_thread and self.sanity_thread.is_alive())
             ):
                 return False, "another historical job is running"
             self.early_stop_event.clear()
@@ -3639,7 +3250,7 @@ class IndependentPriorityRadar:
                 return True, "already_running"
             if any(
                 thread and thread.is_alive()
-                for thread in (self.audit_thread, self.export_thread, self.early_thread, self.breakout_thread, self.rsi2_thread, self.sanity_thread)
+                for thread in (self.audit_thread, self.export_thread, self.early_thread, self.breakout_thread)
             ):
                 return False, "another historical job is running"
             self.orb_stop_event.clear()
@@ -4116,7 +3727,7 @@ class IndependentPriorityRadar:
                 return True, "already_running"
             if any(
                 thread and thread.is_alive()
-                for thread in (self.audit_thread, self.export_thread, self.early_thread, self.orb_thread, self.rsi2_thread, self.sanity_thread)
+                for thread in (self.audit_thread, self.export_thread, self.early_thread, self.orb_thread)
             ):
                 return False, "another historical job is running"
             self.breakout_stop_event.clear()
@@ -4147,831 +3758,6 @@ class IndependentPriorityRadar:
             if not self.breakout_thread or not self.breakout_thread.is_alive():
                 return False, "not_running"
             self.breakout_stop_event.set()
-        return True, "pause_requested"
-
-    def _set_rsi2_progress(self, **updates: Any) -> None:
-        with self.rsi2_lock:
-            self.rsi2_state.update(updates)
-            self.rsi2_state["alpaca_pages_completed"] = self.rsi2_request_pages
-            self.rsi2_state["daily_bar_points_received"] = self.rsi2_bar_points
-            self.rsi2_state["updated_at"] = iso()
-            snapshot = dict(self.rsi2_state)
-        if self.redis.configured:
-            self.redis.set_json(self.rsi2_key("status"), snapshot)
-
-    def _rsi2_page_received(self, points: int) -> None:
-        with self.rsi2_lock:
-            self.rsi2_request_pages += 1
-            self.rsi2_bar_points += int(points)
-
-    @staticmethod
-    def _rsi2_session_map(calendar: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
-        sessions = sorted({str(item.get("date")) for item in calendar if item.get("date")})
-        mapping: dict[str, dict[str, str]] = {}
-        for index, session in enumerate(sessions[:-2]):
-            if RSI2_REVERSAL_SPEC["data"]["development_start"] <= session <= RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"]:
-                mapping[session] = {
-                    "entry_session": sessions[index + 1],
-                    "final_session": sessions[index + 2],
-                }
-        return mapping
-
-    def _rsi2_data_probe(self, universe: list[str]) -> dict[str, Any]:
-        stored = self.redis.get_json(self.rsi2_key("data_probe"), None)
-        if stored and stored.get("passed"):
-            return stored
-        preferred = ["AAPL", "AMD", "F", "GE", "INTC", "META", "NVDA", "PFE", "T", "UBER"]
-        sample = [symbol for symbol in preferred if symbol in set(universe)]
-        for symbol in universe:
-            if len(sample) >= 10:
-                break
-            if symbol not in sample:
-                sample.append(symbol)
-        if len(sample) < 5:
-            raise RuntimeError("RSI2 data probe requires at least five clean symbols")
-        start = datetime.fromisoformat(RSI2_REVERSAL_SPEC["data"]["warmup_start"] + "T00:00:00+00:00")
-        end = datetime.fromisoformat(RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"] + "T23:59:59+00:00")
-        began = time.monotonic()
-        adjusted = self.alpaca.bars(
-            sample, start, end, feed="sip", adjustment="split", timeframe="1Day",
-            on_page=self._rsi2_page_received,
-        )
-        raw = self.alpaca.bars(
-            sample, start, end, feed="sip", adjustment="raw", timeframe="1Day",
-            on_page=self._rsi2_page_received,
-        )
-        coverage = {}
-        long_history = 0
-        recent_history = 0
-        for symbol in sample:
-            adjusted_sessions = {_daily_bar_session(row) for row in adjusted.get(symbol, [])}
-            raw_sessions = {_daily_bar_session(row) for row in raw.get(symbol, [])}
-            overlap = sorted(adjusted_sessions & raw_sessions)
-            first = overlap[0] if overlap else None
-            last = overlap[-1] if overlap else None
-            if first and first <= "2020-01-15" and len(overlap) >= 1200:
-                long_history += 1
-            if last and last >= "2026-08-28":
-                recent_history += 1
-            coverage[symbol] = {
-                "adjusted_bars": len(adjusted_sessions),
-                "raw_bars": len(raw_sessions),
-                "overlap_bars": len(overlap),
-                "first_session": first,
-                "last_session": last,
-            }
-        passed = long_history >= 5 and recent_history >= 5
-        result = {
-            "passed": passed,
-            "tested_at": iso(),
-            "symbols": sample,
-            "long_history_symbols": long_history,
-            "recent_history_symbols": recent_history,
-            "elapsed_seconds": round(time.monotonic() - began, 3),
-            "coverage": coverage,
-            "requirements": {
-                "minimum_symbols_with_1200_overlapping_bars_and_start_by_2020_01_15": 5,
-                "minimum_symbols_current_through_2026_08_28": 5,
-                "both_split_adjusted_and_raw_streams_required": True,
-            },
-        }
-        self.redis.set_json(self.rsi2_key("data_probe"), result)
-        if not passed:
-            raise RuntimeError(f"Alpaca multi-year daily data probe failed: {json_compact(result)}")
-        return result
-
-    def _rsi2_fetch_batch(
-        self,
-        batch_index: int,
-        symbols: list[str],
-        start: datetime,
-        end: datetime,
-        session_map: dict[str, dict[str, str]],
-    ) -> dict[str, Any]:
-        adjusted = self.alpaca.bars(
-            symbols, start, end, feed="sip", adjustment="split", timeframe="1Day",
-            on_page=self._rsi2_page_received,
-        )
-        # Raw bars are fetched separately so historical $10-$60 membership is
-        # based on contemporaneous prices, not today's split-adjusted scale.
-        raw = self.alpaca.bars(
-            symbols, start, end, feed="sip", adjustment="raw", timeframe="1Day",
-            on_page=self._rsi2_page_received,
-        )
-        combined_counters: dict[str, int] = defaultdict(int)
-        records: list[dict[str, Any]] = []
-        for symbol in symbols:
-            symbol_records, counters = rsi2_candidate_records(
-                symbol, adjusted.get(symbol, []), raw.get(symbol, []), session_map
-            )
-            records.extend(symbol_records)
-            for name, value in counters.items():
-                combined_counters[name] += int(value)
-        return {
-            "batch_index": batch_index,
-            "symbols": symbols,
-            "candidate_records": records,
-            "counters": dict(combined_counters),
-            "raw_bars_persisted": False,
-            "completed_at": iso(),
-        }
-
-    @staticmethod
-    def _rsi2_block_pass(stats: dict[str, Any], minimum_trades: int) -> bool:
-        profit_factor = stats.get("profit_factor")
-        profitable_without_losses = bool(
-            profit_factor is None
-            and int(stats.get("winning_trades") or 0) > 0
-            and int(stats.get("losing_trades") or 0) == 0
-        )
-        return bool(
-            int(stats.get("trades") or 0) >= minimum_trades
-            and (profitable_without_losses or (profit_factor is not None and float(profit_factor) > 1.0))
-            and float(stats.get("average_net_trade_return_pct") or 0.0) > 0.0
-        )
-
-    def _evaluate_rsi2_policy(
-        self,
-        candidates: list[dict[str, Any]],
-        threshold: float,
-        primary: bool,
-    ) -> dict[str, Any]:
-        selected = select_rsi2_trades(candidates, threshold)
-        minimum_block = int(RSI2_REVERSAL_SPEC["evaluation"]["minimum_trades_per_development_block"])
-        blocks = []
-        block_passes = []
-        for index, (start, end) in enumerate(RSI2_REVERSAL_SPEC["evaluation"]["development_blocks"], 1):
-            in_block = [row for row in selected if start <= row["signal_session"] <= end]
-            complete = [row for row in in_block if row["exit_session"] <= end]
-            stats = rsi2_trade_statistics(complete)
-            passed = self._rsi2_block_pass(stats, minimum_block)
-            block_passes.append(passed)
-            blocks.append({
-                "block": index,
-                "start": start,
-                "end": end,
-                "passed": passed,
-                "purged_boundary_trades": len(in_block) - len(complete),
-                **stats,
-            })
-        development_end = str(RSI2_REVERSAL_SPEC["data"]["development_end"])
-        development = [
-            row for row in selected
-            if RSI2_REVERSAL_SPEC["data"]["development_start"] <= row["signal_session"] <= development_end
-            and row["exit_session"] <= development_end
-        ]
-        holdout = [
-            row for row in selected
-            if RSI2_REVERSAL_SPEC["data"]["legacy_holdout_start"] <= row["signal_session"]
-            <= RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"]
-            and row["exit_session"] <= RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"]
-        ]
-        development_stats = rsi2_trade_statistics(development)
-        pooled_profit_factor = development_stats.get("profit_factor")
-        pooled_profitable_without_losses = bool(
-            pooled_profit_factor is None
-            and int(development_stats.get("winning_trades") or 0) > 0
-            and int(development_stats.get("losing_trades") or 0) == 0
-        )
-        pooled_pass = bool(
-            int(development_stats.get("trades") or 0) >= 200
-            and (
-                pooled_profitable_without_losses
-                or (pooled_profit_factor is not None and float(pooled_profit_factor) > 1.0)
-            )
-            and float(development_stats.get("average_net_trade_return_pct") or 0.0) > 0.0
-        )
-        promising = all(block_passes) and pooled_pass
-        return {
-            "name": "RSI2_LT_5_PRIMARY" if primary else "RSI2_LT_10_DIAGNOSTIC",
-            "threshold_strictly_below": threshold,
-            "primary": primary,
-            "selected_trades": len(selected),
-            "development_blocks": blocks,
-            "all_development_blocks_passed": all(block_passes),
-            "development": development_stats,
-            "pooled_thresholds_passed": pooled_pass,
-            "legacy_holdout_audit_only": rsi2_trade_statistics(holdout),
-            "promising_shadow_only": promising,
-            "judgment": "PROMISING_SHADOW_ONLY" if promising else "NO_STABLE_EDGE",
-            "deployment_approved": False,
-            "selected_trade_records": selected,
-        }
-
-    def _build_rsi2_report(
-        self,
-        candidates: list[dict[str, Any]],
-        probe: dict[str, Any],
-        source_universe_count: int,
-        clean_universe_count: int,
-        batch_count: int,
-    ) -> dict[str, Any]:
-        primary = self._evaluate_rsi2_policy(candidates, 5.0, True)
-        diagnostic = self._evaluate_rsi2_policy(candidates, 10.0, False)
-        primary_records = primary.pop("selected_trade_records")
-        diagnostic_records = diagnostic.pop("selected_trade_records")
-        report = {
-            "schema": 1,
-            "generated_at": iso(),
-            "version": VERSION,
-            "build": BUILD,
-            "research_spec": RSI2_REVERSAL_SPEC,
-            "data_probe": probe,
-            "coverage": {
-                "source_universe_symbols": source_universe_count,
-                "clean_current_asset_universe_symbols": clean_universe_count,
-                "completed_symbol_batches": batch_count,
-                "compact_candidates_rsi_below_10": len(candidates),
-                "alpaca_pages_completed": self.rsi2_request_pages,
-                "daily_bar_points_received_in_this_process": self.rsi2_bar_points,
-                "raw_daily_bars_saved_to_redis": False,
-                "survivorship_warning": RSI2_REVERSAL_SPEC["universe"]["survivorship_warning"],
-            },
-            "primary_rsi_below_5": primary,
-            "diagnostic_rsi_below_10": diagnostic,
-            "diagnostic_can_rescue_primary": False,
-            "final_judgment": primary["judgment"],
-            "deployment_approved": False,
-            "legacy_holdout_can_approve_live": False,
-            "forward_requirement_if_promising": {
-                "minimum_sessions": 10,
-                "minimum_completed_trades": 30,
-                "maximum_sessions_if_trade_minimum_not_met": 15,
-            },
-            "safety": RSI2_REVERSAL_SPEC["safety"],
-        }
-        return {"report": report, "primary_records": primary_records, "diagnostic_records": diagnostic_records}
-
-    def _materialize_rsi2_download(self, bundle: dict[str, Any] | None = None) -> str:
-        if bundle is None:
-            report = self.redis.get_json(self.rsi2_key("report"), None)
-            primary = [value for _, value in self.redis.scan_hash_json(self.rsi2_key("primary_trades"))]
-            diagnostic = [value for _, value in self.redis.scan_hash_json(self.rsi2_key("diagnostic_trades"))]
-            bundle = {"report": report, "primary_records": primary, "diagnostic_records": diagnostic}
-        with tempfile.NamedTemporaryFile(prefix="ipr_rsi2_short_term_reversal_", suffix=".json.gz", delete=False) as temporary:
-            path = temporary.name
-        with gzip.open(path, "wt", encoding="utf-8", compresslevel=6) as output:
-            json.dump(bundle, output, ensure_ascii=False, separators=(",", ":"))
-        with self.rsi2_lock:
-            old_path = self.rsi2_path
-            self.rsi2_path = path
-        if old_path and old_path != path and os.path.isfile(old_path):
-            try:
-                os.unlink(old_path)
-            except OSError:
-                pass
-        return path
-
-    def rsi2_reversal_loop(self) -> None:
-        try:
-            manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {})
-            source_universe = sorted(set(manifest.get("symbols") or []))
-            if not source_universe:
-                raise RuntimeError("Frozen source universe is missing")
-            assets = self.alpaca.assets()
-            clean_assets = {
-                str(asset.get("symbol") or "").upper()
-                for asset in assets
-                if self._daily_breakout_allowed_asset(asset)
-            }
-            universe = sorted(set(source_universe) & clean_assets)
-            if not universe:
-                raise RuntimeError("Clean RSI2 universe is empty")
-            self._set_rsi2_progress(
-                status="RUNNING", phase="DATA_PROBE",
-                message="Validating multi-year Alpaca SIP daily depth and raw/split streams",
-                source_universe_symbols=len(source_universe), clean_universe_symbols=len(universe),
-            )
-            probe = self._rsi2_data_probe(universe)
-            if self.rsi2_stop_event.is_set():
-                raise InterruptedError("pause_requested")
-
-            calendar_start = date.fromisoformat(RSI2_REVERSAL_SPEC["data"]["development_start"])
-            calendar_end = date.fromisoformat(RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"]) + timedelta(days=14)
-            calendar = self.alpaca.calendar(calendar_start, calendar_end)
-            session_map = self._rsi2_session_map(calendar)
-            if len(session_map) < 1200:
-                raise RuntimeError(f"Insufficient Alpaca calendar coverage: {len(session_map)} signal sessions")
-            self.redis.set_json(self.rsi2_key("calendar"), session_map)
-
-            batch_size = max(5, min(50, int(os.getenv("IPR_RSI2_SYMBOLS_PER_BATCH", "12"))))
-            workers = max(1, min(64, int(os.getenv("IPR_RSI2_MAX_WORKERS", "24"))))
-            batches = list(chunks(universe, batch_size))
-            start = datetime.fromisoformat(RSI2_REVERSAL_SPEC["data"]["warmup_start"] + "T00:00:00+00:00")
-            end = datetime.fromisoformat(
-                (date.fromisoformat(RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"]) + timedelta(days=10)).isoformat()
-                + "T23:59:59+00:00"
-            )
-            completed_indices = []
-            pending = []
-            for index, symbol_batch in enumerate(batches):
-                if self.redis.get_json(self.rsi2_key(f"batch:{index}"), None) is None:
-                    pending.append((index, symbol_batch))
-                else:
-                    completed_indices.append(index)
-            self._set_rsi2_progress(
-                status="RUNNING", phase="HISTORICAL_DAILY_FETCH",
-                message="Fetching raw and split-adjusted daily bars in parallel compact batches",
-                data_probe_passed=True, total_symbol_batches=len(batches),
-                completed_symbol_batches=len(completed_indices), remaining_symbol_batches=len(pending),
-                symbols_per_batch=batch_size, parallel_workers=workers,
-                alpaca_page_limit=10000, raw_daily_bars_saved_to_redis=False,
-            )
-
-            pending_iterator = iter(pending)
-            executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ipr-rsi2-fetch")
-            futures = {}
-            try:
-                for _ in range(min(workers, len(pending))):
-                    index, symbol_batch = next(pending_iterator)
-                    future = executor.submit(self._rsi2_fetch_batch, index, symbol_batch, start, end, session_map)
-                    futures[future] = index
-                while futures:
-                    if self.rsi2_stop_event.is_set():
-                        raise InterruptedError("pause_requested")
-                    done, _ = wait(futures, return_when=FIRST_COMPLETED, timeout=2.0)
-                    for future in done:
-                        index = futures.pop(future)
-                        payload = future.result()
-                        self.redis.set_json(self.rsi2_key(f"batch:{index}"), payload)
-                        completed_indices.append(index)
-                        self._set_rsi2_progress(
-                            status="RUNNING", phase="HISTORICAL_DAILY_FETCH",
-                            message=f"Completed compact RSI2 symbol batch {len(completed_indices)}/{len(batches)}",
-                            completed_symbol_batches=len(completed_indices),
-                            remaining_symbol_batches=len(batches) - len(completed_indices),
-                        )
-                        try:
-                            next_index, next_symbols = next(pending_iterator)
-                        except StopIteration:
-                            continue
-                        next_future = executor.submit(
-                            self._rsi2_fetch_batch, next_index, next_symbols, start, end, session_map
-                        )
-                        futures[next_future] = next_index
-            finally:
-                executor.shutdown(wait=True, cancel_futures=True)
-
-            candidates: list[dict[str, Any]] = []
-            aggregate_counters: dict[str, int] = defaultdict(int)
-            for index in range(len(batches)):
-                payload = self.redis.get_json(self.rsi2_key(f"batch:{index}"), None)
-                if payload is None:
-                    raise RuntimeError(f"Missing completed RSI2 batch {index}")
-                candidates.extend(payload.get("candidate_records") or [])
-                for name, value in (payload.get("counters") or {}).items():
-                    aggregate_counters[name] += int(value)
-            self._set_rsi2_progress(
-                status="RUNNING", phase="EVALUATION",
-                message="Ranking daily candidates and evaluating frozen Development blocks",
-                compact_candidates=len(candidates), candidate_counters=dict(aggregate_counters),
-            )
-            bundle = self._build_rsi2_report(
-                candidates, probe, len(source_universe), len(universe), len(batches)
-            )
-            report = bundle["report"]
-            self.redis.set_json(self.rsi2_key("report"), report)
-            for row in bundle["primary_records"]:
-                field = f"{row['signal_session']}|{row['rank']}|{row['symbol']}"
-                self.redis.hset_json(self.rsi2_key("primary_trades"), field, row)
-            for row in bundle["diagnostic_records"]:
-                field = f"{row['signal_session']}|{row['rank']}|{row['symbol']}"
-                self.redis.hset_json(self.rsi2_key("diagnostic_trades"), field, row)
-            path = self._materialize_rsi2_download(bundle)
-            self._set_rsi2_progress(
-                status="COMPLETED", phase="COMPLETED",
-                message="Multi-year causal RSI(2) reversal research is complete",
-                result_ready=True, download_ready=True,
-                final_judgment=report["final_judgment"],
-                compressed_bytes=os.path.getsize(path),
-            )
-        except InterruptedError:
-            self._set_rsi2_progress(
-                status="PAUSED", message="Paused safely; completed compact batches are resumable"
-            )
-        except Exception as exc:
-            logging.exception("RSI2 reversal research failed")
-            self._set_rsi2_progress(
-                status="ERROR", message=f"{type(exc).__name__}: {exc}", result_ready=False
-            )
-        finally:
-            with self.rsi2_lock:
-                self.rsi2_thread = None
-
-    def start_rsi2_reversal(self) -> tuple[bool, str]:
-        if self._within_monitoring_hours(now_utc()):
-            return False, "Research is blocked during monitoring hours; retry after 17:30 New York time"
-        if not self.redis.configured or not self.alpaca.configured:
-            return False, "Redis and Alpaca credentials are required"
-        with self.rsi2_lock:
-            if self.rsi2_thread and self.rsi2_thread.is_alive():
-                return True, "already_running"
-            if any(thread and thread.is_alive() for thread in (
-                self.audit_thread, self.export_thread, self.early_thread,
-                self.orb_thread, self.breakout_thread, self.sanity_thread,
-            )):
-                return False, "another historical job is running"
-            self.rsi2_stop_event.clear()
-            stored = self.redis.get_json(self.rsi2_key("status"), None)
-            if stored and stored.get("status") == "COMPLETED":
-                self.rsi2_state = stored
-                return False, "already_completed"
-            self.rsi2_state = {
-                "status": "STARTING", "phase": "DATA_PROBE",
-                "message": "Preparing multi-year RSI2 data probe",
-                "research_id": RSI2_REVERSAL_SPEC["research_id"],
-                "alerts_enabled": False, "orders_enabled": False,
-                "result_ready": False, "updated_at": iso(),
-            }
-            self.rsi2_thread = threading.Thread(
-                target=self.rsi2_reversal_loop,
-                name="independent-priority-rsi2-reversal",
-                daemon=True,
-            )
-            self.rsi2_thread.start()
-        return True, "started"
-
-    def pause_rsi2_reversal(self) -> tuple[bool, str]:
-        with self.rsi2_lock:
-            if not self.rsi2_thread or not self.rsi2_thread.is_alive():
-                return False, "not_running"
-            self.rsi2_stop_event.set()
-        return True, "pause_requested"
-
-    def _set_sanity_progress(self, **updates: Any) -> None:
-        with self.sanity_lock:
-            self.sanity_state.update(updates)
-            self.sanity_state["alpaca_pages_completed"] = self.sanity_request_pages
-            self.sanity_state["daily_bar_points_received"] = self.sanity_bar_points
-            self.sanity_state["updated_at"] = iso()
-            snapshot = dict(self.sanity_state)
-        if self.redis.configured:
-            self.redis.set_json(self.sanity_key("status"), snapshot)
-
-    def _sanity_page_received(self, points: int) -> None:
-        with self.sanity_lock:
-            self.sanity_request_pages += 1
-            self.sanity_bar_points += int(points)
-
-    def _sanity_fetch_batch(
-        self,
-        batch_index: int,
-        symbols: list[str],
-        start: datetime,
-        end: datetime,
-        session_map: dict[str, dict[str, str]],
-    ) -> dict[str, Any]:
-        adjusted = self.alpaca.bars(
-            symbols, start, end, feed="sip", adjustment="split", timeframe="1Day",
-            on_page=self._sanity_page_received,
-        )
-        raw = self.alpaca.bars(
-            symbols, start, end, feed="sip", adjustment="raw", timeframe="1Day",
-            on_page=self._sanity_page_received,
-        )
-        compact_candidates = []
-        checks = []
-        for symbol in symbols:
-            rows = adjusted.get(symbol, [])
-            checks.append(sanity_indicator_check(symbol, rows))
-            records, _ = rsi2_candidate_records(
-                symbol, rows, raw.get(symbol, []), session_map,
-                maximum_rsi_exclusive=101.0,
-            )
-            compact_candidates.extend({
-                "symbol": row["symbol"],
-                "signal_session": row["signal_session"],
-                "gross_return_pct": row["gross_return_pct"],
-                "rsi2": row["rsi2"],
-                "exit_rule": row["exit_rule"],
-            } for row in records)
-        return {
-            "batch_index": batch_index,
-            "compact_candidates": compact_candidates,
-            "indicator_checks": checks,
-            "raw_bars_persisted": False,
-        }
-
-    def _save_sanity_checkpoint(
-        self,
-        reservoirs: dict[str, list[dict[str, Any]]],
-        moments: dict[str, dict[str, Any]],
-        processed_indices: set[int],
-        indicator_integrity: dict[str, Any],
-    ) -> None:
-        generation = f"g{len(processed_indices):04d}_{int(time.time())}"
-        years = sorted({session[:4] for session in set(reservoirs) | set(moments)})
-        for year in years:
-            payload = {
-                "reservoirs": {session: rows for session, rows in reservoirs.items() if session.startswith(year)},
-                "moments": {session: row for session, row in moments.items() if session.startswith(year)},
-            }
-            self.redis.set_json(
-                self.sanity_key(f"checkpoint:{generation}:{year}"), pack_checkpoint(payload)
-            )
-        self.redis.set_json(self.sanity_key("checkpoint"), {
-            "generation": generation,
-            "years": years,
-            "processed_indices": sorted(processed_indices),
-            "indicator_integrity": indicator_integrity,
-            "saved_at": iso(),
-        })
-
-    def _load_sanity_checkpoint(
-        self,
-    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, Any]], set[int], dict[str, Any]]:
-        metadata = self.redis.get_json(self.sanity_key("checkpoint"), None)
-        if not metadata:
-            return {}, {}, set(), {"checked_points": 0, "max_rsi2_difference": 0.0, "max_sma200_difference": 0.0}
-        reservoirs: dict[str, list[dict[str, Any]]] = {}
-        moments: dict[str, dict[str, Any]] = {}
-        generation = str(metadata["generation"])
-        for year in metadata.get("years") or []:
-            packed = self.redis.get_json(self.sanity_key(f"checkpoint:{generation}:{year}"), None)
-            if packed is None:
-                raise RuntimeError(f"Missing sanity checkpoint shard {generation}:{year}")
-            payload = unpack_checkpoint(packed)
-            reservoirs.update(payload.get("reservoirs") or {})
-            moments.update(payload.get("moments") or {})
-        return (
-            reservoirs,
-            moments,
-            {int(value) for value in metadata.get("processed_indices") or []},
-            dict(metadata.get("indicator_integrity") or {}),
-        )
-
-    @staticmethod
-    def _merge_indicator_integrity(current: dict[str, Any], checks: list[dict[str, Any]]) -> None:
-        for check in checks:
-            current["checked_points"] = int(current.get("checked_points") or 0) + int(check.get("checked_points") or 0)
-            for name in ("max_rsi2_difference", "max_sma200_difference"):
-                value = check.get(name)
-                if value is not None:
-                    current[name] = max(float(current.get(name) or 0.0), float(value))
-
-    def _build_sanity_report(
-        self,
-        primary_records: list[dict[str, Any]],
-        slot_counts: dict[str, int],
-        reservoirs: dict[str, list[dict[str, Any]]],
-        moments: dict[str, dict[str, Any]],
-        integrity: dict[str, Any],
-        source_universe_count: int,
-        clean_universe_count: int,
-        completed_batches: int,
-    ) -> dict[str, Any]:
-        periods = {
-            "development": (
-                RSI2_REVERSAL_SPEC["data"]["development_start"],
-                RSI2_REVERSAL_SPEC["data"]["development_end"],
-            ),
-            "legacy_holdout_audit_only": (
-                RSI2_REVERSAL_SPEC["data"]["legacy_holdout_start"],
-                RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"],
-            ),
-        }
-        comparisons = {}
-        for offset, (name, (start, end)) in enumerate(periods.items()):
-            exact = {
-                str(cost): sanity_exact_baseline_statistics(moments, slot_counts, start, end, float(cost))
-                for cost in RSI2_SANITY_SPEC["simulation"]["cost_sensitivity_pct_round_trip"]
-            }
-            monte_carlo = sanity_monte_carlo(
-                reservoirs, slot_counts, primary_records, start, end,
-                iterations=int(RSI2_SANITY_SPEC["simulation"]["iterations"]),
-                seed=int(RSI2_SANITY_SPEC["simulation"]["seed"]) + offset,
-            )
-            comparisons[name] = {
-                "start": start,
-                "end": end,
-                "exact_matched_random_expectation": exact,
-                "monte_carlo": monte_carlo,
-            }
-        identity_difference = max((
-            abs(float(row["net_return_pct"]) - (float(row["gross_return_pct"]) - .25))
-            for row in primary_records
-        ), default=0.0)
-        integrity["max_return_identity_difference"] = identity_difference
-        tolerance = float(RSI2_SANITY_SPEC["integrity"]["maximum_allowed_indicator_difference"])
-        integrity["passed"] = bool(
-            int(integrity.get("checked_points") or 0) > 0
-            and float(integrity.get("max_rsi2_difference") or 0.0) <= tolerance
-            and float(integrity.get("max_sma200_difference") or 0.0) <= tolerance
-            and identity_difference <= tolerance
-        )
-        development_cost = comparisons["development"]["monte_carlo"]["cost_sensitivity"]["0.25"]
-        percentile = float(development_cost["strategy_average_percentile_vs_random"])
-        strategy_gross = comparisons["development"]["monte_carlo"]["cost_sensitivity"]["0.0"][
-            "strategy_observed"
-        ]["average_net_trade_return_pct"]
-        random_gross = comparisons["development"]["exact_matched_random_expectation"]["0.0"]["average_net_trade_return_pct"]
-        if not integrity["passed"]:
-            judgment = "ENGINE_REVIEW_REQUIRED"
-        elif percentile <= 5.0:
-            judgment = "RSI_FILTER_UNDERPERFORMS_MATCHED_RANDOM"
-        elif float(strategy_gross) <= 0 and float(random_gross) <= 0:
-            judgment = "NO_SHORT_HORIZON_EDGE_IN_MATCHED_UNIVERSE"
-        elif percentile < 25.0:
-            judgment = "RSI_FILTER_NOT_BETTER_THAN_RANDOM"
-        else:
-            judgment = "RSI_FILTER_ADDS_SELECTION_VALUE_EXIT_POLICY_STILL_UNPROVEN"
-        return {
-            "schema": 1,
-            "generated_at": iso(),
-            "version": VERSION,
-            "build": BUILD,
-            "audit_spec": RSI2_SANITY_SPEC,
-            "coverage": {
-                "source_universe_symbols": source_universe_count,
-                "clean_current_asset_universe_symbols": clean_universe_count,
-                "completed_symbol_batches": completed_batches,
-                "matched_signal_sessions": len(slot_counts),
-                "primary_strategy_records": len(primary_records),
-                "reservoir_sessions": len(reservoirs),
-                "exact_moment_sessions": len(moments),
-                "alpaca_pages_completed_in_this_process": self.sanity_request_pages,
-                "daily_bar_points_received_in_this_process": self.sanity_bar_points,
-                "raw_daily_bars_saved_to_redis": False,
-            },
-            "integrity": integrity,
-            "comparisons": comparisons,
-            "final_judgment": judgment,
-            "diagnostic_only": True,
-            "deployment_approved": False,
-            "safety": RSI2_SANITY_SPEC["safety"],
-        }
-
-    def _materialize_sanity_download(self, report: dict[str, Any] | None = None) -> str:
-        report = report or self.redis.get_json(self.sanity_key("report"), None)
-        with tempfile.NamedTemporaryFile(prefix="ipr_rsi2_sanity_check_", suffix=".json.gz", delete=False) as temporary:
-            path = temporary.name
-        with gzip.open(path, "wt", encoding="utf-8", compresslevel=6) as output:
-            json.dump({"report": report}, output, ensure_ascii=False, separators=(",", ":"))
-        with self.sanity_lock:
-            old_path = self.sanity_path
-            self.sanity_path = path
-        if old_path and old_path != path and os.path.isfile(old_path):
-            try:
-                os.unlink(old_path)
-            except OSError:
-                pass
-        return path
-
-    def rsi2_sanity_loop(self) -> None:
-        try:
-            primary_records = [value for _, value in self.redis.scan_hash_json(self.rsi2_key("primary_trades"))]
-            if not primary_records:
-                raise RuntimeError("Completed RSI2 primary trade records are required")
-            slot_counts: dict[str, int] = defaultdict(int)
-            for row in primary_records:
-                slot_counts[str(row["signal_session"])] += 1
-            source_manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {})
-            source_universe = sorted(set(source_manifest.get("symbols") or []))
-            assets = self.alpaca.assets()
-            clean_assets = {
-                str(asset.get("symbol") or "").upper()
-                for asset in assets if self._daily_breakout_allowed_asset(asset)
-            }
-            universe = sorted(set(source_universe) & clean_assets)
-            if not universe:
-                raise RuntimeError("Matched-random clean universe is empty")
-            full_session_map = self.redis.get_json(self.rsi2_key("calendar"), None)
-            if not full_session_map:
-                calendar = self.alpaca.calendar(
-                    date.fromisoformat(RSI2_REVERSAL_SPEC["data"]["development_start"]),
-                    date.fromisoformat(RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"]) + timedelta(days=14),
-                )
-                full_session_map = self._rsi2_session_map(calendar)
-            session_map = {session: full_session_map[session] for session in slot_counts if session in full_session_map}
-            if len(session_map) != len(slot_counts):
-                raise RuntimeError("Unable to match every RSI2 signal session to the stored calendar")
-
-            reservoirs, moments, processed, integrity = self._load_sanity_checkpoint()
-            batch_size = max(5, min(50, int(os.getenv("IPR_RSI2_SYMBOLS_PER_BATCH", "12"))))
-            workers = max(1, min(64, int(os.getenv("IPR_RSI2_MAX_WORKERS", "24"))))
-            batches = list(chunks(universe, batch_size))
-            pending = [(index, values) for index, values in enumerate(batches) if index not in processed]
-            start = datetime.fromisoformat(RSI2_REVERSAL_SPEC["data"]["warmup_start"] + "T00:00:00+00:00")
-            end = datetime.fromisoformat(
-                (date.fromisoformat(RSI2_REVERSAL_SPEC["data"]["legacy_holdout_end"]) + timedelta(days=10)).isoformat()
-                + "T23:59:59+00:00"
-            )
-            self._set_sanity_progress(
-                status="RUNNING", phase="MATCHED_UNIVERSE_FETCH",
-                message="Building matched non-RSI daily universe with parallel Alpaca pages",
-                total_symbol_batches=len(batches), completed_symbol_batches=len(processed),
-                remaining_symbol_batches=len(pending), matched_signal_sessions=len(slot_counts),
-                simulations=1000, symbols_per_batch=batch_size, parallel_workers=workers,
-            )
-            pending_iterator = iter(pending)
-            executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ipr-rsi2-sanity")
-            futures = {}
-            since_checkpoint = 0
-            try:
-                for _ in range(min(workers, len(pending))):
-                    index, symbols = next(pending_iterator)
-                    future = executor.submit(self._sanity_fetch_batch, index, symbols, start, end, session_map)
-                    futures[future] = index
-                while futures:
-                    if self.sanity_stop_event.is_set():
-                        raise InterruptedError("pause_requested")
-                    done, _ = wait(futures, return_when=FIRST_COMPLETED, timeout=2.0)
-                    for future in done:
-                        index = futures.pop(future)
-                        payload = future.result()
-                        for row in payload["compact_candidates"]:
-                            sanity_add_candidate(reservoirs, moments, row)
-                        self._merge_indicator_integrity(integrity, payload["indicator_checks"])
-                        processed.add(index)
-                        since_checkpoint += 1
-                        if since_checkpoint >= int(RSI2_SANITY_SPEC["storage"]["checkpoint_every_completed_batches"]):
-                            self._save_sanity_checkpoint(reservoirs, moments, processed, integrity)
-                            since_checkpoint = 0
-                        self._set_sanity_progress(
-                            status="RUNNING", phase="MATCHED_UNIVERSE_FETCH",
-                            message=f"Completed matched-random batch {len(processed)}/{len(batches)}",
-                            completed_symbol_batches=len(processed),
-                            remaining_symbol_batches=len(batches) - len(processed),
-                            reservoir_sessions=len(reservoirs),
-                        )
-                        try:
-                            next_index, next_symbols = next(pending_iterator)
-                        except StopIteration:
-                            continue
-                        next_future = executor.submit(
-                            self._sanity_fetch_batch, next_index, next_symbols, start, end, session_map
-                        )
-                        futures[next_future] = next_index
-            finally:
-                executor.shutdown(wait=True, cancel_futures=True)
-            self._save_sanity_checkpoint(reservoirs, moments, processed, integrity)
-            self._set_sanity_progress(
-                status="RUNNING", phase="MONTE_CARLO",
-                message="Running 1,000 deterministic matched-random portfolios at three cost levels",
-            )
-            report = self._build_sanity_report(
-                primary_records, dict(slot_counts), reservoirs, moments, integrity,
-                len(source_universe), len(universe), len(processed),
-            )
-            self.redis.set_json(self.sanity_key("report"), report)
-            path = self._materialize_sanity_download(report)
-            self._set_sanity_progress(
-                status="COMPLETED", phase="COMPLETED",
-                message="RSI2 matched-random sanity check is complete",
-                result_ready=True, download_ready=True,
-                final_judgment=report["final_judgment"], compressed_bytes=os.path.getsize(path),
-            )
-        except InterruptedError:
-            self._set_sanity_progress(
-                status="PAUSED", message="Paused safely; the last atomic checkpoint is resumable"
-            )
-        except Exception as exc:
-            logging.exception("RSI2 sanity check failed")
-            self._set_sanity_progress(
-                status="ERROR", message=f"{type(exc).__name__}: {exc}", result_ready=False
-            )
-        finally:
-            with self.sanity_lock:
-                self.sanity_thread = None
-
-    def start_rsi2_sanity(self) -> tuple[bool, str]:
-        if self._within_monitoring_hours(now_utc()):
-            return False, "Research is blocked during monitoring hours; retry after 17:30 New York time"
-        if not self.redis.configured or not self.alpaca.configured:
-            return False, "Redis and Alpaca credentials are required"
-        with self.sanity_lock:
-            if self.sanity_thread and self.sanity_thread.is_alive():
-                return True, "already_running"
-            if any(thread and thread.is_alive() for thread in (
-                self.audit_thread, self.export_thread, self.early_thread,
-                self.orb_thread, self.breakout_thread, self.rsi2_thread,
-            )):
-                return False, "another historical job is running"
-            self.sanity_stop_event.clear()
-            stored = self.redis.get_json(self.sanity_key("status"), None)
-            if stored and stored.get("status") == "COMPLETED":
-                self.sanity_state = stored
-                return False, "already_completed"
-            self.sanity_state = {
-                "status": "STARTING", "phase": "MATCHED_UNIVERSE_FETCH",
-                "message": "Preparing frozen matched-random RSI2 sanity check",
-                "audit_id": RSI2_SANITY_SPEC["audit_id"],
-                "alerts_enabled": False, "orders_enabled": False,
-                "result_ready": False, "updated_at": iso(),
-            }
-            self.sanity_thread = threading.Thread(
-                target=self.rsi2_sanity_loop,
-                name="independent-priority-rsi2-sanity",
-                daemon=True,
-            )
-            self.sanity_thread.start()
-        return True, "started"
-
-    def pause_rsi2_sanity(self) -> tuple[bool, str]:
-        with self.sanity_lock:
-            if not self.sanity_thread or not self.sanity_thread.is_alive():
-                return False, "not_running"
-            self.sanity_stop_event.set()
         return True, "pause_requested"
 
     @staticmethod
@@ -5736,8 +4522,7 @@ def home():
             "early_causal_entry_research": "/early-causal-entry",
             "liquid_daily_orb_research": "/liquid-daily-orb",
             "daily_breakout_volume_research": "/daily-breakout",
-            "rsi2_short_term_reversal_research": "/rsi2-reversal",
-            "rsi2_matched_random_sanity_check": "/rsi2-sanity",
+            "phase0_capability_probe": "/phase0/probe",
         },
     })
 
@@ -6261,259 +5046,40 @@ def daily_breakout_download():
     return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
 
 
-@app.get("/rsi2-reversal")
-def rsi2_reversal_page():
-    return """
-<!doctype html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>بحث RSI(2) للانعكاس القصير</title>
-    <style>
-        body { font-family: system-ui; background: #101114; color: #eee; max-width: 760px; margin: 30px auto; padding: 18px; }
-        .box { background: #191b20; border: 1px solid #343741; border-radius: 14px; padding: 20px; margin: 14px 0; }
-        input, button { width: 100%; box-sizing: border-box; font-size: 17px; padding: 13px; margin: 7px 0; border-radius: 9px; border: 1px solid #555; }
-        button { background: #7c3aed; color: white; font-weight: 700; }
-        a { color: #c4b5fd; }
-    </style>
-</head>
-<body>
-    <h1>RSI(2) Short-Term Reversal</h1>
-    <div class="box">
-        <p>اختبار تاريخي متعدد السنوات: فوق SMA200، وRSI(2)&lt;5 أساسيًا، ودخول افتتاح الجلسة التالية، وخروج سببي خلال جلستين كحد أقصى.</p>
-        <p>السعر 10–60 دولار، والسيولة السابقة 20 مليون دولار يوميًا، وTop-3. تكلفة القرار 0.25% ولا يوجد وقف مخترع.</p>
-        <p>يبدأ بفحص عمق Alpaca تلقائيًا، ثم يجلب البيانات الخام والمعدلة بالتوازي. الشموع الخام لا تحفظ في Redis.</p>
-        <form method="post" action="/rsi2-reversal/start">
-            <input name="token" type="password" placeholder="Admin token" required>
-            <button type="submit">ابدأ أو استكمل البحث</button>
-        </form>
-        <p><a href="/rsi2-reversal/protocol">البروتوكول المجمد</a> · <a href="/rsi2-reversal/status">متابعة التقدم</a> · <a href="/rsi2-reversal/result">النتيجة</a> · <a href="/rsi2-reversal/probe">فحص البيانات</a></p>
-        <form method="post" action="/rsi2-reversal/pause">
-            <input name="token" type="password" placeholder="Admin token" required>
-            <button type="submit">إيقاف آمن بعد الدفعات الجارية</button>
-        </form>
-        <form method="post" action="/rsi2-reversal/download">
-            <input name="token" type="password" placeholder="Admin token" required>
-            <button type="submit">تنزيل النتيجة الكاملة JSON.GZ</button>
-        </form>
-    </div>
-</body>
-</html>
-"""
-
-
-@app.get("/rsi2-reversal/protocol")
-def rsi2_reversal_protocol():
+@app.get("/phase0/probe")
+def phase0_probe_home():
     return jsonify({
-        "version": VERSION,
-        "build": BUILD,
-        "research_spec": RSI2_REVERSAL_SPEC,
-        "live_protocol_sha256": PROTOCOL_SHA256,
+        "probe_id": PHASE0_PROBE_SPEC["probe_id"], "probe_sha256": PHASE0_PROBE_SHA256,
+        "protocol_url": "/phase0/probe/protocol", "status_url": "/phase0/probe/status",
+        "start_url": "/phase0/probe/start", "result_url": "/phase0/probe/result",
+        "phase0a_implemented": False, "fail_closed": True,
     })
 
+@app.get("/phase0/probe/protocol")
+def phase0_probe_protocol():
+    return jsonify({"version": VERSION, "build": BUILD, "probe_spec": PHASE0_PROBE_SPEC, "probe_sha256": PHASE0_PROBE_SHA256})
 
-@app.post("/rsi2-reversal/start")
-def rsi2_reversal_start():
+@app.post("/phase0/probe/start")
+def phase0_probe_start():
     if not export_authorized():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    started, message = radar.start_rsi2_reversal()
-    return jsonify({
-        "ok": started,
-        "status": message,
-        "status_url": "/rsi2-reversal/status",
-        "protocol_url": "/rsi2-reversal/protocol",
-        "probe_url": "/rsi2-reversal/probe",
-        "result_url": "/rsi2-reversal/result",
-        "download_url": "/rsi2-reversal/download",
-        "alerts_enabled": False,
-        "orders_enabled": False,
-    }), (202 if started else 409)
+    started, message = radar.start_phase0_probe()
+    return jsonify({"ok": started, "status": message, "status_url": "/phase0/probe/status", "result_url": "/phase0/probe/result", "phase0a_allowed": False}), (202 if started else 409)
 
-
-@app.post("/rsi2-reversal/pause")
-def rsi2_reversal_pause():
-    if not export_authorized():
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    ok, message = radar.pause_rsi2_reversal()
-    return jsonify({"ok": ok, "status": message}), (202 if ok else 409)
-
-
-@app.get("/rsi2-reversal/status")
-def rsi2_reversal_status():
-    stored = radar.redis.get_json(radar.rsi2_key("status"), None) if radar.redis.configured else None
-    with radar.rsi2_lock:
-        payload = dict(stored or radar.rsi2_state)
-        payload["worker_alive"] = bool(radar.rsi2_thread and radar.rsi2_thread.is_alive())
-        payload["alpaca_pages_completed"] = max(
-            int(payload.get("alpaca_pages_completed") or 0), radar.rsi2_request_pages
-        )
-        payload["daily_bar_points_received"] = max(
-            int(payload.get("daily_bar_points_received") or 0), radar.rsi2_bar_points
-        )
-    payload.update({
-        "status_url": "/rsi2-reversal/status",
-        "probe_url": "/rsi2-reversal/probe",
-        "result_url": "/rsi2-reversal/result",
-        "download_url": "/rsi2-reversal/download",
-        "alerts_enabled": False,
-        "orders_enabled": False,
-    })
+@app.get("/phase0/probe/status")
+def phase0_probe_status():
+    stored = radar.redis.get_json(radar.phase0_probe_key("status"), None) if radar.redis.configured else None
+    with radar.phase0_probe_lock:
+        payload = dict(stored or radar.phase0_probe_state)
+        payload["worker_alive"] = bool(radar.phase0_probe_thread and radar.phase0_probe_thread.is_alive())
     return jsonify(payload)
 
-
-@app.get("/rsi2-reversal/probe")
-def rsi2_reversal_probe():
-    probe = radar.redis.get_json(radar.rsi2_key("data_probe"), None) if radar.redis.configured else None
-    if not probe:
-        return jsonify({"probe_ready": False, "status_url": "/rsi2-reversal/status"}), 202
-    return jsonify(probe)
-
-
-@app.get("/rsi2-reversal/result")
-def rsi2_reversal_result():
-    report = radar.redis.get_json(radar.rsi2_key("report"), None) if radar.redis.configured else None
+@app.get("/phase0/probe/result")
+def phase0_probe_result():
+    report = radar.redis.get_json(radar.phase0_probe_key("report"), None) if radar.redis.configured else radar.phase0_probe_report
     if not report:
-        return jsonify({"result_ready": False, "status_url": "/rsi2-reversal/status"}), 202
+        return jsonify({"result_ready": False, "phase0a_allowed": False, "status_url": "/phase0/probe/status"}), 202
     return jsonify(report)
-
-
-@app.post("/rsi2-reversal/download")
-def rsi2_reversal_download():
-    if not export_authorized():
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    report = radar.redis.get_json(radar.rsi2_key("report"), None) if radar.redis.configured else None
-    if not report:
-        return jsonify({"result_ready": False, "status_url": "/rsi2-reversal/status"}), 202
-    with radar.rsi2_lock:
-        path = radar.rsi2_path
-    if not path or not os.path.isfile(path):
-        path = radar._materialize_rsi2_download()
-    filename = f"ipr_rsi2_short_term_reversal_{now_utc().strftime('%Y%m%dT%H%M%SZ')}.json.gz"
-    return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
-
-
-@app.get("/rsi2-sanity")
-def rsi2_sanity_page():
-    return """
-<!doctype html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>فحص سلامة RSI(2)</title>
-    <style>
-        body { font-family: system-ui; background: #101114; color: #eee; max-width: 760px; margin: 30px auto; padding: 18px; }
-        .box { background: #191b20; border: 1px solid #343741; border-radius: 14px; padding: 20px; margin: 14px 0; }
-        input, button { width: 100%; box-sizing: border-box; font-size: 17px; padding: 13px; margin: 7px 0; border-radius: 9px; border: 1px solid #555; }
-        button { background: #0f766e; color: white; font-weight: 700; }
-        a { color: #5eead4; }
-    </style>
-</head>
-<body>
-    <h1>RSI(2) Matched-Random Sanity Check</h1>
-    <div class="box">
-        <p>يقارن نتيجة RSI(2) بكون عشوائي مطابق: نفس أيام الإشارة، ونفس عدد المراكز، والسعر والسيولة وSMA200، ونفس الدخول والخروج. الشرط الوحيد المحذوف هو RSI وترتيبه.</p>
-        <p>يعرض المتوسط العشوائي الدقيق و1,000 محاكاة ثابتة عند تكاليف 0% و0.10% و0.25%، مع فحص مستقل لحساب RSI وSMA والعوائد.</p>
-        <p>هذا فحص تشخيصي فقط؛ لا يرسل تنبيهات أو أوامر ولا يغيّر الاستراتيجية الحية.</p>
-        <form method="post" action="/rsi2-sanity/start">
-            <input name="token" type="password" placeholder="Admin token" required>
-            <button type="submit">ابدأ أو استكمل الفحص</button>
-        </form>
-        <p><a href="/rsi2-sanity/protocol">البروتوكول المجمد</a> · <a href="/rsi2-sanity/status">متابعة التقدم</a> · <a href="/rsi2-sanity/result">النتيجة</a></p>
-        <form method="post" action="/rsi2-sanity/pause">
-            <input name="token" type="password" placeholder="Admin token" required>
-            <button type="submit">إيقاف آمن بعد الدفعات الجارية</button>
-        </form>
-        <form method="post" action="/rsi2-sanity/download">
-            <input name="token" type="password" placeholder="Admin token" required>
-            <button type="submit">تنزيل التقرير JSON.GZ</button>
-        </form>
-    </div>
-</body>
-</html>
-"""
-
-
-@app.get("/rsi2-sanity/protocol")
-def rsi2_sanity_protocol():
-    return jsonify({
-        "version": VERSION,
-        "build": BUILD,
-        "audit_spec": RSI2_SANITY_SPEC,
-        "live_protocol_sha256": PROTOCOL_SHA256,
-    })
-
-
-@app.post("/rsi2-sanity/start")
-def rsi2_sanity_start():
-    if not export_authorized():
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    started, message = radar.start_rsi2_sanity()
-    return jsonify({
-        "ok": started,
-        "status": message,
-        "status_url": "/rsi2-sanity/status",
-        "protocol_url": "/rsi2-sanity/protocol",
-        "result_url": "/rsi2-sanity/result",
-        "download_url": "/rsi2-sanity/download",
-        "alerts_enabled": False,
-        "orders_enabled": False,
-    }), (202 if started else 409)
-
-
-@app.post("/rsi2-sanity/pause")
-def rsi2_sanity_pause():
-    if not export_authorized():
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    ok, message = radar.pause_rsi2_sanity()
-    return jsonify({"ok": ok, "status": message}), (202 if ok else 409)
-
-
-@app.get("/rsi2-sanity/status")
-def rsi2_sanity_status():
-    stored = radar.redis.get_json(radar.sanity_key("status"), None) if radar.redis.configured else None
-    with radar.sanity_lock:
-        payload = dict(stored or radar.sanity_state)
-        payload["worker_alive"] = bool(radar.sanity_thread and radar.sanity_thread.is_alive())
-        payload["alpaca_pages_completed"] = max(
-            int(payload.get("alpaca_pages_completed") or 0), radar.sanity_request_pages
-        )
-        payload["daily_bar_points_received"] = max(
-            int(payload.get("daily_bar_points_received") or 0), radar.sanity_bar_points
-        )
-    payload.update({
-        "status_url": "/rsi2-sanity/status",
-        "result_url": "/rsi2-sanity/result",
-        "download_url": "/rsi2-sanity/download",
-        "alerts_enabled": False,
-        "orders_enabled": False,
-    })
-    return jsonify(payload)
-
-
-@app.get("/rsi2-sanity/result")
-def rsi2_sanity_result():
-    report = radar.redis.get_json(radar.sanity_key("report"), None) if radar.redis.configured else None
-    if not report:
-        return jsonify({"result_ready": False, "status_url": "/rsi2-sanity/status"}), 202
-    return jsonify(report)
-
-
-@app.post("/rsi2-sanity/download")
-def rsi2_sanity_download():
-    if not export_authorized():
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    report = radar.redis.get_json(radar.sanity_key("report"), None) if radar.redis.configured else None
-    if not report:
-        return jsonify({"result_ready": False, "status_url": "/rsi2-sanity/status"}), 202
-    with radar.sanity_lock:
-        path = radar.sanity_path
-    if not path or not os.path.isfile(path):
-        path = radar._materialize_sanity_download(report)
-    filename = f"ipr_rsi2_sanity_check_{now_utc().strftime('%Y%m%dT%H%M%SZ')}.json.gz"
-    return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
-
 
 @app.get("/health")
 def health():
@@ -6528,8 +5094,7 @@ def health():
         "early_causal_entry_alive": bool(radar.early_thread and radar.early_thread.is_alive()),
         "liquid_daily_orb_alive": bool(radar.orb_thread and radar.orb_thread.is_alive()),
         "daily_breakout_alive": bool(radar.breakout_thread and radar.breakout_thread.is_alive()),
-        "rsi2_reversal_alive": bool(radar.rsi2_thread and radar.rsi2_thread.is_alive()),
-        "rsi2_sanity_alive": bool(radar.sanity_thread and radar.sanity_thread.is_alive()),
+        "phase0_probe_alive": bool(radar.phase0_probe_thread and radar.phase0_probe_thread.is_alive()),
     })
 
 
