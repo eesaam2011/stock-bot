@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.4.0"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-E"
+VERSION = "1.5.0"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-F"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -149,6 +149,67 @@ EARLY_CAUSAL_ENTRY_SPEC = {
         "changes_live_model": False,
         "changes_live_cutoff": False,
         "legacy_holdout_can_approve_live": False,
+    },
+}
+
+# Independent after-hours research.  The paper-rule reference is descriptive;
+# the only user-executable variant is long-only, $10-$60, and capped at three
+# equally weighted slots.  Nothing here is consumed by the live radar.
+LIQUID_DAILY_ORB_SPEC = {
+    "research_id": "IPR-LIQUID-DAILY-ORB-2026-09-05-A",
+    "paper": {
+        "title": "A Profitable Day Trading Strategy For The U.S. Equity Market",
+        "opening_range_minutes": 5,
+        "price_min_exclusive": 5.0,
+        "average_share_volume_lookback_sessions": 14,
+        "minimum_average_share_volume": 1_000_000,
+        "atr_lookback_sessions": 14,
+        "minimum_atr_exclusive": 0.50,
+        "minimum_opening_relative_volume": 1.0,
+        "daily_rank_count": 20,
+        "directions": ["LONG", "SHORT"],
+        "stop_distance": "10 percent of ATR14",
+        "exit": "16:00 New York if stop is not hit",
+        "commission_per_share_per_side_usd": 0.0035,
+        "role": "paper-rule reference only; not deployable policy",
+    },
+    "user_primary": {
+        "price_min_inclusive": 10.0,
+        "price_max_inclusive": 60.0,
+        "minimum_average_dollar_volume_60_sessions": 20_000_000,
+        "minimum_atr_exclusive": 0.50,
+        "intended_minimum_market_cap_usd": 2_000_000_000,
+        "market_cap_handling": "reported when a stored fundamental snapshot exists; never backfilled with current data into a historical decision",
+        "sharia_keyword_exclusions": True,
+        "direction": "LONG_ONLY",
+        "opening_relative_volume_lookback_sessions": 14,
+        "minimum_opening_relative_volume": 1.0,
+        "primary_daily_rank_count": 3,
+        "diagnostic_daily_rank_count": 1,
+        "stop_distance": "10 percent of ATR14",
+        "exit": "16:00 New York if stop is not hit",
+        "decision_cost_pct_round_trip": 0.25,
+        "capital_sar_reference": 2000.0,
+        "leverage": 1.0,
+        "allocation": "equal slot weights; an untriggered slot remains cash",
+    },
+    "evaluation": {
+        "sessions": "the frozen 60-session source manifest",
+        "development_sessions": 45,
+        "legacy_holdout_sessions": 15,
+        "development_stability": "three consecutive 15-session blocks",
+        "minimum_active_days_per_development_block": 5,
+        "primary_judgment": "Top-3 must have PF > 1, average daily return > 0, and at least five active days in every Development block",
+        "legacy_holdout_can_approve_live": False,
+        "promising_wording": "PROMISING_SHADOW_ONLY",
+        "failure_wording": "NO_STABLE_EDGE",
+    },
+    "safety": {
+        "alerts_enabled": False,
+        "orders_enabled": False,
+        "changes_live_model": False,
+        "changes_live_cutoff": False,
+        "changes_live_confirmation": False,
     },
 }
 
@@ -306,12 +367,13 @@ class AlpacaClient:
         end: datetime,
         feed: str = "sip",
         adjustment: str = "raw",
+        timeframe: str = "1Min",
     ) -> dict[str, list[dict[str, Any]]]:
         output = {symbol: [] for symbol in symbols}
         page_token = None
         while True:
             params: dict[str, Any] = {
-                "symbols": ",".join(symbols), "timeframe": "1Min",
+                "symbols": ",".join(symbols), "timeframe": timeframe,
                 "start": iso(start), "end": iso(end), "feed": feed,
                 "adjustment": adjustment, "limit": 10000, "sort": "asc",
             }
@@ -323,6 +385,13 @@ class AlpacaClient:
             page_token = page.get("next_page_token")
             if not page_token:
                 return output
+
+    def calendar(self, start: date, end: date) -> list[dict[str, Any]]:
+        result = self.get(
+            f"{self.trading_base}/v2/calendar",
+            {"start": start.isoformat(), "end": end.isoformat()},
+        )
+        return list(result or [])
 
 
 class QualityModel:
@@ -709,6 +778,156 @@ def return_statistics(returns: list[float]) -> dict[str, Any]:
     }
 
 
+def orb_opening_snapshot(bars: list[dict[str, Any]], session: str) -> dict[str, Any] | None:
+    """Return the five completed 09:30-09:34 New York bars only."""
+    expected_date = date.fromisoformat(session)
+    selected: dict[int, dict[str, Any]] = {}
+    for bar in bars:
+        if not bar.get("t"):
+            continue
+        local = parse_dt(str(bar["t"])).astimezone(NY)
+        minute = local.hour * 60 + local.minute
+        if local.date() == expected_date and 570 <= minute < 575:
+            selected[minute] = bar
+    if sorted(selected) != list(range(570, 575)):
+        return None
+    ordered = [selected[minute] for minute in range(570, 575)]
+    opening = float(ordered[0]["o"])
+    close = float(ordered[-1]["c"])
+    if opening <= 0 or close <= 0:
+        return None
+    direction = "LONG" if close > opening else "SHORT" if close < opening else "DOJI"
+    return {
+        "session": session,
+        "open": opening,
+        "close": close,
+        "high": max(float(bar["h"]) for bar in ordered),
+        "low": min(float(bar["l"]) for bar in ordered),
+        "volume": sum(float(bar.get("v") or 0.0) for bar in ordered),
+        "direction": direction,
+        "bar_timestamps": [str(bar["t"]) for bar in ordered],
+    }
+
+
+def orb_trade_result(
+    bars: list[dict[str, Any]],
+    session: str,
+    direction: str,
+    entry_price: float,
+    atr14: float,
+    cost_pct_round_trip: float | None = None,
+    commission_per_share_per_side: float | None = None,
+    session_close: dtime = dtime(16, 0),
+) -> dict[str, Any]:
+    """Conservative one-minute ORB execution after the completed opening range."""
+    if direction not in {"LONG", "SHORT"} or entry_price <= 0 or atr14 <= 0:
+        return {"complete": False, "triggered": False, "reason": "invalid_trade_definition"}
+    session_date = date.fromisoformat(session)
+    close_minute = session_close.hour * 60 + session_close.minute
+    regular = []
+    for bar in sorted(bars, key=lambda item: str(item.get("t") or "")):
+        if not bar.get("t"):
+            continue
+        local = parse_dt(str(bar["t"])).astimezone(NY)
+        minute = local.hour * 60 + local.minute
+        if local.date() == session_date and 575 <= minute < close_minute:
+            regular.append(bar)
+    expected_last_minute = close_minute - 1
+    last_local = parse_dt(str(regular[-1]["t"])).astimezone(NY) if regular else None
+    complete = bool(last_local) and (last_local.hour * 60 + last_local.minute) >= expected_last_minute
+    if not complete:
+        return {"complete": False, "triggered": False, "reason": "incomplete_regular_session", "bars": len(regular)}
+
+    trigger_price = float(entry_price)
+    stop_distance = 0.10 * float(atr14)
+    executed_entry = None
+    stop_price = None
+    trigger_index = None
+    exit_price = None
+    exit_reason = None
+    conservative_same_bar_stop = False
+    for index, bar in enumerate(regular):
+        high = float(bar["h"])
+        low = float(bar["l"])
+        open_price = float(bar["o"])
+        triggered = high >= trigger_price if direction == "LONG" else low <= trigger_price
+        if trigger_index is None and triggered:
+            trigger_index = index
+            executed_entry = max(trigger_price, open_price) if direction == "LONG" else min(trigger_price, open_price)
+            stop_price = executed_entry - stop_distance if direction == "LONG" else executed_entry + stop_distance
+        if trigger_index is not None:
+            assert stop_price is not None
+            stopped = low <= stop_price if direction == "LONG" else high >= stop_price
+            if stopped:
+                exit_price = min(stop_price, open_price) if direction == "LONG" else max(stop_price, open_price)
+                exit_reason = "STOP"
+                conservative_same_bar_stop = index == trigger_index
+                break
+    if trigger_index is None:
+        return {"complete": True, "triggered": False, "reason": "entry_not_triggered", "bars": len(regular)}
+    assert executed_entry is not None and stop_price is not None
+    if exit_price is None:
+        exit_price = float(regular[-1]["c"])
+        exit_reason = "END_OF_DAY"
+
+    gross_per_share = exit_price - executed_entry if direction == "LONG" else executed_entry - exit_price
+    if cost_pct_round_trip is not None:
+        cost_per_share = executed_entry * float(cost_pct_round_trip) / 100.0
+        cost_rule = f"{float(cost_pct_round_trip):g}% round trip"
+    else:
+        per_side = float(commission_per_share_per_side or 0.0)
+        cost_per_share = 2.0 * per_side
+        cost_rule = f"${per_side:g} per share per side"
+    net_per_share = gross_per_share - cost_per_share
+    return {
+        "complete": True,
+        "triggered": True,
+        "direction": direction,
+        "entry_trigger_price": round(float(trigger_price), 8),
+        "entry_price": round(float(executed_entry), 8),
+        "entry_ts": str(regular[trigger_index]["t"]),
+        "stop_price": round(float(stop_price), 8),
+        "stop_distance": round(float(stop_distance), 8),
+        "exit_price": round(float(exit_price), 8),
+        "exit_reason": exit_reason,
+        "exit_ts": str(regular[-1]["t"] if exit_reason == "END_OF_DAY" else regular[index]["t"]),
+        "conservative_same_bar_stop": conservative_same_bar_stop,
+        "gross_pnl_per_share": round(float(gross_per_share), 8),
+        "cost_per_share": round(float(cost_per_share), 8),
+        "cost_rule": cost_rule,
+        "net_pnl_per_share": round(float(net_per_share), 8),
+        "net_return_pct": round(float(net_per_share / executed_entry * 100.0), 6),
+        "net_r_multiple": round(float(net_per_share / stop_distance), 6),
+        "bars": len(regular),
+    }
+
+
+def orb_slot_daily_return(selected_trades: list[dict[str, Any]], slots: int) -> float | None:
+    """Equal-weight selected slots; untriggered selections remain cash."""
+    if slots <= 0 or any(not trade.get("complete") for trade in selected_trades):
+        return None
+    return sum(float(trade.get("net_return_pct") or 0.0) for trade in selected_trades if trade.get("triggered")) / slots
+
+
+def daily_return_statistics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(
+        [row for row in rows if row.get("daily_return_pct") is not None],
+        key=lambda row: str(row.get("session") or ""),
+    )
+    values = [float(row["daily_return_pct"]) for row in ordered]
+    result = return_statistics(values)
+    result.update({
+        "sessions": len(ordered),
+        "active_days": sum(abs(value) > 1e-12 for value in values),
+        "positive_days": sum(value > 0 for value in values),
+        "negative_days": sum(value < 0 for value in values),
+        "flat_days": sum(abs(value) <= 1e-12 for value in values),
+        "first_session": ordered[0]["session"] if ordered else None,
+        "last_session": ordered[-1]["session"] if ordered else None,
+    })
+    return result
+
+
 def update_live_tracking(
     tracking: dict[str, Any] | None,
     entry_price: float,
@@ -809,6 +1028,19 @@ class IndependentPriorityRadar:
             "orders_enabled": False,
             "updated_at": iso(),
         }
+        self.orb_lock = threading.RLock()
+        self.orb_thread: threading.Thread | None = None
+        self.orb_stop_event = threading.Event()
+        self.orb_path: str | None = None
+        self.orb_state: dict[str, Any] = {
+            "status": "IDLE",
+            "phase": "NOT_STARTED",
+            "message": "Liquid daily ORB research has not started",
+            "research_id": LIQUID_DAILY_ORB_SPEC["research_id"],
+            "alerts_enabled": False,
+            "orders_enabled": False,
+            "updated_at": iso(),
+        }
         self.state = {
             "status": "STARTING", "message": "Waiting for model bootstrap",
             "version": VERSION, "build": BUILD, "protocol_id": PROTOCOL_ID,
@@ -827,6 +1059,9 @@ class IndependentPriorityRadar:
 
     def early_key(self, suffix: str) -> str:
         return self.key(f"early_causal_entry:v1:{suffix}")
+
+    def orb_key(self, suffix: str) -> str:
+        return self.key(f"liquid_daily_orb:v1:{suffix}")
 
     def save_state(self, **updates: Any) -> None:
         with self.lock:
@@ -1024,6 +1259,8 @@ class IndependentPriorityRadar:
             return False, "Export is blocked during monitoring hours; retry after 17:30 New York time"
         if self.early_thread and self.early_thread.is_alive():
             return False, "Early Causal Entry Research is running"
+        if self.orb_thread and self.orb_thread.is_alive():
+            return False, "Liquid Daily ORB Research is running"
         with self.export_lock:
             if self.export_thread and self.export_thread.is_alive():
                 return True, "already_running"
@@ -1407,6 +1644,8 @@ class IndependentPriorityRadar:
             return False, "Redis and Alpaca credentials are required"
         if self.early_thread and self.early_thread.is_alive():
             return False, "Early Causal Entry Research is running"
+        if self.orb_thread and self.orb_thread.is_alive():
+            return False, "Liquid Daily ORB Research is running"
         with self.audit_lock:
             if self.audit_thread and self.audit_thread.is_alive():
                 return True, "already_running"
@@ -1886,7 +2125,11 @@ class IndependentPriorityRadar:
         with self.early_lock:
             if self.early_thread and self.early_thread.is_alive():
                 return True, "already_running"
-            if (self.audit_thread and self.audit_thread.is_alive()) or (self.export_thread and self.export_thread.is_alive()):
+            if (
+                (self.audit_thread and self.audit_thread.is_alive())
+                or (self.export_thread and self.export_thread.is_alive())
+                or (self.orb_thread and self.orb_thread.is_alive())
+            ):
                 return False, "another historical job is running"
             self.early_stop_event.clear()
             stored = self.redis.get_json(self.early_key("status"), None)
@@ -1915,6 +2158,611 @@ class IndependentPriorityRadar:
             if not self.early_thread or not self.early_thread.is_alive():
                 return False, "not_running"
             self.early_stop_event.set()
+        return True, "pause_requested"
+
+    def _set_orb_progress(self, **updates: Any) -> None:
+        with self.orb_lock:
+            self.orb_state.update(updates)
+            self.orb_state["updated_at"] = iso()
+            snapshot = dict(self.orb_state)
+        if self.redis.configured:
+            self.redis.set_json(self.orb_key("status"), snapshot)
+
+    @staticmethod
+    def _orb_daily_metrics(rows: list[dict[str, Any]], session: str) -> dict[str, float] | None:
+        target = date.fromisoformat(session)
+        prior = []
+        for row in rows:
+            if not row.get("t"):
+                continue
+            row_date = parse_dt(str(row["t"])).astimezone(NY).date()
+            if row_date < target:
+                prior.append((row_date, row))
+        prior.sort(key=lambda item: item[0])
+        if len(prior) < 61:
+            return None
+        latest = [row for _, row in prior[-61:]]
+        atr_rows = latest[-15:]
+        true_ranges = []
+        for previous, current in zip(atr_rows, atr_rows[1:]):
+            previous_close = float(previous["c"])
+            high = float(current["h"])
+            low = float(current["l"])
+            true_ranges.append(max(high - low, abs(high - previous_close), abs(low - previous_close)))
+        if len(true_ranges) != 14:
+            return None
+        last60 = latest[-60:]
+        average_volume14 = mean(float(row.get("v") or 0.0) for row in latest[-14:])
+        average_dollar_volume60 = mean(
+            float(row.get("v") or 0.0) * float(row.get("c") or 0.0) for row in last60
+        )
+        return {
+            "atr14": float(mean(true_ranges)),
+            "average_share_volume14": float(average_volume14),
+            "average_dollar_volume60": float(average_dollar_volume60),
+            "previous_close": float(latest[-1]["c"]),
+            "history_sessions": float(len(prior)),
+        }
+
+    @staticmethod
+    def _orb_manifest_parts(manifest: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+        symbols = sorted({str(symbol).upper() for symbol in manifest.get("symbols", []) if SYMBOL_RE.fullmatch(str(symbol).upper())})
+        sessions = [str(value) for value in manifest.get("sessions", [])]
+        development = [str(value) for value in manifest.get("development_sessions", [])]
+        holdout = [str(value) for value in manifest.get("holdout_sessions", [])]
+        if len(sessions) != 60 or len(development) != 45 or len(holdout) != 15:
+            raise RuntimeError("Liquid ORB requires the frozen 60-session manifest with 45 Development and 15 Holdout sessions")
+        if sessions != development + holdout:
+            raise RuntimeError("Manifest session order does not match the frozen Development/Holdout partition")
+        if not symbols:
+            raise RuntimeError("Full-universe symbols are missing from the source manifest")
+        return symbols, development, holdout
+
+    def _orb_daily_candidate_batches(
+        self,
+        symbols: list[str],
+        sessions: list[str],
+    ) -> list[dict[str, list[dict[str, Any]]]]:
+        batches = list(chunks(symbols, 100))
+        first_day = date.fromisoformat(sessions[0])
+        last_day = date.fromisoformat(sessions[-1])
+        start = datetime.combine(first_day - timedelta(days=120), dtime(0, 0), tzinfo=NY).astimezone(UTC)
+        end = datetime.combine(last_day + timedelta(days=1), dtime(0, 0), tzinfo=NY).astimezone(UTC)
+        payloads: list[dict[str, list[dict[str, Any]]]] = []
+        for batch_index, symbol_batch in enumerate(batches):
+            if self.orb_stop_event.is_set():
+                raise InterruptedError("pause_requested")
+            key = self.orb_key(f"daily_batch:{batch_index}")
+            stored = self.redis.get_json(key, None)
+            if stored is not None:
+                payloads.append(stored)
+                continue
+            fetched = self.alpaca.bars(
+                symbol_batch, start, end, feed="sip", adjustment="raw", timeframe="1Day"
+            )
+            payload: dict[str, list[dict[str, Any]]] = {session: [] for session in sessions}
+            for symbol in symbol_batch:
+                rows = fetched.get(symbol, [])
+                for session in sessions:
+                    metrics = self._orb_daily_metrics(rows, session)
+                    if metrics is None:
+                        continue
+                    paper_possible = (
+                        metrics["average_share_volume14"] >= LIQUID_DAILY_ORB_SPEC["paper"]["minimum_average_share_volume"]
+                        and metrics["atr14"] > LIQUID_DAILY_ORB_SPEC["paper"]["minimum_atr_exclusive"]
+                    )
+                    user_possible = (
+                        metrics["average_dollar_volume60"]
+                        >= LIQUID_DAILY_ORB_SPEC["user_primary"]["minimum_average_dollar_volume_60_sessions"]
+                        and metrics["atr14"] > LIQUID_DAILY_ORB_SPEC["user_primary"]["minimum_atr_exclusive"]
+                    )
+                    if paper_possible or user_possible:
+                        payload[session].append({"symbol": symbol, **metrics})
+            self.redis.set_json(key, payload)
+            payloads.append(payload)
+            self._set_orb_progress(
+                status="RUNNING",
+                phase="DAILY_SCREEN",
+                message="Building causal daily liquidity and ATR screens",
+                completed_daily_batches=batch_index + 1,
+                total_daily_batches=len(batches),
+            )
+        return payloads
+
+    def _orb_opening_sessions(
+        self,
+        symbols: list[str],
+        evaluation_sessions: list[str],
+    ) -> list[str]:
+        first_day = date.fromisoformat(evaluation_sessions[0])
+        last_day = date.fromisoformat(evaluation_sessions[-1])
+        calendar = self.alpaca.calendar(first_day - timedelta(days=35), last_day)
+        all_sessions = sorted(str(item.get("date")) for item in calendar if item.get("date"))
+        self.redis.set_json(
+            self.orb_key("calendar"),
+            {
+                str(item["date"]): {"open": str(item.get("open") or "09:30"), "close": str(item.get("close") or "16:00")}
+                for item in calendar if item.get("date")
+            },
+        )
+        prior = [session for session in all_sessions if session < evaluation_sessions[0]][-14:]
+        if len(prior) != 14 or any(session not in all_sessions for session in evaluation_sessions):
+            raise RuntimeError("Unable to build 14 exact opening-volume warmup sessions")
+        research_sessions = prior + evaluation_sessions
+        for index, session in enumerate(research_sessions):
+            if self.orb_stop_event.is_set():
+                raise InterruptedError("pause_requested")
+            key = self.orb_key(f"opening:{session}")
+            if self.redis.get_json(key, None) is not None:
+                continue
+            local_day = date.fromisoformat(session)
+            start = datetime.combine(local_day, dtime(9, 30), tzinfo=NY).astimezone(UTC)
+            end = datetime.combine(local_day, dtime(9, 35), tzinfo=NY).astimezone(UTC)
+            snapshots: dict[str, dict[str, Any]] = {}
+            for symbol_batch in chunks(symbols, 100):
+                fetched = self.alpaca.bars(
+                    symbol_batch, start, end, feed="sip", adjustment="raw", timeframe="1Min"
+                )
+                for symbol, rows in fetched.items():
+                    snapshot = orb_opening_snapshot(rows, session)
+                    if snapshot is not None:
+                        snapshots[symbol] = snapshot
+            self.redis.set_json(key, snapshots)
+            self._set_orb_progress(
+                status="RUNNING",
+                phase="OPENING_RANGES",
+                message=f"Collected causal five-minute opening ranges for {session}",
+                completed_opening_sessions=index + 1,
+                total_opening_sessions=len(research_sessions),
+                opening_symbols=len(symbols),
+            )
+        return research_sessions
+
+    @staticmethod
+    def _orb_sharia_allowed_symbols(assets: list[dict[str, Any]]) -> set[str]:
+        return {
+            str(asset.get("symbol") or "").upper()
+            for asset in assets
+            if IndependentPriorityRadar._allowed_asset(asset)
+        }
+
+    @staticmethod
+    def _orb_market_cap_from_record(record: Any) -> float | None:
+        if not isinstance(record, dict):
+            return None
+        for name in ("market_cap", "marketCap", "market_capitalization", "marketCapitalization"):
+            value = record.get(name)
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                return number
+        return None
+
+    def _orb_current_market_caps(self, symbols: set[str]) -> dict[str, float]:
+        """Diagnostic only. Current snapshots must never decide a historical trade."""
+        output: dict[str, float] = {}
+        for key in self.float_keys:
+            raw = self.redis.command("GET", key)
+            if raw is None:
+                continue
+            try:
+                document = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            for symbol in symbols - set(output):
+                value = find_symbol_record(document, symbol)
+                market_cap = self._orb_market_cap_from_record(value)
+                if market_cap is not None:
+                    output[symbol] = market_cap
+        return output
+
+    def _orb_session_result(
+        self,
+        session: str,
+        daily_rows: list[dict[str, Any]],
+        opening_sessions: list[str],
+        sharia_allowed: set[str],
+        current_market_caps: dict[str, float],
+    ) -> dict[str, Any]:
+        current_index = opening_sessions.index(session)
+        prior_sessions = opening_sessions[current_index - 14:current_index]
+        current = self.redis.get_json(self.orb_key(f"opening:{session}"), {})
+        prior = [self.redis.get_json(self.orb_key(f"opening:{value}"), {}) for value in prior_sessions]
+        paper_candidates = []
+        user_candidates = []
+        missing_opening_history = 0
+        for daily in daily_rows:
+            symbol = daily["symbol"]
+            opening = current.get(symbol)
+            previous_volumes = [snapshot.get(symbol, {}).get("volume") for snapshot in prior]
+            if opening is None or any(value is None for value in previous_volumes):
+                missing_opening_history += 1
+                continue
+            average_opening_volume = mean(float(value) for value in previous_volumes)
+            if average_opening_volume <= 0:
+                continue
+            rvol = float(opening["volume"]) / average_opening_volume
+            candidate = {
+                **daily,
+                "opening": opening,
+                "opening_relative_volume": rvol,
+                "average_prior14_opening_volume": average_opening_volume,
+                "current_market_cap_diagnostic": current_market_caps.get(symbol),
+            }
+            if (
+                float(opening["open"]) > LIQUID_DAILY_ORB_SPEC["paper"]["price_min_exclusive"]
+                and daily["average_share_volume14"] >= LIQUID_DAILY_ORB_SPEC["paper"]["minimum_average_share_volume"]
+                and daily["atr14"] > LIQUID_DAILY_ORB_SPEC["paper"]["minimum_atr_exclusive"]
+                and rvol >= LIQUID_DAILY_ORB_SPEC["paper"]["minimum_opening_relative_volume"]
+                and opening["direction"] in {"LONG", "SHORT"}
+            ):
+                paper_candidates.append(candidate)
+            if (
+                LIQUID_DAILY_ORB_SPEC["user_primary"]["price_min_inclusive"]
+                <= float(opening["open"])
+                <= LIQUID_DAILY_ORB_SPEC["user_primary"]["price_max_inclusive"]
+                and daily["average_dollar_volume60"]
+                >= LIQUID_DAILY_ORB_SPEC["user_primary"]["minimum_average_dollar_volume_60_sessions"]
+                and daily["atr14"] > LIQUID_DAILY_ORB_SPEC["user_primary"]["minimum_atr_exclusive"]
+                and rvol >= LIQUID_DAILY_ORB_SPEC["user_primary"]["minimum_opening_relative_volume"]
+                and opening["direction"] == "LONG"
+                and symbol in sharia_allowed
+            ):
+                user_candidates.append(candidate)
+        paper_candidates.sort(key=lambda row: (-row["opening_relative_volume"], row["symbol"]))
+        user_candidates.sort(key=lambda row: (-row["opening_relative_volume"], row["symbol"]))
+        paper_selected = paper_candidates[:LIQUID_DAILY_ORB_SPEC["paper"]["daily_rank_count"]]
+        user_selected = user_candidates[:LIQUID_DAILY_ORB_SPEC["user_primary"]["primary_daily_rank_count"]]
+        selected_symbols = sorted({row["symbol"] for row in paper_selected + user_selected})
+        local_day = date.fromisoformat(session)
+        calendar = self.redis.get_json(self.orb_key("calendar"), {})
+        close_text = str((calendar.get(session) or {}).get("close") or "16:00")
+        close_hour, close_minute = [int(value) for value in close_text.split(":")[:2]]
+        session_close = dtime(close_hour, close_minute)
+        start = datetime.combine(local_day, dtime(9, 35), tzinfo=NY).astimezone(UTC)
+        end = datetime.combine(local_day, session_close, tzinfo=NY).astimezone(UTC)
+        full_bars: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in selected_symbols}
+        for symbol_batch in chunks(selected_symbols, 100):
+            fetched = self.alpaca.bars(
+                symbol_batch, start, end, feed="sip", adjustment="raw", timeframe="1Min"
+            )
+            for symbol, bars in fetched.items():
+                full_bars[symbol] = bars
+
+        def calculate(selected: list[dict[str, Any]], user_cost: bool) -> list[dict[str, Any]]:
+            trades = []
+            for candidate in selected:
+                opening = candidate["opening"]
+                direction = "LONG" if user_cost else opening["direction"]
+                entry = float(opening["high"] if direction == "LONG" else opening["low"])
+                trade = orb_trade_result(
+                    full_bars.get(candidate["symbol"], []),
+                    session,
+                    direction,
+                    entry,
+                    float(candidate["atr14"]),
+                    cost_pct_round_trip=(
+                        LIQUID_DAILY_ORB_SPEC["user_primary"]["decision_cost_pct_round_trip"] if user_cost else None
+                    ),
+                    commission_per_share_per_side=(
+                        None if user_cost else LIQUID_DAILY_ORB_SPEC["paper"]["commission_per_share_per_side_usd"]
+                    ),
+                    session_close=session_close,
+                )
+                trades.append({
+                    "symbol": candidate["symbol"],
+                    "rank": len(trades) + 1,
+                    "opening_relative_volume": round(float(candidate["opening_relative_volume"]), 6),
+                    "opening": opening,
+                    "atr14": round(float(candidate["atr14"]), 6),
+                    "average_share_volume14": round(float(candidate["average_share_volume14"]), 2),
+                    "average_dollar_volume60": round(float(candidate["average_dollar_volume60"]), 2),
+                    "current_market_cap_diagnostic": candidate.get("current_market_cap_diagnostic"),
+                    "trade": trade,
+                })
+            return trades
+
+        paper_trades = calculate(paper_selected, False)
+        user_trades = calculate(user_selected, True)
+        paper_results = [row["trade"] for row in paper_trades]
+        user_results = [row["trade"] for row in user_trades]
+        return {
+            "session": session,
+            "paper_rule_reference": {
+                "eligible_count": len(paper_candidates),
+                "selected_count": len(paper_selected),
+                "trades": paper_trades,
+                "equal_slot_daily_return_pct": orb_slot_daily_return(
+                    paper_results, LIQUID_DAILY_ORB_SPEC["paper"]["daily_rank_count"]
+                ),
+            },
+            "user_top3_primary": {
+                "eligible_count": len(user_candidates),
+                "selected_count": len(user_selected),
+                "trades": user_trades,
+                "daily_return_pct": orb_slot_daily_return(
+                    user_results, LIQUID_DAILY_ORB_SPEC["user_primary"]["primary_daily_rank_count"]
+                ),
+            },
+            "user_top1_diagnostic": {
+                "selected_count": min(1, len(user_trades)),
+                "trades": user_trades[:1],
+                "daily_return_pct": orb_slot_daily_return(user_results[:1], 1),
+            },
+            "coverage": {
+                "daily_screen_count": len(daily_rows),
+                "missing_exact_opening_history": missing_opening_history,
+                "market_cap_snapshot_available_for_user_eligible": sum(
+                    row.get("current_market_cap_diagnostic") is not None for row in user_candidates
+                ),
+                "current_market_cap_above_intended_floor": sum(
+                    float(row.get("current_market_cap_diagnostic") or 0.0)
+                    >= LIQUID_DAILY_ORB_SPEC["user_primary"]["intended_minimum_market_cap_usd"]
+                    for row in user_candidates
+                ),
+                "market_cap_filter_applied": False,
+            },
+        }
+
+    @staticmethod
+    def _orb_strategy_rows(results: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
+        return [
+            {"session": row["session"], "daily_return_pct": row[name].get("daily_return_pct")}
+            for row in results
+        ]
+
+    def _build_orb_report(
+        self,
+        development_sessions: list[str],
+        holdout_sessions: list[str],
+        results: list[dict[str, Any]],
+        universe_count: int,
+        opening_symbol_count: int,
+    ) -> dict[str, Any]:
+        by_session = {row["session"]: row for row in results}
+        development = [by_session[session] for session in development_sessions if session in by_session]
+        holdout = [by_session[session] for session in holdout_sessions if session in by_session]
+        blocks = [development_sessions[index:index + 15] for index in range(0, 45, 15)]
+        block_reports = []
+        block_passes = []
+        for index, sessions in enumerate(blocks, 1):
+            rows = [by_session[session] for session in sessions if session in by_session]
+            stats = daily_return_statistics(self._orb_strategy_rows(rows, "user_top3_primary"))
+            profit_factor = stats.get("profit_factor")
+            passed = bool(
+                profit_factor is not None
+                and profit_factor > 1.0
+                and (stats.get("average_return_pct") or 0.0) > 0.0
+                and stats.get("active_days", 0)
+                >= LIQUID_DAILY_ORB_SPEC["evaluation"]["minimum_active_days_per_development_block"]
+            )
+            block_passes.append(passed)
+            block_reports.append({"block": index, "passed": passed, **stats})
+        judgment = (
+            LIQUID_DAILY_ORB_SPEC["evaluation"]["promising_wording"]
+            if len(block_passes) == 3 and all(block_passes)
+            else LIQUID_DAILY_ORB_SPEC["evaluation"]["failure_wording"]
+        )
+        paper_daily = [
+            {
+                "session": row["session"],
+                "daily_return_pct": row["paper_rule_reference"].get("equal_slot_daily_return_pct"),
+            }
+            for row in results
+        ]
+        market_cap_coverage = sum(
+            row["coverage"].get("market_cap_snapshot_available_for_user_eligible", 0) for row in results
+        )
+        market_cap_above_floor = sum(
+            row["coverage"].get("current_market_cap_above_intended_floor", 0) for row in results
+        )
+        return {
+            "schema": 1,
+            "generated_at": iso(),
+            "version": VERSION,
+            "build": BUILD,
+            "live_protocol_id": PROTOCOL_ID,
+            "live_protocol_sha256": PROTOCOL_SHA256,
+            "research_spec": LIQUID_DAILY_ORB_SPEC,
+            "coverage": {
+                "universe_symbols": universe_count,
+                "opening_screen_symbols": opening_symbol_count,
+                "completed_sessions": len(results),
+                "development_sessions": len(development),
+                "legacy_holdout_sessions": len(holdout),
+                "current_market_cap_diagnostic_records": market_cap_coverage,
+                "current_market_cap_above_intended_floor_records": market_cap_above_floor,
+                "market_cap_filter_applied": False,
+                "market_cap_note": "Alpaca has no historical point-in-time market cap. Current snapshots are reported only and never select a historical trade.",
+            },
+            "paper_rule_reference": {
+                "role": "short recent-period rule reference, not a replication of the paper's 2016-2023 portfolio",
+                "all_sessions_equal_slot_statistics": daily_return_statistics(paper_daily),
+                "development_equal_slot_statistics": daily_return_statistics(
+                    [row for row in paper_daily if row["session"] in set(development_sessions)]
+                ),
+                "legacy_holdout_equal_slot_statistics": daily_return_statistics(
+                    [row for row in paper_daily if row["session"] in set(holdout_sessions)]
+                ),
+            },
+            "user_top3_primary": {
+                "development_blocks": block_reports,
+                "development": daily_return_statistics(self._orb_strategy_rows(development, "user_top3_primary")),
+                "legacy_holdout_audit_only": daily_return_statistics(
+                    self._orb_strategy_rows(holdout, "user_top3_primary")
+                ),
+                "all_three_development_blocks_passed": len(block_passes) == 3 and all(block_passes),
+            },
+            "user_top1_diagnostic": {
+                "development": daily_return_statistics(self._orb_strategy_rows(development, "user_top1_diagnostic")),
+                "legacy_holdout_audit_only": daily_return_statistics(
+                    self._orb_strategy_rows(holdout, "user_top1_diagnostic")
+                ),
+            },
+            "capital_reference": {
+                "sar": LIQUID_DAILY_ORB_SPEC["user_primary"]["capital_sar_reference"],
+                "development_top3_total_simple_pnl_sar": round(
+                    LIQUID_DAILY_ORB_SPEC["user_primary"]["capital_sar_reference"]
+                    * sum(
+                        float(row["user_top3_primary"].get("daily_return_pct") or 0.0) / 100.0
+                        for row in development
+                    ),
+                    2,
+                ),
+                "note": "Simple non-compounded reference; fractional-share availability and broker constraints are not assumed.",
+            },
+            "final_judgment": judgment,
+            "deployment_approved": False,
+            "legacy_holdout_can_approve_live": False,
+            "safety": LIQUID_DAILY_ORB_SPEC["safety"],
+        }
+
+    def _materialize_orb_download(self, report: dict[str, Any]) -> str:
+        manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {})
+        _, development_sessions, holdout_sessions = self._orb_manifest_parts(manifest)
+        sessions = development_sessions + holdout_sessions
+        results = [
+            self.redis.get_json(self.orb_key(f"session:{session}"), None)
+            for session in sessions
+        ]
+        results = [row for row in results if row is not None]
+        with tempfile.NamedTemporaryFile(prefix="ipr_liquid_daily_orb_", suffix=".json.gz", delete=False) as temporary:
+            path = temporary.name
+        with gzip.open(path, "wt", encoding="utf-8", compresslevel=6) as output:
+            json.dump({"report": report, "sessions": results}, output, ensure_ascii=False, separators=(",", ":"))
+        with self.orb_lock:
+            old_path = self.orb_path
+            self.orb_path = path
+        if old_path and old_path != path and os.path.isfile(old_path):
+            try:
+                os.unlink(old_path)
+            except OSError:
+                pass
+        return path
+
+    def liquid_daily_orb_loop(self) -> None:
+        try:
+            manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {})
+            universe, development_sessions, holdout_sessions = self._orb_manifest_parts(manifest)
+            sessions = development_sessions + holdout_sessions
+            self._set_orb_progress(
+                status="RUNNING",
+                phase="DAILY_SCREEN",
+                message="Loading causal daily history for the frozen full universe",
+                universe_symbols=len(universe),
+                total_sessions=len(sessions),
+            )
+            daily_payloads = self._orb_daily_candidate_batches(universe, sessions)
+            opening_symbols = sorted({
+                row["symbol"]
+                for payload in daily_payloads
+                for rows in payload.values()
+                for row in rows
+            })
+            opening_sessions = self._orb_opening_sessions(opening_symbols, sessions)
+            assets = self.alpaca.assets()
+            sharia_allowed = self._orb_sharia_allowed_symbols(assets)
+            current_market_caps = self._orb_current_market_caps(set(opening_symbols))
+            completed = 0
+            results = []
+            for session in sessions:
+                if self.orb_stop_event.is_set():
+                    self._set_orb_progress(status="PAUSED", phase="SESSION_EVALUATION", message="Paused safely; press start to resume")
+                    return
+                key = self.orb_key(f"session:{session}")
+                result = self.redis.get_json(key, None)
+                if result is None:
+                    daily_rows = [row for payload in daily_payloads for row in payload.get(session, [])]
+                    result = self._orb_session_result(
+                        session,
+                        daily_rows,
+                        opening_sessions,
+                        sharia_allowed,
+                        current_market_caps,
+                    )
+                    self.redis.set_json(key, result)
+                results.append(result)
+                completed += 1
+                self._set_orb_progress(
+                    status="RUNNING",
+                    phase="SESSION_EVALUATION",
+                    message=f"Completed liquid daily ORB session {session}",
+                    completed_sessions=completed,
+                    total_sessions=len(sessions),
+                    remaining_sessions=len(sessions) - completed,
+                )
+            report = self._build_orb_report(
+                development_sessions,
+                holdout_sessions,
+                results,
+                len(universe),
+                len(opening_symbols),
+            )
+            self.redis.set_json(self.orb_key("report"), report)
+            path = self._materialize_orb_download(report)
+            self._set_orb_progress(
+                status="COMPLETED",
+                phase="COMPLETED",
+                message="Liquid Stocks Daily ORB research is complete",
+                completed_sessions=len(sessions),
+                total_sessions=len(sessions),
+                result_ready=True,
+                download_ready=True,
+                final_judgment=report["final_judgment"],
+                compressed_bytes=os.path.getsize(path),
+            )
+        except InterruptedError:
+            self._set_orb_progress(status="PAUSED", message="Paused safely; press start to resume")
+        except Exception as exc:
+            logging.exception("Liquid daily ORB research failed")
+            self._set_orb_progress(status="ERROR", message=f"{type(exc).__name__}: {exc}", result_ready=False)
+        finally:
+            with self.orb_lock:
+                self.orb_thread = None
+
+    def start_liquid_daily_orb(self) -> tuple[bool, str]:
+        if self._within_monitoring_hours(now_utc()):
+            return False, "Research is blocked during monitoring hours; retry after 17:30 New York time"
+        if not self.redis.configured or not self.alpaca.configured:
+            return False, "Redis and Alpaca credentials are required"
+        with self.orb_lock:
+            if self.orb_thread and self.orb_thread.is_alive():
+                return True, "already_running"
+            if any(
+                thread and thread.is_alive()
+                for thread in (self.audit_thread, self.export_thread, self.early_thread)
+            ):
+                return False, "another historical job is running"
+            self.orb_stop_event.clear()
+            stored = self.redis.get_json(self.orb_key("status"), None)
+            if stored and stored.get("status") == "COMPLETED":
+                self.orb_state = stored
+                return False, "already_completed"
+            self.orb_state = {
+                "status": "STARTING",
+                "phase": "DAILY_SCREEN",
+                "message": "Preparing frozen 60-session liquid daily ORB research",
+                "research_id": LIQUID_DAILY_ORB_SPEC["research_id"],
+                "alerts_enabled": False,
+                "orders_enabled": False,
+                "result_ready": False,
+                "updated_at": iso(),
+            }
+            self.orb_thread = threading.Thread(
+                target=self.liquid_daily_orb_loop,
+                name="independent-priority-liquid-daily-orb",
+                daemon=True,
+            )
+            self.orb_thread.start()
+        return True, "started"
+
+    def pause_liquid_daily_orb(self) -> tuple[bool, str]:
+        with self.orb_lock:
+            if not self.orb_thread or not self.orb_thread.is_alive():
+                return False, "not_running"
+            self.orb_stop_event.set()
         return True, "pause_requested"
 
     @staticmethod
@@ -2677,6 +3525,7 @@ def home():
             "protocol": "/protocol", "historical_export": "/historical-export",
             "historical_confirmation_audit": "/historical-confirmation",
             "early_causal_entry_research": "/early-causal-entry",
+            "liquid_daily_orb_research": "/liquid-daily-orb",
         },
     })
 
@@ -2968,6 +3817,122 @@ def early_causal_entry_download():
     return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
 
 
+@app.get("/liquid-daily-orb")
+def liquid_daily_orb_page():
+    return """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>بحث ORB اليومي للأسهم السائلة</title>
+    <style>
+        body { font-family: system-ui; background: #101114; color: #eee; max-width: 760px; margin: 30px auto; padding: 18px; }
+        .box { background: #191b20; border: 1px solid #343741; border-radius: 14px; padding: 20px; margin: 14px 0; }
+        input, button { width: 100%; box-sizing: border-box; font-size: 17px; padding: 13px; margin: 7px 0; border-radius: 9px; border: 1px solid #555; }
+        button { background: #1d4ed8; color: white; font-weight: 700; }
+        a { color: #93c5fd; }
+    </style>
+</head>
+<body>
+    <h1>Liquid Stocks Daily ORB Research</h1>
+    <div class="box">
+        <p>النسخة الأساسية: Long فقط، سعر 10–60 دولار، سيولة 60 جلسة لا تقل عن 20 مليون دولار، Top-3، تكلفة 0.25% وخروج قبل الإغلاق.</p>
+        <p>توجد مقارنة تشخيصية مع قواعد ورقة 5-minute ORB. البحث قراءة فقط ولا يرسل تنبيهات أو أوامر.</p>
+        <p>التقدم محفوظ ويمكن استكماله. يبدأ بعد 17:30 نيويورك أو خلال الويكند.</p>
+        <form method="post" action="/liquid-daily-orb/start">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">ابدأ أو استكمل البحث</button>
+        </form>
+        <p><a href="/liquid-daily-orb/protocol">البروتوكول المجمد</a> · <a href="/liquid-daily-orb/status">متابعة التقدم</a> · <a href="/liquid-daily-orb/result">النتيجة المختصرة</a></p>
+        <form method="post" action="/liquid-daily-orb/pause">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">إيقاف آمن بعد الدفعة الحالية</button>
+        </form>
+        <form method="post" action="/liquid-daily-orb/download">
+            <input name="token" type="password" placeholder="Admin token" required>
+            <button type="submit">تنزيل النتيجة الكاملة JSON.GZ</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.post("/liquid-daily-orb/start")
+def liquid_daily_orb_start():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    started, message = radar.start_liquid_daily_orb()
+    return jsonify({
+        "ok": started,
+        "status": message,
+        "status_url": "/liquid-daily-orb/status",
+        "protocol_url": "/liquid-daily-orb/protocol",
+        "result_url": "/liquid-daily-orb/result",
+        "download_url": "/liquid-daily-orb/download",
+        "alerts_enabled": False,
+        "orders_enabled": False,
+    }), (202 if started else 409)
+
+
+@app.get("/liquid-daily-orb/protocol")
+def liquid_daily_orb_protocol():
+    return jsonify({
+        "version": VERSION,
+        "build": BUILD,
+        "research_spec": LIQUID_DAILY_ORB_SPEC,
+        "live_protocol_sha256": PROTOCOL_SHA256,
+    })
+
+
+@app.post("/liquid-daily-orb/pause")
+def liquid_daily_orb_pause():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    ok, message = radar.pause_liquid_daily_orb()
+    return jsonify({"ok": ok, "status": message}), (202 if ok else 409)
+
+
+@app.get("/liquid-daily-orb/status")
+def liquid_daily_orb_status():
+    stored = radar.redis.get_json(radar.orb_key("status"), None) if radar.redis.configured else None
+    with radar.orb_lock:
+        payload = dict(stored or radar.orb_state)
+        payload["worker_alive"] = bool(radar.orb_thread and radar.orb_thread.is_alive())
+    payload.update({
+        "status_url": "/liquid-daily-orb/status",
+        "result_url": "/liquid-daily-orb/result",
+        "download_url": "/liquid-daily-orb/download",
+        "alerts_enabled": False,
+        "orders_enabled": False,
+    })
+    return jsonify(payload)
+
+
+@app.get("/liquid-daily-orb/result")
+def liquid_daily_orb_result():
+    report = radar.redis.get_json(radar.orb_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({"result_ready": False, "status_url": "/liquid-daily-orb/status"}), 202
+    return jsonify(report)
+
+
+@app.post("/liquid-daily-orb/download")
+def liquid_daily_orb_download():
+    if not export_authorized():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    report = radar.redis.get_json(radar.orb_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({"result_ready": False, "status_url": "/liquid-daily-orb/status"}), 202
+    with radar.orb_lock:
+        path = radar.orb_path
+    if not path or not os.path.isfile(path):
+        path = radar._materialize_orb_download(report)
+    filename = f"ipr_liquid_daily_orb_{now_utc().strftime('%Y%m%dT%H%M%SZ')}.json.gz"
+    return send_file(path, mimetype="application/gzip", as_attachment=True, download_name=filename)
+
+
 @app.get("/health")
 def health():
     return jsonify({
@@ -2979,6 +3944,7 @@ def health():
         "live_sampler_alive": bool(radar.live_sample_thread and radar.live_sample_thread.is_alive()),
         "historical_audit_alive": bool(radar.audit_thread and radar.audit_thread.is_alive()),
         "early_causal_entry_alive": bool(radar.early_thread and radar.early_thread.is_alive()),
+        "liquid_daily_orb_alive": bool(radar.orb_thread and radar.orb_thread.is_alive()),
     })
 
 
