@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.6.8"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0A-CENSUS-TEST-DISCOVERY-FIX"
+VERSION = "1.7.0"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-HISTORICAL-UNIVERSE-CAPABILITY-PROBE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -473,6 +473,12 @@ class AlpacaClient:
 
     def assets(self) -> list[dict[str, Any]]:
         return list(self.get(f"{self.trading_base}/v2/assets", {"status": "active", "asset_class": "us_equity"}) or [])
+
+    def assets_by_status(self, status: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"asset_class": "us_equity"}
+        if status:
+            params["status"] = status
+        return list(self.get(f"{self.trading_base}/v2/assets", params) or [])
 
     def snapshots(self, symbols: list[str], feed: str = "sip") -> dict[str, Any]:
         if not symbols:
@@ -1373,6 +1379,10 @@ class IndependentPriorityRadar:
             "selection_uses_session_detector": False, "phase0a_allowed": False, "updated_at": iso(),
         }
         self.phase0_reference_report: dict[str, Any] | None = None
+        self.universe_probe_lock = threading.RLock()
+        self.universe_probe_thread: threading.Thread | None = None
+        self.universe_probe_state: dict[str, Any] = {"status":"IDLE","message":"Historical-universe capability probe has not started","historical_census_allowed":False,"updated_at":iso()}
+        self.universe_probe_report: dict[str, Any] | None = None
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -1592,6 +1602,91 @@ class IndependentPriorityRadar:
             self.phase0_probe_thread = threading.Thread(target=self.phase0_probe_loop, name="independent-priority-phase0-probe", daemon=True)
             self.phase0_probe_thread.start()
         return True, "started"
+
+    def universe_probe_key(self, suffix: str) -> str:
+        return self.key(f"historical_universe_probe:v1:{suffix}")
+
+    def _set_universe_probe_state(self, **updates: Any) -> None:
+        with self.universe_probe_lock:
+            self.universe_probe_state.update(updates)
+            self.universe_probe_state["updated_at"] = iso()
+            snapshot = dict(self.universe_probe_state)
+        if self.redis.configured:
+            self.redis.set_json(self.universe_probe_key("status"), snapshot)
+
+    @staticmethod
+    def _asset_symbol_set(rows: list[dict[str, Any]]) -> set[str]:
+        return {str(x.get("symbol") or "").upper() for x in rows if SYMBOL_RE.fullmatch(str(x.get("symbol") or "").upper())}
+
+    def historical_universe_probe_loop(self) -> None:
+        try:
+            self._set_universe_probe_state(status="RUNNING", message="Testing Alpaca all/inactive asset coverage and old SIP history", historical_census_allowed=False)
+            all_assets = self.alpaca.assets_by_status(None)
+            active_assets = self.alpaca.assets_by_status("active")
+            inactive_assets = self.alpaca.assets_by_status("inactive")
+            all_syms, active_syms, inactive_syms = map(self._asset_symbol_set, (all_assets, active_assets, inactive_assets))
+            manifest = self.redis.get_json(f"{self.source_prefix}:manifest", {}) if self.redis.configured else {}
+            manifest_syms = {str(x).upper() for x in (manifest.get("symbols") or []) if SYMBOL_RE.fullmatch(str(x).upper())}
+            catalog = self.redis.get_json(f"{self.source_prefix}:explosions:catalog", {}) if self.redis.configured else {}
+            catalog_syms = {str(x.get("symbol") or "").upper() for x in (catalog.get("cases") or []) if SYMBOL_RE.fullmatch(str(x.get("symbol") or "").upper())}
+            historical_cases = [
+                {"symbol":"CELG","start":"2019-10-01","end":"2019-10-08","purpose":"2019 delisted/acquired ticker"},
+                {"symbol":"TWTR","start":"2022-10-20","end":"2022-10-28","purpose":"2022 delisted/acquired ticker"},
+                {"symbol":"SIVB","start":"2023-03-01","end":"2023-03-11","purpose":"2023 inactive bank ticker"},
+                {"symbol":"ATVI","start":"2023-10-06","end":"2023-10-14","purpose":"2023 acquired ticker"},
+                {"symbol":"BBBY","start":"2023-04-03","end":"2023-04-11","purpose":"2023 delisted ticker"},
+            ]
+            case_results=[]
+            for case in historical_cases:
+                start=datetime.fromisoformat(case["start"]+"T00:00:00+00:00")
+                end=datetime.fromisoformat(case["end"]+"T23:59:59+00:00")
+                rows=self.alpaca.bars([case["symbol"]], start, end, feed="sip", adjustment="raw", timeframe="1Day").get(case["symbol"],[])
+                sym=case["symbol"]
+                case_results.append({**case,"sip_historical_bars":len(rows),"sip_history_found":bool(rows),"in_all_assets":sym in all_syms,"in_active_assets":sym in active_syms,"in_inactive_assets":sym in inactive_syms})
+            # Explicitly test historical symbol mapping around FB -> META.
+            map_start=datetime(2022,6,6,tzinfo=UTC); map_end=datetime(2022,6,11,tzinfo=UTC)
+            mapped=self.alpaca.bars(["META"],map_start,map_end,feed="sip",adjustment="raw",timeframe="1Day").get("META",[])
+            old_history_hits=sum(bool(x["sip_history_found"]) for x in case_results)
+            inactive_with_history=sum(bool(x["sip_history_found"] and x["in_inactive_assets"]) for x in case_results)
+            manifest_in_all=len(manifest_syms & all_syms)
+            catalog_in_all=len(catalog_syms & all_syms)
+            diagnostics={
+                "all_assets_count":len(all_syms),"active_assets_count":len(active_syms),"inactive_assets_count":len(inactive_syms),
+                "all_equals_active_union_inactive": all_syms == (active_syms | inactive_syms),
+                "manifest_symbol_count":len(manifest_syms),"manifest_in_all_assets":manifest_in_all,"manifest_missing_from_all_assets":len(manifest_syms-all_syms),
+                "catalog_symbol_count":len(catalog_syms),"catalog_in_all_assets":catalog_in_all,"catalog_missing_from_all_assets":len(catalog_syms-all_syms),
+                "old_history_cases_found":old_history_hits,"old_history_cases_total":len(case_results),"inactive_cases_with_sip_history":inactive_with_history,
+                "meta_mapping_bars_2022_06_06_to_10":len(mapped),"meta_mapping_has_pre_rename_days":any(str(r.get("t") or "")[:10] < "2022-06-09" for r in mapped),
+            }
+            # This probe can establish usefulness, but Alpaca /assets is not documented as a point-in-time 2019-2026 security master.
+            useful = len(inactive_syms)>0 and old_history_hits>=3 and diagnostics["meta_mapping_has_pre_rename_days"]
+            if useful and len(manifest_syms-all_syms)==0:
+                decision="PARTIAL"
+                reason="Alpaca all/inactive assets plus SIP history are useful, but /v2/assets is not documented as a complete point-in-time 2019-2026 security master; do not run the full historical census from this list alone."
+            elif useful:
+                decision="PARTIAL"
+                reason="Historical SIP/inactive coverage works, but current all-assets misses symbols already present in the frozen manifest; merge/reconstruct the universe before a multi-year census."
+            else:
+                decision="FAIL"
+                reason="Alpaca all/inactive assets did not demonstrate enough historical-universe capability for the 2019-2026 census."
+            report={"version":VERSION,"build":BUILD,"probe_id":"IPR-HISTORICAL-UNIVERSE-CAPABILITY-2026-09-05-A","status":"COMPLETED","decision":decision,"decision_reason":reason,"historical_census_allowed":False,"fail_closed":True,"diagnostics":diagnostics,"historical_reference_cases":case_results,"meta_symbol_mapping_test":{"symbol":"META","bars":len(mapped),"has_pre_rename_days":diagnostics["meta_mapping_has_pre_rename_days"]},"next_step":"Design a documented historical-universe reconstruction only after reviewing this report.","completed_at":iso()}
+            self.universe_probe_report=report
+            if self.redis.configured:self.redis.set_json(self.universe_probe_key("report"),report)
+            self._set_universe_probe_state(status="COMPLETED",message=f"Historical-universe probe completed: {decision}",decision=decision,historical_census_allowed=False)
+        except Exception as exc:
+            logging.exception("Historical universe capability probe failed")
+            self._set_universe_probe_state(status="ERROR",message="Historical-universe probe failed closed",historical_census_allowed=False,last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.universe_probe_lock:self.universe_probe_thread=None
+
+    def start_historical_universe_probe(self) -> tuple[bool,str]:
+        if not (self.alpaca.configured and self.redis.configured): return False,"Alpaca and Redis are required"
+        with self.universe_probe_lock:
+            if self.universe_probe_thread and self.universe_probe_thread.is_alive(): return False,"already_running"
+            self.universe_probe_state={"status":"STARTING","message":"Starting historical-universe capability probe","historical_census_allowed":False,"updated_at":iso()}
+            self.universe_probe_thread=threading.Thread(target=self.historical_universe_probe_loop,name="historical-universe-probe",daemon=True)
+            self.universe_probe_thread.start()
+        return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
         return self.key(f"phase0a:v1:{suffix}")
@@ -5293,6 +5388,29 @@ def phase0_reference_candidates_status():
 def phase0_reference_candidates_result():
     report=radar.redis.get_json(radar.phase0_reference_key("report"),None) if radar.redis.configured else radar.phase0_reference_report
     if not report: return jsonify({"result_ready":False,"phase0a_allowed":False,"status_url":"/phase0/reference-candidates/status"}),202
+    return jsonify(report)
+
+@app.get("/phase0/universe-probe")
+def historical_universe_probe_home():
+    return jsonify({"purpose":"Test historical universe coverage before any 2019-2026 census","start_url":"/phase0/universe-probe/start","status_url":"/phase0/universe-probe/status","result_url":"/phase0/universe-probe/result","historical_census_allowed":False})
+
+@app.get("/phase0/universe-probe/start")
+@app.post("/phase0/universe-probe/start")
+def historical_universe_probe_start():
+    started,message=radar.start_historical_universe_probe()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/universe-probe/status","result_url":"/phase0/universe-probe/result","historical_census_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/universe-probe/status")
+def historical_universe_probe_status():
+    stored=radar.redis.get_json(radar.universe_probe_key("status"),None) if radar.redis.configured else None
+    with radar.universe_probe_lock:
+        payload=dict(stored or radar.universe_probe_state); payload["worker_alive"]=bool(radar.universe_probe_thread and radar.universe_probe_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/universe-probe/result")
+def historical_universe_probe_result():
+    report=radar.redis.get_json(radar.universe_probe_key("report"),None) if radar.redis.configured else radar.universe_probe_report
+    if not report:return jsonify({"result_ready":False,"status_url":"/phase0/universe-probe/status","historical_census_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0a")
