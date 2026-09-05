@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.6.5"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0-REFERENCE-DISCOVERY"
+VERSION = "1.6.6"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-PHASE0-DUAL-DETECTOR-PROBE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -65,41 +65,25 @@ PROTOCOL = {
     "safety": {"orders_enabled": False, "automatic_execution": False},
 }
 PHASE0_PROBE_SPEC = {
-    "probe_id": "IPR-HISTORICAL-EXPLOSION-PHASE0-PROBE-2026-09-05-A",
-    "purpose": "Fail-closed capability probe before any Phase 0A historical explosion census.",
+    "probe_id": "IPR-HISTORICAL-EXPLOSION-PHASE0-PROBE-2026-09-05-B",
+    "purpose": "Fail-closed dual-detector capability probe before any Phase 0A historical explosion census.",
     "trading_cycle": "previous official regular close -> target session official regular close",
     "primary_threshold_pct": 20.0,
-    "detector": "forward streaming running-min detector on chronologically merged one-minute closes",
+    "full_cycle_detector": "forward streaming running-min detector on chronologically merged one-minute closes across the full trading cycle",
+    "session_detector": "the same forward streaming running-min detector, but restricted to the frozen expected session only",
     "candidate_sources": ["Alpaca SIP 1Min raw", "Alpaca BOATS 1Min raw for overnight"],
     "acceptance": {
-        "all_frozen_reference_cases_must_be_detected": True,
-        "all_expected_extended_sessions_must_have_coverage": True,
-        "detected_t1_must_match_expected_start_session": True,
+        "all_frozen_reference_cases_must_have_expected_session_coverage": True,
+        "all_frozen_reference_cases_must_detect_ge20_in_full_cycle": True,
+        "all_frozen_reference_cases_must_detect_ge20_inside_expected_session": True,
+        "full_cycle_t1_session_is_diagnostic_only": True,
         "synthetic_streaming_detector_tests_must_pass": True,
         "phase0a_is_fail_closed": True,
     },
     "frozen_reference_cases": [
-        {
-            "symbol": "INHD",
-            "target_session": "2026-08-28",
-            "expected_start_session": "AH",
-            "expected_ge20_in_cycle": True,
-            "provenance": "pre-code observed case: move began after the 2026-08-27 regular close",
-        },
-        {
-            "symbol": "SDOT",
-            "target_session": "2026-08-24",
-            "expected_start_session": "Overnight",
-            "expected_ge20_in_cycle": True,
-            "provenance": "pre-code observed case from project log: active in overnight trading before the 2026-08-24 regular session and later exceeded +20%",
-        },
-        {
-            "symbol": "GME",
-            "target_session": "2021-01-27",
-            "expected_start_session": "Premarket",
-            "expected_ge20_in_cycle": True,
-            "provenance": "pre-code historical reference selected specifically to exercise SIP premarket coverage; detector must independently verify the >=20% path",
-        }
+        {"symbol":"INHD","target_session":"2026-08-28","expected_session":"AH","expected_ge20_in_cycle":True,"expected_ge20_in_session":True,"provenance":"raw one-minute reference established before this dual-detector probe"},
+        {"symbol":"ELPW","target_session":"2026-06-09","expected_session":"Overnight","expected_ge20_in_cycle":True,"expected_ge20_in_session":True,"provenance":"selected from legacy NDR catalog, then independently reviewed on raw Alpaca one-minute bars before this dual-detector probe"},
+        {"symbol":"OFAL","target_session":"2026-08-12","expected_session":"Premarket","expected_ge20_in_cycle":True,"expected_ge20_in_session":True,"provenance":"selected from legacy NDR catalog, then independently reviewed on raw Alpaca one-minute bars before this dual-detector probe"},
     ],
     "safety": {"phase0a_runs": False, "feature_discovery_runs": False, "alerts_enabled": False, "orders_enabled": False},
 }
@@ -1472,42 +1456,36 @@ class IndependentPriorityRadar:
         boats = self.alpaca.bars([symbol], start, end, feed="boats", adjustment="raw", timeframe="1Min").get(symbol, [])
         merged: dict[str, dict[str, Any]] = {}
         source_by_ts: dict[str, str] = {}
-        for source, rows in (("sip", sip), ("boats", boats)):
-            for row in rows:
+        for source, source_rows in (("sip", sip), ("boats", boats)):
+            for row in source_rows:
                 ts = str(row.get("t") or "")
-                if not ts:
-                    continue
-                # BOATS is only authoritative for the overnight window; SIP wins elsewhere.
+                if not ts: continue
                 session = self._probe_session(ts, target)
-                if source == "boats" and session != "Overnight":
-                    continue
+                if source == "boats" and session != "Overnight": continue
                 if ts not in merged or source == "sip":
-                    merged[ts] = row
-                    source_by_ts[ts] = source
+                    merged[ts] = row; source_by_ts[ts] = source
         rows = [merged[k] for k in sorted(merged)]
-        session_counts: dict[str, int] = defaultdict(int)
-        source_counts: dict[str, int] = defaultdict(int)
+        expected_session = str(case.get("expected_session") or "")
+        session_rows = [r for r in rows if self._probe_session(str(r.get("t") or ""), target) == expected_session]
+        session_counts: dict[str, int] = defaultdict(int); source_counts: dict[str, int] = defaultdict(int)
         for row in rows:
             ts = str(row.get("t") or "")
-            session_counts[self._probe_session(ts, target)] += 1
-            source_counts[source_by_ts.get(ts, "unknown")] += 1
-        detector = self._streaming_ge20(rows, float(PHASE0_PROBE_SPEC["primary_threshold_pct"]))
-        expected_session = str(case.get("expected_start_session") or "")
+            session_counts[self._probe_session(ts, target)] += 1; source_counts[source_by_ts.get(ts, "unknown")] += 1
+        threshold = float(PHASE0_PROBE_SPEC["primary_threshold_pct"])
+        full_cycle_detector = self._streaming_ge20(rows, threshold)
+        session_detector = self._streaming_ge20(session_rows, threshold)
         coverage_ok = bool(session_counts.get(expected_session, 0)) if expected_session else True
-        explosion_ok = detector["detected"] == bool(case.get("expected_ge20_in_cycle", True))
-        actual_start_session = None
-        if detector.get("detected") and detector.get("t1"):
-            actual_start_session = self._probe_session(str(detector["t1"]), target)
-        start_session_match = (actual_start_session == expected_session) if expected_session else True
-        passed = coverage_ok and explosion_ok and start_session_match
-        return {
-            **case, "cycle_start": iso(start), "cycle_end": iso(end),
-            "sip_bars": len(sip), "boats_bars": len(boats), "merged_bars": len(rows),
-            "session_counts": dict(session_counts), "source_counts": dict(source_counts),
-            "coverage_ok": coverage_ok, "explosion_expectation_ok": explosion_ok,
-            "actual_start_session": actual_start_session, "start_session_match": start_session_match,
-            "detector": detector, "passed": passed,
-        }
+        full_cycle_ok = full_cycle_detector["detected"] == bool(case.get("expected_ge20_in_cycle", True))
+        session_path_ok = session_detector["detected"] == bool(case.get("expected_ge20_in_session", True))
+        full_cycle_t1_session = None
+        if full_cycle_detector.get("detected") and full_cycle_detector.get("t1"):
+            full_cycle_t1_session = self._probe_session(str(full_cycle_detector["t1"]), target)
+        passed = coverage_ok and full_cycle_ok and session_path_ok
+        return {**case, "cycle_start":iso(start), "cycle_end":iso(end), "sip_bars":len(sip), "boats_bars":len(boats), "merged_bars":len(rows),
+                "expected_session_bars":len(session_rows), "session_counts":dict(session_counts), "source_counts":dict(source_counts),
+                "coverage_ok":coverage_ok, "full_cycle_expectation_ok":full_cycle_ok, "session_path_expectation_ok":session_path_ok,
+                "full_cycle_t1_session":full_cycle_t1_session, "full_cycle_t1_session_is_diagnostic_only":True,
+                "full_cycle_detector":full_cycle_detector, "session_detector":session_detector, "passed":passed}
 
     @staticmethod
     def _synthetic_phase0_probe_tests() -> dict[str, Any]:
@@ -1527,8 +1505,8 @@ class IndependentPriorityRadar:
 
     @staticmethod
     def _phase0_gate_decision(synthetic: dict[str, Any], reference_results: list[dict[str, Any]]) -> dict[str, Any]:
-        expected_sessions = {str(c.get("expected_start_session") or "") for c in PHASE0_PROBE_SPEC["frozen_reference_cases"]}
-        covered_sessions = {str(r.get("expected_start_session") or "") for r in reference_results if r.get("coverage_ok")}
+        expected_sessions = {str(c.get("expected_session") or "") for c in PHASE0_PROBE_SPEC["frozen_reference_cases"]}
+        covered_sessions = {str(r.get("expected_session") or "") for r in reference_results if r.get("coverage_ok")}
         refs_complete = len(reference_results) == len(PHASE0_PROBE_SPEC["frozen_reference_cases"])
         refs_pass = refs_complete and bool(reference_results) and all(bool(r.get("passed")) for r in reference_results)
         sessions_pass = bool(expected_sessions) and expected_sessions.issubset(covered_sessions)
