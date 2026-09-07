@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.17-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-FEATURE-SCORING-FREEZE-ANCHOR-POLICY-HARDENED"
+VERSION = "1.7.18"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-VALIDATION-SUCCESS-CRITERIA-FREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -376,6 +376,43 @@ FEATURE_SCORING_FREEZE_SPEC = {
     "safety": {"alpaca_requests":False,"validation_2025_read":False,"holdout_2026_read":False,"orders_enabled":False,"alerts_enabled":False,"stop_and_review_after_freeze":True},
 }
 FEATURE_SCORING_FREEZE_SHA256 = hashlib.sha256(json.dumps(FEATURE_SCORING_FREEZE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+# Frozen only after the 2019-2024 model freeze and before any 2025 read.
+# These rules define how 2025 will be interpreted; they do not open or scan 2025.
+VALIDATION_SUCCESS_CRITERIA_SPEC = {
+    "criteria_id": "IPR-VALIDATION-SUCCESS-CRITERIA-2026-09-08-A",
+    "development_status": "Post-Discovery/post-model-freeze, pre-Validation protocol amendment. Frozen before any 2025 read and never claimed as pre-Discovery preregistration.",
+    "purpose": "Pre-commit PASS/WEAK_PASS/FAIL interpretation for the untouched 2025 Validation year before opening it.",
+    "required_frozen_model_sha256": "c543ed4320a9cbc7eecef311675fb8955642d9bcb81e31fe7888728ee1c5c7c3",
+    "required_freeze_id": "IPR-FEATURE-SCORING-FREEZE-2026-09-08-B",
+    "scope": "Freeze criteria from the already-frozen 2019-2024 model report only. No 2025/2026 observations may be read.",
+    "metric_unit": {
+        "positive": "event-level pass rate among scoreable verified >=20% positive events",
+        "hard_negative": "symbol-level pass rate using mean event score per symbol, matching Development threshold calibration",
+        "scoreability": "report scoreable numerator/denominator separately; do not silently drop missing-score cases from coverage diagnostics",
+    },
+    "role_rules": {
+        "early_core": {"critical": True, "pass_min_development_recall_retention": 0.60, "weak_min_development_recall_retention": 0.40, "max_hard_negative_symbol_pass_rate": 0.10},
+        "confirmation": {"critical": True, "pass_min_development_recall_retention": 0.60, "weak_min_development_recall_retention": 0.40, "max_hard_negative_symbol_pass_rate": 0.10},
+        "severity_quality": {"critical": False, "pass_min_development_recall_retention": 0.60, "weak_min_development_recall_retention": 0.40, "max_hard_negative_symbol_pass_rate": 0.10, "note": "Diagnostic/quality role; cannot rescue or veto Core Validation by itself."},
+    },
+    "classification": {
+        "role_pass": "positive pass rate >= 60% of its frozen Development positive pass rate AND hard-negative symbol pass rate <=10%.",
+        "role_weak_pass": "positive pass rate >=40% but <60% of frozen Development positive pass rate AND hard-negative symbol pass rate <=10%.",
+        "role_fail": "positive pass rate <40% of frozen Development positive pass rate OR hard-negative symbol pass rate >10%.",
+        "overall_pass": "Both critical roles (early_core and confirmation) are PASS.",
+        "overall_weak_pass": "Neither critical role is FAIL and at least one critical role is WEAK_PASS.",
+        "overall_fail": "Either critical role is FAIL.",
+    },
+    "guardrails": {
+        "no_threshold_change": True, "no_feature_change": True, "no_anchor_change": True, "no_direction_change": True, "no_weight_change": True,
+        "no_2025_driven_reinterpretation": True, "no_2026_read": True,
+        "after_2025": "STOP_REVIEW regardless of PASS/WEAK_PASS/FAIL. 2026 remains locked and requires a separate explicit decision."
+    },
+    "safety": {"alpaca_requests": False, "validation_2025_read": False, "holdout_2026_read": False, "orders_enabled": False, "alerts_enabled": False},
+}
+VALIDATION_SUCCESS_CRITERIA_SHA256 = hashlib.sha256(json.dumps(VALIDATION_SUCCESS_CRITERIA_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 PROTOCOL_SHA256 = hashlib.sha256(
@@ -1688,6 +1725,7 @@ class IndependentPriorityRadar:
         self.feature_scoring_freeze_lock = threading.RLock()
         self.feature_scoring_freeze_thread: threading.Thread | None = None
         self.feature_scoring_freeze_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Feature/Scoring Freeze has not started","freeze_id":FEATURE_SCORING_FREEZE_SPEC["freeze_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
+        self.validation_criteria_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Validation Success Criteria Freeze has not started","criteria_id":VALIDATION_SUCCESS_CRITERIA_SPEC["criteria_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -3518,6 +3556,40 @@ class IndependentPriorityRadar:
             if self.feature_scoring_freeze_thread and self.feature_scoring_freeze_thread.is_alive():return False,"already_running"
             self.feature_scoring_freeze_thread=threading.Thread(target=self.feature_scoring_freeze_loop,name="feature-scoring-freeze-2019-2024",daemon=True); self.feature_scoring_freeze_thread.start()
         return True,"started"
+
+    def validation_criteria_key(self, suffix: str) -> str:
+        return self.key(f"validation_success_criteria:v1:{suffix}")
+
+    def _validation_criteria_gate(self) -> tuple[bool,str]:
+        if not self.redis.configured: return False,"Redis is required"
+        report=self.redis.get_json(self.feature_scoring_freeze_key("report"),None)
+        if not isinstance(report,dict) or report.get("status")!="COMPLETED" or report.get("phase")!="FROZEN_STOP_REVIEW": return False,"Completed frozen model report is required"
+        if report.get("validation_2025_opened") is not False or report.get("holdout_2026_opened") is not False: return False,"Validation/Holdout contamination flag"
+        if str(report.get("freeze_id"))!=VALIDATION_SUCCESS_CRITERIA_SPEC["required_freeze_id"]: return False,"Frozen model freeze_id mismatch"
+        if str(report.get("frozen_model_sha256"))!=VALIDATION_SUCCESS_CRITERIA_SPEC["required_frozen_model_sha256"]: return False,"Frozen model SHA256 mismatch"
+        return True,"allowed"
+
+    def freeze_validation_success_criteria(self) -> tuple[bool,str]:
+        allowed,reason=self._validation_criteria_gate()
+        if not allowed:return False,reason
+        model=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}
+        cal=model.get("calibration") or {}
+        derived={}
+        for role,rule in VALIDATION_SUCCESS_CRITERIA_SPEC["role_rules"].items():
+            dev=float((cal.get(role) or {}).get("development_positive_event_pass_rate"))
+            derived[role]={
+                "development_positive_event_pass_rate":dev,
+                "pass_min_2025_positive_event_pass_rate":dev*float(rule["pass_min_development_recall_retention"]),
+                "weak_min_2025_positive_event_pass_rate":dev*float(rule["weak_min_development_recall_retention"]),
+                "max_2025_hard_negative_symbol_pass_rate":float(rule["max_hard_negative_symbol_pass_rate"]),
+                "critical":bool(rule.get("critical")),
+            }
+        report={"version":VERSION,"build":BUILD,"criteria_id":VALIDATION_SUCCESS_CRITERIA_SPEC["criteria_id"],"criteria_sha256":VALIDATION_SUCCESS_CRITERIA_SHA256,"status":"COMPLETED","phase":"CRITERIA_FROZEN_STOP_REVIEW","scope":"Frozen before any 2025/2026 read","source_freeze_id":model.get("freeze_id"),"source_frozen_model_sha256":model.get("frozen_model_sha256"),"criteria":VALIDATION_SUCCESS_CRITERIA_SPEC,"derived_numeric_thresholds":derived,"alpaca_requests_made":0,"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+        canonical=dict(report); canonical.pop("completed_at",None); report["criteria_artifact_sha256"]=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        self.redis.set_json(self.validation_criteria_key("report"),report)
+        state={"status":"COMPLETED","phase":"CRITERIA_FROZEN_STOP_REVIEW","message":"Validation success criteria frozen; STOP and review before opening 2025","criteria_id":VALIDATION_SUCCESS_CRITERIA_SPEC["criteria_id"],"criteria_sha256":VALIDATION_SUCCESS_CRITERIA_SHA256,"criteria_artifact_sha256":report["criteria_artifact_sha256"],"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"updated_at":iso()}
+        self.validation_criteria_state=state; self.redis.set_json(self.validation_criteria_key("status"),state)
+        return True,"frozen"
 
     def start_phase0b_full(self) -> tuple[bool,str]:
         allowed,reason=self._phase0b_full_gate()
@@ -7458,6 +7530,25 @@ def feature_scoring_freeze_status():
 def feature_scoring_freeze_result():
     report=radar.redis.get_json(radar.feature_scoring_freeze_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/feature-scoring-freeze/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
+    return jsonify(report)
+
+@app.get("/research/validation-success-criteria/protocol")
+def validation_success_criteria_protocol():
+    allowed,reason=radar._validation_criteria_gate(); return jsonify({"version":VERSION,"build":BUILD,"criteria_spec":VALIDATION_SUCCESS_CRITERIA_SPEC,"criteria_sha256":VALIDATION_SUCCESS_CRITERIA_SHA256,"gate_allowed":allowed,"gate_reason":reason,"validation_2025_opened":False,"holdout_2026_opened":False})
+
+@app.get("/research/validation-success-criteria/start")
+def validation_success_criteria_start():
+    ok,message=radar.freeze_validation_success_criteria(); return jsonify({"ok":ok,"status":message,"status_url":"/research/validation-success-criteria/status","result_url":"/research/validation-success-criteria/result","validation_2025_opened":False,"holdout_2026_opened":False}), (200 if ok else 409)
+
+@app.get("/research/validation-success-criteria/status")
+def validation_success_criteria_status():
+    stored=radar.redis.get_json(radar.validation_criteria_key("status"),None) if radar.redis.configured else None
+    return jsonify(dict(stored or radar.validation_criteria_state))
+
+@app.get("/research/validation-success-criteria/result")
+def validation_success_criteria_result():
+    report=radar.redis.get_json(radar.validation_criteria_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/validation-success-criteria/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
     return jsonify(report)
 
 @app.get("/phase0/phase0b-full")
