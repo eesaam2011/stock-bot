@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.16"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-DISCOVERY-AUDIT-HARDENING"
+VERSION = "1.7.17"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-FEATURE-SCORING-FREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -329,6 +329,43 @@ FEATURE_DISCOVERY_AUDIT_SPEC = {
     "safety": {"alpaca_requests":False,"validation_2025_read":False,"holdout_2026_read":False,"orders_enabled":False,"alerts_enabled":False,"stop_and_review_after_audit":True},
 }
 FEATURE_DISCOVERY_AUDIT_SHA256 = hashlib.sha256(json.dumps(FEATURE_DISCOVERY_AUDIT_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+FEATURE_SCORING_FREEZE_SPEC = {
+    "freeze_id": "IPR-FEATURE-SCORING-FREEZE-2026-09-08-A",
+    "purpose": "Freeze feature eligibility, early-detection/confirmation/severity roles, score construction and Development-only operating thresholds before opening 2025.",
+    "source_audit_id": FEATURE_DISCOVERY_AUDIT_SPEC["audit_id"],
+    "scope": "2019-2024 persisted Discovery observations only; no Alpaca fetch and no 2025/2026 read.",
+    "pre_selection_eligibility_rule": {
+        "principle": "A trading-model feature must directly represent observable price, volume, liquidity, VWAP/location, volatility/range, or persistence/recovery behavior. Data-availability/coverage/history-length mechanics are structural proxies and are ineligible regardless of statistical performance.",
+        "structural_proxy_exact_names": ["bars_available"],
+        "structural_proxy_name_tokens": ["coverage", "data_available", "history_length", "bars_available"],
+        "applies_regardless_of_effect": True,
+    },
+    "roles": {
+        "early_core": "Source-promoted, six-year sign-stable, all-supported-phase sign-stable, eligible features at anchors 60/120/240m. Keep exactly the earliest qualifying anchor (largest minutes) per feature.",
+        "confirmation": "Same stability/eligibility rule at anchors 5/15/30m. Keep exactly the earliest qualifying confirmation anchor (largest minutes) per feature. Confirmation is separate and cannot redefine Early Core after Validation opens.",
+        "severity_quality": "Source-promoted + six-year stable + supported-phase stable + monotonic +20/+30/+50, eligible features only. Keep earliest qualifying anchor per feature. This is quality/severity evidence, not a mandatory +20 detector gate.",
+    },
+    "score": {
+        "normalization": "For each selected Feature x Anchor, center at the Discovery hard-negative equal-symbol mean and scale by the pooled symbol-mean SD reconstructed as abs((positive_mean-hard_negative_mean)/standardized_effect).",
+        "component": "clip(direction * (x-hard_negative_mean)/pooled_sd, -3, +3)",
+        "weight": "abs(Discovery standardized effect), normalized to sum to 1 within role",
+        "event_score": "weighted mean of available selected components; renormalize over available weights; require >=50% of role weight observed",
+        "development_threshold": "95th percentile of per-symbol mean hard-negative event scores in 2019-2024; frozen before 2025. This targets approximately 5% Development hard-negative symbol FPR without optimizing on positive recall.",
+    },
+    "integrity": {
+        "expected_sessions": 1510,
+        "expected_observations": 197125,
+        "expected_class_counts": {"positive":92538,"hard_negative":71332,"random_control":33255},
+        "expected_source_promoted": 76,
+        "expected_year_stable": 73,
+        "expected_phase_stable": 60,
+        "expected_ladder_monotonic": 16,
+    },
+    "safety": {"alpaca_requests":False,"validation_2025_read":False,"holdout_2026_read":False,"orders_enabled":False,"alerts_enabled":False,"stop_and_review_after_freeze":True},
+}
+FEATURE_SCORING_FREEZE_SHA256 = hashlib.sha256(json.dumps(FEATURE_SCORING_FREEZE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 PROTOCOL_SHA256 = hashlib.sha256(
@@ -1638,6 +1675,9 @@ class IndependentPriorityRadar:
         self.feature_discovery_audit_lock = threading.RLock()
         self.feature_discovery_audit_thread: threading.Thread | None = None
         self.feature_discovery_audit_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Discovery Audit has not started","audit_id":FEATURE_DISCOVERY_AUDIT_SPEC["audit_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
+        self.feature_scoring_freeze_lock = threading.RLock()
+        self.feature_scoring_freeze_thread: threading.Thread | None = None
+        self.feature_scoring_freeze_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Feature/Scoring Freeze has not started","freeze_id":FEATURE_SCORING_FREEZE_SPEC["freeze_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -3356,6 +3396,106 @@ class IndependentPriorityRadar:
         with self.feature_discovery_audit_lock:
             if self.feature_discovery_audit_thread and self.feature_discovery_audit_thread.is_alive():return False,"already_running"
             self.feature_discovery_audit_thread=threading.Thread(target=self.feature_discovery_audit_loop,name="feature-discovery-audit-2019-2024",daemon=True); self.feature_discovery_audit_thread.start()
+        return True,"started"
+
+    def feature_scoring_freeze_key(self, suffix: str) -> str:
+        return self.key(f"feature_scoring_freeze:v1:{suffix}")
+
+    def _set_feature_scoring_freeze_state(self, **updates: Any) -> None:
+        with self.feature_scoring_freeze_lock:
+            self.feature_scoring_freeze_state.update(updates); self.feature_scoring_freeze_state["updated_at"] = iso(); snap=dict(self.feature_scoring_freeze_state)
+        if self.redis.configured: self.redis.set_json(self.feature_scoring_freeze_key("status"), snap)
+
+    @staticmethod
+    def _fsf_structural_proxy(feature: str) -> bool:
+        n=str(feature or "").lower(); rule=FEATURE_SCORING_FREEZE_SPEC["pre_selection_eligibility_rule"]
+        return n in set(rule["structural_proxy_exact_names"]) or any(tok in n for tok in rule["structural_proxy_name_tokens"])
+
+    def _feature_scoring_freeze_gate(self) -> tuple[bool,str]:
+        if not self.redis.configured: return False,"Redis is required"
+        audit=self.redis.get_json(self.feature_discovery_audit_key("report"),None)
+        if not isinstance(audit,dict) or audit.get("status")!="COMPLETED" or audit.get("phase")!="STOP_REVIEW": return False,"Completed Discovery Audit STOP_REVIEW report is required"
+        if str(audit.get("audit_id"))!=FEATURE_DISCOVERY_AUDIT_SPEC["audit_id"] or str(audit.get("audit_sha256"))!=FEATURE_DISCOVERY_AUDIT_SHA256: return False,"Discovery Audit identity/hash mismatch"
+        if audit.get("validation_2025_opened") is not False or audit.get("holdout_2026_opened") is not False: return False,"Validation/Holdout contamination flag"
+        x=FEATURE_SCORING_FREEZE_SPEC["integrity"]; sm=audit.get("summary") or {}
+        if int(audit.get("sessions") or 0)!=x["expected_sessions"] or int(audit.get("observations") or 0)!=x["expected_observations"]: return False,"Audit totals mismatch"
+        if dict(audit.get("class_counts") or {})!=x["expected_class_counts"]: return False,"Audit class counts mismatch"
+        if int(sm.get("source_promoted") or 0)!=x["expected_source_promoted"] or int(sm.get("promoted_all_6_years_same_direction") or 0)!=x["expected_year_stable"] or int(sm.get("promoted_all_supported_phases_same_direction") or 0)!=x["expected_phase_stable"] or int(sm.get("promoted_ladder_monotonic_20_30_50") or 0)!=x["expected_ladder_monotonic"]: return False,"Audit summary mismatch"
+        return True,"allowed"
+
+    @staticmethod
+    def _fsf_choose_earliest(rows: list[dict[str,Any]]) -> list[dict[str,Any]]:
+        best={}
+        for r in rows:
+            f=str(r.get("feature")); a=int(r.get("anchor_minutes") or 0)
+            if f not in best or a>int(best[f].get("anchor_minutes") or 0): best[f]=r
+        return sorted(best.values(),key=lambda r:(-int(r.get("anchor_minutes") or 0),str(r.get("feature"))))
+
+    def feature_scoring_freeze_loop(self)->None:
+        try:
+            allowed,reason=self._feature_scoring_freeze_gate()
+            if not allowed: raise RuntimeError(reason)
+            audit=self.redis.get_json(self.feature_discovery_audit_key("report"),{}) or {}
+            source=self.redis.get_json(self.feature_discovery_key("report"),{}) or {}
+            src={(int(x["anchor_minutes"]),str(x["feature"])):x for x in (source.get("feature_tests") or [])}
+            promoted=[d for d in (audit.get("diagnostics") or []) if d.get("source_promoted")]
+            stable=[d for d in promoted if d.get("year_stability",{}).get("all_years_same_direction") and d.get("phase_stability",{}).get("all_supported_phases_same_direction")]
+            structural=[d for d in stable if self._fsf_structural_proxy(d.get("feature"))]
+            eligible=[d for d in stable if not self._fsf_structural_proxy(d.get("feature"))]
+            early=self._fsf_choose_earliest([d for d in eligible if int(d.get("anchor_minutes") or 0)>=60])
+            confirm=self._fsf_choose_earliest([d for d in eligible if int(d.get("anchor_minutes") or 0)<60])
+            severity=self._fsf_choose_earliest([d for d in eligible if d.get("ladder_monotonicity",{}).get("monotonic_20_30_50")])
+            def enrich(rows):
+                out=[]
+                for d in rows:
+                    a=int(d["anchor_minutes"]); f=str(d["feature"]); t=src.get((a,f)) or {}; eff=float(t.get("standardized_effect_pos_vs_hard") or 0); pm=t.get("positive_mean_symbol_weighted"); hm=t.get("hard_negative_mean_symbol_weighted")
+                    if not isinstance(pm,(int,float)) or not isinstance(hm,(int,float)) or abs(eff)<1e-12: continue
+                    scale=abs((float(pm)-float(hm))/eff)
+                    if not math.isfinite(scale) or scale<=1e-12: continue
+                    out.append({"feature":f,"anchor_minutes":a,"family":d.get("family"),"direction":1 if eff>0 else -1,"standardized_effect":eff,"hard_negative_center":float(hm),"pooled_symbol_sd":scale,"raw_weight":abs(eff),"year_stable":True,"phase_stable":True,"ladder_monotonic":bool(d.get("ladder_monotonicity",{}).get("monotonic_20_30_50"))})
+                z=sum(x["raw_weight"] for x in out) or 1.0
+                for x in out:x["weight"]=x["raw_weight"]/z
+                return out
+            roles={"early_core":enrich(early),"confirmation":enrich(confirm),"severity_quality":enrich(severity)}
+            if not roles["early_core"]: raise RuntimeError("No eligible Early Core features after frozen rules")
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.feature_discovery_key("completed_sessions"),[]) or []) if 2019<=int(str(x)[:4])<=2024)
+            role_scores={k:defaultdict(list) for k in roles}; role_pos={k:[] for k in roles}; counts=__import__('collections').Counter()
+            self._set_feature_scoring_freeze_state(status="RUNNING",phase="CALIBRATE_2019_2024",message="Calibrating frozen scores from persisted 2019-2024 observations only; 2025/2026 locked",sessions_scanned=0,total_sessions=len(sessions),validation_2025_opened=False,holdout_2026_opened=False)
+            for si,sess in enumerate(sessions,1):
+                obs=self.redis.get_json(self.feature_discovery_key(f"observations:{sess}"),[]) or []
+                for o in obs:
+                    cls=str(o.get("class") or ""); sym=str(o.get("symbol") or ""); counts[cls]+=1
+                    anchors=o.get("anchors") or {}
+                    for role,defs in roles.items():
+                        num=den=0.0
+                        for d in defs:
+                            v=(anchors.get(str(d["anchor_minutes"])) or {}).get(d["feature"])
+                            if not isinstance(v,(int,float)) or not math.isfinite(v): continue
+                            c=d["direction"]*(float(v)-d["hard_negative_center"])/d["pooled_symbol_sd"]; c=max(-3.0,min(3.0,c)); num+=d["weight"]*c; den+=d["weight"]
+                        if den<0.5: continue
+                        score=num/den
+                        if cls=="hard_negative": role_scores[role][sym].append(score)
+                        elif cls=="positive": role_pos[role].append(score)
+                if si==1 or si%100==0 or si==len(sessions): self._set_feature_scoring_freeze_state(status="RUNNING",phase="CALIBRATE_2019_2024",message=f"Frozen score calibration: {si}/{len(sessions)} persisted sessions",sessions_scanned=si,total_sessions=len(sessions),validation_2025_opened=False,holdout_2026_opened=False)
+            calibration={}
+            for role in roles:
+                hs=np.asarray([float(np.mean(v)) for v in role_scores[role].values() if v],dtype=float); ps=np.asarray(role_pos[role],dtype=float)
+                thr=float(np.quantile(hs,0.95)) if len(hs) else None
+                calibration[role]={"hard_negative_symbols":len(hs),"positive_events_scored":len(ps),"threshold_rule":"95th percentile of per-symbol mean hard-negative scores","frozen_threshold":thr,"development_positive_event_pass_rate":(float(np.mean(ps>=thr)) if thr is not None and len(ps) else None),"development_hard_negative_symbol_pass_rate":(float(np.mean(hs>=thr)) if thr is not None and len(hs) else None)}
+            report={"version":VERSION,"build":BUILD,"freeze_id":FEATURE_SCORING_FREEZE_SPEC["freeze_id"],"freeze_spec_sha256":FEATURE_SCORING_FREEZE_SHA256,"status":"COMPLETED","phase":"FROZEN_STOP_REVIEW","scope":"2019-2024 only","source_audit_id":audit.get("audit_id"),"source_audit_sha256":audit.get("audit_sha256"),"source_protocol_sha256":audit.get("source_protocol_sha256"),"source_execution_sha256":audit.get("source_execution_sha256"),"eligibility_rule":FEATURE_SCORING_FREEZE_SPEC["pre_selection_eligibility_rule"],"structural_proxies_excluded":[{"feature":d.get("feature"),"anchor_minutes":d.get("anchor_minutes"),"reason":"structural/data-availability proxy excluded by pre-selection eligibility rule regardless of effect"} for d in structural],"source_intersection_all_three_count":sum(bool(d.get("year_stability",{}).get("all_years_same_direction") and d.get("phase_stability",{}).get("all_supported_phases_same_direction") and d.get("ladder_monotonicity",{}).get("monotonic_20_30_50")) for d in promoted),"roles":roles,"role_counts":{k:len(v) for k,v in roles.items()},"calibration":calibration,"sessions":len(sessions),"class_counts_seen":dict(counts),"alpaca_requests_made":0,"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            canonical=dict(report); canonical.pop("completed_at",None); report["frozen_model_sha256"]=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+            self.redis.set_json(self.feature_scoring_freeze_key("report"),report); self._set_feature_scoring_freeze_state(status="COMPLETED",phase="FROZEN_STOP_REVIEW",message="Feature/Scoring Freeze completed; STOP and review before opening 2025",sessions_scanned=len(sessions),total_sessions=len(sessions),role_counts=report["role_counts"],source_intersection_all_three_count=report["source_intersection_all_three_count"],validation_2025_opened=False,holdout_2026_opened=False,validation_allowed=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Feature/Scoring Freeze failed"); self._set_feature_scoring_freeze_state(status="ERROR",phase="BLOCKED",message="Feature/Scoring Freeze failed closed",last_error=f"{type(exc).__name__}: {exc}",validation_2025_opened=False,holdout_2026_opened=False,validation_allowed=False)
+        finally:
+            with self.feature_scoring_freeze_lock:self.feature_scoring_freeze_thread=None
+
+    def start_feature_scoring_freeze(self)->tuple[bool,str]:
+        allowed,reason=self._feature_scoring_freeze_gate()
+        if not allowed:return False,reason
+        with self.feature_scoring_freeze_lock:
+            if self.feature_scoring_freeze_thread and self.feature_scoring_freeze_thread.is_alive():return False,"already_running"
+            self.feature_scoring_freeze_thread=threading.Thread(target=self.feature_scoring_freeze_loop,name="feature-scoring-freeze-2019-2024",daemon=True); self.feature_scoring_freeze_thread.start()
         return True,"started"
 
     def start_phase0b_full(self) -> tuple[bool,str]:
@@ -7276,6 +7416,27 @@ def feature_discovery_audit_status():
 def feature_discovery_audit_result():
     report=radar.redis.get_json(radar.feature_discovery_audit_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/feature-discovery-audit/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
+    return jsonify(report)
+
+@app.get("/research/feature-scoring-freeze/protocol")
+def feature_scoring_freeze_protocol():
+    allowed,reason=radar._feature_scoring_freeze_gate(); return jsonify({"version":VERSION,"build":BUILD,"freeze_spec":FEATURE_SCORING_FREEZE_SPEC,"freeze_spec_sha256":FEATURE_SCORING_FREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"validation_2025_opened":False,"holdout_2026_opened":False})
+
+@app.get("/research/feature-scoring-freeze/start")
+def feature_scoring_freeze_start():
+    started,message=radar.start_feature_scoring_freeze(); return jsonify({"ok":started,"status":"started" if started else message,"status_url":"/research/feature-scoring-freeze/status","result_url":"/research/feature-scoring-freeze/result","validation_2025_opened":False,"holdout_2026_opened":False}), (200 if started else 409)
+
+@app.get("/research/feature-scoring-freeze/status")
+def feature_scoring_freeze_status():
+    stored=radar.redis.get_json(radar.feature_scoring_freeze_key("status"),None) if radar.redis.configured else None
+    with radar.feature_scoring_freeze_lock:
+        payload=dict(stored or radar.feature_scoring_freeze_state); payload["worker_alive"]=bool(radar.feature_scoring_freeze_thread and radar.feature_scoring_freeze_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/research/feature-scoring-freeze/result")
+def feature_scoring_freeze_result():
+    report=radar.redis.get_json(radar.feature_scoring_freeze_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/feature-scoring-freeze/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
     return jsonify(report)
 
 @app.get("/phase0/phase0b-full")
