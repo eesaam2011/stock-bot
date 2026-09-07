@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.10"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-PHASE0B-DATASET-AUDIT-HARDENING"
+VERSION = "1.7.11"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-FEATURE-DISCOVERY-PROTOCOL-FREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -190,6 +190,87 @@ PHASE0B_DATASET_AUDIT_SPEC = {
     "safety": {"alpaca_requests": False, "feature_discovery_runs": False, "alerts_enabled": False, "orders_enabled": False, "stop_and_review_after_completion": True},
 }
 PHASE0B_DATASET_AUDIT_SHA256 = hashlib.sha256(json.dumps(PHASE0B_DATASET_AUDIT_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+FEATURE_DISCOVERY_PROTOCOL_SPEC = {
+    "protocol_id": "IPR-FEATURE-DISCOVERY-2026-09-07-A",
+    "status": "FROZEN_PROTOCOL_ONLY",
+    "purpose": "Discover causal pre-explosion features from the audited Phase 0B ground-truth dataset without running feature discovery yet.",
+    "source_gate": {
+        "required_phase0b_processed": 205028,
+        "required_phase0b_verified": 169628,
+        "required_unique_verified_symbols": 3724,
+        "required_dataset_audit_integrity_passed": True,
+        "source_phase0b_sha256": "8864474fe6c513d9eca37791b90df1804674ea9e59ef20017490fb0f7eaa205f",
+        "source_audit_id": "IPR-PHASE0B-DATASET-AUDIT-2026-09-07-B-HARDENED",
+    },
+    "positive_events": {
+        "primary": "Phase 0B verified >=20% events only",
+        "strength_ladders": [20, 30, 50],
+        "still_ambiguous_policy": "excluded from positives and retained only for sensitivity diagnostics",
+        "failed_policy": "never relabeled positive",
+    },
+    "causality": {
+        "feature_cutoff": "strictly before the event's first verified +20% threshold timestamp; no post-threshold information",
+        "anchors": "universal completed 5-minute anchors before threshold, not trigger-conditioned anchors",
+        "anchor_offsets_minutes": [5, 15, 30, 60, 120, 240],
+        "no_future_leakage": True,
+    },
+    "controls": {
+        "hard_negatives": "matched on contextual variables only: year/regime, trading phase, price band, liquidity/coverage availability, and comparable symbol-session opportunity; never match on candidate predictive features",
+        "random_controls": "separate random eligible symbol-cycle controls from the same broad time/regime pool",
+        "match_id": "one immutable match_id binds each positive event to its hard-negative/control set",
+        "ratio": "1 positive : up to 3 hard negatives : 1 random control, fail closed when contextual match quality is inadequate",
+    },
+    "symbol_aware": {
+        "unit_of_observation": "event",
+        "inference": "symbol-clustered; uncertainty and significance are computed with symbol as the cluster",
+        "discovery_weight": "equal-symbol weighting: each symbol contributes total weight 1 across its eligible positive events; event weight = 1 / eligible positive-event count for that symbol",
+        "no_arbitrary_event_cap": True,
+        "reason": "retain temporal diversity without allowing symbols with hundreds of events to dominate feature discovery",
+        "validation_grouping": "all observations for a symbol stay in one validation group; no symbol leakage across grouped folds",
+    },
+    "feature_families": [
+        "price/return path and acceleration",
+        "volume and dollar-volume participation",
+        "range/volatility expansion and compression",
+        "VWAP/location and close-position structure",
+        "persistence/recovery/pullback asymmetry",
+        "gap and session-transition context",
+        "liquidity/spread where historically available",
+    ],
+    "statistics": {
+        "discovery_goal": "effect size and stability first; p-values are secondary",
+        "multiple_testing": "Benjamini-Hochberg FDR within each frozen feature family",
+        "report": ["weighted positive vs hard-negative effect size", "random-control contrast", "symbol-clustered uncertainty", "year stability", "phase stability", "20/30/50 ladder monotonicity"],
+        "min_n_rule": "minimum support thresholds must be frozen from dataset counts before feature results are inspected",
+    },
+    "splits": {
+        "discovery": "2019-2024 only",
+        "validation": "2025 only; untouched during feature selection",
+        "final_holdout": "2026 through 2026-08-31; locked and not inspected until a feature set and scoring rule are frozen",
+        "symbol_grouping_applies_within_discovery_resampling": True,
+        "time_order_is_primary_oos_test": True,
+    },
+    "promotion_gate": {
+        "required": [
+            "directionally stable effect in discovery years",
+            "survives symbol-aware inference",
+            "passes frozen FDR/support rules",
+            "replicates direction and material effect in 2025 validation",
+            "feature set and scoring rule frozen before opening 2026 holdout"
+        ],
+        "no_strategy_or_entry_claim": "Feature Discovery identifies predictive structure only; it does not establish a tradable strategy or profitability.",
+    },
+    "safety": {
+        "feature_discovery_runs": False,
+        "alpaca_requests": False,
+        "orders_enabled": False,
+        "alerts_enabled": False,
+        "protocol_review_required_before_code": True,
+    },
+}
+FEATURE_DISCOVERY_PROTOCOL_SHA256 = hashlib.sha256(json.dumps(FEATURE_DISCOVERY_PROTOCOL_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
 
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -6680,6 +6761,31 @@ def phase0b_dataset_audit_result():
     report=radar.redis.get_json(radar.phase0b_dataset_audit_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/phase0/phase0b-dataset-audit/status","feature_discovery_allowed":False}),202
     return jsonify(report)
+
+
+
+@app.get("/research/feature-discovery/protocol")
+def feature_discovery_protocol():
+    audit = radar.redis.get_json(radar.phase0b_dataset_audit_key("report"), None) if radar.redis.configured else None
+    gate = bool(audit and audit.get("integrity_passed") is True and int((audit.get("totals") or {}).get("processed",0)) == 205028 and int((audit.get("totals") or {}).get("verified",0)) == 169628)
+    return jsonify({
+        "version": VERSION, "build": BUILD,
+        "protocol": FEATURE_DISCOVERY_PROTOCOL_SPEC,
+        "protocol_sha256": FEATURE_DISCOVERY_PROTOCOL_SHA256,
+        "source_audit_gate_passed": gate,
+        "feature_discovery_allowed": False,
+        "message": "Protocol frozen for review only; no Feature Discovery code/run is enabled."
+    })
+
+@app.get("/research/feature-discovery")
+def feature_discovery_home():
+    return jsonify({
+        "purpose": "Frozen Feature Discovery protocol review before implementation",
+        "protocol_url": "/research/feature-discovery/protocol",
+        "feature_discovery_allowed": False,
+        "start_endpoint_exists": False,
+        "stop_and_review_required": True
+    })
 
 @app.get("/phase0/phase0b-full")
 def phase0b_full_home():
