@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.8"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-PHASE0B-FULL-CYCLE-VERIFICATION"
+VERSION = "1.7.10"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-PHASE0B-DATASET-AUDIT-HARDENING"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -176,6 +176,20 @@ PHASE0B_FULL_SPEC = {
     "safety": {"feature_discovery_runs": False, "alerts_enabled": False, "orders_enabled": False, "stop_and_review_after_completion": True},
 }
 PHASE0B_FULL_SHA256 = hashlib.sha256(json.dumps(PHASE0B_FULL_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+PHASE0B_DATASET_AUDIT_SPEC = {
+    "audit_id": "IPR-PHASE0B-DATASET-AUDIT-2026-09-07-B-HARDENED",
+    "purpose": "Read-only integrity and distribution audit of the completed Phase 0B ground-truth dataset before Feature Discovery.",
+    "source": "Persisted Redis Phase 0B per-session results only; no Alpaca requests and no minute-bar refetch.",
+    "expected_processed": 205028,
+    "expected_verified": 169628,
+    "expected_sessions": 1926,
+    "breakdowns": ["year", "classification", "verified_gain_ladders", "verified_first_20_phase", "unique_symbols", "repeat_verified_events", "bar_coverage", "extreme_verified_events"],
+    "integrity": "All partitions must reconcile exactly to persisted Phase 0B totals; fail closed on missing session results or count mismatch.",
+    "safety": {"alpaca_requests": False, "feature_discovery_runs": False, "alerts_enabled": False, "orders_enabled": False, "stop_and_review_after_completion": True},
+}
+PHASE0B_DATASET_AUDIT_SHA256 = hashlib.sha256(json.dumps(PHASE0B_DATASET_AUDIT_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1474,6 +1488,9 @@ class IndependentPriorityRadar:
         self.phase0b_full_thread: threading.Thread | None = None
         self.phase0b_full_stop_event = threading.Event()
         self.phase0b_full_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Phase 0B full-cycle verification has not started","verification_id":PHASE0B_FULL_SPEC["verification_id"],"feature_discovery_allowed":False,"updated_at":iso()}
+        self.phase0b_dataset_audit_lock = threading.RLock()
+        self.phase0b_dataset_audit_thread: threading.Thread | None = None
+        self.phase0b_dataset_audit_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Phase 0B dataset audit has not started","audit_id":PHASE0B_DATASET_AUDIT_SPEC["audit_id"],"feature_discovery_allowed":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -2691,6 +2708,118 @@ class IndependentPriorityRadar:
             self._set_phase0b_full_state(status="ERROR",phase="BLOCKED",message="Phase 0B full-cycle verification failed closed",feature_discovery_allowed=False,last_error=f"{type(exc).__name__}: {exc}")
         finally:
             with self.phase0b_full_lock: self.phase0b_full_thread=None
+
+    def phase0b_dataset_audit_key(self, suffix: str) -> str:
+        return self.key(f"phase0b_dataset_audit:v1:{suffix}")
+
+    def _set_phase0b_dataset_audit_state(self, **updates: Any) -> None:
+        with self.phase0b_dataset_audit_lock:
+            self.phase0b_dataset_audit_state.update(updates)
+            self.phase0b_dataset_audit_state["updated_at"] = iso()
+            snap = dict(self.phase0b_dataset_audit_state)
+        if self.redis.configured:
+            self.redis.set_json(self.phase0b_dataset_audit_key("status"), snap)
+
+    def _phase0b_dataset_audit_gate(self) -> tuple[bool, str]:
+        if not self.redis.configured:
+            return False, "Redis is required"
+        report = self.redis.get_json(self.phase0b_full_key("report"), None)
+        if not report or report.get("status") != "COMPLETED":
+            return False, "Completed Phase 0B full-cycle report is required"
+        totals = report.get("totals") or {}
+        if int(totals.get("processed") or 0) != 205028 or int(totals.get("verified") or 0) != 169628:
+            return False, "Frozen Phase 0B totals do not match the reviewed dataset"
+        if report.get("full_cycle_ground_truth") is not True or report.get("window_optimization_used") is not False:
+            return False, "Only the reviewed full-cycle ground-truth dataset may be audited"
+        return True, "allowed"
+
+    @staticmethod
+    def _audit_verified_rate(verified: int, processed: int) -> float:
+        return round(100.0 * int(verified) / int(processed), 6) if int(processed) > 0 else 0.0
+
+    @staticmethod
+    def _audit_extremes(items: list[dict[str, Any]], limit: int = 25) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        # Deterministic, opposite orderings. Never infer extremes from insertion order.
+        largest = sorted(items, key=lambda x: (-float(x["gain_pct"]), str(x["symbol"]), str(x["target_session"])))[:limit]
+        smallest = sorted(items, key=lambda x: (float(x["gain_pct"]), str(x["symbol"]), str(x["target_session"])))[:limit]
+        return largest, smallest
+
+    def phase0b_dataset_audit_loop(self) -> None:
+        try:
+            allowed, reason = self._phase0b_dataset_audit_gate()
+            if not allowed: raise RuntimeError(reason)
+            full_report = self.redis.get_json(self.phase0b_full_key("report"), {}) or {}
+            sessions = list(self.redis.get_json(self.phase0b_full_key("completed_sessions"), []) or [])
+            expected_sessions = int(full_report.get("total_sessions") or 0)
+            if len(sessions) != expected_sessions or expected_sessions != 1926:
+                raise RuntimeError(f"Fail-closed: completed session index has {len(sessions)}, expected 1926")
+            self._set_phase0b_dataset_audit_state(status="RUNNING", phase="AUDIT", message="Read-only Phase 0B dataset audit; no Alpaca requests", total_sessions=len(sessions), completed_sessions=0, feature_discovery_allowed=False)
+            years={}; phases={"AH":0,"Overnight":0,"Premarket":0,"Regular":0,"Other":0}; symbols={}; processed=0
+            classifications={"verified":0,"still_ambiguous":0,"failed":0}; verified_ladders={"20":0,"30":0,"50":0}
+            bars_zero=0; bars_positive=0; bars_sum=0; largest=[]; smallest=[]
+            for idx, session in enumerate(sessions, 1):
+                rows = self.redis.get_json(self.phase0b_full_key(f"results:{session}"), None)
+                if rows is None: raise RuntimeError(f"Fail-closed: missing persisted Phase 0B results for {session}")
+                y=str(session)[:4]; yr=years.setdefault(y,{"processed":0,"verified":0,"still_ambiguous":0,"failed":0,"verified_rate_pct":0.0})
+                for r in rows:
+                    cls=str(r.get("classification") or "")
+                    if cls not in classifications: raise RuntimeError(f"Unexpected classification {cls!r} in {session}")
+                    processed+=1; classifications[cls]+=1; yr["processed"]+=1; yr[cls]+=1
+                    n=int(r.get("full_cycle_1m_bars") or 0); bars_sum+=n
+                    if n>0: bars_positive+=1
+                    else: bars_zero+=1
+                    if cls=="verified":
+                        sym=str(r.get("symbol") or "").upper(); symbols[sym]=symbols.get(sym,0)+1
+                        g=float(r.get("gain_pct") or 0.0)
+                        for level in (20,30,50):
+                            if g+1e-12>=level: verified_ladders[str(level)]+=1
+                        phase=self._probe_session(str(r.get("t2") or ""), date.fromisoformat(session)) if r.get("t2") else "Other"
+                        phases[phase if phase in phases else "Other"]+=1
+                        item={"symbol":sym,"target_session":session,"gain_pct":g,"t1":r.get("t1"),"t2":r.get("t2"),"bars":n}
+                        largest.append(item); smallest.append(item)
+                if idx % 100 == 0 or idx == len(sessions):
+                    self._set_phase0b_dataset_audit_state(status="RUNNING",phase="AUDIT",message=f"Audited persisted Phase 0B session {session}",total_sessions=len(sessions),completed_sessions=idx,processed=processed,feature_discovery_allowed=False)
+            for yr in years.values(): yr["verified_rate_pct"] = self._audit_verified_rate(yr["verified"], yr["processed"])
+            largest, smallest = self._audit_extremes(largest, 25)
+            repeat_hist={};
+            for count in symbols.values(): repeat_hist[str(count)]=repeat_hist.get(str(count),0)+1
+            top_repeat=[{"symbol":s,"verified_events":c} for s,c in sorted(symbols.items(),key=lambda kv:(-kv[1],kv[0]))[:25]]
+            expected=full_report.get("totals") or {}; checks={
+                "processed_matches": processed==int(expected.get("processed") or -1)==205028,
+                "verified_matches": classifications["verified"]==int(expected.get("verified") or -1)==169628,
+                "ambiguous_matches": classifications["still_ambiguous"]==int(expected.get("still_ambiguous") or -1),
+                "failed_matches": classifications["failed"]==int(expected.get("failed") or -1),
+                "classification_partition_matches": sum(classifications.values())==processed,
+                "year_partition_matches": sum(v["processed"] for v in years.values())==processed,
+                "year_classification_partitions_match": all(v["verified"] + v["still_ambiguous"] + v["failed"] == v["processed"] for v in years.values()),
+                "year_verified_rates_exact": all(v["verified_rate_pct"] == self._audit_verified_rate(v["verified"], v["processed"]) for v in years.values()),
+                "verified_phase_partition_matches": sum(phases.values())==classifications["verified"],
+                "verified_ladder_monotonic": verified_ladders["20"] >= verified_ladders["30"] >= verified_ladders["50"] >= 0,
+                "verified_20_ladder_matches_verified": verified_ladders["20"] == classifications["verified"],
+                "largest_sorted_desc": all(largest[i]["gain_pct"] >= largest[i+1]["gain_pct"] for i in range(len(largest)-1)),
+                "smallest_sorted_asc": all(smallest[i]["gain_pct"] <= smallest[i+1]["gain_pct"] for i in range(len(smallest)-1)),
+                "extreme_lengths_valid": len(largest) == min(25, classifications["verified"]) and len(smallest) == min(25, classifications["verified"]),
+                "bar_coverage_partition_matches": bars_zero+bars_positive==processed,
+                "all_sessions_present": len(sessions)==1926,
+                "no_alpaca_requests_by_design": True,
+            }
+            passed=all(checks.values())
+            report={"version":VERSION,"build":BUILD,"audit_id":PHASE0B_DATASET_AUDIT_SPEC["audit_id"],"audit_sha256":PHASE0B_DATASET_AUDIT_SHA256,"status":"COMPLETED" if passed else "FAILED","spec":PHASE0B_DATASET_AUDIT_SPEC,"source_phase0b_sha256":full_report.get("phase0b_sha256"),"totals":{"processed":processed,**classifications,"unique_verified_symbols":len(symbols)},"by_year":years,"verified_gain_ladders":verified_ladders,"verified_first_20_phase":phases,"repeat_verified_events":{"histogram":repeat_hist,"top_symbols":top_repeat},"bar_coverage":{"cases_with_positive_1m_bars":bars_positive,"cases_with_zero_1m_bars":bars_zero,"mean_1m_bars_per_case":round(bars_sum/processed,4) if processed else 0.0},"extreme_verified_events":{"largest_25":largest,"smallest_25":smallest},"integrity_checks":checks,"integrity_passed":passed,"feature_discovery_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            self.redis.set_json(self.phase0b_dataset_audit_key("report"),report)
+            self._set_phase0b_dataset_audit_state(status="COMPLETED" if passed else "ERROR",phase="STOP_REVIEW" if passed else "BLOCKED",message="Phase 0B dataset audit completed; STOP and review before Feature Discovery" if passed else "Phase 0B dataset audit failed integrity checks",processed=processed,total_sessions=len(sessions),completed_sessions=len(sessions),integrity_passed=passed,feature_discovery_allowed=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Phase 0B dataset audit failed")
+            self._set_phase0b_dataset_audit_state(status="ERROR",phase="BLOCKED",message="Phase 0B dataset audit failed closed",last_error=f"{type(exc).__name__}: {exc}",feature_discovery_allowed=False)
+        finally:
+            with self.phase0b_dataset_audit_lock: self.phase0b_dataset_audit_thread=None
+
+    def start_phase0b_dataset_audit(self) -> tuple[bool,str]:
+        allowed,reason=self._phase0b_dataset_audit_gate()
+        if not allowed:return False,reason
+        with self.phase0b_dataset_audit_lock:
+            if self.phase0b_dataset_audit_thread and self.phase0b_dataset_audit_thread.is_alive(): return False,"already_running"
+            self.phase0b_dataset_audit_thread=threading.Thread(target=self.phase0b_dataset_audit_loop,name="phase0b-dataset-audit",daemon=True); self.phase0b_dataset_audit_thread.start()
+        return True,"started"
 
     def start_phase0b_full(self) -> tuple[bool,str]:
         allowed,reason=self._phase0b_full_gate()
@@ -6523,6 +6652,33 @@ def pre0b_audit_status():
 def pre0b_audit_result():
     report=radar.redis.get_json(radar.pre0b_audit_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/pre0b-audit/status","phase0b_allowed":False}),202
+    return jsonify(report)
+
+@app.get("/phase0/phase0b-dataset-audit")
+def phase0b_dataset_audit_home():
+    allowed,reason=radar._phase0b_dataset_audit_gate()
+    return jsonify({"purpose":"Read-only audit of completed Phase 0B dataset before Feature Discovery","audit_id":PHASE0B_DATASET_AUDIT_SPEC["audit_id"],"audit_sha256":PHASE0B_DATASET_AUDIT_SHA256,"gate_allowed":allowed,"gate_reason":reason,"protocol_url":"/phase0/phase0b-dataset-audit/protocol","start_url":"/phase0/phase0b-dataset-audit/start","status_url":"/phase0/phase0b-dataset-audit/status","result_url":"/phase0/phase0b-dataset-audit/result","feature_discovery_allowed":False})
+
+@app.get("/phase0/phase0b-dataset-audit/protocol")
+def phase0b_dataset_audit_protocol(): return jsonify({"version":VERSION,"build":BUILD,"spec":PHASE0B_DATASET_AUDIT_SPEC,"audit_sha256":PHASE0B_DATASET_AUDIT_SHA256})
+
+@app.get("/phase0/phase0b-dataset-audit/start")
+@app.post("/phase0/phase0b-dataset-audit/start")
+def phase0b_dataset_audit_start():
+    started,message=radar.start_phase0b_dataset_audit()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/phase0b-dataset-audit/status","result_url":"/phase0/phase0b-dataset-audit/result","feature_discovery_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/phase0b-dataset-audit/status")
+def phase0b_dataset_audit_status():
+    stored=radar.redis.get_json(radar.phase0b_dataset_audit_key("status"),None) if radar.redis.configured else None
+    with radar.phase0b_dataset_audit_lock:
+        payload=dict(stored or radar.phase0b_dataset_audit_state); payload["worker_alive"]=bool(radar.phase0b_dataset_audit_thread and radar.phase0b_dataset_audit_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/phase0b-dataset-audit/result")
+def phase0b_dataset_audit_result():
+    report=radar.redis.get_json(radar.phase0b_dataset_audit_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/phase0/phase0b-dataset-audit/status","feature_discovery_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0/phase0b-full")
