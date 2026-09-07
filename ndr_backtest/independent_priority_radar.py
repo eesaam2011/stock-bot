@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.14"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-FEATURE-DISCOVERY-RESTART-SAFE-FINALIZE"
+VERSION = "1.7.15"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-FEATURE-DISCOVERY-CONTROL-INFERENCE-HARDENING"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -281,7 +281,7 @@ FEATURE_DISCOVERY_EXEC_SPEC = {
         "eligible_pool": "Phase 0B failed clean candidates in 2019-2024 only; still_ambiguous is never a control.",
         "hard_negative_matching": ["same target session when available", "same trading phase", "same frozen log2 price band", "comparable 5-minute coverage"],
         "hard_negative_ratio": "up to 3 per positive; controls may be reused when a contextual cell is sparse, with reuse counted and reported",
-        "random_control": "one separate deterministic random failed clean candidate from the same year/regime pool; never selected using predictive feature values",
+        "random_control": "one separate deterministic random failed clean candidate from the same target-session contextual failed pool (same session is a stricter subset of the frozen broad time/regime requirement); never selected using predictive feature values",
         "pseudo_cutoff": "failed controls use the frozen Phase 0A coarse first-20 timestamp as opportunity-time cutoff; no post-cutoff feature data",
     },
     "anchors_minutes": [5,15,30,60,120,240],
@@ -293,7 +293,7 @@ FEATURE_DISCOVERY_EXEC_SPEC = {
         "year_support": "at least 4 distinct Discovery years",
         "freeze_timing": "computed and persisted from Phase 0B labels before any feature-effect calculation",
     },
-    "statistics": "equal-symbol positive weighting; symbol-clustered normal-approximation uncertainty; Benjamini-Hochberg FDR within frozen feature family; effect stability by year",
+    "statistics": "equal-symbol weighting; deterministic symbol-cluster multiplier bootstrap uncertainty (Rademacher cluster weights, 2000 replicates); Benjamini-Hochberg FDR within frozen feature family; effect stability by year",
     "safety": {"orders_enabled":False,"alerts_enabled":False,"validation_2025_read":False,"holdout_2026_read":False,"stop_and_review_after_discovery":True},
 }
 FEATURE_DISCOVERY_EXEC_SHA256 = hashlib.sha256(json.dumps(FEATURE_DISCOVERY_EXEC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -3038,6 +3038,28 @@ class IndependentPriorityRadar:
         if "drawdown" in name or "higher_low" in name:return "persistence/recovery/pullback asymmetry"
         return "liquidity/spread where historically available"
 
+    @staticmethod
+    def _fd_symbol_cluster_bootstrap(pos_by_symbol:dict[str,float], hard_by_symbol:dict[str,float], seed_key:str, reps:int=2000)->dict[str,Any]:
+        """Deterministic symbol-cluster multiplier bootstrap using one Rademacher weight per symbol cluster."""
+        symbols=sorted(set(pos_by_symbol) | set(hard_by_symbol))
+        if len(symbols)<2 or not pos_by_symbol or not hard_by_symbol:
+            return {"method":"symbol_cluster_multiplier_bootstrap","replicates":0,"se":None,"ci95":[None,None],"p_value":1.0,"clusters":len(symbols)}
+        mp=float(np.mean(list(pos_by_symbol.values()))); mh=float(np.mean(list(hard_by_symbol.values()))); obs=mp-mh
+        np_=float(len(pos_by_symbol)); nh_=float(len(hard_by_symbol))
+        # Cluster influence for the difference in equal-symbol means.  If a symbol occurs
+        # in both classes, both contributions remain inside the same cluster and therefore
+        # receive the same multiplier -- this is the key cluster-preserving property.
+        psi=np.asarray([((pos_by_symbol[x]-mp)/np_ if x in pos_by_symbol else 0.0)-((hard_by_symbol[x]-mh)/nh_ if x in hard_by_symbol else 0.0) for x in symbols],dtype=float)
+        seed=int(hashlib.sha256(seed_key.encode("utf-8")).hexdigest()[:16],16) & 0xFFFFFFFF
+        rng=np.random.default_rng(seed); deltas=[]; left=int(reps); batch=200
+        while left>0:
+            b=min(batch,left); w=rng.integers(0,2,size=(b,len(symbols)),dtype=np.int8).astype(float)*2.0-1.0
+            deltas.extend((w @ psi).tolist()); left-=b
+        a=np.asarray(deltas,dtype=float); se=float(a.std(ddof=1)) if len(a)>1 else None
+        qlo,qhi=(float(x) for x in np.quantile(a,[0.025,0.975])); ci=[obs-qhi,obs-qlo]
+        pv=(float(np.sum(np.abs(a)>=abs(obs)))+1.0)/(len(a)+1.0)
+        return {"method":"symbol_cluster_multiplier_bootstrap","replicates":len(a),"se":se,"ci95":ci,"p_value":min(1.0,pv),"clusters":len(symbols),"observed_difference":obs}
+
     def _fd_summarize(self, observations:list[dict[str,Any]], min_events:int, min_symbols:int)->list[dict[str,Any]]:
         # equal-symbol weights within each class; cluster-aware uncertainty from symbol means
         out=[]; anchors=FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]
@@ -3160,21 +3182,20 @@ class IndependentPriorityRadar:
             for anchor in FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]:
                 ak=str(anchor)
                 for fn in sorted(feature_names):
-                    bycls={"positive":[],"hard_negative":[],"random_control":[]}
+                    bycls={"positive":{},"hard_negative":{},"random_control":{}}
                     for (a,f,cls,sym),v in agg.items():
-                        if a==ak and f==fn and cls in bycls and v["n"]: bycls[cls].append(v["sum"]/v["n"])
-                    p=np.array(bycls["positive"],dtype=float); h=np.array(bycls["hard_negative"],dtype=float); r=np.array(bycls["random_control"],dtype=float)
+                        if a==ak and f==fn and cls in bycls and v["n"]: bycls[cls][sym]=v["sum"]/v["n"]
+                    p=np.array(list(bycls["positive"].values()),dtype=float); h=np.array(list(bycls["hard_negative"].values()),dtype=float); r=np.array(list(bycls["random_control"].values()),dtype=float)
                     if len(p)==0 or len(h)==0: continue
                     mp,mh=float(p.mean()),float(h.mean()); pooled=math.sqrt((float(p.var(ddof=1)) if len(p)>1 else 0)+(float(h.var(ddof=1)) if len(h)>1 else 0))/math.sqrt(2) if len(p)+len(h)>2 else 0
                     effect=(mp-mh)/pooled if pooled>1e-12 else 0.0
-                    se=math.sqrt((float(p.var(ddof=1))/len(p) if len(p)>1 else 0)+(float(h.var(ddof=1))/len(h) if len(h)>1 else 0))
-                    z=(mp-mh)/se if se>1e-12 else 0.0; pv=math.erfc(abs(z)/math.sqrt(2)) if se>1e-12 else 1.0
+                    boot=self._fd_symbol_cluster_bootstrap(bycls["positive"],bycls["hard_negative"],f"{FEATURE_DISCOVERY_EXEC_SPEC['run_id']}|{ak}|{fn}",2000); pv=float(boot["p_value"])
                     pc=event_counts[(ak,fn,"positive")]; pys=years[(ak,fn,"positive")]
                     support=pc>=min_events and len(p)>=min_symbols and len(pys)>=4
-                    stats.append({"anchor_minutes":anchor,"feature":fn,"family":self._fd_family(fn),"positive_events":pc,"positive_symbols":len(p),"hard_negative_events":event_counts[(ak,fn,"hard_negative")],"hard_negative_symbols":len(h),"random_events":event_counts[(ak,fn,"random_control")],"positive_mean_symbol_weighted":mp,"hard_negative_mean_symbol_weighted":mh,"random_mean_symbol_weighted":float(r.mean()) if len(r) else None,"standardized_effect_pos_vs_hard":effect,"p_value":pv,"support_passed":support,"positive_year_support":sorted(pys),"fdr_q":None})
+                    stats.append({"anchor_minutes":anchor,"feature":fn,"family":self._fd_family(fn),"positive_events":pc,"positive_symbols":len(p),"hard_negative_events":event_counts[(ak,fn,"hard_negative")],"hard_negative_symbols":len(h),"random_events":event_counts[(ak,fn,"random_control")],"positive_mean_symbol_weighted":mp,"hard_negative_mean_symbol_weighted":mh,"random_mean_symbol_weighted":float(r.mean()) if len(r) else None,"standardized_effect_pos_vs_hard":effect,"inference":boot,"p_value":pv,"support_passed":support,"positive_year_support":sorted(pys),"fdr_q":None})
             self._fd_bh(stats)
             promoted=[r for r in stats if r.get("support_passed") and isinstance(r.get("fdr_q"),(int,float)) and r["fdr_q"]<=0.05 and abs(float(r.get("standardized_effect_pos_vs_hard") or 0))>=0.10]
-            report={"version":VERSION,"build":BUILD,"run_id":FEATURE_DISCOVERY_EXEC_SPEC["run_id"],"execution_sha256":FEATURE_DISCOVERY_EXEC_SHA256,"protocol_sha256":FEATURE_DISCOVERY_PROTOCOL_SHA256,"status":"COMPLETED","phase":"STOP_REVIEW","scope":"2019-2024 Discovery only","min_n_frozen":minspec,"sessions":len(sessions),"observations":final_obs,"class_counts":dict(class_counts),"feature_tests":stats,"promotion_candidates_discovery_only":promoted,"promotion_candidate_count":len(promoted),"finalization_mode":"restart_safe_streaming_from_persisted_session_observations","validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            report={"version":VERSION,"build":BUILD,"run_id":FEATURE_DISCOVERY_EXEC_SPEC["run_id"],"execution_sha256":FEATURE_DISCOVERY_EXEC_SHA256,"protocol_sha256":FEATURE_DISCOVERY_PROTOCOL_SHA256,"status":"COMPLETED","phase":"STOP_REVIEW","scope":"2019-2024 Discovery only","min_n_frozen":minspec,"sessions":len(sessions),"observations":final_obs,"class_counts":dict(class_counts),"feature_tests":stats,"promotion_candidates_discovery_only":promoted,"promotion_candidate_count":len(promoted),"finalization_mode":"restart_safe_streaming_symbol_cluster_bootstrap_from_persisted_session_observations","validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
             self.redis.set_json(self.feature_discovery_key("report"),report); self._set_feature_discovery_state(status="COMPLETED",phase="STOP_REVIEW",message="Discovery 2019-2024 completed; STOP and review before any 2025 validation",completed_sessions=len(sessions),total_sessions=len(sessions),remaining_sessions=0,observations=final_obs,promotion_candidate_count=len(promoted),finalize_sessions_scanned=len(sessions),validation_2025_opened=False,holdout_2026_opened=False,stop_and_review_required=True)
         except Exception as exc:
             logging.exception("Feature Discovery failed"); self._set_feature_discovery_state(status="ERROR",phase="BLOCKED",message="Feature Discovery failed closed",last_error=f"{type(exc).__name__}: {exc}",validation_2025_opened=False,holdout_2026_opened=False)
