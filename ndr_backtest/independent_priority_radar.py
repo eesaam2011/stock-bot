@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.15"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-FEATURE-DISCOVERY-CONTROL-INFERENCE-HARDENING"
+VERSION = "1.7.16"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-DISCOVERY-AUDIT-HARDENING"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -297,6 +297,38 @@ FEATURE_DISCOVERY_EXEC_SPEC = {
     "safety": {"orders_enabled":False,"alerts_enabled":False,"validation_2025_read":False,"holdout_2026_read":False,"stop_and_review_after_discovery":True},
 }
 FEATURE_DISCOVERY_EXEC_SHA256 = hashlib.sha256(json.dumps(FEATURE_DISCOVERY_EXEC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+FEATURE_DISCOVERY_AUDIT_SPEC = {
+    "audit_id": "IPR-FEATURE-DISCOVERY-AUDIT-2026-09-07-A",
+    "purpose": "Read-only post-Discovery hardening on persisted 2019-2024 observations before any 2025 validation.",
+    "source_run_id": FEATURE_DISCOVERY_EXEC_SPEC["run_id"],
+    "source_protocol_sha256": FEATURE_DISCOVERY_PROTOCOL_SHA256,
+    "source_execution_sha256": FEATURE_DISCOVERY_EXEC_SHA256,
+    "scope": "Persisted Discovery observations from 2019-2024 only; no Alpaca fetch and no 2025/2026 read.",
+    "diagnostics": {
+        "year_stability": "For each Feature x Anchor, recompute equal-symbol standardized positive-vs-hard effect separately in each Discovery year 2019-2024; report sign agreement with the all-years Discovery effect and yearly magnitudes.",
+        "phase_stability": "For each Feature x Anchor, recompute equal-symbol standardized positive-vs-hard effect within each observed trading phase; report sign agreement where both classes have >=100 events and >=30 symbols.",
+        "ladder_monotonicity": "Within positive events only, compare equal-symbol feature means for >=20, >=30, >=50 strength ladders. Report whether the absolute movement from hard-negative mean is non-decreasing in the all-years Discovery direction; this is diagnostic, not a new selection rule.",
+    },
+    "integrity": {
+        "expected_sessions": 1510,
+        "expected_observations": 197125,
+        "expected_class_counts": {"positive":92538,"hard_negative":71332,"random_control":33255},
+        "expected_min_n": {"eligible_discovery_positive_events":107397,"eligible_discovery_positive_symbols":3260,"min_positive_events":537,"min_positive_symbols":100,"min_years":4,"frozen_at":"2026-09-07T17:31:10.246281Z"},
+        "source_report_must_be_completed_stop_review": True,
+        "validation_2025_must_remain_closed": True,
+        "holdout_2026_must_remain_closed": True,
+    },
+    "statistics": {
+        "weighting": "equal-symbol means within each class/subgroup",
+        "effect": "standardized difference positive-vs-hard using pooled SD of symbol means",
+        "phase_support_floor": {"events_per_class":100,"symbols_per_class":30},
+        "note": "No new p-value/FDR threshold is introduced post hoc; this audit measures stability/monotonicity required by the frozen protocol."
+    },
+    "safety": {"alpaca_requests":False,"validation_2025_read":False,"holdout_2026_read":False,"orders_enabled":False,"alerts_enabled":False,"stop_and_review_after_audit":True},
+}
+FEATURE_DISCOVERY_AUDIT_SHA256 = hashlib.sha256(json.dumps(FEATURE_DISCOVERY_AUDIT_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 PROTOCOL_SHA256 = hashlib.sha256(
@@ -1603,6 +1635,9 @@ class IndependentPriorityRadar:
         self.feature_discovery_thread: threading.Thread | None = None
         self.feature_discovery_stop_event = threading.Event()
         self.feature_discovery_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Feature Discovery has not started","run_id":FEATURE_DISCOVERY_EXEC_SPEC["run_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
+        self.feature_discovery_audit_lock = threading.RLock()
+        self.feature_discovery_audit_thread: threading.Thread | None = None
+        self.feature_discovery_audit_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Discovery Audit has not started","audit_id":FEATURE_DISCOVERY_AUDIT_SPEC["audit_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -3208,6 +3243,119 @@ class IndependentPriorityRadar:
         with self.feature_discovery_lock:
             if self.feature_discovery_thread and self.feature_discovery_thread.is_alive():return False,"already_running"
             self.feature_discovery_thread=threading.Thread(target=self.feature_discovery_loop,name="feature-discovery-2019-2024",daemon=True); self.feature_discovery_thread.start()
+        return True,"started"
+
+    def feature_discovery_audit_key(self, suffix: str) -> str:
+        return self.key(f"feature_discovery_audit:v1:{suffix}")
+
+    def _set_feature_discovery_audit_state(self, **updates: Any) -> None:
+        with self.feature_discovery_audit_lock:
+            self.feature_discovery_audit_state.update(updates); self.feature_discovery_audit_state["updated_at"] = iso(); snap=dict(self.feature_discovery_audit_state)
+        if self.redis.configured: self.redis.set_json(self.feature_discovery_audit_key("status"), snap)
+
+    def _feature_discovery_audit_gate(self) -> tuple[bool,str]:
+        if not self.redis.configured: return False,"Redis is required"
+        report=self.redis.get_json(self.feature_discovery_key("report"),None)
+        if not isinstance(report,dict) or report.get("status")!="COMPLETED" or report.get("phase")!="STOP_REVIEW": return False,"Completed Discovery STOP_REVIEW report is required"
+        if str(report.get("run_id"))!=FEATURE_DISCOVERY_EXEC_SPEC["run_id"]: return False,"Discovery run id mismatch"
+        if str(report.get("protocol_sha256"))!=FEATURE_DISCOVERY_PROTOCOL_SHA256: return False,"Discovery protocol hash mismatch"
+        if str(report.get("execution_sha256"))!=FEATURE_DISCOVERY_EXEC_SHA256: return False,"Discovery execution hash mismatch"
+        if report.get("validation_2025_opened") is not False or report.get("holdout_2026_opened") is not False: return False,"Validation/Holdout contamination flag"
+        integ=FEATURE_DISCOVERY_AUDIT_SPEC["integrity"]
+        if int(report.get("sessions") or 0)!=integ["expected_sessions"] or int(report.get("observations") or 0)!=integ["expected_observations"]: return False,"Discovery session/observation totals mismatch"
+        if dict(report.get("class_counts") or {})!=integ["expected_class_counts"]: return False,"Discovery class counts mismatch"
+        mn=report.get("min_n_frozen") or {}; exp=integ["expected_min_n"]
+        for k,v in exp.items():
+            if mn.get(k)!=v: return False,f"Frozen min_n mismatch: {k}"
+        completed=self.redis.get_json(self.feature_discovery_key("completed_sessions"),[]) or []
+        disc=[str(x) for x in completed if 2019<=int(str(x)[:4])<=2024]
+        if len(disc)!=integ["expected_sessions"] or any(int(x[:4])>2024 for x in disc): return False,"Persisted Discovery session set mismatch"
+        return True,"allowed"
+
+    @staticmethod
+    def _fd_effect_from_symbol_values(pos: dict[str,list[float]], hard: dict[str,list[float]]) -> dict[str,Any]:
+        p=np.asarray([float(np.mean(v)) for v in pos.values() if v],dtype=float); h=np.asarray([float(np.mean(v)) for v in hard.values() if v],dtype=float)
+        if len(p)==0 or len(h)==0:return {"effect":None,"positive_mean":None,"hard_negative_mean":None,"positive_symbols":len(p),"hard_negative_symbols":len(h)}
+        mp,mh=float(p.mean()),float(h.mean()); pooled=math.sqrt(((float(p.var(ddof=1)) if len(p)>1 else 0.0)+(float(h.var(ddof=1)) if len(h)>1 else 0.0))/2.0)
+        return {"effect":((mp-mh)/pooled if pooled>1e-12 else 0.0),"positive_mean":mp,"hard_negative_mean":mh,"positive_symbols":len(p),"hard_negative_symbols":len(h)}
+
+    def feature_discovery_audit_loop(self)->None:
+        try:
+            allowed,reason=self._feature_discovery_audit_gate()
+            if not allowed: raise RuntimeError(reason)
+            source=self.redis.get_json(self.feature_discovery_key("report"),{}) or {}
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.feature_discovery_key("completed_sessions"),[]) or []) if 2019<=int(str(x)[:4])<=2024)
+            source_tests={(int(x["anchor_minutes"]),str(x["feature"])):x for x in (source.get("feature_tests") or [])}
+            diagnostics=[]; total_observations=0; class_counts={}
+            self._set_feature_discovery_audit_state(status="RUNNING",phase="AUDIT_SCAN",message="Read-only stability audit from persisted 2019-2024 observations; 2025/2026 locked",anchor_index=0,total_anchors=len(FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]),validation_2025_opened=False,holdout_2026_opened=False)
+            # Memory-bounded design: process one frozen anchor at a time. This intentionally
+            # rereads persisted Redis observations six times rather than holding multi-million
+            # subgroup cells in RAM on a small Render instance. No Alpaca request is made.
+            for ai,a in enumerate(FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"],1):
+                ak=str(a)
+                year_agg=defaultdict(lambda:defaultdict(lambda:defaultdict(lambda:{"sum":0.0,"n":0})))
+                phase_agg=defaultdict(lambda:defaultdict(lambda:defaultdict(lambda:{"sum":0.0,"n":0})))
+                ladder_agg=defaultdict(lambda:defaultdict(lambda:defaultdict(lambda:{"sum":0.0,"n":0})))
+                local_counts=__import__('collections').Counter(); scanned=0
+                for si,sess in enumerate(sessions,1):
+                    sobs=self.redis.get_json(self.feature_discovery_key(f"observations:{sess}"),[]) or []
+                    if ai==1:
+                        total_observations+=len(sobs)
+                        for o in sobs: local_counts[str(o.get("class") or "")]+=1
+                    for o in sobs:
+                        cls=str(o.get("class") or ""); sym=str(o.get("symbol") or ""); yr=int(o.get("year") or sess[:4]); ph=str(o.get("phase") or "Other"); vals=(o.get("anchors") or {}).get(ak) or {}
+                        if not isinstance(vals,dict):continue
+                        for fn,val in vals.items():
+                            if not isinstance(val,(int,float)) or not math.isfinite(val):continue
+                            x=float(val)
+                            yc=year_agg[(fn,yr)][cls][sym]; yc["sum"]+=x; yc["n"]+=1
+                            pc=phase_agg[(fn,ph)][cls][sym]; pc["sum"]+=x; pc["n"]+=1
+                            if cls=="positive":
+                                lc=ladder_agg[(fn,"20")][cls][sym]; lc["sum"]+=x; lc["n"]+=1
+                                if o.get("strength_30"):
+                                    lc=ladder_agg[(fn,"30")][cls][sym]; lc["sum"]+=x; lc["n"]+=1
+                                if o.get("strength_50"):
+                                    lc=ladder_agg[(fn,"50")][cls][sym]; lc["sum"]+=x; lc["n"]+=1
+                    scanned=si
+                    if si==1 or si%100==0 or si==len(sessions): self._set_feature_discovery_audit_state(status="RUNNING",phase="AUDIT_SCAN",message=f"Audit anchor {a}m: {si}/{len(sessions)} persisted sessions",anchor_minutes=a,anchor_index=ai,total_anchors=len(FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]),sessions_scanned=si,total_sessions=len(sessions),validation_2025_opened=False,holdout_2026_opened=False)
+                if ai==1:
+                    class_counts=dict(local_counts)
+                    integ=FEATURE_DISCOVERY_AUDIT_SPEC["integrity"]
+                    if total_observations!=integ["expected_observations"] or class_counts!=integ["expected_class_counts"]: raise RuntimeError("Persisted observation integrity totals changed during audit")
+                features=sorted(fn for aa,fn in source_tests if aa==a)
+                for fn in features:
+                    src=source_tests[(a,fn)]; global_effect=float(src.get("standardized_effect_pos_vs_hard") or 0.0); direction=1 if global_effect>0 else (-1 if global_effect<0 else 0)
+                    def vals(cells): return {sym:(v["sum"]/v["n"]) for sym,v in cells.items() if v["n"]}
+                    yr_rows=[]
+                    for yr in range(2019,2025):
+                        d=year_agg[(fn,yr)]; p=vals(d["positive"]); h=vals(d["hard_negative"]); e=self._fd_effect_from_symbol_values({k:[v] for k,v in p.items()},{k:[v] for k,v in h.items()}); e.update({"year":yr,"positive_events":sum(v["n"] for v in d["positive"].values()),"hard_negative_events":sum(v["n"] for v in d["hard_negative"].values())}); e["same_direction"]=bool(e["effect"] is not None and direction!=0 and e["effect"]*direction>0); yr_rows.append(e)
+                    usable_years=[x for x in yr_rows if x["effect"] is not None]; same_years=sum(bool(x["same_direction"]) for x in usable_years)
+                    phase_rows=[]
+                    phases=sorted(ph for f,ph in phase_agg if f==fn)
+                    for ph in phases:
+                        d=phase_agg[(fn,ph)]; p=vals(d["positive"]); h=vals(d["hard_negative"]); pe=sum(v["n"] for v in d["positive"].values()); he=sum(v["n"] for v in d["hard_negative"].values()); e=self._fd_effect_from_symbol_values({k:[v] for k,v in p.items()},{k:[v] for k,v in h.items()}); supported=pe>=100 and he>=100 and e["positive_symbols"]>=30 and e["hard_negative_symbols"]>=30; e.update({"phase":ph,"positive_events":pe,"hard_negative_events":he,"support_passed":supported,"same_direction":bool(supported and e["effect"] is not None and direction!=0 and e["effect"]*direction>0)}); phase_rows.append(e)
+                    supported_ph=[x for x in phase_rows if x["support_passed"]]; same_ph=sum(bool(x["same_direction"]) for x in supported_ph)
+                    hard_mean=float(src.get("hard_negative_mean_symbol_weighted")); lm={}
+                    for lev in ("20","30","50"):
+                        d=ladder_agg[(fn,lev)]["positive"]; arr=np.asarray([v["sum"]/v["n"] for v in d.values() if v["n"]],dtype=float); mean=float(arr.mean()) if len(arr) else None; lm[lev]={"mean":mean,"symbols":len(arr),"distance_in_discovery_direction":((mean-hard_mean)*direction if mean is not None else None)}
+                    ds=[lm[x]["distance_in_discovery_direction"] for x in ("20","30","50")]; monotonic=bool(all(x is not None for x in ds) and ds[0]<=ds[1]<=ds[2])
+                    diagnostics.append({"anchor_minutes":a,"feature":fn,"family":src.get("family"),"source_fdr_q":src.get("fdr_q"),"source_support_passed":src.get("support_passed"),"source_standardized_effect":global_effect,"source_promoted":bool(src.get("support_passed") and isinstance(src.get("fdr_q"),(int,float)) and src["fdr_q"]<=0.05 and abs(global_effect)>=0.10),"year_stability":{"same_direction_years":same_years,"usable_years":len(usable_years),"all_years_same_direction":same_years==len(usable_years) and len(usable_years)==6,"by_year":yr_rows},"phase_stability":{"same_direction_supported_phases":same_ph,"supported_phases":len(supported_ph),"all_supported_phases_same_direction":same_ph==len(supported_ph) and len(supported_ph)>0,"by_phase":phase_rows},"ladder_monotonicity":{"monotonic_20_30_50":monotonic,"levels":lm}})
+                del year_agg,phase_agg,ladder_agg
+            promoted=[x for x in diagnostics if x["source_promoted"]]
+            summary={"tests":len(diagnostics),"source_promoted":len(promoted),"promoted_all_6_years_same_direction":sum(x["year_stability"]["all_years_same_direction"] for x in promoted),"promoted_all_supported_phases_same_direction":sum(x["phase_stability"]["all_supported_phases_same_direction"] for x in promoted),"promoted_ladder_monotonic_20_30_50":sum(x["ladder_monotonicity"]["monotonic_20_30_50"] for x in promoted)}
+            report={"version":VERSION,"build":BUILD,"audit_id":FEATURE_DISCOVERY_AUDIT_SPEC["audit_id"],"audit_sha256":FEATURE_DISCOVERY_AUDIT_SHA256,"status":"COMPLETED","phase":"STOP_REVIEW","scope":"2019-2024 persisted Discovery observations only","source_run_id":source.get("run_id"),"source_protocol_sha256":source.get("protocol_sha256"),"source_execution_sha256":source.get("execution_sha256"),"source_completed_at":source.get("completed_at"),"min_n_frozen":source.get("min_n_frozen"),"sessions":len(sessions),"observations":total_observations,"class_counts":class_counts,"summary":summary,"diagnostics":diagnostics,"audit_mode":"memory_bounded_anchor_streaming_from_persisted_observations","alpaca_requests_made":0,"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            self.redis.set_json(self.feature_discovery_audit_key("report"),report); self._set_feature_discovery_audit_state(status="COMPLETED",phase="STOP_REVIEW",message="Discovery Audit completed; STOP and review before any 2025 validation",anchor_index=len(FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]),total_anchors=len(FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]),sessions_scanned=len(sessions),total_sessions=len(sessions),observations_scanned=total_observations,summary=summary,validation_2025_opened=False,holdout_2026_opened=False,validation_allowed=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Feature Discovery Audit failed"); self._set_feature_discovery_audit_state(status="ERROR",phase="BLOCKED",message="Discovery Audit failed closed",last_error=f"{type(exc).__name__}: {exc}",validation_2025_opened=False,holdout_2026_opened=False,validation_allowed=False)
+        finally:
+            with self.feature_discovery_audit_lock:self.feature_discovery_audit_thread=None
+
+    def start_feature_discovery_audit(self)->tuple[bool,str]:
+        allowed,reason=self._feature_discovery_audit_gate()
+        if not allowed:return False,reason
+        with self.feature_discovery_audit_lock:
+            if self.feature_discovery_audit_thread and self.feature_discovery_audit_thread.is_alive():return False,"already_running"
+            self.feature_discovery_audit_thread=threading.Thread(target=self.feature_discovery_audit_loop,name="feature-discovery-audit-2019-2024",daemon=True); self.feature_discovery_audit_thread.start()
         return True,"started"
 
     def start_phase0b_full(self) -> tuple[bool,str]:
@@ -7101,6 +7249,33 @@ def feature_discovery_status():
 def feature_discovery_result():
     report=radar.redis.get_json(radar.feature_discovery_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/feature-discovery/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
+    return jsonify(report)
+
+@app.get("/research/feature-discovery-audit/protocol")
+def feature_discovery_audit_protocol():
+    allowed,reason=radar._feature_discovery_audit_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"audit_spec":FEATURE_DISCOVERY_AUDIT_SPEC,"audit_sha256":FEATURE_DISCOVERY_AUDIT_SHA256,"gate_allowed":allowed,"gate_reason":reason,"validation_2025_opened":False,"holdout_2026_opened":False})
+
+@app.get("/research/feature-discovery-audit")
+def feature_discovery_audit_home():
+    allowed,reason=radar._feature_discovery_audit_gate()
+    return jsonify({"purpose":"Read-only 2019-2024 Discovery stability/ladder audit before Validation","gate_allowed":allowed,"gate_reason":reason,"protocol_url":"/research/feature-discovery-audit/protocol","start_url":"/research/feature-discovery-audit/start","status_url":"/research/feature-discovery-audit/status","result_url":"/research/feature-discovery-audit/result","validation_2025_opened":False,"holdout_2026_opened":False})
+
+@app.get("/research/feature-discovery-audit/start")
+def feature_discovery_audit_start():
+    started,message=radar.start_feature_discovery_audit(); return jsonify({"ok":started,"status":"started" if started else message,"status_url":"/research/feature-discovery-audit/status","result_url":"/research/feature-discovery-audit/result","validation_2025_opened":False,"holdout_2026_opened":False}), (200 if started else 409)
+
+@app.get("/research/feature-discovery-audit/status")
+def feature_discovery_audit_status():
+    stored=radar.redis.get_json(radar.feature_discovery_audit_key("status"),None) if radar.redis.configured else None
+    with radar.feature_discovery_audit_lock:
+        payload=dict(stored or radar.feature_discovery_audit_state); payload["worker_alive"]=bool(radar.feature_discovery_audit_thread and radar.feature_discovery_audit_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/research/feature-discovery-audit/result")
+def feature_discovery_audit_result():
+    report=radar.redis.get_json(radar.feature_discovery_audit_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/feature-discovery-audit/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
     return jsonify(report)
 
 @app.get("/phase0/phase0b-full")
