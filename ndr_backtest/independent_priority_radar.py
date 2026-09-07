@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.4"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-INSTRUMENT-TYPE-CLEANUP-AUDIT"
+VERSION = "1.7.5"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-INSTRUMENT-TYPE-CLEANUP-AUDIT-STREAMING-FIX"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -2128,18 +2128,27 @@ class IndependentPriorityRadar:
             allowed, reason = self._instrument_cleanup_gate()
             if not allowed:
                 raise RuntimeError(reason)
-            self._set_instrument_cleanup_state(status="RUNNING", phase="LOAD", message="Loading stored Census candidates; no Census rescan and no market-bar requests", phase0b_allowed=False)
+            self._set_instrument_cleanup_state(status="RUNNING", phase="LOAD", message="Streaming stored Census sessions to collect candidate symbols; no Census rescan and no market-bar requests", sessions_loaded=0, phase0b_allowed=False)
             census = self.redis.get_json(self.historical_census_key("report"), {})
             sessions = list(self.redis.get_json(self.historical_census_key("completed_sessions"), []) or [])
             if len(sessions) != 1926:
                 raise RuntimeError(f"Expected 1926 stored sessions, found {len(sessions)}")
             records = self.redis.get_json(self.universe_reconstruction_key("records"), {}) or {}
+
+            # PASS 1 (streaming): collect only unique symbols.  v1.7.4 retained all
+            # 338k candidate dictionaries in RAM and could be OOM-killed on Render.
             candidate_symbols=set()
-            stored=[]
-            for key in sessions:
+            loaded_candidate_count=0
+            for idx,key in enumerate(sessions,1):
                 rows=self.redis.get_json(self.historical_census_key(f"candidates:{key}"), []) or []
-                stored.append((key,rows))
+                loaded_candidate_count += len(rows)
                 candidate_symbols.update(str(x.get("symbol") or "").upper() for x in rows if x.get("symbol"))
+                if idx % 50 == 0 or idx == len(sessions):
+                    self._set_instrument_cleanup_state(status="RUNNING",phase="LOAD",message=f"Streamed {idx}/{len(sessions)} stored sessions; no candidate rows retained in RAM",sessions_loaded=idx,total_sessions=len(sessions),loaded_candidate_count=loaded_candidate_count,unique_candidate_symbols=len(candidate_symbols),phase0b_allowed=False)
+                del rows
+            if loaded_candidate_count != 338323:
+                raise RuntimeError(f"Frozen Census candidate count mismatch while streaming: {loaded_candidate_count}")
+
             self._set_instrument_cleanup_state(status="RUNNING", phase="METADATA", message="Fetching one Alpaca /v2/assets metadata snapshot; no historical bars", unique_candidate_symbols=len(candidate_symbols), phase0b_allowed=False)
             assets = self.alpaca.assets_by_status(None)
             asset_map={str(a.get("symbol") or "").upper():a for a in assets if str(a.get("symbol") or "").upper() in candidate_symbols}
@@ -2150,7 +2159,6 @@ class IndependentPriorityRadar:
                 rec=records.get(sym) or {}
                 base=self._instrument_name_classification(asset_map.get(sym))
                 recycling=bool(rec.get("ticker_recycling_risk"))
-                # Current /v2/assets metadata is not point-in-time identity evidence across a recycling gap.
                 if recycling:
                     base={**base,"pre_recycling_bucket":base["bucket"],"bucket":"unresolved_ticker_recycling","evidence":"ticker_recycling_risk_blocks_cross_era_metadata_classification"}
                 diags=self._suffix_diagnostics(sym)
@@ -2158,9 +2166,13 @@ class IndependentPriorityRadar:
                 symbol_map[sym]=base
                 symbol_bucket_counts[base["bucket"]]+=1; symbol_subtype_counts[base["subtype"]]+=1
                 for d in diags:suffix_diag_counts[d]+=1
+            del assets, asset_map, records
+
+            # PASS 2 (streaming): re-read one session at a time and aggregate only.
             totals=defaultdict(int); by_year={str(y):defaultdict(int) for y in range(2019,2027)}
             subtype_candidate_counts=defaultdict(int); top_non_common=defaultdict(int); top_unresolved=defaultdict(int); top_common=defaultdict(int)
-            for idx,(key,rows) in enumerate(stored,1):
+            for idx,key in enumerate(sessions,1):
+                rows=self.redis.get_json(self.historical_census_key(f"candidates:{key}"), []) or []
                 year=str(key)[:4]
                 for c in rows:
                     sym=str(c.get("symbol") or "").upper(); cls=symbol_map.get(sym) or {"bucket":"unresolved_no_metadata","subtype":"unknown"}
@@ -2171,21 +2183,22 @@ class IndependentPriorityRadar:
                         totals["split_suspect"]+=1; by_year[year]["split_suspect"]+=1
                     if c.get("same_bar_order_ambiguous_ge20"):
                         totals["same_bar_ambiguous"]+=1; by_year[year]["same_bar_ambiguous"]+=1
-                    # Clean recommendation is deliberately conservative: only metadata-common-like, no split, no recycling.
                     clean = bucket=="metadata_common_like" and not c.get("corporate_action_screen",{}).get("suspect") and not cls.get("ticker_recycling_risk")
                     if clean:
                         totals["recommended_clean_for_phase0b"]+=1; by_year[year]["recommended_clean_for_phase0b"]+=1; top_common[sym]+=1
                     elif bucket=="metadata_non_common": top_non_common[sym]+=1
                     else: top_unresolved[sym]+=1
-                if idx%100==0 or idx==len(stored):
-                    self._set_instrument_cleanup_state(status="RUNNING",phase="AUDIT",message=f"Classified {idx}/{len(stored)} stored sessions",sessions_audited=idx,total_sessions=len(stored),phase0b_allowed=False)
+                if idx%50==0 or idx==len(sessions):
+                    self._set_instrument_cleanup_state(status="RUNNING",phase="AUDIT",message=f"Classified {idx}/{len(sessions)} stored sessions (streaming)",sessions_audited=idx,total_sessions=len(sessions),phase0b_allowed=False)
+                del rows
             unresolved=sum(v for k,v in totals.items() if k.startswith("unresolved_"))
             totals["unresolved_total"]=unresolved
             totals["excluded_metadata_non_common"]=totals.get("metadata_non_common",0)
             report={
-                "version":VERSION,"build":BUILD,"audit_id":"IPR-INSTRUMENT-TYPE-CLEANUP-AUDIT-2026-09-07-A","status":"COMPLETED",
+                "version":VERSION,"build":BUILD,"audit_id":"IPR-INSTRUMENT-TYPE-CLEANUP-AUDIT-2026-09-07-B","status":"COMPLETED",
                 "source_historical_census_sha256":census.get("historical_census_sha256"),"source_reconstruction_sha256":census.get("reconstruction_sha256"),
                 "period":census.get("period"),"sessions":len(sessions),"unique_candidate_symbols":len(candidate_symbols),
+                "implementation":{"streaming_two_pass":True,"all_candidate_rows_retained_in_ram":False,"reason":"Avoid Render OOM/process death observed in v1.7.4 LOAD"},
                 "policy":{
                     "goal":"Separate likely common/ordinary equity from non-common instruments before Phase 0B without altering stored Census candidates.",
                     "metadata_source":"One current Alpaca /v2/assets?asset_class=us_equity snapshot including active and inactive assets; no market-bar request.",
@@ -2205,6 +2218,7 @@ class IndependentPriorityRadar:
                 "top_metadata_common_like_symbols":[{"symbol":s,"candidate_cycles":n,"classification":symbol_map[s]} for s,n in sorted(top_common.items(),key=lambda kv:(-kv[1],kv[0]))[:30]],
                 "integrity":{
                     "candidate_count_matches_frozen_census":totals["candidates"]==338323,
+                    "stream_load_count_matches_frozen_census":loaded_candidate_count==338323,
                     "sessions_match_frozen_census":len(sessions)==1926,
                     "classification_partition_matches":totals["candidates"]==(totals.get("metadata_common_like",0)+totals.get("metadata_non_common",0)+unresolved),
                     "original_candidates_mutated":False,
