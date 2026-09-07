@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.17"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-FEATURE-SCORING-FREEZE"
+VERSION = "1.7.17-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-FEATURE-SCORING-FREEZE-ANCHOR-POLICY-HARDENED"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -332,7 +332,7 @@ FEATURE_DISCOVERY_AUDIT_SHA256 = hashlib.sha256(json.dumps(FEATURE_DISCOVERY_AUD
 
 
 FEATURE_SCORING_FREEZE_SPEC = {
-    "freeze_id": "IPR-FEATURE-SCORING-FREEZE-2026-09-08-A",
+    "freeze_id": "IPR-FEATURE-SCORING-FREEZE-2026-09-08-B",
     "purpose": "Freeze feature eligibility, early-detection/confirmation/severity roles, score construction and Development-only operating thresholds before opening 2025.",
     "source_audit_id": FEATURE_DISCOVERY_AUDIT_SPEC["audit_id"],
     "scope": "2019-2024 persisted Discovery observations only; no Alpaca fetch and no 2025/2026 read.",
@@ -342,10 +342,20 @@ FEATURE_SCORING_FREEZE_SPEC = {
         "structural_proxy_name_tokens": ["coverage", "data_available", "history_length", "bars_available"],
         "applies_regardless_of_effect": True,
     },
+    "anchor_selection_policy": {
+        "frozen_before_validation": True,
+        "principle": "Anchor choice is role-defined and deterministic, never chosen by observed effect magnitude, p/q value, ladder strength, or positive recall. For each feature, use the role's fixed priority from earliest information to latest and select the first anchor that passes the already-defined eligibility gates.",
+        "early_core_priority_minutes": [240, 120, 60],
+        "confirmation_priority_minutes": [30, 15, 5],
+        "severity_quality_priority_minutes": [240, 120, 60, 30, 15, 5],
+        "tie_break": "The fixed priority list is the complete tie-break; no result-dependent secondary tie-break is permitted.",
+        "development_status": "Frozen now while only 2019-2024 Discovery/Audit results are available. This is Development model selection, not a claim that the anchor policy was frozen before Discovery/Audit results existed.",
+        "validation_lock": "Once 2025 is opened, anchor priorities and selected Feature x Anchor pairs cannot be changed from 2025 results.",
+    },
     "roles": {
-        "early_core": "Source-promoted, six-year sign-stable, all-supported-phase sign-stable, eligible features at anchors 60/120/240m. Keep exactly the earliest qualifying anchor (largest minutes) per feature.",
-        "confirmation": "Same stability/eligibility rule at anchors 5/15/30m. Keep exactly the earliest qualifying confirmation anchor (largest minutes) per feature. Confirmation is separate and cannot redefine Early Core after Validation opens.",
-        "severity_quality": "Source-promoted + six-year stable + supported-phase stable + monotonic +20/+30/+50, eligible features only. Keep earliest qualifying anchor per feature. This is quality/severity evidence, not a mandatory +20 detector gate.",
+        "early_core": "Source-promoted, six-year sign-stable, all-supported-phase sign-stable, eligible features at anchors 60/120/240m. Apply fixed priority 240->120->60; keep first qualifying anchor per feature.",
+        "confirmation": "Same stability/eligibility rule at anchors 5/15/30m. Apply fixed priority 30->15->5; keep first qualifying anchor per feature. Confirmation cannot redefine Early Core after Validation opens.",
+        "severity_quality": "Source-promoted + six-year stable + supported-phase stable + monotonic +20/+30/+50, eligible features only. Apply fixed priority 240->120->60->30->15->5. This is quality/severity evidence, not a mandatory +20 detector gate.",
     },
     "score": {
         "normalization": "For each selected Feature x Anchor, center at the Discovery hard-negative equal-symbol mean and scale by the pooled symbol-mean SD reconstructed as abs((positive_mean-hard_negative_mean)/standardized_effect).",
@@ -3424,12 +3434,22 @@ class IndependentPriorityRadar:
         return True,"allowed"
 
     @staticmethod
-    def _fsf_choose_earliest(rows: list[dict[str,Any]]) -> list[dict[str,Any]]:
-        best={}
+    def _fsf_choose_by_frozen_anchor_priority(rows: list[dict[str,Any]], priority_minutes: list[int]) -> list[dict[str,Any]]:
+        by_feature={}
         for r in rows:
             f=str(r.get("feature")); a=int(r.get("anchor_minutes") or 0)
-            if f not in best or a>int(best[f].get("anchor_minutes") or 0): best[f]=r
-        return sorted(best.values(),key=lambda r:(-int(r.get("anchor_minutes") or 0),str(r.get("feature"))))
+            by_feature.setdefault(f,{})[a]=r
+        out=[]
+        for f in sorted(by_feature):
+            amap=by_feature[f]
+            chosen=next((amap[a] for a in priority_minutes if a in amap),None)
+            if chosen is not None: out.append(chosen)
+        return sorted(out,key=lambda r:(priority_minutes.index(int(r.get("anchor_minutes") or 0)),str(r.get("feature"))))
+
+    @staticmethod
+    def _fsf_choose_earliest(rows: list[dict[str,Any]]) -> list[dict[str,Any]]:
+        # Backward-compatible helper for legacy tests only; production freeze uses explicit role priorities.
+        return IndependentPriorityRadar._fsf_choose_by_frozen_anchor_priority(rows,[240,120,60,30,15,5])
 
     def feature_scoring_freeze_loop(self)->None:
         try:
@@ -3442,9 +3462,10 @@ class IndependentPriorityRadar:
             stable=[d for d in promoted if d.get("year_stability",{}).get("all_years_same_direction") and d.get("phase_stability",{}).get("all_supported_phases_same_direction")]
             structural=[d for d in stable if self._fsf_structural_proxy(d.get("feature"))]
             eligible=[d for d in stable if not self._fsf_structural_proxy(d.get("feature"))]
-            early=self._fsf_choose_earliest([d for d in eligible if int(d.get("anchor_minutes") or 0)>=60])
-            confirm=self._fsf_choose_earliest([d for d in eligible if int(d.get("anchor_minutes") or 0)<60])
-            severity=self._fsf_choose_earliest([d for d in eligible if d.get("ladder_monotonicity",{}).get("monotonic_20_30_50")])
+            ap=FEATURE_SCORING_FREEZE_SPEC["anchor_selection_policy"]
+            early=self._fsf_choose_by_frozen_anchor_priority([d for d in eligible if int(d.get("anchor_minutes") or 0) in ap["early_core_priority_minutes"]],ap["early_core_priority_minutes"])
+            confirm=self._fsf_choose_by_frozen_anchor_priority([d for d in eligible if int(d.get("anchor_minutes") or 0) in ap["confirmation_priority_minutes"]],ap["confirmation_priority_minutes"])
+            severity=self._fsf_choose_by_frozen_anchor_priority([d for d in eligible if d.get("ladder_monotonicity",{}).get("monotonic_20_30_50")],ap["severity_quality_priority_minutes"])
             def enrich(rows):
                 out=[]
                 for d in rows:
@@ -3482,7 +3503,7 @@ class IndependentPriorityRadar:
                 hs=np.asarray([float(np.mean(v)) for v in role_scores[role].values() if v],dtype=float); ps=np.asarray(role_pos[role],dtype=float)
                 thr=float(np.quantile(hs,0.95)) if len(hs) else None
                 calibration[role]={"hard_negative_symbols":len(hs),"positive_events_scored":len(ps),"threshold_rule":"95th percentile of per-symbol mean hard-negative scores","frozen_threshold":thr,"development_positive_event_pass_rate":(float(np.mean(ps>=thr)) if thr is not None and len(ps) else None),"development_hard_negative_symbol_pass_rate":(float(np.mean(hs>=thr)) if thr is not None and len(hs) else None)}
-            report={"version":VERSION,"build":BUILD,"freeze_id":FEATURE_SCORING_FREEZE_SPEC["freeze_id"],"freeze_spec_sha256":FEATURE_SCORING_FREEZE_SHA256,"status":"COMPLETED","phase":"FROZEN_STOP_REVIEW","scope":"2019-2024 only","source_audit_id":audit.get("audit_id"),"source_audit_sha256":audit.get("audit_sha256"),"source_protocol_sha256":audit.get("source_protocol_sha256"),"source_execution_sha256":audit.get("source_execution_sha256"),"eligibility_rule":FEATURE_SCORING_FREEZE_SPEC["pre_selection_eligibility_rule"],"structural_proxies_excluded":[{"feature":d.get("feature"),"anchor_minutes":d.get("anchor_minutes"),"reason":"structural/data-availability proxy excluded by pre-selection eligibility rule regardless of effect"} for d in structural],"source_intersection_all_three_count":sum(bool(d.get("year_stability",{}).get("all_years_same_direction") and d.get("phase_stability",{}).get("all_supported_phases_same_direction") and d.get("ladder_monotonicity",{}).get("monotonic_20_30_50")) for d in promoted),"roles":roles,"role_counts":{k:len(v) for k,v in roles.items()},"calibration":calibration,"sessions":len(sessions),"class_counts_seen":dict(counts),"alpaca_requests_made":0,"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            report={"version":VERSION,"build":BUILD,"freeze_id":FEATURE_SCORING_FREEZE_SPEC["freeze_id"],"freeze_spec_sha256":FEATURE_SCORING_FREEZE_SHA256,"status":"COMPLETED","phase":"FROZEN_STOP_REVIEW","scope":"2019-2024 only","source_audit_id":audit.get("audit_id"),"source_audit_sha256":audit.get("audit_sha256"),"source_protocol_sha256":audit.get("source_protocol_sha256"),"source_execution_sha256":audit.get("source_execution_sha256"),"eligibility_rule":FEATURE_SCORING_FREEZE_SPEC["pre_selection_eligibility_rule"],"anchor_selection_policy":FEATURE_SCORING_FREEZE_SPEC["anchor_selection_policy"],"structural_proxies_excluded":[{"feature":d.get("feature"),"anchor_minutes":d.get("anchor_minutes"),"reason":"structural/data-availability proxy excluded by pre-selection eligibility rule regardless of effect"} for d in structural],"source_intersection_all_three_count":sum(bool(d.get("year_stability",{}).get("all_years_same_direction") and d.get("phase_stability",{}).get("all_supported_phases_same_direction") and d.get("ladder_monotonicity",{}).get("monotonic_20_30_50")) for d in promoted),"roles":roles,"role_counts":{k:len(v) for k,v in roles.items()},"calibration":calibration,"sessions":len(sessions),"class_counts_seen":dict(counts),"alpaca_requests_made":0,"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
             canonical=dict(report); canonical.pop("completed_at",None); report["frozen_model_sha256"]=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
             self.redis.set_json(self.feature_scoring_freeze_key("report"),report); self._set_feature_scoring_freeze_state(status="COMPLETED",phase="FROZEN_STOP_REVIEW",message="Feature/Scoring Freeze completed; STOP and review before opening 2025",sessions_scanned=len(sessions),total_sessions=len(sessions),role_counts=report["role_counts"],source_intersection_all_three_count=report["source_intersection_all_three_count"],validation_2025_opened=False,holdout_2026_opened=False,validation_allowed=False,stop_and_review_required=True)
         except Exception as exc:
