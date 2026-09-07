@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.2"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-05-HISTORICAL-CENSUS-2019-2026"
+VERSION = "1.7.3"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-HISTORICAL-CENSUS-AUDIT"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1429,6 +1429,9 @@ class IndependentPriorityRadar:
         self.historical_census_thread: threading.Thread | None = None
         self.historical_census_stop_event = threading.Event()
         self.historical_census_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"2019-2026 historical census has not started","phase0b_allowed":False,"updated_at":iso()}
+        self.historical_census_audit_lock = threading.RLock()
+        self.historical_census_audit_thread: threading.Thread | None = None
+        self.historical_census_audit_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Historical Census audit has not started","phase0b_allowed":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -1959,6 +1962,99 @@ class IndependentPriorityRadar:
             self.historical_census_stop_event.clear()
             self.historical_census_thread=threading.Thread(target=self.historical_census_loop,name="historical-census-2019-2026",daemon=True)
             self.historical_census_thread.start()
+        return True,"started"
+
+    def historical_census_audit_key(self, suffix: str) -> str:
+        return self.key(f"historical_census_audit:v1:{suffix}")
+
+    def _set_historical_census_audit_state(self, **updates: Any) -> None:
+        with self.historical_census_audit_lock:
+            self.historical_census_audit_state.update(updates)
+            self.historical_census_audit_state["updated_at"] = iso()
+            snapshot = dict(self.historical_census_audit_state)
+        if self.redis.configured:
+            self.redis.set_json(self.historical_census_audit_key("status"), snapshot)
+
+    def _historical_census_audit_gate(self) -> tuple[bool, str]:
+        if not self.redis.configured:
+            return False, "Redis is required"
+        report = self.redis.get_json(self.historical_census_key("report"), None)
+        if not report or report.get("status") != "COMPLETED":
+            return False, "Completed Historical Census report is required"
+        if str(report.get("historical_census_sha256")) != HISTORICAL_CENSUS_SHA256:
+            return False, "Stored Historical Census SHA does not match frozen v1.7.2 census"
+        completed = self.redis.get_json(self.historical_census_key("completed_sessions"), []) or []
+        if len(completed) != int(report.get("sessions") or 0) or len(completed) < 1800:
+            return False, "Historical Census completed-session index is incomplete"
+        return True, "allowed"
+
+    @staticmethod
+    def _audit_percentiles(values: list[int]) -> dict[str, float | int | None]:
+        if not values:
+            return {"min":None,"p25":None,"median":None,"p75":None,"p90":None,"p95":None,"max":None,"mean":None}
+        ordered=sorted(values); n=len(ordered)
+        def q(p: float) -> float:
+            pos=(n-1)*p; lo=int(math.floor(pos)); hi=int(math.ceil(pos))
+            if lo==hi:return float(ordered[lo])
+            return float(ordered[lo]+(ordered[hi]-ordered[lo])*(pos-lo))
+        return {"min":ordered[0],"p25":round(q(.25),2),"median":round(q(.5),2),"p75":round(q(.75),2),"p90":round(q(.9),2),"p95":round(q(.95),2),"max":ordered[-1],"mean":round(sum(ordered)/n,2)}
+
+    def historical_census_audit_loop(self) -> None:
+        try:
+            allowed, reason = self._historical_census_audit_gate()
+            if not allowed: raise RuntimeError(reason)
+            census_report=self.redis.get_json(self.historical_census_key("report"),{})
+            sessions=sorted(self.redis.get_json(self.historical_census_key("completed_sessions"),[]) or [])
+            by_year={str(y):{"sessions":0,"candidates":0,"same_bar_ambiguous":0,"split_suspects":0,"ticker_recycling_risk":0,"symbols_expected":0,"symbols_with_bars":0,"symbols_without_bars":0} for y in range(2019,2027)}
+            threshold_counts={str(x):0 for x in (5,10,15,20,30,50)}
+            gain_bands={"20_to_lt30":0,"30_to_lt50":0,"ge50":0}
+            unique_symbols=set(); symbol_counts=defaultdict(int); session_counts=[]; top_sessions=[]
+            totals={"candidates":0,"eligible_for_phase0b":0,"ineligible_split_suspect":0,"same_bar_ambiguous":0,"ticker_recycling_risk":0,"quality_split_suspects":0,"quality_same_bar_ambiguous":0,"quality_ticker_recycling_risk":0,"symbols_expected":0,"symbols_with_bars":0,"symbols_without_bars":0}
+            for idx,key in enumerate(sessions,1):
+                candidates=self.redis.get_json(self.historical_census_key(f"candidates:{key}"),[]) or []
+                quality=self.redis.get_json(self.historical_census_key(f"quality:{key}"),{}) or {}
+                year=str(key)[:4]; yc=by_year.setdefault(year,{"sessions":0,"candidates":0,"same_bar_ambiguous":0,"split_suspects":0,"ticker_recycling_risk":0,"symbols_expected":0,"symbols_with_bars":0,"symbols_without_bars":0})
+                yc["sessions"]+=1; yc["candidates"]+=len(candidates)
+                for field in ("same_bar_ambiguous","split_suspects","ticker_recycling_risk","symbols_expected","symbols_with_bars","symbols_without_bars"):
+                    val=int(quality.get(field,0) or 0); yc[field]+=val
+                    if field in ("same_bar_ambiguous","split_suspects","ticker_recycling_risk"): totals[f"quality_{field}"]+=val
+                    else: totals[field]+=val
+                session_counts.append(len(candidates)); top_sessions.append((len(candidates),key))
+                totals["candidates"]+=len(candidates)
+                for c in candidates:
+                    sym=str(c.get("symbol") or ""); unique_symbols.add(sym); symbol_counts[sym]+=1
+                    hits=c.get("ladder_hits") or {}
+                    for level in threshold_counts:
+                        if hits.get(level): threshold_counts[level]+=1
+                    gain=float(c.get("max_coarse_gain_pct") or 0.0)
+                    if gain>=50: gain_bands["ge50"]+=1
+                    elif gain>=30: gain_bands["30_to_lt50"]+=1
+                    else: gain_bands["20_to_lt30"]+=1
+                    if c.get("eligible_for_phase0b"): totals["eligible_for_phase0b"]+=1
+                    else: totals["ineligible_split_suspect"]+=1
+                    if c.get("same_bar_order_ambiguous_ge20"): totals["same_bar_ambiguous"]+=1
+                    if c.get("ticker_recycling_risk"): totals["ticker_recycling_risk"]+=1
+                if idx % 50 == 0 or idx == len(sessions):
+                    self._set_historical_census_audit_state(status="RUNNING",phase="AUDIT",message=f"Audited {idx}/{len(sessions)} stored sessions",sessions_audited=idx,total_sessions=len(sessions),phase0b_allowed=False)
+            top_sessions=[{"session":k,"candidates":n} for n,k in sorted(top_sessions,reverse=True)[:20]]
+            top_symbols=[{"symbol":sym,"candidate_cycles":n} for sym,n in sorted(symbol_counts.items(),key=lambda kv:(-kv[1],kv[0]))[:20]]
+            bars_den=totals["symbols_with_bars"]+totals["symbols_without_bars"]
+            report={"version":VERSION,"build":BUILD,"audit_id":"IPR-HISTORICAL-CENSUS-AUDIT-2026-09-07-A","status":"COMPLETED","source_historical_census_sha256":HISTORICAL_CENSUS_SHA256,"source_reconstruction_sha256":census_report.get("reconstruction_sha256"),"period":census_report.get("period"),"sessions":len(sessions),"candidate_scope_note":"Stored Census candidates are already coarse >=20% candidates. Therefore +5/+10/+15 counts are descriptive within that stored >=20% set, not counts for the full scanned universe.","totals":{**totals,"unique_symbols":len(unique_symbols),"bars_coverage_pct":round(totals["symbols_with_bars"]/bars_den*100,4) if bars_den else None},"threshold_counts_within_stored_ge20_candidates":threshold_counts,"max_coarse_gain_bands":gain_bands,"candidates_by_year":by_year,"candidates_per_session":self._audit_percentiles(session_counts),"top_sessions":top_sessions,"top_symbols":top_symbols,"integrity":{"stored_candidate_count_matches_census_report":totals["candidates"]==int(census_report.get("coarse_candidates") or -1),"candidate_vs_quality_same_bar_match":totals["same_bar_ambiguous"]==totals["quality_same_bar_ambiguous"],"candidate_vs_quality_split_match":totals["ineligible_split_suspect"]==totals["quality_split_suspects"],"candidate_vs_quality_recycling_match":totals["ticker_recycling_risk"]==totals["quality_ticker_recycling_risk"]},"phase0b_allowed":False,"stop_and_review_required":True,"alpaca_requests_made":0,"census_rescan_performed":False,"completed_at":iso()}
+            self.redis.set_json(self.historical_census_audit_key("report"),report)
+            self._set_historical_census_audit_state(status="COMPLETED",phase="STOP_REVIEW",message="Historical Census audit completed; STOP and review before Phase 0B",sessions_audited=len(sessions),total_sessions=len(sessions),phase0b_allowed=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Historical Census audit failed")
+            self._set_historical_census_audit_state(status="ERROR",phase="BLOCKED",message="Historical Census audit failed closed",phase0b_allowed=False,last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.historical_census_audit_lock:self.historical_census_audit_thread=None
+
+    def start_historical_census_audit(self) -> tuple[bool,str]:
+        allowed,reason=self._historical_census_audit_gate()
+        if not allowed:return False,reason
+        with self.historical_census_audit_lock:
+            if self.historical_census_audit_thread and self.historical_census_audit_thread.is_alive():return False,"already_running"
+            self.historical_census_audit_thread=threading.Thread(target=self.historical_census_audit_loop,name="historical-census-audit",daemon=True)
+            self.historical_census_audit_thread.start()
         return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
@@ -5711,6 +5807,30 @@ def universe_reconstruction_status():
 def universe_reconstruction_result():
     report=radar.redis.get_json(radar.universe_reconstruction_key("report"),None) if radar.redis.configured else None
     if not report: return jsonify({"result_ready":False,"status_url":"/phase0/universe-reconstruction/status","historical_census_allowed":False}),202
+    return jsonify(report)
+
+@app.get("/phase0/historical-census/audit")
+def historical_census_audit_home():
+    allowed,reason=radar._historical_census_audit_gate()
+    return jsonify({"purpose":"Read-only audit of stored 2019-2026 Historical Census; no Alpaca requests and no census rescan","gate_allowed":allowed,"gate_reason":reason,"start_url":"/phase0/historical-census/audit/start","status_url":"/phase0/historical-census/audit/status","result_url":"/phase0/historical-census/audit/result","phase0b_allowed":False})
+
+@app.get("/phase0/historical-census/audit/start")
+@app.post("/phase0/historical-census/audit/start")
+def historical_census_audit_start():
+    started,message=radar.start_historical_census_audit()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/historical-census/audit/status","result_url":"/phase0/historical-census/audit/result","phase0b_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/historical-census/audit/status")
+def historical_census_audit_status():
+    stored=radar.redis.get_json(radar.historical_census_audit_key("status"),None) if radar.redis.configured else None
+    with radar.historical_census_audit_lock:
+        payload=dict(stored or radar.historical_census_audit_state); payload["worker_alive"]=bool(radar.historical_census_audit_thread and radar.historical_census_audit_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/historical-census/audit/result")
+def historical_census_audit_result():
+    report=radar.redis.get_json(radar.historical_census_audit_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/audit/status","phase0b_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0/historical-census")
