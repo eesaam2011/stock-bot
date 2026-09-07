@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.11"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-FEATURE-DISCOVERY-PROTOCOL-FREEZE"
+VERSION = "1.7.13"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-FEATURE-DISCOVERY-EXECUTION-MIN-N-HARDENED"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -270,6 +270,33 @@ FEATURE_DISCOVERY_PROTOCOL_SPEC = {
     },
 }
 FEATURE_DISCOVERY_PROTOCOL_SHA256 = hashlib.sha256(json.dumps(FEATURE_DISCOVERY_PROTOCOL_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+FEATURE_DISCOVERY_EXEC_SPEC = {
+    "run_id": "IPR-FEATURE-DISCOVERY-2019-2024-2026-09-07-A",
+    "protocol_sha256": FEATURE_DISCOVERY_PROTOCOL_SHA256,
+    "scope": "Discovery years 2019-2024 only; 2025 validation and 2026 holdout are not read by this run.",
+    "source": "Persisted Phase 0B verified/failed events plus raw 5-minute SIP/BOATS bars fetched only for selected Discovery observations.",
+    "controls": {
+        "eligible_pool": "Phase 0B failed clean candidates in 2019-2024 only; still_ambiguous is never a control.",
+        "hard_negative_matching": ["same target session when available", "same trading phase", "same frozen log2 price band", "comparable 5-minute coverage"],
+        "hard_negative_ratio": "up to 3 per positive; controls may be reused when a contextual cell is sparse, with reuse counted and reported",
+        "random_control": "one separate deterministic random failed clean candidate from the same year/regime pool; never selected using predictive feature values",
+        "pseudo_cutoff": "failed controls use the frozen Phase 0A coarse first-20 timestamp as opportunity-time cutoff; no post-cutoff feature data",
+    },
+    "anchors_minutes": [5,15,30,60,120,240],
+    "bar_timeframe": "5Min",
+    "feature_families": FEATURE_DISCOVERY_PROTOCOL_SPEC["feature_families"],
+    "min_n_formula": {
+        "events": "max(500, ceil(0.5% of all eligible Discovery positive events))",
+        "symbols": "max(100, ceil(3% of all eligible Discovery positive symbols))",
+        "year_support": "at least 4 distinct Discovery years",
+        "freeze_timing": "computed and persisted from Phase 0B labels before any feature-effect calculation",
+    },
+    "statistics": "equal-symbol positive weighting; symbol-clustered normal-approximation uncertainty; Benjamini-Hochberg FDR within frozen feature family; effect stability by year",
+    "safety": {"orders_enabled":False,"alerts_enabled":False,"validation_2025_read":False,"holdout_2026_read":False,"stop_and_review_after_discovery":True},
+}
+FEATURE_DISCOVERY_EXEC_SHA256 = hashlib.sha256(json.dumps(FEATURE_DISCOVERY_EXEC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 PROTOCOL_SHA256 = hashlib.sha256(
@@ -1572,6 +1599,10 @@ class IndependentPriorityRadar:
         self.phase0b_dataset_audit_lock = threading.RLock()
         self.phase0b_dataset_audit_thread: threading.Thread | None = None
         self.phase0b_dataset_audit_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Phase 0B dataset audit has not started","audit_id":PHASE0B_DATASET_AUDIT_SPEC["audit_id"],"feature_discovery_allowed":False,"updated_at":iso()}
+        self.feature_discovery_lock = threading.RLock()
+        self.feature_discovery_thread: threading.Thread | None = None
+        self.feature_discovery_stop_event = threading.Event()
+        self.feature_discovery_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Feature Discovery has not started","run_id":FEATURE_DISCOVERY_EXEC_SPEC["run_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -2900,6 +2931,221 @@ class IndependentPriorityRadar:
         with self.phase0b_dataset_audit_lock:
             if self.phase0b_dataset_audit_thread and self.phase0b_dataset_audit_thread.is_alive(): return False,"already_running"
             self.phase0b_dataset_audit_thread=threading.Thread(target=self.phase0b_dataset_audit_loop,name="phase0b-dataset-audit",daemon=True); self.phase0b_dataset_audit_thread.start()
+        return True,"started"
+
+    def feature_discovery_key(self, suffix: str) -> str:
+        return self.key(f"feature_discovery:v1:{suffix}")
+
+    def _set_feature_discovery_state(self, **updates: Any) -> None:
+        with self.feature_discovery_lock:
+            self.feature_discovery_state.update(updates); self.feature_discovery_state["updated_at"] = iso(); snap=dict(self.feature_discovery_state)
+        if self.redis.configured: self.redis.set_json(self.feature_discovery_key("status"), snap)
+
+    def _feature_discovery_gate(self) -> tuple[bool,str]:
+        if not (self.redis.configured and self.alpaca.configured): return False,"Redis and Alpaca are required"
+        audit=self.redis.get_json(self.phase0b_dataset_audit_key("report"),None)
+        if not audit or audit.get("integrity_passed") is not True: return False,"Hardened Phase 0B Dataset Audit must pass"
+        t=audit.get("totals") or {}
+        if int(t.get("processed") or 0)!=205028 or int(t.get("verified") or 0)!=169628: return False,"Frozen Phase 0B totals do not match"
+        if str(audit.get("audit_id")) != FEATURE_DISCOVERY_PROTOCOL_SPEC["source_gate"]["source_audit_id"]: return False,"Frozen source audit id mismatch"
+        return True,"allowed"
+
+    @staticmethod
+    def _fd_price_band(price: Any) -> str:
+        try: x=float(price)
+        except (TypeError,ValueError): return "unknown"
+        if not math.isfinite(x) or x<=0:return "unknown"
+        return str(int(math.floor(math.log(x,2))))
+
+    @staticmethod
+    def _fd_phase(ts: str, target: date) -> str:
+        return IndependentPriorityRadar._probe_session(ts,target) if ts else "Other"
+
+    @staticmethod
+    def _fd_coarse_cutoff(c: dict[str,Any]) -> str | None:
+        lf=c.get("ladder_first_ts") or {}
+        return lf.get("20") or c.get("max_high_ts")
+
+    def _fd_fetch_session_rows(self, symbols: list[str], target: date, start: datetime, end: datetime) -> dict[str,list[dict[str,Any]]]:
+        merged={sym:{} for sym in symbols}; batch_size=200
+        for off in range(0,len(symbols),batch_size):
+            batch=symbols[off:off+batch_size]
+            sip=self.alpaca.bars(batch,start,end,feed="sip",adjustment="raw",timeframe="5Min")
+            boats={} if target < date.fromisoformat(HISTORICAL_CENSUS_SPEC["boats_launch_date"]) else self.alpaca.bars(batch,start,end,feed="boats",adjustment="raw",timeframe="5Min")
+            for sym in batch:
+                dst=merged[sym]
+                for row in boats.get(sym,[]) or []:
+                    ts=str(row.get("t") or "")
+                    if ts and self._probe_session(ts,target)=="Overnight": dst[ts]={**row,"source":"boats","session":"Overnight"}
+                for row in sip.get(sym,[]) or []:
+                    ts=str(row.get("t") or "")
+                    if ts: dst[ts]={**row,"source":"sip","session":self._probe_session(ts,target)}
+        return {sym:[d[k] for k in sorted(d)] for sym,d in merged.items()}
+
+    @staticmethod
+    def _fd_features(rows: list[dict[str,Any]], cutoff: datetime) -> dict[str,float] | None:
+        rr=[]
+        for r in rows:
+            try:
+                ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00")); o=float(r.get("o")); h=float(r.get("h")); l=float(r.get("l")); c=float(r.get("c")); v=float(r.get("v") or 0)
+            except Exception: continue
+            if ts >= cutoff or min(o,h,l,c)<=0: continue
+            rr.append((ts,o,h,l,c,max(v,0.0)))
+        rr.sort(key=lambda x:x[0])
+        if len(rr)<4:return None
+        last=rr[-1]; closes=np.array([x[4] for x in rr],dtype=float); highs=np.array([x[2] for x in rr],dtype=float); lows=np.array([x[3] for x in rr],dtype=float); vols=np.array([x[5] for x in rr],dtype=float)
+        def ret(n):
+            if len(closes)<=n:return float("nan")
+            return float((closes[-1]/closes[-1-n]-1)*100)
+        n12=min(12,len(rr)); n6=min(6,len(rr)); prev12=vols[-24:-12] if len(vols)>=24 else vols[:-n12]
+        dv=closes*vols; typical=(highs+lows+closes)/3; denom=float(vols[-n12:].sum()); vwap=float((typical[-n12:]*vols[-n12:]).sum()/denom) if denom>0 else float(np.mean(typical[-n12:]))
+        ranges=(highs-lows)/closes*100
+        prior_high=float(np.max(highs[:-1])) if len(highs)>1 else highs[-1]
+        recent_low=float(np.min(lows[-n12:])); recent_high=float(np.max(highs[-n12:]))
+        span=max(recent_high-recent_low,1e-12)
+        return {
+            "ret_5m":ret(1),"ret_15m":ret(3),"ret_30m":ret(6),"ret_60m":ret(12),
+            "accel_15_vs_60":ret(3)-(ret(12)/4 if math.isfinite(ret(12)) else 0.0),
+            "volume_60m":float(vols[-n12:].sum()),"dollar_volume_60m":float(dv[-n12:].sum()),
+            "volume_ratio_prev60":float(vols[-n12:].mean()/max(float(prev12.mean()) if len(prev12) else 1.0,1.0)),
+            "range_pct_30m":float(np.mean(ranges[-n6:])),"range_expansion":float(np.mean(ranges[-n6:])/max(float(np.mean(ranges[-2*n6:-n6])) if len(ranges)>=2*n6 else float(np.mean(ranges)),1e-9)),
+            "vwap_distance_pct":float((closes[-1]/vwap-1)*100) if vwap>0 else float("nan"),
+            "close_position_60m":float((closes[-1]-recent_low)/span),
+            "distance_prior_high_pct":float((closes[-1]/prior_high-1)*100) if prior_high>0 else float("nan"),
+            "drawdown_from_60m_high_pct":float((closes[-1]/recent_high-1)*100),
+            "higher_low_30m":float(1.0 if len(lows)>=6 and np.min(lows[-3:])>np.min(lows[-6:-3]) else 0.0),
+            "bars_available":float(len(rr)),
+        }
+
+    @staticmethod
+    def _fd_bh(rows: list[dict[str,Any]]) -> None:
+        fam=defaultdict(list)
+        for i,r in enumerate(rows):
+            p=r.get("p_value")
+            if isinstance(p,(int,float)) and math.isfinite(p): fam[r["family"]].append((float(p),i))
+        for arr in fam.values():
+            arr.sort(); m=len(arr); q=[1.0]*m; running=1.0
+            for j in range(m-1,-1,-1):
+                p,i=arr[j]; running=min(running,p*m/(j+1)); q[j]=running
+            for (_,i),qq in zip(arr,q): rows[i]["fdr_q"]=min(1.0,qq)
+
+    @staticmethod
+    def _fd_family(name:str)->str:
+        if name.startswith("ret_") or name.startswith("accel"): return "price/return path and acceleration"
+        if "volume" in name: return "volume and dollar-volume participation"
+        if "range" in name: return "range/volatility expansion and compression"
+        if "vwap" in name or "close_position" in name or "prior_high" in name:return "VWAP/location and close-position structure"
+        if "drawdown" in name or "higher_low" in name:return "persistence/recovery/pullback asymmetry"
+        return "liquidity/spread where historically available"
+
+    def _fd_summarize(self, observations:list[dict[str,Any]], min_events:int, min_symbols:int)->list[dict[str,Any]]:
+        # equal-symbol weights within each class; cluster-aware uncertainty from symbol means
+        out=[]; anchors=FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]
+        feature_names=sorted({k for o in observations for a in o.get("anchors",{}).values() for k in a})
+        for anchor in anchors:
+            ak=str(anchor)
+            for fn in feature_names:
+                bycls={"positive":defaultdict(list),"hard_negative":defaultdict(list),"random_control":defaultdict(list)}
+                years=defaultdict(set); counts=defaultdict(int)
+                for o in observations:
+                    val=(o.get("anchors",{}).get(ak) or {}).get(fn)
+                    if not isinstance(val,(int,float)) or not math.isfinite(val):continue
+                    cls=o["class"]; bycls[cls][o["symbol"]].append(float(val)); years[cls].add(int(o["year"])); counts[cls]+=1
+                def symvals(cls): return np.array([float(np.mean(v)) for v in bycls[cls].values()],dtype=float)
+                p=symvals("positive"); h=symvals("hard_negative"); r=symvals("random_control")
+                if len(p)==0 or len(h)==0:continue
+                mp,mh=float(p.mean()),float(h.mean()); pooled=math.sqrt((float(p.var(ddof=1)) if len(p)>1 else 0)+(float(h.var(ddof=1)) if len(h)>1 else 0))/math.sqrt(2) if len(p)+len(h)>2 else 0
+                effect=(mp-mh)/pooled if pooled>1e-12 else 0.0
+                se=math.sqrt((float(p.var(ddof=1))/len(p) if len(p)>1 else 0)+(float(h.var(ddof=1))/len(h) if len(h)>1 else 0))
+                z=(mp-mh)/se if se>1e-12 else 0.0; pv=math.erfc(abs(z)/math.sqrt(2)) if se>1e-12 else 1.0
+                support=counts["positive"]>=min_events and len(p)>=min_symbols and len(years["positive"])>=4
+                out.append({"anchor_minutes":anchor,"feature":fn,"family":self._fd_family(fn),"positive_events":counts["positive"],"positive_symbols":len(p),"hard_negative_events":counts["hard_negative"],"hard_negative_symbols":len(h),"random_events":counts["random_control"],"positive_mean_symbol_weighted":mp,"hard_negative_mean_symbol_weighted":mh,"random_mean_symbol_weighted":float(r.mean()) if len(r) else None,"standardized_effect_pos_vs_hard":effect,"p_value":pv,"support_passed":support,"positive_year_support":sorted(years["positive"]),"fdr_q":None})
+        self._fd_bh(out); return out
+
+    def feature_discovery_loop(self)->None:
+        try:
+            allowed,reason=self._feature_discovery_gate()
+            if not allowed: raise RuntimeError(reason)
+            sessions=[s for s in (self.redis.get_json(self.phase0b_full_key("completed_sessions"),[]) or []) if 2019<=int(str(s)[:4])<=2024]
+            # Freeze min-N before any feature values are fetched/calculated.
+            pos_count=0; pos_syms=set()
+            for sess in sessions:
+                for r in self.redis.get_json(self.phase0b_full_key(f"results:{sess}"),[]) or []:
+                    if r.get("classification")=="verified": pos_count+=1; pos_syms.add(str(r.get("symbol") or ""))
+            min_events=max(500,int(math.ceil(pos_count*0.005))); min_symbols=max(100,int(math.ceil(len(pos_syms)*0.03)))
+            minspec={"eligible_discovery_positive_events":pos_count,"eligible_discovery_positive_symbols":len(pos_syms),"min_positive_events":min_events,"min_positive_symbols":min_symbols,"min_years":4,"formula":FEATURE_DISCOVERY_EXEC_SPEC["min_n_formula"],"frozen_at":iso()}
+            self.redis.set_json(self.feature_discovery_key("min_n_frozen"),minspec)
+            completed=set(self.redis.get_json(self.feature_discovery_key("completed_sessions"),[]) or [])
+            self.feature_discovery_stop_event.clear(); total_obs=int(self.redis.get_json(self.feature_discovery_key("observation_count"),0) or 0)
+            self._set_feature_discovery_state(status="RUNNING",phase="DISCOVERY_EXTRACT",message="Discovery 2019-2024 only; 2025/2026 locked",total_sessions=len(sessions),completed_sessions=len(completed),observations=total_obs,min_n=minspec,validation_2025_opened=False,holdout_2026_opened=False)
+            for si,sess in enumerate(sessions,1):
+                if sess in completed:continue
+                if self.feature_discovery_stop_event.is_set():
+                    self._set_feature_discovery_state(status="PAUSED",phase="DISCOVERY_EXTRACT",message="Paused at session boundary; resume is safe",completed_sessions=len(completed),total_sessions=len(sessions),observations=total_obs,validation_2025_opened=False,holdout_2026_opened=False);return
+                target=date.fromisoformat(sess); p0=self.redis.get_json(self.phase0b_full_key(f"results:{sess}"),[]) or []; coarse={str(c.get("symbol") or "").upper():c for c in (self.redis.get_json(self.historical_census_key(f"candidates:{sess}"),[]) or [])}
+                positives=[r for r in p0 if r.get("classification")=="verified"]; failed=[r for r in p0 if r.get("classification")=="failed"]
+                # Context index uses only frozen labels/context, never predictive feature values.
+                fctx=[]
+                for r in failed:
+                    sym=str(r.get("symbol") or "").upper(); c=coarse.get(sym,{}) ; cut=self._fd_coarse_cutoff(c)
+                    if not cut:continue
+                    fctx.append((r,sym,cut,self._fd_phase(cut,target),self._fd_price_band(r.get("t1_low"))))
+                selected=[]
+                for pi,p in enumerate(positives):
+                    psym=str(p.get("symbol") or "").upper(); phase=self._fd_phase(str(p.get("t2") or ""),target); pb=self._fd_price_band(p.get("t1_low")); exact=[x for x in fctx if x[3]==phase and x[4]==pb]; pool=exact or [x for x in fctx if x[3]==phase] or fctx
+                    hard=[]
+                    if pool:
+                        base=int(hashlib.sha256(f"{sess}|{psym}|{p.get('t2')}".encode()).hexdigest()[:12],16)
+                        for j in range(min(3,len(pool))): hard.append(pool[(base+j*7919)%len(pool)])
+                        rnd=pool[(base+104729)%len(pool)]
+                    else: rnd=None
+                    match=hashlib.sha256(f"{sess}|{psym}|{p.get('t2')}|{pi}".encode()).hexdigest()[:20]
+                    selected.append(("positive",p,psym,str(p.get("t2")),match))
+                    for x in hard:selected.append(("hard_negative",x[0],x[1],x[2],match))
+                    if rnd:selected.append(("random_control",rnd[0],rnd[1],rnd[2],match))
+                syms=sorted({x[2] for x in selected}); start,end=self._probe_cycle_bounds(target); rows_by=self._fd_fetch_session_rows(syms,target,start,end) if syms else {}
+                obs=[]
+                for cls,r,sym,cut,match in selected:
+                    try: cutoff=datetime.fromisoformat(str(cut).replace("Z","+00:00"))
+                    except Exception:continue
+                    anchors={}
+                    for off in FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]:
+                        f=self._fd_features(rows_by.get(sym,[]),cutoff-timedelta(minutes=off))
+                        if f:anchors[str(off)]=f
+                    if not anchors:continue
+                    obs.append({"class":cls,"symbol":sym,"target_session":sess,"year":int(sess[:4]),"phase":self._fd_phase(cut,target),"price_band":self._fd_price_band(r.get("t1_low")),"match_id":match,"cutoff":cut,"anchors":anchors,"strength_30":bool((r.get("ladder_first_ts") or {}).get("30")) if cls=="positive" else False,"strength_50":bool((r.get("ladder_first_ts") or {}).get("50")) if cls=="positive" else False})
+                # Frozen contextual coverage check: controls with grossly different pre-cutoff bar availability are omitted.
+                grouped=defaultdict(list)
+                for o in obs: grouped[o["match_id"]].append(o)
+                filtered=[]
+                for grp in grouped.values():
+                    pos=next((o for o in grp if o["class"]=="positive"),None)
+                    if not pos: continue
+                    pa=(pos.get("anchors",{}).get("5") or {}).get("bars_available")
+                    filtered.append(pos)
+                    for o in grp:
+                        if o is pos: continue
+                        ca=(o.get("anchors",{}).get("5") or {}).get("bars_available")
+                        if isinstance(pa,(int,float)) and isinstance(ca,(int,float)) and pa>0 and 0.5 <= ca/pa <= 2.0: filtered.append(o)
+                obs=filtered
+                self.redis.set_json(self.feature_discovery_key(f"observations:{sess}"),obs); total_obs+=len(obs); completed.add(sess); self.redis.set_json(self.feature_discovery_key("completed_sessions"),sorted(completed)); self.redis.set_json(self.feature_discovery_key("observation_count"),total_obs)
+                self._set_feature_discovery_state(status="RUNNING",phase="DISCOVERY_EXTRACT",message=f"Feature Discovery extracted session {sess}",current_session=sess,total_sessions=len(sessions),completed_sessions=len(completed),remaining_sessions=len(sessions)-len(completed),last_session_observations=len(obs),observations=total_obs,min_n=minspec,validation_2025_opened=False,holdout_2026_opened=False)
+            allobs=[]
+            for sess in sessions: allobs.extend(self.redis.get_json(self.feature_discovery_key(f"observations:{sess}"),[]) or [])
+            stats=self._fd_summarize(allobs,min_events,min_symbols); promoted=[r for r in stats if r.get("support_passed") and isinstance(r.get("fdr_q"),(int,float)) and r["fdr_q"]<=0.05 and abs(float(r.get("standardized_effect_pos_vs_hard") or 0))>=0.10]
+            report={"version":VERSION,"build":BUILD,"run_id":FEATURE_DISCOVERY_EXEC_SPEC["run_id"],"execution_sha256":FEATURE_DISCOVERY_EXEC_SHA256,"protocol_sha256":FEATURE_DISCOVERY_PROTOCOL_SHA256,"status":"COMPLETED","phase":"STOP_REVIEW","scope":"2019-2024 Discovery only","min_n_frozen":minspec,"sessions":len(sessions),"observations":len(allobs),"class_counts":dict(__import__('collections').Counter(o['class'] for o in allobs)),"feature_tests":stats,"promotion_candidates_discovery_only":promoted,"promotion_candidate_count":len(promoted),"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            self.redis.set_json(self.feature_discovery_key("report"),report); self._set_feature_discovery_state(status="COMPLETED",phase="STOP_REVIEW",message="Discovery 2019-2024 completed; STOP and review before any 2025 validation",completed_sessions=len(sessions),total_sessions=len(sessions),observations=len(allobs),promotion_candidate_count=len(promoted),validation_2025_opened=False,holdout_2026_opened=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Feature Discovery failed"); self._set_feature_discovery_state(status="ERROR",phase="BLOCKED",message="Feature Discovery failed closed",last_error=f"{type(exc).__name__}: {exc}",validation_2025_opened=False,holdout_2026_opened=False)
+        finally:
+            with self.feature_discovery_lock:self.feature_discovery_thread=None
+
+    def start_feature_discovery(self)->tuple[bool,str]:
+        allowed,reason=self._feature_discovery_gate()
+        if not allowed:return False,reason
+        with self.feature_discovery_lock:
+            if self.feature_discovery_thread and self.feature_discovery_thread.is_alive():return False,"already_running"
+            self.feature_discovery_thread=threading.Thread(target=self.feature_discovery_loop,name="feature-discovery-2019-2024",daemon=True); self.feature_discovery_thread.start()
         return True,"started"
 
     def start_phase0b_full(self) -> tuple[bool,str]:
@@ -6766,26 +7012,34 @@ def phase0b_dataset_audit_result():
 
 @app.get("/research/feature-discovery/protocol")
 def feature_discovery_protocol():
-    audit = radar.redis.get_json(radar.phase0b_dataset_audit_key("report"), None) if radar.redis.configured else None
-    gate = bool(audit and audit.get("integrity_passed") is True and int((audit.get("totals") or {}).get("processed",0)) == 205028 and int((audit.get("totals") or {}).get("verified",0)) == 169628)
-    return jsonify({
-        "version": VERSION, "build": BUILD,
-        "protocol": FEATURE_DISCOVERY_PROTOCOL_SPEC,
-        "protocol_sha256": FEATURE_DISCOVERY_PROTOCOL_SHA256,
-        "source_audit_gate_passed": gate,
-        "feature_discovery_allowed": False,
-        "message": "Protocol frozen for review only; no Feature Discovery code/run is enabled."
-    })
+    allowed,reason=radar._feature_discovery_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":FEATURE_DISCOVERY_PROTOCOL_SPEC,"protocol_sha256":FEATURE_DISCOVERY_PROTOCOL_SHA256,"execution_spec":FEATURE_DISCOVERY_EXEC_SPEC,"execution_sha256":FEATURE_DISCOVERY_EXEC_SHA256,"source_audit_gate_passed":allowed,"gate_reason":reason,"feature_discovery_allowed":allowed,"validation_2025_opened":False,"holdout_2026_opened":False})
 
 @app.get("/research/feature-discovery")
 def feature_discovery_home():
-    return jsonify({
-        "purpose": "Frozen Feature Discovery protocol review before implementation",
-        "protocol_url": "/research/feature-discovery/protocol",
-        "feature_discovery_allowed": False,
-        "start_endpoint_exists": False,
-        "stop_and_review_required": True
-    })
+    allowed,reason=radar._feature_discovery_gate()
+    return jsonify({"purpose":"Causal Feature Discovery on frozen 2019-2024 Discovery split only","gate_allowed":allowed,"gate_reason":reason,"protocol_url":"/research/feature-discovery/protocol","start_url":"/research/feature-discovery/start","status_url":"/research/feature-discovery/status","result_url":"/research/feature-discovery/result","pause_url":"/research/feature-discovery/pause","validation_2025_opened":False,"holdout_2026_opened":False})
+
+@app.get("/research/feature-discovery/start")
+def feature_discovery_start():
+    started,message=radar.start_feature_discovery(); return jsonify({"ok":started,"status":"started" if started else message,"status_url":"/research/feature-discovery/status","result_url":"/research/feature-discovery/result","validation_2025_opened":False,"holdout_2026_opened":False}), (200 if started else 409)
+
+@app.get("/research/feature-discovery/pause")
+def feature_discovery_pause():
+    radar.feature_discovery_stop_event.set(); return jsonify({"ok":True,"message":"pause_requested","resume_url":"/research/feature-discovery/start","validation_2025_opened":False,"holdout_2026_opened":False})
+
+@app.get("/research/feature-discovery/status")
+def feature_discovery_status():
+    stored=radar.redis.get_json(radar.feature_discovery_key("status"),None) if radar.redis.configured else None
+    with radar.feature_discovery_lock:
+        payload=dict(stored or radar.feature_discovery_state); payload["worker_alive"]=bool(radar.feature_discovery_thread and radar.feature_discovery_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/research/feature-discovery/result")
+def feature_discovery_result():
+    report=radar.redis.get_json(radar.feature_discovery_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/feature-discovery/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
+    return jsonify(report)
 
 @app.get("/phase0/phase0b-full")
 def phase0b_full_home():
