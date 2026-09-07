@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.18"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-VALIDATION-SUCCESS-CRITERIA-FREEZE"
+VERSION = "1.7.19"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-FROZEN-MODEL-VALIDATION-2025"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -413,6 +413,10 @@ VALIDATION_SUCCESS_CRITERIA_SPEC = {
     "safety": {"alpaca_requests": False, "validation_2025_read": False, "holdout_2026_read": False, "orders_enabled": False, "alerts_enabled": False},
 }
 VALIDATION_SUCCESS_CRITERIA_SHA256 = hashlib.sha256(json.dumps(VALIDATION_SUCCESS_CRITERIA_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+VALIDATION_2025_SPEC={"validation_id":"IPR-FROZEN-MODEL-VALIDATION-2025-2026-09-08-A","scope":"2025 only; 2026 forbidden","required_frozen_model_sha256":"c543ed4320a9cbc7eecef311675fb8955642d9bcb81e31fe7888728ee1c5c7c3","required_criteria_sha256":"8369764d07694d2dc69c8de5c06f331bef0ff2e998da0b11936ade30c19ed67a","required_criteria_artifact_sha256":"b64031aa249d24660ca3fdc2a510bf145b6285be00324bf906b88a0d422ea664","locked_year":2025,"forbidden_year":2026,"model_mutation_allowed":False,"threshold_recalibration_allowed":False,"criteria_reinterpretation_allowed":False,"stop_and_review_after_2025":True}
+VALIDATION_2025_SHA256=hashlib.sha256(json.dumps(VALIDATION_2025_SPEC,sort_keys=True,separators=(",", ":")).encode("utf-8")).hexdigest()
+
 
 
 PROTOCOL_SHA256 = hashlib.sha256(
@@ -1726,6 +1730,8 @@ class IndependentPriorityRadar:
         self.feature_scoring_freeze_thread: threading.Thread | None = None
         self.feature_scoring_freeze_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Feature/Scoring Freeze has not started","freeze_id":FEATURE_SCORING_FREEZE_SPEC["freeze_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
         self.validation_criteria_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Validation Success Criteria Freeze has not started","criteria_id":VALIDATION_SUCCESS_CRITERIA_SPEC["criteria_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
+        self.validation_2025_lock=threading.RLock(); self.validation_2025_thread=None; self.validation_2025_stop_event=threading.Event()
+        self.validation_2025_state={"status":"IDLE","phase":"NOT_STARTED","message":"2025 Validation not started","validation_id":VALIDATION_2025_SPEC["validation_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -3597,6 +3603,102 @@ class IndependentPriorityRadar:
         with self.phase0b_full_lock:
             if self.phase0b_full_thread and self.phase0b_full_thread.is_alive(): return False,"already_running"
             self.phase0b_full_thread=threading.Thread(target=self.phase0b_full_loop,name="phase0b-full-cycle-verification",daemon=True); self.phase0b_full_thread.start()
+        return True,"started"
+
+    def validation_2025_key(self,suffix): return self.key(f"frozen_model_validation_2025:v1:{suffix}")
+    def _set_validation_2025_state(self,**u):
+        with self.validation_2025_lock: self.validation_2025_state.update(u); self.validation_2025_state["updated_at"]=iso(); snap=dict(self.validation_2025_state)
+        if self.redis.configured:self.redis.set_json(self.validation_2025_key("status"),snap)
+    def _validation_2025_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        m=self.redis.get_json(self.feature_scoring_freeze_key("report"),None); c=self.redis.get_json(self.validation_criteria_key("report"),None)
+        if not isinstance(m,dict) or m.get("frozen_model_sha256")!=VALIDATION_2025_SPEC["required_frozen_model_sha256"]:return False,"Frozen model SHA mismatch"
+        if not isinstance(c,dict) or c.get("criteria_sha256")!=VALIDATION_2025_SPEC["required_criteria_sha256"] or c.get("criteria_artifact_sha256")!=VALIDATION_2025_SPEC["required_criteria_artifact_sha256"]:return False,"Frozen criteria SHA mismatch"
+        if m.get("holdout_2026_opened") is not False or c.get("holdout_2026_opened") is not False:return False,"2026 contamination flag"
+        old=self.redis.get_json(self.validation_2025_key("report"),None)
+        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"2025 validation already completed; rerun prohibited"
+        return True,"allowed"
+    @staticmethod
+    def _v25_class(pr,hr,lim):
+        if pr is None or hr is None or hr>float(lim["max_2025_hard_negative_symbol_pass_rate"]):return "FAIL"
+        if pr>=float(lim["pass_min_2025_positive_event_pass_rate"]):return "PASS"
+        if pr>=float(lim["weak_min_2025_positive_event_pass_rate"]):return "WEAK_PASS"
+        return "FAIL"
+    def frozen_model_validation_2025_loop(self):
+        try:
+            ok,why=self._validation_2025_gate()
+            if not ok:raise RuntimeError(why)
+            m=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}; c=self.redis.get_json(self.validation_criteria_key("report"),{}) or {}; roles=m["roles"]; cal=m["calibration"]; lim=c["derived_numeric_thresholds"]
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.phase0b_full_key("completed_sessions"),[]) or []) if str(x).startswith("2025-"))
+            if not sessions:raise RuntimeError("No persisted 2025 Phase0B sessions")
+            done=set(self.redis.get_json(self.validation_2025_key("completed_sessions"),[]) or []); self.validation_2025_stop_event.clear(); self._set_validation_2025_state(status="RUNNING",phase="VALIDATE_2025",message="2025 opened; 2026 hard-locked",validation_2025_opened=True,holdout_2026_opened=False,total_sessions=len(sessions),sessions_scanned=len(done))
+            for si,sess in enumerate(sessions,1):
+                if sess in done:continue
+                if self.validation_2025_stop_event.is_set():self._set_validation_2025_state(status="PAUSED",phase="VALIDATE_2025",validation_2025_opened=True,holdout_2026_opened=False,sessions_scanned=len(done),total_sessions=len(sessions));return
+                target=date.fromisoformat(sess); p0=self.redis.get_json(self.phase0b_full_key(f"results:{sess}"),None)
+                if p0 is None:raise RuntimeError(f"Missing 2025 Phase0B {sess}")
+                coarse={str(x.get("symbol") or "").upper():x for x in (self.redis.get_json(self.historical_census_key(f"candidates:{sess}"),[]) or [])}; pos=[x for x in p0 if x.get("classification")=="verified"]; fail=[x for x in p0 if x.get("classification")=="failed"]; fctx=[]
+                for r in fail:
+                    sym=str(r.get("symbol") or "").upper(); cut=self._fd_coarse_cutoff(coarse.get(sym,{}))
+                    if cut:fctx.append((r,sym,cut,self._fd_phase(cut,target),self._fd_price_band(r.get("t1_low"))))
+                sel=[]
+                for pi,r in enumerate(pos):
+                    sym=str(r.get("symbol") or "").upper(); phase=self._fd_phase(str(r.get("t2") or ""),target); pb=self._fd_price_band(r.get("t1_low")); exact=[x for x in fctx if x[3]==phase and x[4]==pb]; pool=exact or [x for x in fctx if x[3]==phase] or fctx; base=int(hashlib.sha256(f"{sess}|{sym}|{r.get('t2')}".encode()).hexdigest()[:12],16); match=hashlib.sha256(f"{sess}|{sym}|{r.get('t2')}|{pi}".encode()).hexdigest()[:20]; sel.append(("positive",r,sym,str(r.get("t2")),match))
+                    for j in range(min(3,len(pool))):x=pool[(base+j*7919)%len(pool)];sel.append(("hard_negative",x[0],x[1],x[2],match))
+                syms=sorted({x[2] for x in sel}); start,end=self._probe_cycle_bounds(target); rows=self._fd_fetch_session_rows(syms,target,start,end) if syms else {}; obs=[]
+                for cls,r,sym,cut,match in sel:
+                    try:dt=datetime.fromisoformat(str(cut).replace("Z","+00:00"))
+                    except:continue
+                    aa={}
+                    for off in FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]:
+                        f=self._fd_features(rows.get(sym,[]),dt-timedelta(minutes=off))
+                        if f:aa[str(off)]=f
+                    if aa:obs.append({"class":cls,"symbol":sym,"match_id":match,"anchors":aa})
+                groups=defaultdict(list)
+                for o in obs:groups[o["match_id"]].append(o)
+                filt=[]
+                for g in groups.values():
+                    po=next((o for o in g if o["class"]=="positive"),None)
+                    if not po:continue
+                    pa=(po["anchors"].get("5") or {}).get("bars_available");filt.append(po)
+                    for o in g:
+                        if o is po:continue
+                        ca=(o["anchors"].get("5") or {}).get("bars_available")
+                        if isinstance(pa,(int,float)) and isinstance(ca,(int,float)) and pa>0 and .5<=ca/pa<=2:filt.append(o)
+                scored=[]
+                for o in filt:
+                    ss={}
+                    for role,defs in roles.items():
+                        num=den=0.0
+                        for d in defs:
+                            v=(o["anchors"].get(str(d["anchor_minutes"])) or {}).get(d["feature"])
+                            if not isinstance(v,(int,float)) or not math.isfinite(v):continue
+                            z=d["direction"]*(float(v)-d["hard_negative_center"])/d["pooled_symbol_sd"];num+=d["weight"]*max(-3,min(3,z));den+=d["weight"]
+                        if den>=.5:ss[role]=num/den
+                    scored.append({"class":o["class"],"symbol":o["symbol"],"scores":ss})
+                self.redis.set_json(self.validation_2025_key(f"scores:{sess}"),scored);done.add(sess);self.redis.set_json(self.validation_2025_key("completed_sessions"),sorted(done))
+                if si==1 or si%25==0 or si==len(sessions):self._set_validation_2025_state(status="RUNNING",phase="VALIDATE_2025",message=f"2025 frozen validation {len(done)}/{len(sessions)}",validation_2025_opened=True,holdout_2026_opened=False,sessions_scanned=len(done),total_sessions=len(sessions),current_session=sess)
+            ps=defaultdict(list);hs=defaultdict(lambda:defaultdict(list));raw=defaultdict(int)
+            for sess in sessions:
+                for o in self.redis.get_json(self.validation_2025_key(f"scores:{sess}"),[]) or []:
+                    raw[o["class"]]+=1
+                    for role,v in o["scores"].items():
+                        if o["class"]=="positive":ps[role].append(float(v))
+                        elif o["class"]=="hard_negative":hs[role][o["symbol"]].append(float(v))
+            rr={}
+            for role in roles:
+                thr=float(cal[role]["frozen_threshold"]);pa=np.asarray(ps[role]);ha=np.asarray([np.mean(v) for v in hs[role].values()]);pr=float(np.mean(pa>=thr)) if len(pa) else None;hr=float(np.mean(ha>=thr)) if len(ha) else None;rr[role]={"classification":self._v25_class(pr,hr,lim[role]),"frozen_threshold":thr,"positive_event_pass_rate":pr,"hard_negative_symbol_pass_rate":hr,"positive_events_scoreable":len(pa),"hard_negative_symbols_scoreable":len(ha),"positive_events_raw_selected":raw["positive"],"hard_negative_events_raw_selected":raw["hard_negative"],"criteria":lim[role]}
+            critical=[rr["early_core"]["classification"],rr["confirmation"]["classification"]];overall="FAIL" if "FAIL" in critical else ("PASS" if critical==["PASS","PASS"] else "WEAK_PASS")
+            report={"version":VERSION,"build":BUILD,"validation_id":VALIDATION_2025_SPEC["validation_id"],"validation_spec_sha256":VALIDATION_2025_SHA256,"status":"COMPLETED","phase":"VALIDATION_2025_STOP_REVIEW","scope":"2025 only","source_frozen_model_sha256":m["frozen_model_sha256"],"source_criteria_sha256":c["criteria_sha256"],"source_criteria_artifact_sha256":c["criteria_artifact_sha256"],"sessions":len(sessions),"role_results":rr,"overall_classification":overall,"validation_2025_opened":True,"holdout_2026_opened":False,"holdout_2026_read":False,"model_mutated":False,"thresholds_recalibrated":False,"stop_and_review_required":True,"completed_at":iso()};canon=dict(report);canon.pop("completed_at");report["validation_result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",", ":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.validation_2025_key("report"),report);self._set_validation_2025_state(status="COMPLETED",phase="VALIDATION_2025_STOP_REVIEW",message=f"2025 Validation {overall}; STOP REVIEW; 2026 locked",overall_classification=overall,validation_2025_opened=True,holdout_2026_opened=False,sessions_scanned=len(sessions),total_sessions=len(sessions),stop_and_review_required=True)
+        except Exception as e:logging.exception("2025 validation failed");self._set_validation_2025_state(status="ERROR",phase="BLOCKED",message="2025 validation failed closed; 2026 locked",last_error=f"{type(e).__name__}: {e}",validation_2025_opened=True,holdout_2026_opened=False)
+        finally:
+            with self.validation_2025_lock:self.validation_2025_thread=None
+    def start_frozen_model_validation_2025(self):
+        ok,why=self._validation_2025_gate()
+        if not ok:return False,why
+        with self.validation_2025_lock:
+            if self.validation_2025_thread and self.validation_2025_thread.is_alive():return False,"already_running"
+            self.validation_2025_thread=threading.Thread(target=self.frozen_model_validation_2025_loop,daemon=True);self.validation_2025_thread.start()
         return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
@@ -7555,6 +7657,23 @@ def validation_success_criteria_result():
 def phase0b_full_home():
     allowed,reason=radar._phase0b_full_gate()
     return jsonify({"purpose":"Full Trading Cycle 1-minute verification of all 205,028 frozen clean candidates; no window optimization","verification_id":PHASE0B_FULL_SPEC["verification_id"],"phase0b_sha256":PHASE0B_FULL_SHA256,"gate_allowed":allowed,"gate_reason":reason,"protocol_url":"/phase0/phase0b-full/protocol","start_url":"/phase0/phase0b-full/start","status_url":"/phase0/phase0b-full/status","result_url":"/phase0/phase0b-full/result","pause_url":"/phase0/phase0b-full/pause","feature_discovery_allowed":False})
+
+@app.get("/research/frozen-model-validation-2025/protocol")
+def v25_protocol():
+    ok,why=radar._validation_2025_gate();return jsonify({"version":VERSION,"build":BUILD,"validation_spec":VALIDATION_2025_SPEC,"validation_spec_sha256":VALIDATION_2025_SHA256,"gate_allowed":ok,"gate_reason":why,"validation_2025_opened":False,"holdout_2026_opened":False})
+@app.get("/research/frozen-model-validation-2025/start")
+def v25_start():
+    ok,why=radar.start_frozen_model_validation_2025();return jsonify({"ok":ok,"status":"started" if ok else why,"status_url":"/research/frozen-model-validation-2025/status","result_url":"/research/frozen-model-validation-2025/result","holdout_2026_opened":False}),(200 if ok else 409)
+@app.get("/research/frozen-model-validation-2025/pause")
+def v25_pause():radar.validation_2025_stop_event.set();return jsonify({"ok":True,"message":"pause_requested","holdout_2026_opened":False})
+@app.get("/research/frozen-model-validation-2025/status")
+def v25_status():
+    x=radar.redis.get_json(radar.validation_2025_key("status"),None) if radar.redis.configured else None;out=x if isinstance(x,dict) else dict(radar.validation_2025_state);out["worker_alive"]=bool(radar.validation_2025_thread and radar.validation_2025_thread.is_alive());return jsonify(out)
+@app.get("/research/frozen-model-validation-2025/result")
+def v25_result():
+    x=radar.redis.get_json(radar.validation_2025_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/frozen-model-validation-2025/status","holdout_2026_opened":False}),202
+    return jsonify(x)
 
 @app.get("/phase0/phase0b-full/protocol")
 def phase0b_full_protocol(): return jsonify({"version":VERSION,"build":BUILD,"spec":PHASE0B_FULL_SPEC,"phase0b_sha256":PHASE0B_FULL_SHA256})
