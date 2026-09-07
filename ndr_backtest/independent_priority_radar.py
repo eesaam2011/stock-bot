@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.5"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-INSTRUMENT-TYPE-CLEANUP-AUDIT-STREAMING-FIX"
+VERSION = "1.7.6"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-PRE-PHASE0B-RESOLUTION-NORMALIZATION-AUDIT"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1435,6 +1435,9 @@ class IndependentPriorityRadar:
         self.instrument_cleanup_lock = threading.RLock()
         self.instrument_cleanup_thread: threading.Thread | None = None
         self.instrument_cleanup_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Instrument-type cleanup audit has not started","phase0b_allowed":False,"updated_at":iso()}
+        self.pre0b_audit_lock = threading.RLock()
+        self.pre0b_audit_thread: threading.Thread | None = None
+        self.pre0b_audit_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Pre-Phase0B resolution/normalization audit has not started","phase0b_allowed":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -2244,6 +2247,189 @@ class IndependentPriorityRadar:
             self.instrument_cleanup_thread=threading.Thread(target=self.instrument_cleanup_audit_loop,name="instrument-type-cleanup-audit",daemon=True)
             self.instrument_cleanup_thread.start()
         return True,"started"
+
+    def pre0b_audit_key(self, suffix: str) -> str:
+        return self.key(f"pre0b_resolution_normalization_audit:v1:{suffix}")
+
+    def _set_pre0b_audit_state(self, **updates: Any) -> None:
+        with self.pre0b_audit_lock:
+            self.pre0b_audit_state.update(updates)
+            self.pre0b_audit_state["updated_at"] = iso()
+            snap = dict(self.pre0b_audit_state)
+        if self.redis.configured:
+            self.redis.set_json(self.pre0b_audit_key("status"), snap)
+
+    def _pre0b_audit_gate(self) -> tuple[bool, str]:
+        if not self.redis.configured:
+            return False, "Redis is required"
+        cleanup = self.redis.get_json(self.instrument_cleanup_key("report"), None)
+        classes = self.redis.get_json(self.instrument_cleanup_key("symbol_classification"), None)
+        census_audit = self.redis.get_json(self.historical_census_audit_key("report"), None)
+        if not cleanup or cleanup.get("status") != "COMPLETED" or cleanup.get("version") != "1.7.5":
+            return False, "Completed v1.7.5 instrument cleanup is required"
+        integ = cleanup.get("integrity") or {}
+        if not all(integ.get(k) for k in ("candidate_count_matches_frozen_census","stream_load_count_matches_frozen_census","sessions_match_frozen_census","classification_partition_matches")):
+            return False, "v1.7.5 cleanup integrity must pass"
+        if int((cleanup.get("candidate_classification_totals") or {}).get("candidates") or 0) != 338323:
+            return False, "Frozen candidate count mismatch"
+        if not isinstance(classes, dict) or len(classes) != 8514:
+            return False, "Frozen v1.7.5 symbol classification map is required"
+        if not census_audit or census_audit.get("status") != "COMPLETED":
+            return False, "Completed Census audit is required for annual denominators"
+        return True, "allowed"
+
+    @staticmethod
+    def _resolve_ambiguous_asset_name(name: str | None) -> dict[str, str] | None:
+        """Second-pass conservative resolver. No suffix-only decisions."""
+        low = " ".join(str(name or "").lower().split())
+        if not low:
+            return None
+        non_common = (
+            ("preferred", (r"\bpfd\b", r"\bpfd ser\b", r"\bpref(?:erred)?\b")),
+            ("warrant", (r"\bwarrant", r"\bwt exp\b", r"\bwts\b")),
+            ("right", (r"\bright(?:s)?\b",)),
+            ("unit", (r"\bunit(?:s)?\b",)),
+        )
+        for subtype, pats in non_common:
+            for pat in pats:
+                if re.search(pat, low):
+                    return {"bucket":"metadata_non_common","subtype":subtype,"evidence":f"second_pass_asset_name:{pat}"}
+        common = (
+            r"\bads\b", r"american depositary shs?", r"depositary shs?",
+            r"\bcom par\b", r"\bcom new\b", r"\bcommon\b",
+        )
+        for pat in common:
+            if re.search(pat, low):
+                return {"bucket":"metadata_common_like","subtype":"common_or_ordinary_equity","evidence":f"second_pass_asset_name:{pat}"}
+        return None
+
+    def pre0b_resolution_normalization_audit_loop(self) -> None:
+        try:
+            allowed, reason = self._pre0b_audit_gate()
+            if not allowed:
+                raise RuntimeError(reason)
+            self._set_pre0b_audit_state(status="RUNNING", phase="LOAD", message="Loading frozen cleanup classifications and annual coverage denominators; no Census rescan", phase0b_allowed=False)
+            cleanup = self.redis.get_json(self.instrument_cleanup_key("report"), {}) or {}
+            symbol_map = self.redis.get_json(self.instrument_cleanup_key("symbol_classification"), {}) or {}
+            census_audit = self.redis.get_json(self.historical_census_audit_key("report"), {}) or {}
+            sessions = list(self.redis.get_json(self.historical_census_key("completed_sessions"), []) or [])
+            if len(sessions) != 1926:
+                raise RuntimeError(f"Expected 1926 sessions, found {len(sessions)}")
+
+            # One current asset snapshot only to re-examine ambiguous names; no bars.
+            self._set_pre0b_audit_state(status="RUNNING", phase="METADATA", message="Refreshing one asset-name snapshot for unresolved-name resolution; no market bars", phase0b_allowed=False)
+            assets = self.alpaca.assets_by_status(None)
+            asset_map = {str(a.get("symbol") or "").upper(): a for a in assets}
+            resolved_map = {}
+            resolution_symbol_counts = defaultdict(int)
+            for sym, old in symbol_map.items():
+                new = dict(old)
+                if old.get("bucket") == "unresolved_metadata_ambiguous" and not old.get("ticker_recycling_risk"):
+                    asset = asset_map.get(sym) or {}
+                    resolution = self._resolve_ambiguous_asset_name(asset.get("name") or old.get("name"))
+                    if resolution:
+                        new.update(resolution)
+                        new["resolution_changed"] = True
+                    else:
+                        new["resolution_changed"] = False
+                else:
+                    new["resolution_changed"] = False
+                resolved_map[sym] = new
+                resolution_symbol_counts[new.get("bucket") or "unknown"] += 1
+            del assets, asset_map
+
+            totals = defaultdict(int)
+            by_year = {str(y): defaultdict(int) for y in range(2019, 2027)}
+            changed_candidates = 0
+            for idx, key in enumerate(sessions, 1):
+                rows = self.redis.get_json(self.historical_census_key(f"candidates:{key}"), []) or []
+                year = str(key)[:4]
+                for c in rows:
+                    sym = str(c.get("symbol") or "").upper()
+                    old = symbol_map.get(sym) or {"bucket":"unresolved_no_metadata"}
+                    cls = resolved_map.get(sym) or old
+                    bucket = cls.get("bucket") or "unresolved_no_metadata"
+                    split = bool((c.get("corporate_action_screen") or {}).get("suspect"))
+                    amb = bool(c.get("same_bar_order_ambiguous_ge20"))
+                    totals["candidates"] += 1; by_year[year]["candidates"] += 1
+                    totals[bucket] += 1; by_year[year][bucket] += 1
+                    if cls.get("resolution_changed"):
+                        changed_candidates += 1; totals["resolved_from_ambiguous"] += 1; by_year[year]["resolved_from_ambiguous"] += 1
+                    if split:
+                        totals["split_suspect"] += 1; by_year[year]["split_suspect"] += 1
+                    clean = bucket == "metadata_common_like" and not split and not cls.get("ticker_recycling_risk")
+                    if clean:
+                        totals["recommended_clean"] += 1; by_year[year]["recommended_clean"] += 1
+                        if amb:
+                            totals["same_bar_ambiguous_within_clean"] += 1; by_year[year]["same_bar_ambiguous_within_clean"] += 1
+                        else:
+                            totals["temporally_ordered_coarse_within_clean"] += 1; by_year[year]["temporally_ordered_coarse_within_clean"] += 1
+                    if amb:
+                        totals["same_bar_ambiguous_all"] += 1; by_year[year]["same_bar_ambiguous_all"] += 1
+                if idx % 100 == 0 or idx == len(sessions):
+                    self._set_pre0b_audit_state(status="RUNNING", phase="AUDIT", message=f"Audited {idx}/{len(sessions)} stored sessions (streaming)", sessions_audited=idx, total_sessions=len(sessions), phase0b_allowed=False)
+                del rows
+
+            old_year = census_audit.get("candidates_by_year") or {}
+            annual = {}
+            for y in map(str, range(2019, 2027)):
+                den = int((old_year.get(y) or {}).get("symbols_with_bars") or 0)
+                vals = dict(by_year[y])
+                clean = int(vals.get("recommended_clean") or 0)
+                raw = int(vals.get("candidates") or 0)
+                vals["symbols_with_bars_denominator"] = den
+                vals["raw_candidates_per_1000_symbol_sessions_with_bars"] = round(raw / den * 1000, 6) if den else None
+                vals["clean_candidates_per_1000_symbol_sessions_with_bars"] = round(clean / den * 1000, 6) if den else None
+                vals["clean_same_bar_ambiguous_pct"] = round((int(vals.get("same_bar_ambiguous_within_clean") or 0) / clean * 100), 4) if clean else None
+                annual[y] = vals
+
+            unresolved = sum(int(totals.get(k) or 0) for k in ("unresolved_metadata_ambiguous","unresolved_no_metadata","unresolved_ticker_recycling"))
+            clean = int(totals.get("recommended_clean") or 0)
+            report = {
+                "version": VERSION, "build": BUILD, "audit_id":"IPR-PRE-PHASE0B-RESOLUTION-NORMALIZATION-AUDIT-2026-09-07-A", "status":"COMPLETED",
+                "source_cleanup_audit_id": cleanup.get("audit_id"), "source_historical_census_sha256": cleanup.get("source_historical_census_sha256"),
+                "period": cleanup.get("period"), "sessions": len(sessions), "candidate_count": int(totals.get("candidates") or 0),
+                "resolution_policy": {
+                    "purpose":"Resolve only additional decisive asset-name cases among v1.7.5 ambiguous metadata; never use suffix alone.",
+                    "ticker_recycling":"Always remains unresolved.", "missing_metadata":"Always remains unresolved.",
+                    "same_bar":"Not resolved here. It is measured inside the clean set and reserved for Phase 0B 1-minute chronological verification; any residual 1-minute intrabar ambiguity must remain still_ambiguous.",
+                    "annual_normalization":"candidate count divided by actual symbol-sessions with bars from frozen v1.7.3 Census Audit.",
+                },
+                "requests":{"alpaca_asset_metadata_requests":1,"alpaca_market_bar_requests":0,"census_rescan_performed":False},
+                "symbol_bucket_counts_after_resolution": dict(resolution_symbol_counts),
+                "candidate_totals_after_resolution": {**dict(totals), "unresolved_total":unresolved, "recommended_clean":clean,
+                    "same_bar_ambiguous_within_clean_pct": round(int(totals.get("same_bar_ambiguous_within_clean") or 0)/clean*100,4) if clean else None},
+                "annual_normalized_rates": annual,
+                "integrity": {
+                    "candidate_count_matches_frozen_census": int(totals.get("candidates") or 0) == 338323,
+                    "sessions_match_frozen_census": len(sessions) == 1926,
+                    "same_bar_all_matches_v1_7_5": int(totals.get("same_bar_ambiguous_all") or 0) == int((cleanup.get("candidate_classification_totals") or {}).get("same_bar_ambiguous") or -1),
+                    "original_candidates_mutated": False,
+                },
+                "phase0b_allowed":False, "stop_and_review_required":True, "completed_at":iso(),
+            }
+            self.redis.set_json(self.pre0b_audit_key("resolved_symbol_classification"), resolved_map)
+            self.redis.set_json(self.pre0b_audit_key("report"), report)
+            self._set_pre0b_audit_state(status="COMPLETED", phase="STOP_REVIEW", message="Pre-Phase0B resolution/normalization audit completed; STOP and review before Phase 0B design", sessions_audited=len(sessions), total_sessions=len(sessions), phase0b_allowed=False, stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Pre-Phase0B audit failed")
+            self._set_pre0b_audit_state(status="ERROR", phase="BLOCKED", message="Pre-Phase0B audit failed closed", phase0b_allowed=False, last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.pre0b_audit_lock:
+                self.pre0b_audit_thread = None
+
+    def start_pre0b_resolution_normalization_audit(self) -> tuple[bool, str]:
+        allowed, reason = self._pre0b_audit_gate()
+        if not allowed:
+            return False, reason
+        if not self.alpaca.configured:
+            return False, "Alpaca is required for one asset-metadata snapshot"
+        with self.pre0b_audit_lock:
+            if self.pre0b_audit_thread and self.pre0b_audit_thread.is_alive():
+                return False, "already_running"
+            self.pre0b_audit_thread = threading.Thread(target=self.pre0b_resolution_normalization_audit_loop, name="pre0b-resolution-normalization-audit", daemon=True)
+            self.pre0b_audit_thread.start()
+        return True, "started"
 
     def phase0a_key(self, suffix: str) -> str:
         return self.key(f"phase0a:v1:{suffix}")
@@ -6043,6 +6229,31 @@ def instrument_cleanup_status():
 def instrument_cleanup_result():
     report=radar.redis.get_json(radar.instrument_cleanup_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/instrument-cleanup/status","phase0b_allowed":False}),202
+    return jsonify(report)
+
+
+@app.get("/phase0/historical-census/pre0b-audit")
+def pre0b_audit_home():
+    allowed,reason=radar._pre0b_audit_gate()
+    return jsonify({"purpose":"Final cheap audit before Phase 0B: unresolved-name resolution, clean/same-bar intersection, and annual coverage normalization","gate_allowed":allowed,"gate_reason":reason,"start_url":"/phase0/historical-census/pre0b-audit/start","status_url":"/phase0/historical-census/pre0b-audit/status","result_url":"/phase0/historical-census/pre0b-audit/result","phase0b_allowed":False})
+
+@app.get("/phase0/historical-census/pre0b-audit/start")
+@app.post("/phase0/historical-census/pre0b-audit/start")
+def pre0b_audit_start():
+    started,message=radar.start_pre0b_resolution_normalization_audit()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/historical-census/pre0b-audit/status","result_url":"/phase0/historical-census/pre0b-audit/result","phase0b_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/historical-census/pre0b-audit/status")
+def pre0b_audit_status():
+    stored=radar.redis.get_json(radar.pre0b_audit_key("status"),None) if radar.redis.configured else None
+    with radar.pre0b_audit_lock:
+        payload=dict(stored or radar.pre0b_audit_state); payload["worker_alive"]=bool(radar.pre0b_audit_thread and radar.pre0b_audit_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/historical-census/pre0b-audit/result")
+def pre0b_audit_result():
+    report=radar.redis.get_json(radar.pre0b_audit_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/pre0b-audit/status","phase0b_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0/historical-census")
