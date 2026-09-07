@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.13"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-FEATURE-DISCOVERY-EXECUTION-MIN-N-HARDENED"
+VERSION = "1.7.14"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-FEATURE-DISCOVERY-RESTART-SAFE-FINALIZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -3073,8 +3073,12 @@ class IndependentPriorityRadar:
                 for r in self.redis.get_json(self.phase0b_full_key(f"results:{sess}"),[]) or []:
                     if r.get("classification")=="verified": pos_count+=1; pos_syms.add(str(r.get("symbol") or ""))
             min_events=max(500,int(math.ceil(pos_count*0.005))); min_symbols=max(100,int(math.ceil(len(pos_syms)*0.03)))
-            minspec={"eligible_discovery_positive_events":pos_count,"eligible_discovery_positive_symbols":len(pos_syms),"min_positive_events":min_events,"min_positive_symbols":min_symbols,"min_years":4,"formula":FEATURE_DISCOVERY_EXEC_SPEC["min_n_formula"],"frozen_at":iso()}
-            self.redis.set_json(self.feature_discovery_key("min_n_frozen"),minspec)
+            existing_min=self.redis.get_json(self.feature_discovery_key("min_n_frozen"),None)
+            if isinstance(existing_min,dict) and int(existing_min.get("eligible_discovery_positive_events") or -1)==pos_count and int(existing_min.get("eligible_discovery_positive_symbols") or -1)==len(pos_syms) and int(existing_min.get("min_positive_events") or -1)==min_events and int(existing_min.get("min_positive_symbols") or -1)==min_symbols:
+                minspec=existing_min  # preserve the original pre-effect freeze timestamp across restarts
+            else:
+                minspec={"eligible_discovery_positive_events":pos_count,"eligible_discovery_positive_symbols":len(pos_syms),"min_positive_events":min_events,"min_positive_symbols":min_symbols,"min_years":4,"formula":FEATURE_DISCOVERY_EXEC_SPEC["min_n_formula"],"frozen_at":iso()}
+                self.redis.set_json(self.feature_discovery_key("min_n_frozen"),minspec)
             completed=set(self.redis.get_json(self.feature_discovery_key("completed_sessions"),[]) or [])
             self.feature_discovery_stop_event.clear(); total_obs=int(self.redis.get_json(self.feature_discovery_key("observation_count"),0) or 0)
             self._set_feature_discovery_state(status="RUNNING",phase="DISCOVERY_EXTRACT",message="Discovery 2019-2024 only; 2025/2026 locked",total_sessions=len(sessions),completed_sessions=len(completed),observations=total_obs,min_n=minspec,validation_2025_opened=False,holdout_2026_opened=False)
@@ -3130,11 +3134,48 @@ class IndependentPriorityRadar:
                 obs=filtered
                 self.redis.set_json(self.feature_discovery_key(f"observations:{sess}"),obs); total_obs+=len(obs); completed.add(sess); self.redis.set_json(self.feature_discovery_key("completed_sessions"),sorted(completed)); self.redis.set_json(self.feature_discovery_key("observation_count"),total_obs)
                 self._set_feature_discovery_state(status="RUNNING",phase="DISCOVERY_EXTRACT",message=f"Feature Discovery extracted session {sess}",current_session=sess,total_sessions=len(sessions),completed_sessions=len(completed),remaining_sessions=len(sessions)-len(completed),last_session_observations=len(obs),observations=total_obs,min_n=minspec,validation_2025_opened=False,holdout_2026_opened=False)
-            allobs=[]
-            for sess in sessions: allobs.extend(self.redis.get_json(self.feature_discovery_key(f"observations:{sess}"),[]) or [])
-            stats=self._fd_summarize(allobs,min_events,min_symbols); promoted=[r for r in stats if r.get("support_passed") and isinstance(r.get("fdr_q"),(int,float)) and r["fdr_q"]<=0.05 and abs(float(r.get("standardized_effect_pos_vs_hard") or 0))>=0.10]
-            report={"version":VERSION,"build":BUILD,"run_id":FEATURE_DISCOVERY_EXEC_SPEC["run_id"],"execution_sha256":FEATURE_DISCOVERY_EXEC_SHA256,"protocol_sha256":FEATURE_DISCOVERY_PROTOCOL_SHA256,"status":"COMPLETED","phase":"STOP_REVIEW","scope":"2019-2024 Discovery only","min_n_frozen":minspec,"sessions":len(sessions),"observations":len(allobs),"class_counts":dict(__import__('collections').Counter(o['class'] for o in allobs)),"feature_tests":stats,"promotion_candidates_discovery_only":promoted,"promotion_candidate_count":len(promoted),"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
-            self.redis.set_json(self.feature_discovery_key("report"),report); self._set_feature_discovery_state(status="COMPLETED",phase="STOP_REVIEW",message="Discovery 2019-2024 completed; STOP and review before any 2025 validation",completed_sessions=len(sessions),total_sessions=len(sessions),observations=len(allobs),promotion_candidate_count=len(promoted),validation_2025_opened=False,holdout_2026_opened=False,stop_and_review_required=True)
+            # Finalization is deliberately restart-safe and streaming.  Never materialize all
+            # observations at once: Render may restart a small instance under that memory spike.
+            # A restart may redo FINALIZE from persisted per-session observations, but it will
+            # never re-fetch/re-extract completed market sessions.
+            self._set_feature_discovery_state(status="RUNNING",phase="DISCOVERY_FINALIZE",message="Finalizing persisted Discovery observations; 2025/2026 remain locked",completed_sessions=len(completed),total_sessions=len(sessions),remaining_sessions=0,observations=total_obs,min_n=minspec,finalize_sessions_scanned=0,validation_2025_opened=False,holdout_2026_opened=False)
+            agg=defaultdict(lambda: {"sum":0.0,"n":0})
+            years=defaultdict(set); event_counts=defaultdict(int); class_counts=__import__('collections').Counter(); final_obs=0
+            feature_names=set()
+            for fi,sess in enumerate(sessions,1):
+                sobs=self.redis.get_json(self.feature_discovery_key(f"observations:{sess}"),[]) or []
+                final_obs += len(sobs)
+                for o in sobs:
+                    cls=str(o.get("class") or ""); sym=str(o.get("symbol") or ""); yr=int(o.get("year") or str(sess)[:4])
+                    class_counts[cls]+=1
+                    for ak,vals in (o.get("anchors") or {}).items():
+                        if not isinstance(vals,dict): continue
+                        for fn,val in vals.items():
+                            if not isinstance(val,(int,float)) or not math.isfinite(val): continue
+                            feature_names.add(fn); key=(str(ak),fn,cls,sym); agg[key]["sum"]+=float(val); agg[key]["n"]+=1
+                            event_counts[(str(ak),fn,cls)]+=1; years[(str(ak),fn,cls)].add(yr)
+                if fi==1 or fi%25==0 or fi==len(sessions):
+                    self._set_feature_discovery_state(status="RUNNING",phase="DISCOVERY_FINALIZE",message=f"Finalizing persisted observations: {fi}/{len(sessions)} sessions",completed_sessions=len(completed),total_sessions=len(sessions),remaining_sessions=0,observations=total_obs,min_n=minspec,finalize_sessions_scanned=fi,finalize_total_sessions=len(sessions),validation_2025_opened=False,holdout_2026_opened=False)
+            stats=[]
+            for anchor in FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]:
+                ak=str(anchor)
+                for fn in sorted(feature_names):
+                    bycls={"positive":[],"hard_negative":[],"random_control":[]}
+                    for (a,f,cls,sym),v in agg.items():
+                        if a==ak and f==fn and cls in bycls and v["n"]: bycls[cls].append(v["sum"]/v["n"])
+                    p=np.array(bycls["positive"],dtype=float); h=np.array(bycls["hard_negative"],dtype=float); r=np.array(bycls["random_control"],dtype=float)
+                    if len(p)==0 or len(h)==0: continue
+                    mp,mh=float(p.mean()),float(h.mean()); pooled=math.sqrt((float(p.var(ddof=1)) if len(p)>1 else 0)+(float(h.var(ddof=1)) if len(h)>1 else 0))/math.sqrt(2) if len(p)+len(h)>2 else 0
+                    effect=(mp-mh)/pooled if pooled>1e-12 else 0.0
+                    se=math.sqrt((float(p.var(ddof=1))/len(p) if len(p)>1 else 0)+(float(h.var(ddof=1))/len(h) if len(h)>1 else 0))
+                    z=(mp-mh)/se if se>1e-12 else 0.0; pv=math.erfc(abs(z)/math.sqrt(2)) if se>1e-12 else 1.0
+                    pc=event_counts[(ak,fn,"positive")]; pys=years[(ak,fn,"positive")]
+                    support=pc>=min_events and len(p)>=min_symbols and len(pys)>=4
+                    stats.append({"anchor_minutes":anchor,"feature":fn,"family":self._fd_family(fn),"positive_events":pc,"positive_symbols":len(p),"hard_negative_events":event_counts[(ak,fn,"hard_negative")],"hard_negative_symbols":len(h),"random_events":event_counts[(ak,fn,"random_control")],"positive_mean_symbol_weighted":mp,"hard_negative_mean_symbol_weighted":mh,"random_mean_symbol_weighted":float(r.mean()) if len(r) else None,"standardized_effect_pos_vs_hard":effect,"p_value":pv,"support_passed":support,"positive_year_support":sorted(pys),"fdr_q":None})
+            self._fd_bh(stats)
+            promoted=[r for r in stats if r.get("support_passed") and isinstance(r.get("fdr_q"),(int,float)) and r["fdr_q"]<=0.05 and abs(float(r.get("standardized_effect_pos_vs_hard") or 0))>=0.10]
+            report={"version":VERSION,"build":BUILD,"run_id":FEATURE_DISCOVERY_EXEC_SPEC["run_id"],"execution_sha256":FEATURE_DISCOVERY_EXEC_SHA256,"protocol_sha256":FEATURE_DISCOVERY_PROTOCOL_SHA256,"status":"COMPLETED","phase":"STOP_REVIEW","scope":"2019-2024 Discovery only","min_n_frozen":minspec,"sessions":len(sessions),"observations":final_obs,"class_counts":dict(class_counts),"feature_tests":stats,"promotion_candidates_discovery_only":promoted,"promotion_candidate_count":len(promoted),"finalization_mode":"restart_safe_streaming_from_persisted_session_observations","validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            self.redis.set_json(self.feature_discovery_key("report"),report); self._set_feature_discovery_state(status="COMPLETED",phase="STOP_REVIEW",message="Discovery 2019-2024 completed; STOP and review before any 2025 validation",completed_sessions=len(sessions),total_sessions=len(sessions),remaining_sessions=0,observations=final_obs,promotion_candidate_count=len(promoted),finalize_sessions_scanned=len(sessions),validation_2025_opened=False,holdout_2026_opened=False,stop_and_review_required=True)
         except Exception as exc:
             logging.exception("Feature Discovery failed"); self._set_feature_discovery_state(status="ERROR",phase="BLOCKED",message="Feature Discovery failed closed",last_error=f"{type(exc).__name__}: {exc}",validation_2025_opened=False,holdout_2026_opened=False)
         finally:
