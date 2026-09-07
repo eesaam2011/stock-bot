@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.6"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-PRE-PHASE0B-RESOLUTION-NORMALIZATION-AUDIT"
+VERSION = "1.7.7"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-PHASE0B-WINDOWING-VALIDATION-PROBE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -147,6 +147,20 @@ HISTORICAL_CENSUS_SPEC = {
     "safety": {"phase0b_runs": False, "feature_discovery_runs": False, "alerts_enabled": False, "orders_enabled": False},
 }
 HISTORICAL_CENSUS_SHA256 = hashlib.sha256(json.dumps(HISTORICAL_CENSUS_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+PHASE0B_WINDOW_PROBE_SPEC = {
+    "probe_id": "IPR-PHASE0B-WINDOWING-VALIDATION-PROBE-2026-09-07-A",
+    "purpose": "Validate whether a coarse-informed buffered 1-minute window can exactly reproduce full-trading-cycle Phase 0B verification before any large Phase 0B run.",
+    "sample_size": 64,
+    "sample_design": "Deterministic stratified sample: up to 4 same-bar ambiguous + 4 temporally ordered clean candidates per year, 2019-2026.",
+    "ground_truth": "Full Trading Cycle raw 1-minute SIP plus BOATS where market structure permits; chronological running-min using bar low then later bar high.",
+    "optimization": "1-minute bars restricted to coarse event span plus 60 minutes on each side; never changes the event definition.",
+    "buffer_minutes_each_side": 60,
+    "threshold_pct": 20.0,
+    "acceptance": "Exact classification agreement for every comparable sampled case; any mismatch blocks window optimization. Same-minute low/high threshold hit is still_ambiguous, never verified.",
+    "safety": {"phase0b_full_run": False, "feature_discovery_runs": False, "orders_enabled": False},
+}
+PHASE0B_WINDOW_PROBE_SHA256 = hashlib.sha256(json.dumps(PHASE0B_WINDOW_PROBE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1438,6 +1452,9 @@ class IndependentPriorityRadar:
         self.pre0b_audit_lock = threading.RLock()
         self.pre0b_audit_thread: threading.Thread | None = None
         self.pre0b_audit_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Pre-Phase0B resolution/normalization audit has not started","phase0b_allowed":False,"updated_at":iso()}
+        self.phase0b_window_probe_lock = threading.RLock()
+        self.phase0b_window_probe_thread: threading.Thread | None = None
+        self.phase0b_window_probe_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Phase 0B windowing validation probe has not started","phase0b_allowed":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -2430,6 +2447,120 @@ class IndependentPriorityRadar:
             self.pre0b_audit_thread = threading.Thread(target=self.pre0b_resolution_normalization_audit_loop, name="pre0b-resolution-normalization-audit", daemon=True)
             self.pre0b_audit_thread.start()
         return True, "started"
+
+    def phase0b_window_probe_key(self, suffix: str) -> str:
+        return self.key(f"phase0b_window_probe:v1:{suffix}")
+
+    def _set_phase0b_window_probe_state(self, **updates: Any) -> None:
+        with self.phase0b_window_probe_lock:
+            self.phase0b_window_probe_state.update(updates)
+            self.phase0b_window_probe_state["updated_at"] = iso()
+            snap = dict(self.phase0b_window_probe_state)
+        if self.redis.configured:
+            self.redis.set_json(self.phase0b_window_probe_key("status"), snap)
+
+    def _phase0b_window_probe_gate(self) -> tuple[bool, str]:
+        if not (self.redis.configured and self.alpaca.configured):
+            return False, "Alpaca and Redis are required"
+        report = self.redis.get_json(self.pre0b_audit_key("report"), None)
+        if not report or report.get("status") != "COMPLETED" or int(report.get("candidate_count") or 0) != 338323:
+            return False, "Completed v1.7.6 Pre-Phase0B audit over the frozen 338,323-candidate Census is required"
+        if int((report.get("candidate_totals_after_resolution") or {}).get("recommended_clean") or 0) != 205028:
+            return False, "Frozen clean-candidate count must be 205,028"
+        return True, "allowed"
+
+    @staticmethod
+    def _minute_verify(rows: list[dict[str, Any]], threshold_pct: float = 20.0) -> dict[str, Any]:
+        running_min = None; running_min_ts = None; max_gain = 0.0
+        for row in sorted(rows, key=lambda x: str(x.get("t") or "")):
+            try: lo, hi = float(row.get("l")), float(row.get("h"))
+            except (TypeError, ValueError): continue
+            if not (math.isfinite(lo) and math.isfinite(hi) and lo > 0 and hi > 0): continue
+            ts = str(row.get("t") or "")
+            if running_min is None or lo < running_min:
+                running_min, running_min_ts = lo, ts
+            gain = (hi / running_min - 1.0) * 100.0
+            max_gain = max(max_gain, gain)
+            if gain + 1e-12 >= threshold_pct:
+                if running_min_ts == ts:
+                    return {"classification":"still_ambiguous","t1":running_min_ts,"t2":ts,"t1_low":running_min,"t2_high":hi,"gain_pct":gain,"max_gain_pct":max_gain}
+                return {"classification":"verified","t1":running_min_ts,"t2":ts,"t1_low":running_min,"t2_high":hi,"gain_pct":gain,"max_gain_pct":max_gain}
+        return {"classification":"failed","t1":running_min_ts,"t2":None,"t1_low":running_min,"t2_high":None,"gain_pct":None,"max_gain_pct":max_gain}
+
+    def _phase0b_probe_merge_1m(self, symbol: str, target: date, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        sip = self.alpaca.bars([symbol], start, end, feed="sip", adjustment="raw", timeframe="1Min").get(symbol, [])
+        boats = [] if target < date.fromisoformat(HISTORICAL_CENSUS_SPEC["boats_launch_date"]) else self.alpaca.bars([symbol], start, end, feed="boats", adjustment="raw", timeframe="1Min").get(symbol, [])
+        merged = {}
+        for source, source_rows in (("sip", sip), ("boats", boats)):
+            for row in source_rows:
+                ts = str(row.get("t") or "")
+                if not ts: continue
+                sess = self._probe_session(ts, target)
+                if source == "boats" and sess != "Overnight": continue
+                if ts not in merged or source == "sip": merged[ts] = {**row, "source":source, "session":sess}
+        return [merged[k] for k in sorted(merged)]
+
+    def _phase0b_window_probe_sample(self) -> list[dict[str, Any]]:
+        resolved = self.redis.get_json(self.pre0b_audit_key("resolved_symbol_classification"), {}) or {}
+        sessions = list(self.redis.get_json(self.historical_census_key("completed_sessions"), []) or [])
+        buckets = {(str(y), a): [] for y in range(2019, 2027) for a in (False, True)}
+        for key in sessions:
+            y = str(key)[:4]
+            for c in self.redis.get_json(self.historical_census_key(f"candidates:{key}"), []) or []:
+                sym = str(c.get("symbol") or "").upper(); cls = resolved.get(sym) or {}
+                split = bool((c.get("corporate_action_screen") or {}).get("suspect"))
+                clean = cls.get("bucket") == "metadata_common_like" and not split and not cls.get("ticker_recycling_risk")
+                if not clean: continue
+                amb = bool(c.get("same_bar_order_ambiguous_ge20"))
+                arr = buckets.get((y, amb))
+                if arr is not None and len(arr) < 4:
+                    arr.append({"symbol":sym,"target_session":key,"coarse_ambiguous":amb,"coarse_t1":c.get("running_min_ts"),"coarse_t2":((c.get("ladder_first_ts") or {}).get("20"))})
+        return [x for y in map(str, range(2019,2027)) for amb in (False,True) for x in buckets[(y,amb)]]
+
+    def phase0b_window_probe_loop(self) -> None:
+        try:
+            allowed, reason = self._phase0b_window_probe_gate()
+            if not allowed: raise RuntimeError(reason)
+            sample = self._phase0b_window_probe_sample()
+            if len(sample) < 48: raise RuntimeError(f"Probe sample too small: {len(sample)}")
+            self._set_phase0b_window_probe_state(status="RUNNING",phase="VERIFY",message=f"Validating full-cycle 1m ground truth vs ±60m coarse-informed window on {len(sample)} cases",sample_size=len(sample),completed=0,phase0b_allowed=False)
+            results=[]; mismatches=0; comparable=0
+            for i,c in enumerate(sample,1):
+                target=date.fromisoformat(str(c["target_session"])); full_start,full_end=self._probe_cycle_bounds(target)
+                full_rows=self._phase0b_probe_merge_1m(c["symbol"],target,full_start,full_end)
+                full=self._minute_verify(full_rows)
+                coarse_ts=[x for x in (c.get("coarse_t1"),c.get("coarse_t2")) if x]
+                if coarse_ts:
+                    dts=[datetime.fromisoformat(str(x).replace("Z","+00:00")) for x in coarse_ts]
+                    b=int(PHASE0B_WINDOW_PROBE_SPEC["buffer_minutes_each_side"])
+                    win_start=max(full_start,min(dts)-timedelta(minutes=b)); win_end=min(full_end,max(dts)+timedelta(minutes=b))
+                    win_rows=[r for r in full_rows if win_start <= datetime.fromisoformat(str(r.get("t")).replace("Z","+00:00")) <= win_end]
+                    window=self._minute_verify(win_rows)
+                else:
+                    win_start=win_end=None; window={"classification":"insufficient_coarse_bounds"}
+                same=window.get("classification")==full.get("classification")
+                if full_rows and coarse_ts:
+                    comparable+=1
+                    if not same: mismatches+=1
+                results.append({**c,"full_cycle":full,"buffered_window":window,"classification_match":same,"full_1m_bars":len(full_rows),"window_1m_bars":len(win_rows) if coarse_ts else 0,"window_start":iso(win_start) if win_start else None,"window_end":iso(win_end) if win_end else None})
+                if i%8==0 or i==len(sample): self._set_phase0b_window_probe_state(status="RUNNING",phase="VERIFY",message=f"Verified {i}/{len(sample)} probe cases",sample_size=len(sample),completed=i,mismatches=mismatches,phase0b_allowed=False)
+            optimization_allowed = comparable == len(sample) and mismatches == 0
+            report={"version":VERSION,"build":BUILD,"probe_id":PHASE0B_WINDOW_PROBE_SPEC["probe_id"],"probe_sha256":PHASE0B_WINDOW_PROBE_SHA256,"status":"COMPLETED","spec":PHASE0B_WINDOW_PROBE_SPEC,"sample_size":len(sample),"comparable_cases":comparable,"classification_mismatches":mismatches,"window_optimization_allowed":optimization_allowed,"full_cycle_remains_ground_truth":True,"phase0b_allowed":False,"stop_and_review_required":True,"results":results,"completed_at":iso()}
+            self.redis.set_json(self.phase0b_window_probe_key("report"),report)
+            self._set_phase0b_window_probe_state(status="COMPLETED",phase="STOP_REVIEW",message="Phase 0B windowing validation probe completed; STOP and review before Phase 0B implementation",sample_size=len(sample),completed=len(sample),mismatches=mismatches,window_optimization_allowed=optimization_allowed,phase0b_allowed=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Phase 0B windowing probe failed")
+            self._set_phase0b_window_probe_state(status="ERROR",phase="BLOCKED",message="Phase 0B windowing validation probe failed closed",phase0b_allowed=False,last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.phase0b_window_probe_lock: self.phase0b_window_probe_thread=None
+
+    def start_phase0b_window_probe(self) -> tuple[bool,str]:
+        allowed,reason=self._phase0b_window_probe_gate()
+        if not allowed: return False,reason
+        with self.phase0b_window_probe_lock:
+            if self.phase0b_window_probe_thread and self.phase0b_window_probe_thread.is_alive(): return False,"already_running"
+            self.phase0b_window_probe_thread=threading.Thread(target=self.phase0b_window_probe_loop,name="phase0b-windowing-validation-probe",daemon=True); self.phase0b_window_probe_thread.start()
+        return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
         return self.key(f"phase0a:v1:{suffix}")
@@ -6254,6 +6385,30 @@ def pre0b_audit_status():
 def pre0b_audit_result():
     report=radar.redis.get_json(radar.pre0b_audit_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/pre0b-audit/status","phase0b_allowed":False}),202
+    return jsonify(report)
+
+@app.get("/phase0/phase0b-window-probe")
+def phase0b_window_probe_home():
+    allowed,reason=radar._phase0b_window_probe_gate()
+    return jsonify({"purpose":"Validate buffered-window 1-minute optimization against full-cycle 1-minute ground truth before Phase 0B","gate_allowed":allowed,"gate_reason":reason,"start_url":"/phase0/phase0b-window-probe/start","status_url":"/phase0/phase0b-window-probe/status","result_url":"/phase0/phase0b-window-probe/result","phase0b_allowed":False})
+
+@app.get("/phase0/phase0b-window-probe/start")
+@app.post("/phase0/phase0b-window-probe/start")
+def phase0b_window_probe_start():
+    started,message=radar.start_phase0b_window_probe()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/phase0b-window-probe/status","result_url":"/phase0/phase0b-window-probe/result","phase0b_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/phase0b-window-probe/status")
+def phase0b_window_probe_status():
+    stored=radar.redis.get_json(radar.phase0b_window_probe_key("status"),None) if radar.redis.configured else None
+    with radar.phase0b_window_probe_lock:
+        payload=dict(stored or radar.phase0b_window_probe_state); payload["worker_alive"]=bool(radar.phase0b_window_probe_thread and radar.phase0b_window_probe_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/phase0b-window-probe/result")
+def phase0b_window_probe_result():
+    report=radar.redis.get_json(radar.phase0b_window_probe_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/phase0/phase0b-window-probe/status","phase0b_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0/historical-census")
