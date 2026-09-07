@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.7"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-PHASE0B-WINDOWING-VALIDATION-PROBE"
+VERSION = "1.7.8"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-PHASE0B-FULL-CYCLE-VERIFICATION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -161,6 +161,21 @@ PHASE0B_WINDOW_PROBE_SPEC = {
     "safety": {"phase0b_full_run": False, "feature_discovery_runs": False, "orders_enabled": False},
 }
 PHASE0B_WINDOW_PROBE_SHA256 = hashlib.sha256(json.dumps(PHASE0B_WINDOW_PROBE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+PHASE0B_FULL_SPEC = {
+    "verification_id": "IPR-PHASE0B-FULL-CYCLE-VERIFICATION-2019-2026-A",
+    "input": "205,028 recommended-clean candidates frozen by v1.7.6",
+    "ground_truth": "Full Trading Cycle raw 1-minute SIP plus BOATS where venue existed; no coarse-informed window optimization",
+    "threshold_pct": 20.0,
+    "retained_ladders_pct": [5.0, 10.0, 15.0, 20.0, 30.0, 50.0],
+    "minute_ordering": "running minimum is updated chronologically; if a new minute low and threshold-reaching high occur in that same minute, classify still_ambiguous, never verified",
+    "window_optimization": False,
+    "resume": "session-boundary checkpoints in Redis; completed sessions are never refetched on resume",
+    "batch_size": 200,
+    "corporate_action_policy": "only candidates already passing frozen v1.7.6 split screen and common-like/recycling exclusions enter Phase 0B; raw 1-minute verification never overrides an exclusion",
+    "safety": {"feature_discovery_runs": False, "alerts_enabled": False, "orders_enabled": False, "stop_and_review_after_completion": True},
+}
+PHASE0B_FULL_SHA256 = hashlib.sha256(json.dumps(PHASE0B_FULL_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 PROTOCOL_SHA256 = hashlib.sha256(
     json.dumps(PROTOCOL, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -512,7 +527,7 @@ class AlpacaClient:
                 with urlopen(Request(target, headers=self.headers), timeout=90) as response:
                     return json.load(response)
             except HTTPError as exc:
-                if exc.code == 429 and attempt < 5:
+                if exc.code in (429, 500, 502, 503, 504) and attempt < 5:
                     time.sleep(min(20, 2 ** attempt))
                     continue
                 detail = exc.read(500).decode("utf-8", "replace")
@@ -1455,6 +1470,10 @@ class IndependentPriorityRadar:
         self.phase0b_window_probe_lock = threading.RLock()
         self.phase0b_window_probe_thread: threading.Thread | None = None
         self.phase0b_window_probe_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Phase 0B windowing validation probe has not started","phase0b_allowed":False,"updated_at":iso()}
+        self.phase0b_full_lock = threading.RLock()
+        self.phase0b_full_thread: threading.Thread | None = None
+        self.phase0b_full_stop_event = threading.Event()
+        self.phase0b_full_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Phase 0B full-cycle verification has not started","verification_id":PHASE0B_FULL_SPEC["verification_id"],"feature_discovery_allowed":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -2560,6 +2579,125 @@ class IndependentPriorityRadar:
         with self.phase0b_window_probe_lock:
             if self.phase0b_window_probe_thread and self.phase0b_window_probe_thread.is_alive(): return False,"already_running"
             self.phase0b_window_probe_thread=threading.Thread(target=self.phase0b_window_probe_loop,name="phase0b-windowing-validation-probe",daemon=True); self.phase0b_window_probe_thread.start()
+        return True,"started"
+
+    def phase0b_full_key(self, suffix: str) -> str:
+        return self.key(f"phase0b_full:v1:{suffix}")
+
+    def _set_phase0b_full_state(self, **updates: Any) -> None:
+        with self.phase0b_full_lock:
+            self.phase0b_full_state.update(updates)
+            self.phase0b_full_state["updated_at"] = iso()
+            snap = dict(self.phase0b_full_state)
+        if self.redis.configured:
+            self.redis.set_json(self.phase0b_full_key("status"), snap)
+
+    def _phase0b_full_gate(self) -> tuple[bool, str]:
+        if not (self.redis.configured and self.alpaca.configured):
+            return False, "Alpaca and Redis are required"
+        pre = self.redis.get_json(self.pre0b_audit_key("report"), None)
+        if not pre or pre.get("status") != "COMPLETED":
+            return False, "Completed v1.7.6 Pre-Phase0B audit is required"
+        if int((pre.get("candidate_totals_after_resolution") or {}).get("recommended_clean") or 0) != 205028:
+            return False, "Frozen clean-candidate count must be 205,028"
+        probe = self.redis.get_json(self.phase0b_window_probe_key("report"), None)
+        if not probe or probe.get("status") != "COMPLETED" or int(probe.get("classification_mismatches") or 0) < 1:
+            return False, "Completed v1.7.7 window probe with rejected optimization is required"
+        if probe.get("window_optimization_allowed") is not False or probe.get("full_cycle_remains_ground_truth") is not True:
+            return False, "Window optimization must be rejected and full cycle frozen as ground truth"
+        return True, "allowed"
+
+    @staticmethod
+    def _minute_verify_full(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        ladders = [5.0,10.0,15.0,20.0,30.0,50.0]
+        running_min=None; running_min_ts=None; max_gain=0.0; first={str(int(x)):None for x in ladders}
+        first20=None
+        for row in sorted(rows,key=lambda x:str(x.get("t") or "")):
+            try: lo,hi=float(row.get("l")),float(row.get("h"))
+            except (TypeError,ValueError): continue
+            if not (math.isfinite(lo) and math.isfinite(hi) and lo>0 and hi>0): continue
+            ts=str(row.get("t") or "")
+            new_min = running_min is None or lo < running_min
+            if new_min: running_min,running_min_ts=lo,ts
+            gain=(hi/running_min-1.0)*100.0
+            max_gain=max(max_gain,gain)
+            for level in ladders:
+                k=str(int(level))
+                if first[k] is None and gain+1e-12>=level: first[k]=ts
+            if first20 is None and gain+1e-12>=20.0:
+                first20={"classification":"still_ambiguous" if new_min else "verified","t1":running_min_ts,"t2":ts,"t1_low":running_min,"t2_high":hi,"gain_pct":gain}
+        if first20:
+            return {**first20,"max_gain_pct":max_gain,"ladder_first_ts":first}
+        return {"classification":"failed","t1":running_min_ts,"t2":None,"t1_low":running_min,"t2_high":None,"gain_pct":None,"max_gain_pct":max_gain,"ladder_first_ts":first}
+
+    def _phase0b_clean_candidates_for_session(self, session: str, resolved: dict[str, Any]) -> list[dict[str, Any]]:
+        out=[]
+        for c in self.redis.get_json(self.historical_census_key(f"candidates:{session}"), []) or []:
+            sym=str(c.get("symbol") or "").upper(); cls=resolved.get(sym) or {}
+            split=bool((c.get("corporate_action_screen") or {}).get("suspect"))
+            if cls.get("bucket") != "metadata_common_like" or split or cls.get("ticker_recycling_risk"): continue
+            out.append(c)
+        return out
+
+    def _phase0b_fetch_session_rows(self, symbols: list[str], target: date, start: datetime, end: datetime) -> dict[str,list[dict[str,Any]]]:
+        merged={s:{} for s in symbols}; batch_size=int(PHASE0B_FULL_SPEC["batch_size"])
+        for off in range(0,len(symbols),batch_size):
+            batch=symbols[off:off+batch_size]
+            sip=self.alpaca.bars(batch,start,end,feed="sip",adjustment="raw",timeframe="1Min")
+            boats={} if target < date.fromisoformat(HISTORICAL_CENSUS_SPEC["boats_launch_date"]) else self.alpaca.bars(batch,start,end,feed="boats",adjustment="raw",timeframe="1Min")
+            for sym in batch:
+                dst=merged[sym]
+                for row in boats.get(sym,[]) or []:
+                    ts=str(row.get("t") or "")
+                    if ts and self._probe_session(ts,target)=="Overnight": dst[ts]={**row,"source":"boats","session":"Overnight"}
+                for row in sip.get(sym,[]) or []:
+                    ts=str(row.get("t") or "")
+                    if ts: dst[ts]={**row,"source":"sip","session":self._probe_session(ts,target)}
+        return {s:[d[k] for k in sorted(d)] for s,d in merged.items()}
+
+    def phase0b_full_loop(self) -> None:
+        try:
+            allowed,reason=self._phase0b_full_gate()
+            if not allowed: raise RuntimeError(reason)
+            resolved=self.redis.get_json(self.pre0b_audit_key("resolved_symbol_classification"),{}) or {}
+            sessions=list(self.redis.get_json(self.historical_census_key("completed_sessions"),[]) or [])
+            completed=set(self.redis.get_json(self.phase0b_full_key("completed_sessions"),[]) or [])
+            totals=self.redis.get_json(self.phase0b_full_key("totals"),{}) or {"processed":0,"verified":0,"still_ambiguous":0,"failed":0,"sessions":0}
+            self.phase0b_full_stop_event.clear()
+            self._set_phase0b_full_state(status="RUNNING",phase="VERIFY",message="Full-cycle 1-minute Phase 0B verification; no window optimization",total_sessions=len(sessions),completed_sessions=len(completed),**totals,feature_discovery_allowed=False)
+            for session in sessions:
+                if session in completed: continue
+                if self.phase0b_full_stop_event.is_set():
+                    self._set_phase0b_full_state(status="PAUSED",phase="VERIFY",message="Phase 0B paused at a session boundary; resume will not refetch completed sessions",total_sessions=len(sessions),completed_sessions=len(completed),**totals,feature_discovery_allowed=False); return
+                candidates=self._phase0b_clean_candidates_for_session(session,resolved)
+                target=date.fromisoformat(session); start,end=self._probe_cycle_bounds(target)
+                rows_by_symbol=self._phase0b_fetch_session_rows([str(c.get("symbol") or "").upper() for c in candidates],target,start,end) if candidates else {}
+                results=[]
+                for c in candidates:
+                    sym=str(c.get("symbol") or "").upper(); rows=rows_by_symbol.get(sym,[]); vr=self._minute_verify_full(rows)
+                    result={"symbol":sym,"target_session":session,"coarse_ambiguous":bool(c.get("same_bar_order_ambiguous_ge20")),"classification":vr["classification"],"t1":vr.get("t1"),"t2":vr.get("t2"),"t1_low":vr.get("t1_low"),"t2_high":vr.get("t2_high"),"gain_pct":vr.get("gain_pct"),"max_gain_pct":vr.get("max_gain_pct"),"ladder_first_ts":vr.get("ladder_first_ts"),"full_cycle_1m_bars":len(rows)}
+                    results.append(result); totals["processed"]+=1; totals[vr["classification"]]+=1
+                self.redis.set_json(self.phase0b_full_key(f"results:{session}"),results)
+                completed.add(session); totals["sessions"]=len(completed)
+                self.redis.set_json(self.phase0b_full_key("completed_sessions"),sorted(completed)); self.redis.set_json(self.phase0b_full_key("totals"),totals)
+                self._set_phase0b_full_state(status="RUNNING",phase="VERIFY",message=f"Verified full-cycle 1m session {session}",current_session=session,total_sessions=len(sessions),completed_sessions=len(completed),remaining_sessions=len(sessions)-len(completed),last_session_candidates=len(candidates),**totals,feature_discovery_allowed=False)
+            if int(totals.get("processed") or 0) != 205028:
+                raise RuntimeError(f"Fail-closed: processed {totals.get('processed')} clean cases, expected 205028")
+            report={"version":VERSION,"build":BUILD,"verification_id":PHASE0B_FULL_SPEC["verification_id"],"phase0b_sha256":PHASE0B_FULL_SHA256,"status":"COMPLETED","spec":PHASE0B_FULL_SPEC,"totals":totals,"completed_sessions":len(completed),"total_sessions":len(sessions),"window_optimization_used":False,"full_cycle_ground_truth":True,"feature_discovery_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            self.redis.set_json(self.phase0b_full_key("report"),report)
+            self._set_phase0b_full_state(status="COMPLETED",phase="STOP_REVIEW",message="Phase 0B full-cycle verification completed; STOP and review before Feature Discovery",total_sessions=len(sessions),completed_sessions=len(completed),**totals,feature_discovery_allowed=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Phase 0B full-cycle verification failed")
+            self._set_phase0b_full_state(status="ERROR",phase="BLOCKED",message="Phase 0B full-cycle verification failed closed",feature_discovery_allowed=False,last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.phase0b_full_lock: self.phase0b_full_thread=None
+
+    def start_phase0b_full(self) -> tuple[bool,str]:
+        allowed,reason=self._phase0b_full_gate()
+        if not allowed: return False,reason
+        with self.phase0b_full_lock:
+            if self.phase0b_full_thread and self.phase0b_full_thread.is_alive(): return False,"already_running"
+            self.phase0b_full_thread=threading.Thread(target=self.phase0b_full_loop,name="phase0b-full-cycle-verification",daemon=True); self.phase0b_full_thread.start()
         return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
@@ -6385,6 +6523,38 @@ def pre0b_audit_status():
 def pre0b_audit_result():
     report=radar.redis.get_json(radar.pre0b_audit_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/pre0b-audit/status","phase0b_allowed":False}),202
+    return jsonify(report)
+
+@app.get("/phase0/phase0b-full")
+def phase0b_full_home():
+    allowed,reason=radar._phase0b_full_gate()
+    return jsonify({"purpose":"Full Trading Cycle 1-minute verification of all 205,028 frozen clean candidates; no window optimization","verification_id":PHASE0B_FULL_SPEC["verification_id"],"phase0b_sha256":PHASE0B_FULL_SHA256,"gate_allowed":allowed,"gate_reason":reason,"protocol_url":"/phase0/phase0b-full/protocol","start_url":"/phase0/phase0b-full/start","status_url":"/phase0/phase0b-full/status","result_url":"/phase0/phase0b-full/result","pause_url":"/phase0/phase0b-full/pause","feature_discovery_allowed":False})
+
+@app.get("/phase0/phase0b-full/protocol")
+def phase0b_full_protocol(): return jsonify({"version":VERSION,"build":BUILD,"spec":PHASE0B_FULL_SPEC,"phase0b_sha256":PHASE0B_FULL_SHA256})
+
+@app.get("/phase0/phase0b-full/start")
+@app.post("/phase0/phase0b-full/start")
+def phase0b_full_start():
+    started,message=radar.start_phase0b_full()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/phase0b-full/status","result_url":"/phase0/phase0b-full/result","feature_discovery_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/phase0b-full/pause")
+@app.post("/phase0/phase0b-full/pause")
+def phase0b_full_pause():
+    radar.phase0b_full_stop_event.set(); return jsonify({"ok":True,"message":"pause_requested","resume_url":"/phase0/phase0b-full/start","feature_discovery_allowed":False})
+
+@app.get("/phase0/phase0b-full/status")
+def phase0b_full_status():
+    stored=radar.redis.get_json(radar.phase0b_full_key("status"),None) if radar.redis.configured else None
+    with radar.phase0b_full_lock:
+        payload=dict(stored or radar.phase0b_full_state); payload["worker_alive"]=bool(radar.phase0b_full_thread and radar.phase0b_full_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/phase0b-full/result")
+def phase0b_full_result():
+    report=radar.redis.get_json(radar.phase0b_full_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/phase0/phase0b-full/status","feature_discovery_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0/phase0b-window-probe")
