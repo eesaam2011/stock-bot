@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.3"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-HISTORICAL-CENSUS-AUDIT"
+VERSION = "1.7.4"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-07-INSTRUMENT-TYPE-CLEANUP-AUDIT"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1432,6 +1432,9 @@ class IndependentPriorityRadar:
         self.historical_census_audit_lock = threading.RLock()
         self.historical_census_audit_thread: threading.Thread | None = None
         self.historical_census_audit_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Historical Census audit has not started","phase0b_allowed":False,"updated_at":iso()}
+        self.instrument_cleanup_lock = threading.RLock()
+        self.instrument_cleanup_thread: threading.Thread | None = None
+        self.instrument_cleanup_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Instrument-type cleanup audit has not started","phase0b_allowed":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -2055,6 +2058,177 @@ class IndependentPriorityRadar:
             if self.historical_census_audit_thread and self.historical_census_audit_thread.is_alive():return False,"already_running"
             self.historical_census_audit_thread=threading.Thread(target=self.historical_census_audit_loop,name="historical-census-audit",daemon=True)
             self.historical_census_audit_thread.start()
+        return True,"started"
+
+    def instrument_cleanup_key(self, suffix: str) -> str:
+        return self.key(f"instrument_cleanup_audit:v1:{suffix}")
+
+    def _set_instrument_cleanup_state(self, **updates: Any) -> None:
+        with self.instrument_cleanup_lock:
+            self.instrument_cleanup_state.update(updates)
+            self.instrument_cleanup_state["updated_at"] = iso()
+            snapshot = dict(self.instrument_cleanup_state)
+        if self.redis.configured:
+            self.redis.set_json(self.instrument_cleanup_key("status"), snapshot)
+
+    def _instrument_cleanup_gate(self) -> tuple[bool, str]:
+        if not self.redis.configured:
+            return False, "Redis is required"
+        census = self.redis.get_json(self.historical_census_key("report"), None)
+        audit = self.redis.get_json(self.historical_census_audit_key("report"), None)
+        if not census or census.get("status") != "COMPLETED" or int(census.get("coarse_candidates") or 0) != 338323:
+            return False, "Frozen completed Historical Census (338323 candidates) is required"
+        if str(census.get("historical_census_sha256")) != HISTORICAL_CENSUS_SHA256:
+            return False, "Historical Census SHA mismatch"
+        if not audit or audit.get("status") != "COMPLETED" or not (audit.get("integrity") or {}).get("stored_candidate_count_matches_census_report"):
+            return False, "Completed v1.7.3 Census Audit with passing integrity is required"
+        if int((audit.get("totals") or {}).get("candidates") or 0) != 338323:
+            return False, "Census Audit candidate count mismatch"
+        return True, "allowed"
+
+    @staticmethod
+    def _instrument_name_classification(asset: dict[str, Any] | None) -> dict[str, Any]:
+        if not asset:
+            return {"bucket":"unresolved_no_metadata","subtype":"unknown","evidence":None,"name":None}
+        name = " ".join(str(asset.get("name") or "").strip().split())
+        low = name.lower()
+        # Strong name evidence only. Symbol suffixes are deliberately not classification evidence.
+        rules = [
+            ("warrant", (r"\bwarrants?\b", r"\bwts?\b")),
+            ("unit", (r"\bunits?\b",)),
+            ("right", (r"\brights?\b",)),
+            ("preferred", (r"\bpreferred\b", r"\bpreference shares?\b")),
+            ("fund_etp", (r"\betf\b", r"exchange[- ]traded fund", r"\betn\b", r"exchange[- ]traded note")),
+            ("debt_security", (r"\bsenior notes?\b", r"\bdebentures?\b", r"\bbonds? due\b")),
+        ]
+        for subtype, pats in rules:
+            for pat in pats:
+                if re.search(pat, low):
+                    return {"bucket":"metadata_non_common","subtype":subtype,"evidence":f"asset_name:{pat}","name":name}
+        common_patterns = (
+            r"\bcommon stock\b", r"\bcommon shares?\b", r"\bordinary shares?\b",
+            r"american depositary shares?", r"american depositary receipts?", r"\badr\b",
+        )
+        for pat in common_patterns:
+            if re.search(pat, low):
+                return {"bucket":"metadata_common_like","subtype":"common_or_ordinary_equity","evidence":f"asset_name:{pat}","name":name}
+        return {"bucket":"unresolved_metadata_ambiguous","subtype":"unknown","evidence":"asset_name_not_decisive","name":name}
+
+    @staticmethod
+    def _suffix_diagnostics(symbol: str) -> list[str]:
+        out=[]
+        if symbol.endswith("W"): out.append("suffix_W_possible_warrant")
+        if symbol.endswith("U"): out.append("suffix_U_possible_unit")
+        if symbol.endswith("R"): out.append("suffix_R_possible_right")
+        if symbol.endswith("P"): out.append("suffix_P_possible_preferred")
+        return out
+
+    def instrument_cleanup_audit_loop(self) -> None:
+        try:
+            allowed, reason = self._instrument_cleanup_gate()
+            if not allowed:
+                raise RuntimeError(reason)
+            self._set_instrument_cleanup_state(status="RUNNING", phase="LOAD", message="Loading stored Census candidates; no Census rescan and no market-bar requests", phase0b_allowed=False)
+            census = self.redis.get_json(self.historical_census_key("report"), {})
+            sessions = list(self.redis.get_json(self.historical_census_key("completed_sessions"), []) or [])
+            if len(sessions) != 1926:
+                raise RuntimeError(f"Expected 1926 stored sessions, found {len(sessions)}")
+            records = self.redis.get_json(self.universe_reconstruction_key("records"), {}) or {}
+            candidate_symbols=set()
+            stored=[]
+            for key in sessions:
+                rows=self.redis.get_json(self.historical_census_key(f"candidates:{key}"), []) or []
+                stored.append((key,rows))
+                candidate_symbols.update(str(x.get("symbol") or "").upper() for x in rows if x.get("symbol"))
+            self._set_instrument_cleanup_state(status="RUNNING", phase="METADATA", message="Fetching one Alpaca /v2/assets metadata snapshot; no historical bars", unique_candidate_symbols=len(candidate_symbols), phase0b_allowed=False)
+            assets = self.alpaca.assets_by_status(None)
+            asset_map={str(a.get("symbol") or "").upper():a for a in assets if str(a.get("symbol") or "").upper() in candidate_symbols}
+            symbol_map={}
+            symbol_bucket_counts=defaultdict(int); symbol_subtype_counts=defaultdict(int)
+            suffix_diag_counts=defaultdict(int)
+            for sym in sorted(candidate_symbols):
+                rec=records.get(sym) or {}
+                base=self._instrument_name_classification(asset_map.get(sym))
+                recycling=bool(rec.get("ticker_recycling_risk"))
+                # Current /v2/assets metadata is not point-in-time identity evidence across a recycling gap.
+                if recycling:
+                    base={**base,"pre_recycling_bucket":base["bucket"],"bucket":"unresolved_ticker_recycling","evidence":"ticker_recycling_risk_blocks_cross_era_metadata_classification"}
+                diags=self._suffix_diagnostics(sym)
+                base.update({"symbol":sym,"ticker_recycling_risk":recycling,"suffix_diagnostics":diags,"metadata_present":sym in asset_map})
+                symbol_map[sym]=base
+                symbol_bucket_counts[base["bucket"]]+=1; symbol_subtype_counts[base["subtype"]]+=1
+                for d in diags:suffix_diag_counts[d]+=1
+            totals=defaultdict(int); by_year={str(y):defaultdict(int) for y in range(2019,2027)}
+            subtype_candidate_counts=defaultdict(int); top_non_common=defaultdict(int); top_unresolved=defaultdict(int); top_common=defaultdict(int)
+            for idx,(key,rows) in enumerate(stored,1):
+                year=str(key)[:4]
+                for c in rows:
+                    sym=str(c.get("symbol") or "").upper(); cls=symbol_map.get(sym) or {"bucket":"unresolved_no_metadata","subtype":"unknown"}
+                    bucket=cls["bucket"]; subtype=cls.get("subtype") or "unknown"
+                    totals["candidates"]+=1; totals[bucket]+=1; by_year[year]["candidates"]+=1; by_year[year][bucket]+=1
+                    subtype_candidate_counts[subtype]+=1
+                    if c.get("corporate_action_screen",{}).get("suspect"):
+                        totals["split_suspect"]+=1; by_year[year]["split_suspect"]+=1
+                    if c.get("same_bar_order_ambiguous_ge20"):
+                        totals["same_bar_ambiguous"]+=1; by_year[year]["same_bar_ambiguous"]+=1
+                    # Clean recommendation is deliberately conservative: only metadata-common-like, no split, no recycling.
+                    clean = bucket=="metadata_common_like" and not c.get("corporate_action_screen",{}).get("suspect") and not cls.get("ticker_recycling_risk")
+                    if clean:
+                        totals["recommended_clean_for_phase0b"]+=1; by_year[year]["recommended_clean_for_phase0b"]+=1; top_common[sym]+=1
+                    elif bucket=="metadata_non_common": top_non_common[sym]+=1
+                    else: top_unresolved[sym]+=1
+                if idx%100==0 or idx==len(stored):
+                    self._set_instrument_cleanup_state(status="RUNNING",phase="AUDIT",message=f"Classified {idx}/{len(stored)} stored sessions",sessions_audited=idx,total_sessions=len(stored),phase0b_allowed=False)
+            unresolved=sum(v for k,v in totals.items() if k.startswith("unresolved_"))
+            totals["unresolved_total"]=unresolved
+            totals["excluded_metadata_non_common"]=totals.get("metadata_non_common",0)
+            report={
+                "version":VERSION,"build":BUILD,"audit_id":"IPR-INSTRUMENT-TYPE-CLEANUP-AUDIT-2026-09-07-A","status":"COMPLETED",
+                "source_historical_census_sha256":census.get("historical_census_sha256"),"source_reconstruction_sha256":census.get("reconstruction_sha256"),
+                "period":census.get("period"),"sessions":len(sessions),"unique_candidate_symbols":len(candidate_symbols),
+                "policy":{
+                    "goal":"Separate likely common/ordinary equity from non-common instruments before Phase 0B without altering stored Census candidates.",
+                    "metadata_source":"One current Alpaca /v2/assets?asset_class=us_equity snapshot including active and inactive assets; no market-bar request.",
+                    "point_in_time_warning":"Alpaca asset metadata is not treated as historical point-in-time entity identity. Any ticker-recycling-risk symbol is unresolved regardless of current name metadata.",
+                    "suffix_rule":"W/U/R/P suffixes are diagnostics only and never sufficient for exclusion.",
+                    "non_common_rule":"Only strong asset-name evidence for warrant/unit/right/preferred/fund-ETP/debt is classified metadata_non_common.",
+                    "common_rule":"Only strong asset-name evidence for common stock/common shares/ordinary shares/ADR-ADS is classified metadata_common_like.",
+                    "unresolved_rule":"Missing or ambiguous metadata remains unresolved and is not silently deleted.",
+                    "split_rule":"Existing Census split suspects remain ineligible for recommended clean Phase 0B.",
+                },
+                "requests":{"alpaca_asset_metadata_requests":1,"alpaca_market_bar_requests":0,"census_rescan_performed":False},
+                "symbol_classification_counts":dict(symbol_bucket_counts),"symbol_subtype_counts":dict(symbol_subtype_counts),"suffix_diagnostic_symbol_counts":dict(suffix_diag_counts),
+                "candidate_classification_totals":dict(totals),"candidate_subtype_counts":dict(subtype_candidate_counts),
+                "candidates_by_year":{y:dict(v) for y,v in by_year.items()},
+                "top_metadata_non_common_symbols":[{"symbol":s,"candidate_cycles":n,"classification":symbol_map[s]} for s,n in sorted(top_non_common.items(),key=lambda kv:(-kv[1],kv[0]))[:30]],
+                "top_unresolved_symbols":[{"symbol":s,"candidate_cycles":n,"classification":symbol_map[s]} for s,n in sorted(top_unresolved.items(),key=lambda kv:(-kv[1],kv[0]))[:30]],
+                "top_metadata_common_like_symbols":[{"symbol":s,"candidate_cycles":n,"classification":symbol_map[s]} for s,n in sorted(top_common.items(),key=lambda kv:(-kv[1],kv[0]))[:30]],
+                "integrity":{
+                    "candidate_count_matches_frozen_census":totals["candidates"]==338323,
+                    "sessions_match_frozen_census":len(sessions)==1926,
+                    "classification_partition_matches":totals["candidates"]==(totals.get("metadata_common_like",0)+totals.get("metadata_non_common",0)+unresolved),
+                    "original_candidates_mutated":False,
+                },
+                "phase0b_allowed":False,"stop_and_review_required":True,"completed_at":iso(),
+            }
+            self.redis.set_json(self.instrument_cleanup_key("symbol_classification"),symbol_map)
+            self.redis.set_json(self.instrument_cleanup_key("report"),report)
+            self._set_instrument_cleanup_state(status="COMPLETED",phase="STOP_REVIEW",message="Instrument-type cleanup audit completed; STOP and review before Phase 0B",sessions_audited=len(sessions),total_sessions=len(sessions),phase0b_allowed=False,stop_and_review_required=True)
+        except Exception as exc:
+            logging.exception("Instrument-type cleanup audit failed")
+            self._set_instrument_cleanup_state(status="ERROR",phase="BLOCKED",message="Instrument-type cleanup audit failed closed",phase0b_allowed=False,last_error=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self.instrument_cleanup_lock:
+                self.instrument_cleanup_thread=None
+
+    def start_instrument_cleanup_audit(self) -> tuple[bool,str]:
+        allowed,reason=self._instrument_cleanup_gate()
+        if not allowed:return False,reason
+        if not self.alpaca.configured:return False,"Alpaca is required for the single asset-metadata snapshot"
+        with self.instrument_cleanup_lock:
+            if self.instrument_cleanup_thread and self.instrument_cleanup_thread.is_alive():return False,"already_running"
+            self.instrument_cleanup_thread=threading.Thread(target=self.instrument_cleanup_audit_loop,name="instrument-type-cleanup-audit",daemon=True)
+            self.instrument_cleanup_thread.start()
         return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
@@ -5831,6 +6005,30 @@ def historical_census_audit_status():
 def historical_census_audit_result():
     report=radar.redis.get_json(radar.historical_census_audit_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/audit/status","phase0b_allowed":False}),202
+    return jsonify(report)
+
+@app.get("/phase0/historical-census/instrument-cleanup")
+def instrument_cleanup_home():
+    allowed,reason=radar._instrument_cleanup_gate()
+    return jsonify({"purpose":"Instrument-type cleanup audit over stored 2019-2026 Census candidates; no Census rescan and no market-bar requests","gate_allowed":allowed,"gate_reason":reason,"start_url":"/phase0/historical-census/instrument-cleanup/start","status_url":"/phase0/historical-census/instrument-cleanup/status","result_url":"/phase0/historical-census/instrument-cleanup/result","phase0b_allowed":False})
+
+@app.get("/phase0/historical-census/instrument-cleanup/start")
+@app.post("/phase0/historical-census/instrument-cleanup/start")
+def instrument_cleanup_start():
+    started,message=radar.start_instrument_cleanup_audit()
+    return jsonify({"ok":started,"status":message,"status_url":"/phase0/historical-census/instrument-cleanup/status","result_url":"/phase0/historical-census/instrument-cleanup/result","phase0b_allowed":False}), (202 if started else 409)
+
+@app.get("/phase0/historical-census/instrument-cleanup/status")
+def instrument_cleanup_status():
+    stored=radar.redis.get_json(radar.instrument_cleanup_key("status"),None) if radar.redis.configured else None
+    with radar.instrument_cleanup_lock:
+        payload=dict(stored or radar.instrument_cleanup_state); payload["worker_alive"]=bool(radar.instrument_cleanup_thread and radar.instrument_cleanup_thread.is_alive())
+    return jsonify(payload)
+
+@app.get("/phase0/historical-census/instrument-cleanup/result")
+def instrument_cleanup_result():
+    report=radar.redis.get_json(radar.instrument_cleanup_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/phase0/historical-census/instrument-cleanup/status","phase0b_allowed":False}),202
     return jsonify(report)
 
 @app.get("/phase0/historical-census")
