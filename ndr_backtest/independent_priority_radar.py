@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.19"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-FROZEN-MODEL-VALIDATION-2025"
+VERSION = "1.7.20-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-HOLDOUT-PROTOCOL-LOCK-DIAGNOSTIC-SCOREABILITY"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -416,6 +416,52 @@ VALIDATION_SUCCESS_CRITERIA_SHA256 = hashlib.sha256(json.dumps(VALIDATION_SUCCES
 
 VALIDATION_2025_SPEC={"validation_id":"IPR-FROZEN-MODEL-VALIDATION-2025-2026-09-08-A","scope":"2025 only; 2026 forbidden","required_frozen_model_sha256":"c543ed4320a9cbc7eecef311675fb8955642d9bcb81e31fe7888728ee1c5c7c3","required_criteria_sha256":"8369764d07694d2dc69c8de5c06f331bef0ff2e998da0b11936ade30c19ed67a","required_criteria_artifact_sha256":"b64031aa249d24660ca3fdc2a510bf145b6285be00324bf906b88a0d422ea664","locked_year":2025,"forbidden_year":2026,"model_mutation_allowed":False,"threshold_recalibration_allowed":False,"criteria_reinterpretation_allowed":False,"stop_and_review_after_2025":True}
 VALIDATION_2025_SHA256=hashlib.sha256(json.dumps(VALIDATION_2025_SPEC,sort_keys=True,separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+# Frozen after completed 2025 Validation and before any 2026 read.
+# This is explicitly a post-Validation / pre-Holdout protocol amendment.
+HOLDOUT_SUCCESS_CRITERIA_SPEC = {
+    "criteria_id": "IPR-HOLDOUT-PROTOCOL-LOCK-2026-09-08-B",
+    "development_status": "Post-2025-Validation, pre-2026-Holdout protocol lock. The official 2026 PASS/WEAK_PASS/FAIL rules are inherited unchanged from the criteria frozen before 2025; no new outcome cutoff is introduced from 2025 results.",
+    "purpose": "Lock the untouched 2026 Holdout to the original pre-2025 performance criteria, while reporting scoreability as diagnostic-only coverage information.",
+    "required_frozen_model_sha256": "c543ed4320a9cbc7eecef311675fb8955642d9bcb81e31fe7888728ee1c5c7c3",
+    "required_validation_result_sha256": "96f7645e8db3145f9305bfe995df0ce54cc999ea4ef4a550d1a3cc63c4f0232f",
+    "required_validation_overall_classification": "PASS",
+    "required_pre2025_criteria_sha256": "8369764d07694d2dc69c8de5c06f331bef0ff2e998da0b11936ade30c19ed67a",
+    "scope": "Protocol lock only. No 2026 observations may be read. 2025 is provenance/diagnostic context only and cannot recalibrate the model or official decision thresholds.",
+    "critical_roles": ["early_core", "confirmation"],
+    "performance_rules": {
+        "pass_min_development_recall_retention": 0.60,
+        "weak_min_development_recall_retention": 0.40,
+        "max_hard_negative_symbol_pass_rate": 0.10,
+        "provenance": "Inherited unchanged from IPR-VALIDATION-SUCCESS-CRITERIA-2026-09-08-A, frozen before 2025 was opened.",
+        "note": "No relaxation, tightening, or 2025-based recalibration is permitted for the official 2026 classification."
+    },
+    "scoreability_policy": {
+        "classification_role": "diagnostic_only",
+        "can_change_official_pass_weak_fail": False,
+        "required_reporting": ["positive_events_raw_selected", "positive_events_scoreable", "positive_scoreability_rate"],
+        "comparisons": ["2025", "Development where available"],
+        "no_numeric_cutoff": True,
+        "reason": "The pre-2025 protocol required explicit scoreability reporting but did not precommit a scoreability failure threshold; inventing one after seeing 2025 would add post-validation flexibility."
+    },
+    "classification": {
+        "role_pass": "positive pass rate >=60% of frozen Development positive pass rate AND hard-negative symbol pass rate <=10%.",
+        "role_weak_pass": "positive pass rate >=40% but <60% of frozen Development positive pass rate AND hard-negative symbol pass rate <=10%.",
+        "role_fail": "positive pass rate <40% of frozen Development positive pass rate OR hard-negative symbol pass rate >10%.",
+        "overall_pass": "Both critical roles (early_core and confirmation) are PASS.",
+        "overall_weak_pass": "Neither critical role is FAIL and at least one critical role is WEAK_PASS.",
+        "overall_fail": "Either critical role is FAIL.",
+        "severity_quality": "Diagnostic/quality role; cannot rescue or veto the official Core Holdout classification by itself."
+    },
+    "guardrails": {
+        "no_model_change": True, "no_threshold_change": True, "no_feature_change": True, "no_anchor_change": True, "no_direction_change": True, "no_weight_change": True,
+        "no_2025_recalibration": True, "no_2026_driven_reinterpretation": True, "no_2026_read_during_lock": True,
+        "after_2026": "STOP_REVIEW regardless of PASS/WEAK_PASS/FAIL; no live-bot or profitability claim follows automatically."
+    },
+    "safety": {"alpaca_requests": False, "holdout_2026_read": False, "orders_enabled": False, "alerts_enabled": False}
+}
+HOLDOUT_SUCCESS_CRITERIA_SHA256 = hashlib.sha256(json.dumps(HOLDOUT_SUCCESS_CRITERIA_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 
@@ -1732,6 +1778,7 @@ class IndependentPriorityRadar:
         self.validation_criteria_state: dict[str, Any] = {"status":"IDLE","phase":"NOT_STARTED","message":"Validation Success Criteria Freeze has not started","criteria_id":VALIDATION_SUCCESS_CRITERIA_SPEC["criteria_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
         self.validation_2025_lock=threading.RLock(); self.validation_2025_thread=None; self.validation_2025_stop_event=threading.Event()
         self.validation_2025_state={"status":"IDLE","phase":"NOT_STARTED","message":"2025 Validation not started","validation_id":VALIDATION_2025_SPEC["validation_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
+        self.holdout_criteria_state={"status":"IDLE","phase":"NOT_STARTED","message":"2026 Holdout Success Criteria Freeze has not started","criteria_id":HOLDOUT_SUCCESS_CRITERIA_SPEC["criteria_id"],"holdout_2026_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -3595,6 +3642,50 @@ class IndependentPriorityRadar:
         self.redis.set_json(self.validation_criteria_key("report"),report)
         state={"status":"COMPLETED","phase":"CRITERIA_FROZEN_STOP_REVIEW","message":"Validation success criteria frozen; STOP and review before opening 2025","criteria_id":VALIDATION_SUCCESS_CRITERIA_SPEC["criteria_id"],"criteria_sha256":VALIDATION_SUCCESS_CRITERIA_SHA256,"criteria_artifact_sha256":report["criteria_artifact_sha256"],"validation_2025_opened":False,"holdout_2026_opened":False,"validation_allowed":False,"updated_at":iso()}
         self.validation_criteria_state=state; self.redis.set_json(self.validation_criteria_key("status"),state)
+        return True,"frozen"
+
+    def holdout_criteria_key(self, suffix: str) -> str:
+        return self.key(f"holdout_success_criteria:v1:{suffix}")
+
+    def _holdout_criteria_gate(self) -> tuple[bool,str]:
+        if not self.redis.configured: return False,"Redis is required"
+        model=self.redis.get_json(self.feature_scoring_freeze_key("report"),None)
+        precrit=self.redis.get_json(self.validation_criteria_key("report"),None)
+        val=self.redis.get_json(self.validation_2025_key("report"),None)
+        if not isinstance(model,dict) or str(model.get("frozen_model_sha256"))!=HOLDOUT_SUCCESS_CRITERIA_SPEC["required_frozen_model_sha256"]: return False,"Frozen model SHA256 mismatch"
+        if not isinstance(precrit,dict) or str(precrit.get("criteria_sha256"))!=HOLDOUT_SUCCESS_CRITERIA_SPEC["required_pre2025_criteria_sha256"]: return False,"Pre-2025 criteria SHA256 mismatch"
+        if not isinstance(val,dict) or val.get("status")!="COMPLETED" or val.get("phase")!="VALIDATION_2025_STOP_REVIEW": return False,"Completed 2025 Validation STOP_REVIEW report required"
+        if str(val.get("validation_result_sha256"))!=HOLDOUT_SUCCESS_CRITERIA_SPEC["required_validation_result_sha256"]: return False,"2025 Validation result SHA256 mismatch"
+        if str(val.get("overall_classification"))!=HOLDOUT_SUCCESS_CRITERIA_SPEC["required_validation_overall_classification"]: return False,"2025 Validation classification mismatch"
+        if val.get("holdout_2026_opened") is not False or val.get("holdout_2026_read") is not False: return False,"2026 contamination flag"
+        return True,"allowed"
+
+    def freeze_holdout_success_criteria(self) -> tuple[bool,str]:
+        allowed,reason=self._holdout_criteria_gate()
+        if not allowed:return False,reason
+        model=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}
+        val=self.redis.get_json(self.validation_2025_key("report"),{}) or {}
+        cal=model.get("calibration") or {}; vr=val.get("role_results") or {}; derived={}
+        pr=HOLDOUT_SUCCESS_CRITERIA_SPEC["performance_rules"]
+        for role in ("early_core","confirmation","severity_quality"):
+            dev=float((cal.get(role) or {}).get("development_positive_event_pass_rate"))
+            rv=vr.get(role) or {}; raw=int(rv.get("positive_events_raw_selected") or 0); scored=int(rv.get("positive_events_scoreable") or 0)
+            if raw<=0: return False,f"Missing 2025 positive scoreability denominator for {role}"
+            base=scored/raw
+            derived[role]={
+                "critical": role in HOLDOUT_SUCCESS_CRITERIA_SPEC["critical_roles"],
+                "development_positive_event_pass_rate":dev,
+                "pass_min_2026_positive_event_pass_rate":dev*float(pr["pass_min_development_recall_retention"]),
+                "weak_min_2026_positive_event_pass_rate":dev*float(pr["weak_min_development_recall_retention"]),
+                "max_2026_hard_negative_symbol_pass_rate":float(pr["max_hard_negative_symbol_pass_rate"]),
+                "validation_2025_positive_scoreability_diagnostic":base,
+                "scoreability_cutoff_for_official_classification":None,
+            }
+        report={"version":VERSION,"build":BUILD,"criteria_id":HOLDOUT_SUCCESS_CRITERIA_SPEC["criteria_id"],"criteria_sha256":HOLDOUT_SUCCESS_CRITERIA_SHA256,"status":"COMPLETED","phase":"HOLDOUT_CRITERIA_FROZEN_STOP_REVIEW","scope":"Frozen before any 2026 read","source_frozen_model_sha256":model.get("frozen_model_sha256"),"source_validation_result_sha256":val.get("validation_result_sha256"),"criteria":HOLDOUT_SUCCESS_CRITERIA_SPEC,"derived_numeric_thresholds":derived,"alpaca_requests_made":0,"holdout_2026_opened":False,"holdout_2026_read":False,"holdout_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+        canonical=dict(report);canonical.pop("completed_at",None);report["criteria_artifact_sha256"]=hashlib.sha256(json.dumps(canonical,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        self.redis.set_json(self.holdout_criteria_key("report"),report)
+        state={"status":"COMPLETED","phase":"HOLDOUT_CRITERIA_FROZEN_STOP_REVIEW","message":"2026 Holdout protocol locked; original pre-2025 criteria inherited; scoreability diagnostic only; STOP and review before opening 2026","criteria_id":HOLDOUT_SUCCESS_CRITERIA_SPEC["criteria_id"],"criteria_sha256":HOLDOUT_SUCCESS_CRITERIA_SHA256,"criteria_artifact_sha256":report["criteria_artifact_sha256"],"holdout_2026_opened":False,"holdout_2026_read":False,"holdout_allowed":False,"updated_at":iso()}
+        self.holdout_criteria_state=state;self.redis.set_json(self.holdout_criteria_key("status"),state)
         return True,"frozen"
 
     def start_phase0b_full(self) -> tuple[bool,str]:
@@ -7651,6 +7742,24 @@ def validation_success_criteria_status():
 def validation_success_criteria_result():
     report=radar.redis.get_json(radar.validation_criteria_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/validation-success-criteria/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
+    return jsonify(report)
+
+@app.get("/research/holdout-success-criteria/protocol")
+def holdout_success_criteria_protocol():
+    allowed,reason=radar._holdout_criteria_gate();return jsonify({"version":VERSION,"build":BUILD,"criteria_spec":HOLDOUT_SUCCESS_CRITERIA_SPEC,"criteria_sha256":HOLDOUT_SUCCESS_CRITERIA_SHA256,"gate_allowed":allowed,"gate_reason":reason,"holdout_2026_opened":False,"holdout_2026_read":False})
+
+@app.get("/research/holdout-success-criteria/start")
+def holdout_success_criteria_start():
+    ok,message=radar.freeze_holdout_success_criteria();return jsonify({"ok":ok,"status":message,"status_url":"/research/holdout-success-criteria/status","result_url":"/research/holdout-success-criteria/result","holdout_2026_opened":False,"holdout_2026_read":False}),(200 if ok else 409)
+
+@app.get("/research/holdout-success-criteria/status")
+def holdout_success_criteria_status():
+    stored=radar.redis.get_json(radar.holdout_criteria_key("status"),None) if radar.redis.configured else None;return jsonify(dict(stored or radar.holdout_criteria_state))
+
+@app.get("/research/holdout-success-criteria/result")
+def holdout_success_criteria_result():
+    report=radar.redis.get_json(radar.holdout_criteria_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/holdout-success-criteria/status","holdout_2026_opened":False,"holdout_2026_read":False}),202
     return jsonify(report)
 
 @app.get("/phase0/phase0b-full")
