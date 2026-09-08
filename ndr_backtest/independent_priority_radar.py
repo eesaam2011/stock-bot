@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.21"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-FINAL-FROZEN-HOLDOUT-2026"
+VERSION = "1.7.22"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-CAUSAL-TRADING-TRANSLATION-PROTOCOL-FREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -506,6 +506,67 @@ FINAL_HOLDOUT_2026_SPEC = {
     },
 }
 FINAL_HOLDOUT_2026_SHA256 = hashlib.sha256(json.dumps(FINAL_HOLDOUT_2026_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+CAUSAL_TRADING_TRANSLATION_SPEC = {
+    "translation_id": "IPR-CAUSAL-TRADING-TRANSLATION-2026-09-08-A",
+    "purpose": "Freeze the diagnostic causal trading-translation experiment before inspecting any post-signal MFE/MAE or entry/exit profitability results.",
+    "required_final_holdout_result_sha256": "cdea1fcb18090f0384e0d68ea4558f86577646535f27e35264160bfa6dcbbaea",
+    "required_frozen_model_sha256": "c543ed4320a9cbc7eecef311675fb8955642d9bcb81e31fe7888728ee1c5c7c3",
+    "source_model_status": "Final 2026 Holdout PASS; model remains immutable.",
+    "scope": "Diagnostic replay only. No model/feature/anchor/weight/threshold tuning. No live alerts, orders, stop optimization, target optimization, or profitability claim.",
+    "signal_definition": {
+        "primary_role": "early_core",
+        "rule": "First causal completed 5-minute evaluation timestamp at which the frozen Early Core score is scoreable (>=50% frozen role weight observed) and reaches/exceeds its frozen threshold 0.5205528990060366.",
+        "clock": "America/New_York trading-cycle timeline using only information completed at or before each evaluation timestamp.",
+        "evaluation_grid": "Completed 5-minute boundaries only; never use future/incomplete bars.",
+        "confirmation": "Record first later causal completed 5-minute timestamp at which frozen Confirmation score reaches/exceeds 0.872042442164783; diagnostic only and must not redefine the primary Early Core signal.",
+        "event_limit": "At most one first Early Core signal per verified explosion event.",
+    },
+    "entry_reference": {
+        "diagnostic_price": "Close of the completed 5-minute bar that first satisfies Early Core; no assumption of fill at an earlier intrabar price.",
+        "not_a_trade_fill_claim": True,
+    },
+    "pre_signal_diagnostics": [
+        "event baseline/running-min reference price used by Phase0B where available",
+        "percent move already realized by first Early Core signal",
+        "minutes from first Early Core signal to Phase0B +20% confirmation timestamp",
+        "trading phase at first signal",
+    ],
+    "forward_outcomes": {
+        "horizons_minutes": [5, 15, 30, 60, 120],
+        "also_to_end_of_trading_cycle": True,
+        "metrics": ["MFE_pct_from_signal_close", "MAE_pct_from_signal_close", "close_return_pct", "time_to_MFE_minutes"],
+        "price_source": "historical one-minute bars after the completed signal bar only",
+        "no_stop_or_target_optimization": True,
+    },
+    "reporting": {
+        "stratify_by_year": [2019,2020,2021,2022,2023,2024,2025,2026],
+        "stratify_by_signal_phase": True,
+        "report_scoreability_and_signal_coverage": True,
+        "report_medians_and_distribution_quantiles": [0.10,0.25,0.50,0.75,0.90],
+        "report_fraction_signal_before_plus20_confirmation": True,
+        "report_fraction_with_MFE_ge": [0.05,0.10,0.20],
+        "hard_negative_same_signal_rule": True,
+        "hard_negative_forward_outcomes_same_horizons": True,
+    },
+    "interpretation_guardrails": {
+        "diagnostic_stage_only": True,
+        "no_entry_stop_exit_rules_selected_from_this_freeze": True,
+        "no_expectancy_or_profit_factor_claim_in_this_stage": True,
+        "no_model_mutation": True,
+        "no_threshold_recalibration": True,
+        "no_feature_change": True,
+        "no_anchor_change": True,
+        "no_direction_change": True,
+        "no_weight_change": True,
+        "2026_is_no_longer_an_untouched_model_holdout": True,
+        "translation_protocol_frozen_before_post_signal_path_inspection": True,
+        "stop_and_review_after_diagnostic_replay": True,
+    },
+    "safety": {"alpaca_requests_during_freeze": False, "orders_enabled": False, "alerts_enabled": False},
+}
+CAUSAL_TRADING_TRANSLATION_SHA256 = hashlib.sha256(json.dumps(CAUSAL_TRADING_TRANSLATION_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 
@@ -3951,6 +4012,25 @@ class IndependentPriorityRadar:
             if self.final_holdout_2026_thread and self.final_holdout_2026_thread.is_alive():return False,"already_running"
             self.final_holdout_2026_thread=threading.Thread(target=self.final_frozen_holdout_2026_loop,name="final-frozen-holdout-2026",daemon=True);self.final_holdout_2026_thread.start()
         return True,"started"
+
+    def causal_translation_protocol_key(self,suffix): return self.key(f"causal_trading_translation_protocol:v1:{suffix}")
+    def _causal_translation_protocol_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        h=self.redis.get_json(self.final_holdout_2026_key("report"),None)
+        if not isinstance(h,dict) or h.get("status")!="COMPLETED" or h.get("phase")!="FINAL_HOLDOUT_2026_STOP_REVIEW":return False,"Completed Final 2026 Holdout STOP_REVIEW required"
+        if h.get("overall_classification")!="PASS" or h.get("holdout_result_sha256")!=CAUSAL_TRADING_TRANSLATION_SPEC["required_final_holdout_result_sha256"]:return False,"Final Holdout result provenance mismatch"
+        if h.get("source_frozen_model_sha256")!=CAUSAL_TRADING_TRANSLATION_SPEC["required_frozen_model_sha256"]:return False,"Frozen model provenance mismatch"
+        return True,"allowed"
+    def freeze_causal_translation_protocol(self):
+        ok,why=self._causal_translation_protocol_gate()
+        if not ok:return False,why
+        old=self.redis.get_json(self.causal_translation_protocol_key("report"),None)
+        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"already_frozen"
+        report={"version":VERSION,"build":BUILD,"translation_id":CAUSAL_TRADING_TRANSLATION_SPEC["translation_id"],"translation_spec":CAUSAL_TRADING_TRANSLATION_SPEC,"translation_spec_sha256":CAUSAL_TRADING_TRANSLATION_SHA256,"status":"COMPLETED","phase":"CAUSAL_TRANSLATION_PROTOCOL_FROZEN_STOP_REVIEW","source_final_holdout_result_sha256":CAUSAL_TRADING_TRANSLATION_SPEC["required_final_holdout_result_sha256"],"source_frozen_model_sha256":CAUSAL_TRADING_TRANSLATION_SPEC["required_frozen_model_sha256"],"post_signal_paths_read":False,"alpaca_requests_made":0,"model_mutated":False,"thresholds_recalibrated":False,"stop_and_review_required":True,"completed_at":iso()}
+        canon=dict(report);canon.pop("completed_at");report["translation_protocol_artifact_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        self.redis.set_json(self.causal_translation_protocol_key("report"),report)
+        self.redis.set_json(self.causal_translation_protocol_key("status"),{"status":"COMPLETED","phase":"CAUSAL_TRANSLATION_PROTOCOL_FROZEN_STOP_REVIEW","message":"Causal Trading Translation diagnostic protocol frozen; no post-signal paths read; STOP REVIEW before replay","translation_id":CAUSAL_TRADING_TRANSLATION_SPEC["translation_id"],"post_signal_paths_read":False,"updated_at":iso()})
+        return True,"frozen"
 
     def phase0a_key(self, suffix: str) -> str:
         return self.key(f"phase0a:v1:{suffix}")
@@ -7903,6 +7983,21 @@ def validation_success_criteria_result():
     report=radar.redis.get_json(radar.validation_criteria_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/validation-success-criteria/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
     return jsonify(report)
+
+@app.get("/research/causal-trading-translation/protocol")
+def causal_trading_translation_protocol():
+    allowed,reason=radar._causal_translation_protocol_gate();return jsonify({"version":VERSION,"build":BUILD,"translation_spec":CAUSAL_TRADING_TRANSLATION_SPEC,"translation_spec_sha256":CAUSAL_TRADING_TRANSLATION_SHA256,"gate_allowed":allowed,"gate_reason":reason,"post_signal_paths_read":False})
+@app.get("/research/causal-trading-translation/start")
+def causal_trading_translation_start():
+    ok,why=radar.freeze_causal_translation_protocol();return jsonify({"ok":ok,"status":why,"status_url":"/research/causal-trading-translation/status","result_url":"/research/causal-trading-translation/result","post_signal_paths_read":False}),(200 if ok else 409)
+@app.get("/research/causal-trading-translation/status")
+def causal_trading_translation_status():
+    x=radar.redis.get_json(radar.causal_translation_protocol_key("status"),None) if radar.redis.configured else None;return jsonify(x or {"status":"IDLE","phase":"NOT_STARTED","translation_id":CAUSAL_TRADING_TRANSLATION_SPEC["translation_id"],"post_signal_paths_read":False})
+@app.get("/research/causal-trading-translation/result")
+def causal_trading_translation_result():
+    x=radar.redis.get_json(radar.causal_translation_protocol_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/causal-trading-translation/status"}),202
+    return jsonify(x)
 
 @app.get("/research/final-frozen-holdout-2026/protocol")
 def final_frozen_holdout_2026_protocol():
