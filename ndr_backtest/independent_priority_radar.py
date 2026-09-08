@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.23"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-CAUSAL-DIAGNOSTIC-REPLAY"
+VERSION = "1.7.23-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-CAUSAL-DIAGNOSTIC-REPLAY-GATE-FIX"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -7156,6 +7156,145 @@ class IndependentPriorityRadar:
             logging.exception("Radar startup failed")
             self.save_state(status="ERROR", message="Startup failed", last_error=f"{type(exc).__name__}: {exc}")
 
+    def causal_diagnostic_replay_key(self,suffix): return self.key(f"causal_diagnostic_replay:v1:{suffix}")
+    def _set_causal_diagnostic_replay_state(self,**u):
+        with self.causal_diagnostic_replay_lock:
+            self.causal_diagnostic_replay_state.update(u);self.causal_diagnostic_replay_state["updated_at"]=iso();x=dict(self.causal_diagnostic_replay_state)
+        if self.redis.configured:self.redis.set_json(self.causal_diagnostic_replay_key("status"),x)
+    def _causal_diagnostic_replay_gate(self):
+        if not (self.redis.configured and self.alpaca.configured):return False,"Redis and Alpaca are required"
+        pr=self.redis.get_json(self.causal_translation_protocol_key("report"),None)
+        if not isinstance(pr,dict) or pr.get("status")!="COMPLETED" or pr.get("phase")!="CAUSAL_TRANSLATION_PROTOCOL_FROZEN_STOP_REVIEW":return False,"Frozen v1.7.22 translation protocol required"
+        if pr.get("translation_spec_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_translation_spec_sha256"] or pr.get("translation_protocol_artifact_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_translation_protocol_artifact_sha256"]:return False,"Translation protocol SHA mismatch"
+        if pr.get("source_frozen_model_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_frozen_model_sha256"]:return False,"Frozen model SHA mismatch"
+        old=self.redis.get_json(self.causal_diagnostic_replay_key("report"),None)
+        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"completed_replay_exists_rerun_prohibited"
+        return True,"allowed"
+    def _ctr_fetch_1m(self,symbols,target,start,end):
+        merged={sym:{} for sym in symbols}
+        for off in range(0,len(symbols),200):
+            batch=symbols[off:off+200];sip=self.alpaca.bars(batch,start,end,feed="sip",adjustment="raw",timeframe="1Min")
+            boats={} if target < date.fromisoformat(HISTORICAL_CENSUS_SPEC["boats_launch_date"]) else self.alpaca.bars(batch,start,end,feed="boats",adjustment="raw",timeframe="1Min")
+            for sym in batch:
+                d=merged[sym]
+                for row in boats.get(sym,[]) or []:
+                    ts=str(row.get("t") or "")
+                    if ts and self._probe_session(ts,target)=="Overnight":d[ts]={**row,"source":"boats","session":"Overnight"}
+                for row in sip.get(sym,[]) or []:
+                    ts=str(row.get("t") or "")
+                    if ts:d[ts]={**row,"source":"sip","session":self._probe_session(ts,target)}
+        return {sym:[d[k] for k in sorted(d)] for sym,d in merged.items()}
+    @staticmethod
+    def _ctr_score_at(rows,eval_dt,defs):
+        num=den=0.0
+        for d in defs:
+            f=IndependentPriorityRadar._fd_features(rows,eval_dt-timedelta(minutes=int(d["anchor_minutes"])))
+            v=(f or {}).get(d["feature"])
+            if not isinstance(v,(int,float)) or not math.isfinite(v):continue
+            z=d["direction"]*(float(v)-d["hard_negative_center"])/d["pooled_symbol_sd"];num+=d["weight"]*max(-3,min(3,z));den+=d["weight"]
+        return (num/den,den) if den>=.5 else (None,den)
+    def _ctr_first_signal(self,rows,early_defs,early_thr,confirm_defs,confirm_thr):
+        parsed=[]
+        for r in rows:
+            try:ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"));c=float(r.get("c"))
+            except:continue
+            if c>0:parsed.append((ts,c))
+        parsed.sort(); first=None;confirm=None;early_scoreable=False;confirmation_scoreable=False
+        for ts,c in parsed:
+            ev=ts+timedelta(minutes=5);sc,den=self._ctr_score_at(rows,ev,early_defs)
+            if sc is not None:early_scoreable=True
+            if first is None and sc is not None and sc>=early_thr:first=(ev,c,sc,den)
+            if first is not None and confirm is None and ev>=first[0]:
+                cs,cd=self._ctr_score_at(rows,ev,confirm_defs)
+                if cs is not None:confirmation_scoreable=True
+                if cs is not None and cs>=confirm_thr:confirm=(ev,cs,cd)
+            if first is not None and confirm is not None:break
+        return first,confirm,early_scoreable,confirmation_scoreable
+    @staticmethod
+    def _ctr_forward(rows,signal_dt,signal_close,horizons):
+        pts=[]
+        for r in rows:
+            try:ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"));h=float(r.get("h"));l=float(r.get("l"));c=float(r.get("c"))
+            except:continue
+            if ts>=signal_dt and min(h,l,c)>0:pts.append((ts,h,l,c))
+        pts.sort();out={}
+        for hm in horizons:
+            end=signal_dt+timedelta(minutes=hm);a=[x for x in pts if x[0]<end]
+            if not a:out[str(hm)]=None;continue
+            im=max(range(len(a)),key=lambda i:a[i][1]);out[str(hm)]={"MFE_pct_from_signal_close":(a[im][1]/signal_close-1)*100,"MAE_pct_from_signal_close":(min(x[2] for x in a)/signal_close-1)*100,"close_return_pct":(a[-1][3]/signal_close-1)*100,"time_to_MFE_minutes":max(0.0,(a[im][0]-signal_dt).total_seconds()/60.0)}
+        if pts:
+            im=max(range(len(pts)),key=lambda i:pts[i][1]);out["end_of_trading_cycle"]={"MFE_pct_from_signal_close":(pts[im][1]/signal_close-1)*100,"MAE_pct_from_signal_close":(min(x[2] for x in pts)/signal_close-1)*100,"close_return_pct":(pts[-1][3]/signal_close-1)*100,"time_to_MFE_minutes":max(0.0,(pts[im][0]-signal_dt).total_seconds()/60.0)}
+        else:out["end_of_trading_cycle"]=None
+        return out
+    @staticmethod
+    def _ctr_dist(vals):
+        a=np.asarray([float(x) for x in vals if isinstance(x,(int,float)) and math.isfinite(x)],dtype=float)
+        if not len(a):return {"n":0,"mean":None,"quantiles":{}}
+        qs=[.1,.25,.5,.75,.9];return {"n":len(a),"mean":float(a.mean()),"quantiles":{str(q):float(np.quantile(a,q)) for q in qs}}
+    def causal_diagnostic_replay_loop(self):
+        try:
+            pr=self.redis.get_json(self.causal_translation_protocol_key("report"),{}) or {};m=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}
+            roles=m.get("roles") or {};cal=m.get("calibration") or {};early=roles.get("early_core") or [];conf=roles.get("confirmation") or []
+            if m.get("frozen_model_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_frozen_model_sha256"]:raise RuntimeError("Frozen model mismatch at runtime")
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.phase0b_full_key("completed_sessions"),[]) or []) if "2019-"<=str(x)<="2026-08-31")
+            done=set(self.redis.get_json(self.causal_diagnostic_replay_key("completed_sessions"),[]) or []);self.causal_diagnostic_replay_stop_event.clear()
+            self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_REPLAY",message="Frozen causal diagnostic replay running",post_signal_paths_read=True,total_sessions=len(sessions),sessions_scanned=len(done))
+            for si,sess in enumerate(sessions,1):
+                if sess in done:continue
+                if self.causal_diagnostic_replay_stop_event.is_set():self._set_causal_diagnostic_replay_state(status="PAUSED",phase="CAUSAL_DIAGNOSTIC_REPLAY",post_signal_paths_read=True,total_sessions=len(sessions),sessions_scanned=len(done));return
+                target=date.fromisoformat(sess);p0=self.redis.get_json(self.phase0b_full_key(f"results:{sess}"),None)
+                if p0 is None:raise RuntimeError(f"Missing Phase0B {sess}")
+                coarse={str(x.get("symbol") or "").upper():x for x in (self.redis.get_json(self.historical_census_key(f"candidates:{sess}"),[]) or [])}
+                pos=[x for x in p0 if x.get("classification")=="verified"];fail=[x for x in p0 if x.get("classification")=="failed"];fctx=[]
+                for r in fail:
+                    sym=str(r.get("symbol") or "").upper();cut=self._fd_coarse_cutoff(coarse.get(sym,{}))
+                    if cut:fctx.append((r,sym,cut,self._fd_phase(cut,target),self._fd_price_band(r.get("t1_low"))))
+                sel=[]
+                for pi,r in enumerate(pos):
+                    sym=str(r.get("symbol") or "").upper();phase=self._fd_phase(str(r.get("t2") or ""),target);pb=self._fd_price_band(r.get("t1_low"));exact=[x for x in fctx if x[3]==phase and x[4]==pb];pool=exact or [x for x in fctx if x[3]==phase] or fctx;base=int(hashlib.sha256(f"{sess}|{sym}|{r.get('t2')}".encode()).hexdigest()[:12],16);match=hashlib.sha256(f"{sess}|{sym}|{r.get('t2')}|{pi}".encode()).hexdigest()[:20];sel.append(("positive",r,sym,match))
+                    for j in range(min(3,len(pool))):x=pool[(base+j*7919)%len(pool)];sel.append(("hard_negative",x[0],x[1],match))
+                syms=sorted({x[2] for x in sel});start,end=self._probe_cycle_bounds(target);rows5=self._fd_fetch_session_rows(syms,target,start,end) if syms else {};signals=[];session_stats={"positive_selected":sum(1 for x in sel if x[0]=="positive"),"hard_negative_selected":sum(1 for x in sel if x[0]=="hard_negative"),"positive_scoreable":0,"hard_negative_scoreable":0}
+                for cls,r,sym,match in sel:
+                    first,cf,esc,csc=self._ctr_first_signal(rows5.get(sym,[]),early,float(cal["early_core"]["frozen_threshold"]),conf,float(cal["confirmation"]["frozen_threshold"]))
+                    if esc:session_stats[f"{cls}_scoreable"]+=1
+                    if not first:continue
+                    edt,price,score,den=first;signals.append({"class":cls,"symbol":sym,"match_id":match,"signal_ts":edt.isoformat().replace("+00:00","Z"),"signal_close":price,"early_core_score":score,"early_core_weight_observed":den,"confirmation_ts":cf[0].isoformat().replace("+00:00","Z") if cf else None,"confirmation_score":cf[1] if cf else None,"phase":self._probe_session(edt.isoformat(),target),"event_t2":r.get("t2"),"event_baseline":r.get("t1_low")})
+                sigsyms=sorted({x["symbol"] for x in signals});rows1=self._ctr_fetch_1m(sigsyms,target,start,end) if sigsyms else {}
+                for x in signals:
+                    sd=datetime.fromisoformat(x["signal_ts"].replace("Z","+00:00"));x["forward"]=self._ctr_forward(rows1.get(x["symbol"],[]),sd,float(x["signal_close"]),CAUSAL_DIAGNOSTIC_REPLAY_SPEC["horizons_minutes"])
+                    b=x.get("event_baseline");x["percent_move_already_realized"]=(float(x["signal_close"])/float(b)-1)*100 if isinstance(b,(int,float)) and float(b)>0 else None
+                    try:t2=datetime.fromisoformat(str(x.get("event_t2") or "").replace("Z","+00:00"));x["minutes_signal_to_plus20_confirmation"]=(t2-sd).total_seconds()/60.0
+                    except:x["minutes_signal_to_plus20_confirmation"]=None
+                    x["signal_before_plus20_confirmation"]=bool(isinstance(x["minutes_signal_to_plus20_confirmation"],(int,float)) and x["minutes_signal_to_plus20_confirmation"]>=0) if x["class"]=="positive" else None
+                self.redis.set_json(self.causal_diagnostic_replay_key(f"results:{sess}"),signals);self.redis.set_json(self.causal_diagnostic_replay_key(f"stats:{sess}"),session_stats);done.add(sess);self.redis.set_json(self.causal_diagnostic_replay_key("completed_sessions"),sorted(done))
+                if si==1 or si%20==0 or si==len(sessions):self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_REPLAY",message=f"Causal diagnostic replay {len(done)}/{len(sessions)}",post_signal_paths_read=True,total_sessions=len(sessions),sessions_scanned=len(done),current_session=sess)
+            allr=[]
+            for sess in sessions:allr.extend(self.redis.get_json(self.causal_diagnostic_replay_key(f"results:{sess}"),[]) or [])
+            def summarize(rows):
+                z={"signals":len(rows),"symbols":len({x["symbol"] for x in rows}),"percent_move_already_realized":self._ctr_dist([x.get("percent_move_already_realized") for x in rows]),"minutes_signal_to_plus20_confirmation":self._ctr_dist([x.get("minutes_signal_to_plus20_confirmation") for x in rows])}
+                if rows and rows[0].get("class")=="positive":z["fraction_signal_before_plus20_confirmation"]=sum(1 for x in rows if x.get("signal_before_plus20_confirmation"))/len(rows)
+                z["forward"]={}
+                for h in [str(x) for x in CAUSAL_DIAGNOSTIC_REPLAY_SPEC["horizons_minutes"]]+["end_of_trading_cycle"]:
+                    q=[x["forward"].get(h) for x in rows if (x.get("forward") or {}).get(h)];z["forward"][h]={m:self._ctr_dist([a.get(m) for a in q]) for m in CAUSAL_DIAGNOSTIC_REPLAY_SPEC["forward_metrics"]};z["forward"][h]["fraction_MFE_ge"]={str(t):sum(1 for a in q if a.get("MFE_pct_from_signal_close") is not None and a["MFE_pct_from_signal_close"]>=t*100)/len(q) if q else None for t in [.05,.1,.2]}
+                return z
+            byclass={c:summarize([x for x in allr if x["class"]==c]) for c in ["positive","hard_negative"]};byyear={};byphase={}
+            for y in range(2019,2027):byyear[str(y)]={c:summarize([x for x in allr if x["class"]==c and x["signal_ts"].startswith(str(y))]) for c in ["positive","hard_negative"]}
+            for ph in ["AH","Overnight","Premarket","Regular","Other"]:byphase[ph]={c:summarize([x for x in allr if x["class"]==c and x.get("phase")==ph]) for c in ["positive","hard_negative"]}
+            statrows=[self.redis.get_json(self.causal_diagnostic_replay_key(f"stats:{sess}"),{}) or {} for sess in sessions];rawpos=sum(int(x.get("positive_selected") or 0) for x in statrows);rawhard=sum(int(x.get("hard_negative_selected") or 0) for x in statrows);scorepos=sum(int(x.get("positive_scoreable") or 0) for x in statrows);scorehard=sum(int(x.get("hard_negative_scoreable") or 0) for x in statrows)
+            report={"version":VERSION,"build":BUILD,"replay_id":CAUSAL_DIAGNOSTIC_REPLAY_SPEC["replay_id"],"replay_spec_sha256":CAUSAL_DIAGNOSTIC_REPLAY_SHA256,"translation_spec_sha256":pr.get("translation_spec_sha256"),"translation_protocol_artifact_sha256":pr.get("translation_protocol_artifact_sha256"),"source_frozen_model_sha256":m.get("frozen_model_sha256"),"status":"COMPLETED","phase":"CAUSAL_DIAGNOSTIC_REPLAY_STOP_REVIEW","sessions":len(sessions),"first_session":sessions[0] if sessions else None,"last_session":sessions[-1] if sessions else None,"positive_verified_events":rawpos,"hard_negative_events_selected":rawhard,"positive_events_ever_scoreable":scorepos,"hard_negative_events_ever_scoreable":scorehard,"positive_scoreability_rate":scorepos/rawpos if rawpos else None,"hard_negative_scoreability_rate":scorehard/rawhard if rawhard else None,"positive_signal_events":byclass["positive"]["signals"],"hard_negative_signal_events":byclass["hard_negative"]["signals"],"positive_signal_coverage":byclass["positive"]["signals"]/rawpos if rawpos else None,"hard_negative_signal_coverage":byclass["hard_negative"]["signals"]/rawhard if rawhard else None,"summary_by_class":byclass,"summary_by_year":byyear,"summary_by_signal_phase":byphase,"post_signal_paths_read":True,"model_mutated":False,"thresholds_recalibrated":False,"entry_stop_exit_rules_selected":False,"expectancy_or_profit_factor_claim_allowed":False,"stop_and_review_required":True,"completed_at":iso()};canon=dict(report);canon.pop("completed_at");report["replay_result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.causal_diagnostic_replay_key("report"),report);self._set_causal_diagnostic_replay_state(status="COMPLETED",phase="CAUSAL_DIAGNOSTIC_REPLAY_STOP_REVIEW",message="Causal Diagnostic Replay completed; STOP REVIEW",post_signal_paths_read=True,sessions_scanned=len(sessions),total_sessions=len(sessions),stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Causal diagnostic replay failed");self._set_causal_diagnostic_replay_state(status="ERROR",phase="BLOCKED",message="Causal diagnostic replay failed closed",last_error=f"{type(e).__name__}: {e}",post_signal_paths_read=True)
+        finally:
+            with self.causal_diagnostic_replay_lock:self.causal_diagnostic_replay_thread=None
+    def start_causal_diagnostic_replay(self):
+        ok,why=self._causal_diagnostic_replay_gate()
+        if not ok:return False,why
+        with self.causal_diagnostic_replay_lock:
+            if self.causal_diagnostic_replay_thread and self.causal_diagnostic_replay_thread.is_alive():return False,"already_running"
+            self.causal_diagnostic_replay_thread=threading.Thread(target=self.causal_diagnostic_replay_loop,name="causal-diagnostic-replay",daemon=True);self.causal_diagnostic_replay_thread.start()
+        return True,"started"
+
+
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 app = Flask(__name__)
@@ -7999,143 +8138,6 @@ def validation_success_criteria_result():
     if not report:return jsonify({"result_ready":False,"status_url":"/research/validation-success-criteria/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
     return jsonify(report)
 
-    def causal_diagnostic_replay_key(self,suffix): return self.key(f"causal_diagnostic_replay:v1:{suffix}")
-    def _set_causal_diagnostic_replay_state(self,**u):
-        with self.causal_diagnostic_replay_lock:
-            self.causal_diagnostic_replay_state.update(u);self.causal_diagnostic_replay_state["updated_at"]=iso();x=dict(self.causal_diagnostic_replay_state)
-        if self.redis.configured:self.redis.set_json(self.causal_diagnostic_replay_key("status"),x)
-    def _causal_diagnostic_replay_gate(self):
-        if not (self.redis.configured and self.alpaca.configured):return False,"Redis and Alpaca are required"
-        pr=self.redis.get_json(self.causal_translation_protocol_key("report"),None)
-        if not isinstance(pr,dict) or pr.get("status")!="COMPLETED" or pr.get("phase")!="CAUSAL_TRANSLATION_PROTOCOL_FROZEN_STOP_REVIEW":return False,"Frozen v1.7.22 translation protocol required"
-        if pr.get("translation_spec_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_translation_spec_sha256"] or pr.get("translation_protocol_artifact_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_translation_protocol_artifact_sha256"]:return False,"Translation protocol SHA mismatch"
-        if pr.get("source_frozen_model_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_frozen_model_sha256"]:return False,"Frozen model SHA mismatch"
-        old=self.redis.get_json(self.causal_diagnostic_replay_key("report"),None)
-        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"completed_replay_exists_rerun_prohibited"
-        return True,"allowed"
-    def _ctr_fetch_1m(self,symbols,target,start,end):
-        merged={sym:{} for sym in symbols}
-        for off in range(0,len(symbols),200):
-            batch=symbols[off:off+200];sip=self.alpaca.bars(batch,start,end,feed="sip",adjustment="raw",timeframe="1Min")
-            boats={} if target < date.fromisoformat(HISTORICAL_CENSUS_SPEC["boats_launch_date"]) else self.alpaca.bars(batch,start,end,feed="boats",adjustment="raw",timeframe="1Min")
-            for sym in batch:
-                d=merged[sym]
-                for row in boats.get(sym,[]) or []:
-                    ts=str(row.get("t") or "")
-                    if ts and self._probe_session(ts,target)=="Overnight":d[ts]={**row,"source":"boats","session":"Overnight"}
-                for row in sip.get(sym,[]) or []:
-                    ts=str(row.get("t") or "")
-                    if ts:d[ts]={**row,"source":"sip","session":self._probe_session(ts,target)}
-        return {sym:[d[k] for k in sorted(d)] for sym,d in merged.items()}
-    @staticmethod
-    def _ctr_score_at(rows,eval_dt,defs):
-        num=den=0.0
-        for d in defs:
-            f=IndependentPriorityRadar._fd_features(rows,eval_dt-timedelta(minutes=int(d["anchor_minutes"])))
-            v=(f or {}).get(d["feature"])
-            if not isinstance(v,(int,float)) or not math.isfinite(v):continue
-            z=d["direction"]*(float(v)-d["hard_negative_center"])/d["pooled_symbol_sd"];num+=d["weight"]*max(-3,min(3,z));den+=d["weight"]
-        return (num/den,den) if den>=.5 else (None,den)
-    def _ctr_first_signal(self,rows,early_defs,early_thr,confirm_defs,confirm_thr):
-        parsed=[]
-        for r in rows:
-            try:ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"));c=float(r.get("c"))
-            except:continue
-            if c>0:parsed.append((ts,c))
-        parsed.sort(); first=None;confirm=None;early_scoreable=False;confirmation_scoreable=False
-        for ts,c in parsed:
-            ev=ts+timedelta(minutes=5);sc,den=self._ctr_score_at(rows,ev,early_defs)
-            if sc is not None:early_scoreable=True
-            if first is None and sc is not None and sc>=early_thr:first=(ev,c,sc,den)
-            if first is not None and confirm is None and ev>=first[0]:
-                cs,cd=self._ctr_score_at(rows,ev,confirm_defs)
-                if cs is not None:confirmation_scoreable=True
-                if cs is not None and cs>=confirm_thr:confirm=(ev,cs,cd)
-            if first is not None and confirm is not None:break
-        return first,confirm,early_scoreable,confirmation_scoreable
-    @staticmethod
-    def _ctr_forward(rows,signal_dt,signal_close,horizons):
-        pts=[]
-        for r in rows:
-            try:ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"));h=float(r.get("h"));l=float(r.get("l"));c=float(r.get("c"))
-            except:continue
-            if ts>=signal_dt and min(h,l,c)>0:pts.append((ts,h,l,c))
-        pts.sort();out={}
-        for hm in horizons:
-            end=signal_dt+timedelta(minutes=hm);a=[x for x in pts if x[0]<end]
-            if not a:out[str(hm)]=None;continue
-            im=max(range(len(a)),key=lambda i:a[i][1]);out[str(hm)]={"MFE_pct_from_signal_close":(a[im][1]/signal_close-1)*100,"MAE_pct_from_signal_close":(min(x[2] for x in a)/signal_close-1)*100,"close_return_pct":(a[-1][3]/signal_close-1)*100,"time_to_MFE_minutes":max(0.0,(a[im][0]-signal_dt).total_seconds()/60.0)}
-        if pts:
-            im=max(range(len(pts)),key=lambda i:pts[i][1]);out["end_of_trading_cycle"]={"MFE_pct_from_signal_close":(pts[im][1]/signal_close-1)*100,"MAE_pct_from_signal_close":(min(x[2] for x in pts)/signal_close-1)*100,"close_return_pct":(pts[-1][3]/signal_close-1)*100,"time_to_MFE_minutes":max(0.0,(pts[im][0]-signal_dt).total_seconds()/60.0)}
-        else:out["end_of_trading_cycle"]=None
-        return out
-    @staticmethod
-    def _ctr_dist(vals):
-        a=np.asarray([float(x) for x in vals if isinstance(x,(int,float)) and math.isfinite(x)],dtype=float)
-        if not len(a):return {"n":0,"mean":None,"quantiles":{}}
-        qs=[.1,.25,.5,.75,.9];return {"n":len(a),"mean":float(a.mean()),"quantiles":{str(q):float(np.quantile(a,q)) for q in qs}}
-    def causal_diagnostic_replay_loop(self):
-        try:
-            pr=self.redis.get_json(self.causal_translation_protocol_key("report"),{}) or {};m=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}
-            roles=m.get("roles") or {};cal=m.get("calibration") or {};early=roles.get("early_core") or [];conf=roles.get("confirmation") or []
-            if m.get("frozen_model_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_frozen_model_sha256"]:raise RuntimeError("Frozen model mismatch at runtime")
-            sessions=sorted(str(x) for x in (self.redis.get_json(self.phase0b_full_key("completed_sessions"),[]) or []) if "2019-"<=str(x)<="2026-08-31")
-            done=set(self.redis.get_json(self.causal_diagnostic_replay_key("completed_sessions"),[]) or []);self.causal_diagnostic_replay_stop_event.clear()
-            self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_REPLAY",message="Frozen causal diagnostic replay running",post_signal_paths_read=True,total_sessions=len(sessions),sessions_scanned=len(done))
-            for si,sess in enumerate(sessions,1):
-                if sess in done:continue
-                if self.causal_diagnostic_replay_stop_event.is_set():self._set_causal_diagnostic_replay_state(status="PAUSED",phase="CAUSAL_DIAGNOSTIC_REPLAY",post_signal_paths_read=True,total_sessions=len(sessions),sessions_scanned=len(done));return
-                target=date.fromisoformat(sess);p0=self.redis.get_json(self.phase0b_full_key(f"results:{sess}"),None)
-                if p0 is None:raise RuntimeError(f"Missing Phase0B {sess}")
-                coarse={str(x.get("symbol") or "").upper():x for x in (self.redis.get_json(self.historical_census_key(f"candidates:{sess}"),[]) or [])}
-                pos=[x for x in p0 if x.get("classification")=="verified"];fail=[x for x in p0 if x.get("classification")=="failed"];fctx=[]
-                for r in fail:
-                    sym=str(r.get("symbol") or "").upper();cut=self._fd_coarse_cutoff(coarse.get(sym,{}))
-                    if cut:fctx.append((r,sym,cut,self._fd_phase(cut,target),self._fd_price_band(r.get("t1_low"))))
-                sel=[]
-                for pi,r in enumerate(pos):
-                    sym=str(r.get("symbol") or "").upper();phase=self._fd_phase(str(r.get("t2") or ""),target);pb=self._fd_price_band(r.get("t1_low"));exact=[x for x in fctx if x[3]==phase and x[4]==pb];pool=exact or [x for x in fctx if x[3]==phase] or fctx;base=int(hashlib.sha256(f"{sess}|{sym}|{r.get('t2')}".encode()).hexdigest()[:12],16);match=hashlib.sha256(f"{sess}|{sym}|{r.get('t2')}|{pi}".encode()).hexdigest()[:20];sel.append(("positive",r,sym,match))
-                    for j in range(min(3,len(pool))):x=pool[(base+j*7919)%len(pool)];sel.append(("hard_negative",x[0],x[1],match))
-                syms=sorted({x[2] for x in sel});start,end=self._probe_cycle_bounds(target);rows5=self._fd_fetch_session_rows(syms,target,start,end) if syms else {};signals=[];session_stats={"positive_selected":sum(1 for x in sel if x[0]=="positive"),"hard_negative_selected":sum(1 for x in sel if x[0]=="hard_negative"),"positive_scoreable":0,"hard_negative_scoreable":0}
-                for cls,r,sym,match in sel:
-                    first,cf,esc,csc=self._ctr_first_signal(rows5.get(sym,[]),early,float(cal["early_core"]["frozen_threshold"]),conf,float(cal["confirmation"]["frozen_threshold"]))
-                    if esc:session_stats[f"{cls}_scoreable"]+=1
-                    if not first:continue
-                    edt,price,score,den=first;signals.append({"class":cls,"symbol":sym,"match_id":match,"signal_ts":edt.isoformat().replace("+00:00","Z"),"signal_close":price,"early_core_score":score,"early_core_weight_observed":den,"confirmation_ts":cf[0].isoformat().replace("+00:00","Z") if cf else None,"confirmation_score":cf[1] if cf else None,"phase":self._probe_session(edt.isoformat(),target),"event_t2":r.get("t2"),"event_baseline":r.get("t1_low")})
-                sigsyms=sorted({x["symbol"] for x in signals});rows1=self._ctr_fetch_1m(sigsyms,target,start,end) if sigsyms else {}
-                for x in signals:
-                    sd=datetime.fromisoformat(x["signal_ts"].replace("Z","+00:00"));x["forward"]=self._ctr_forward(rows1.get(x["symbol"],[]),sd,float(x["signal_close"]),CAUSAL_DIAGNOSTIC_REPLAY_SPEC["horizons_minutes"])
-                    b=x.get("event_baseline");x["percent_move_already_realized"]=(float(x["signal_close"])/float(b)-1)*100 if isinstance(b,(int,float)) and float(b)>0 else None
-                    try:t2=datetime.fromisoformat(str(x.get("event_t2") or "").replace("Z","+00:00"));x["minutes_signal_to_plus20_confirmation"]=(t2-sd).total_seconds()/60.0
-                    except:x["minutes_signal_to_plus20_confirmation"]=None
-                    x["signal_before_plus20_confirmation"]=bool(isinstance(x["minutes_signal_to_plus20_confirmation"],(int,float)) and x["minutes_signal_to_plus20_confirmation"]>=0) if x["class"]=="positive" else None
-                self.redis.set_json(self.causal_diagnostic_replay_key(f"results:{sess}"),signals);self.redis.set_json(self.causal_diagnostic_replay_key(f"stats:{sess}"),session_stats);done.add(sess);self.redis.set_json(self.causal_diagnostic_replay_key("completed_sessions"),sorted(done))
-                if si==1 or si%20==0 or si==len(sessions):self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_REPLAY",message=f"Causal diagnostic replay {len(done)}/{len(sessions)}",post_signal_paths_read=True,total_sessions=len(sessions),sessions_scanned=len(done),current_session=sess)
-            allr=[]
-            for sess in sessions:allr.extend(self.redis.get_json(self.causal_diagnostic_replay_key(f"results:{sess}"),[]) or [])
-            def summarize(rows):
-                z={"signals":len(rows),"symbols":len({x["symbol"] for x in rows}),"percent_move_already_realized":self._ctr_dist([x.get("percent_move_already_realized") for x in rows]),"minutes_signal_to_plus20_confirmation":self._ctr_dist([x.get("minutes_signal_to_plus20_confirmation") for x in rows])}
-                if rows and rows[0].get("class")=="positive":z["fraction_signal_before_plus20_confirmation"]=sum(1 for x in rows if x.get("signal_before_plus20_confirmation"))/len(rows)
-                z["forward"]={}
-                for h in [str(x) for x in CAUSAL_DIAGNOSTIC_REPLAY_SPEC["horizons_minutes"]]+["end_of_trading_cycle"]:
-                    q=[x["forward"].get(h) for x in rows if (x.get("forward") or {}).get(h)];z["forward"][h]={m:self._ctr_dist([a.get(m) for a in q]) for m in CAUSAL_DIAGNOSTIC_REPLAY_SPEC["forward_metrics"]};z["forward"][h]["fraction_MFE_ge"]={str(t):sum(1 for a in q if a.get("MFE_pct_from_signal_close") is not None and a["MFE_pct_from_signal_close"]>=t*100)/len(q) if q else None for t in [.05,.1,.2]}
-                return z
-            byclass={c:summarize([x for x in allr if x["class"]==c]) for c in ["positive","hard_negative"]};byyear={};byphase={}
-            for y in range(2019,2027):byyear[str(y)]={c:summarize([x for x in allr if x["class"]==c and x["signal_ts"].startswith(str(y))]) for c in ["positive","hard_negative"]}
-            for ph in ["AH","Overnight","Premarket","Regular","Other"]:byphase[ph]={c:summarize([x for x in allr if x["class"]==c and x.get("phase")==ph]) for c in ["positive","hard_negative"]}
-            statrows=[self.redis.get_json(self.causal_diagnostic_replay_key(f"stats:{sess}"),{}) or {} for sess in sessions];rawpos=sum(int(x.get("positive_selected") or 0) for x in statrows);rawhard=sum(int(x.get("hard_negative_selected") or 0) for x in statrows);scorepos=sum(int(x.get("positive_scoreable") or 0) for x in statrows);scorehard=sum(int(x.get("hard_negative_scoreable") or 0) for x in statrows)
-            report={"version":VERSION,"build":BUILD,"replay_id":CAUSAL_DIAGNOSTIC_REPLAY_SPEC["replay_id"],"replay_spec_sha256":CAUSAL_DIAGNOSTIC_REPLAY_SHA256,"translation_spec_sha256":pr.get("translation_spec_sha256"),"translation_protocol_artifact_sha256":pr.get("translation_protocol_artifact_sha256"),"source_frozen_model_sha256":m.get("frozen_model_sha256"),"status":"COMPLETED","phase":"CAUSAL_DIAGNOSTIC_REPLAY_STOP_REVIEW","sessions":len(sessions),"first_session":sessions[0] if sessions else None,"last_session":sessions[-1] if sessions else None,"positive_verified_events":rawpos,"hard_negative_events_selected":rawhard,"positive_events_ever_scoreable":scorepos,"hard_negative_events_ever_scoreable":scorehard,"positive_scoreability_rate":scorepos/rawpos if rawpos else None,"hard_negative_scoreability_rate":scorehard/rawhard if rawhard else None,"positive_signal_events":byclass["positive"]["signals"],"hard_negative_signal_events":byclass["hard_negative"]["signals"],"positive_signal_coverage":byclass["positive"]["signals"]/rawpos if rawpos else None,"hard_negative_signal_coverage":byclass["hard_negative"]["signals"]/rawhard if rawhard else None,"summary_by_class":byclass,"summary_by_year":byyear,"summary_by_signal_phase":byphase,"post_signal_paths_read":True,"model_mutated":False,"thresholds_recalibrated":False,"entry_stop_exit_rules_selected":False,"expectancy_or_profit_factor_claim_allowed":False,"stop_and_review_required":True,"completed_at":iso()};canon=dict(report);canon.pop("completed_at");report["replay_result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.causal_diagnostic_replay_key("report"),report);self._set_causal_diagnostic_replay_state(status="COMPLETED",phase="CAUSAL_DIAGNOSTIC_REPLAY_STOP_REVIEW",message="Causal Diagnostic Replay completed; STOP REVIEW",post_signal_paths_read=True,sessions_scanned=len(sessions),total_sessions=len(sessions),stop_and_review_required=True)
-        except Exception as e:
-            logging.exception("Causal diagnostic replay failed");self._set_causal_diagnostic_replay_state(status="ERROR",phase="BLOCKED",message="Causal diagnostic replay failed closed",last_error=f"{type(e).__name__}: {e}",post_signal_paths_read=True)
-        finally:
-            with self.causal_diagnostic_replay_lock:self.causal_diagnostic_replay_thread=None
-    def start_causal_diagnostic_replay(self):
-        ok,why=self._causal_diagnostic_replay_gate()
-        if not ok:return False,why
-        with self.causal_diagnostic_replay_lock:
-            if self.causal_diagnostic_replay_thread and self.causal_diagnostic_replay_thread.is_alive():return False,"already_running"
-            self.causal_diagnostic_replay_thread=threading.Thread(target=self.causal_diagnostic_replay_loop,name="causal-diagnostic-replay",daemon=True);self.causal_diagnostic_replay_thread.start()
-        return True,"started"
 
 @app.get("/research/causal-diagnostic-replay/protocol")
 def causal_diagnostic_replay_protocol():
