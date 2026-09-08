@@ -37,8 +37,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.20-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-HOLDOUT-PROTOCOL-LOCK-DIAGNOSTIC-SCOREABILITY"
+VERSION = "1.7.21"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-FINAL-FROZEN-HOLDOUT-2026"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -462,6 +462,50 @@ HOLDOUT_SUCCESS_CRITERIA_SPEC = {
     "safety": {"alpaca_requests": False, "holdout_2026_read": False, "orders_enabled": False, "alerts_enabled": False}
 }
 HOLDOUT_SUCCESS_CRITERIA_SHA256 = hashlib.sha256(json.dumps(HOLDOUT_SUCCESS_CRITERIA_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+FINAL_HOLDOUT_2026_SPEC = {
+    "holdout_id": "IPR-FINAL-FROZEN-HOLDOUT-2026-2026-09-08-A",
+    "purpose": "One-time final untouched 2026 holdout evaluation using the frozen 2019-2024 model and the official criteria inherited unchanged from the pre-2025 criteria freeze.",
+    "scope": "2026-01-01 through 2026-08-31 persisted Phase0B sessions only; no post-2026-08-31 session is eligible.",
+    "locked_year": 2026,
+    "last_allowed_session": "2026-08-31",
+    "required_frozen_model_sha256": "c543ed4320a9cbc7eecef311675fb8955642d9bcb81e31fe7888728ee1c5c7c3",
+    "required_pre2025_criteria_sha256": "8369764d07694d2dc69c8de5c06f331bef0ff2e998da0b11936ade30c19ed67a",
+    "required_validation_result_sha256": "96f7645e8db3145f9305bfe995df0ce54cc999ea4ef4a550d1a3cc63c4f0232f",
+    "required_holdout_criteria_id": "IPR-HOLDOUT-PROTOCOL-LOCK-2026-09-08-B",
+    "required_holdout_criteria_sha256": "ec9a1292d4d3c13ab4688cd7238239f2566ae45fcdea30205d05ec9942355160",
+    "required_holdout_criteria_artifact_sha256": "7289c944c839d77b79a934b64157590f55c397cf3733ce11b4eed5c99a0fde3a",
+    "official_classification": {
+        "pass_min_development_recall_retention": 0.60,
+        "weak_min_development_recall_retention": 0.40,
+        "max_hard_negative_symbol_pass_rate": 0.10,
+        "critical_roles": ["early_core", "confirmation"],
+        "severity_quality": "diagnostic_only",
+    },
+    "scoreability": {
+        "classification_role": "diagnostic_only",
+        "no_numeric_cutoff": True,
+        "report_positive_events_raw_selected": True,
+        "report_positive_events_scoreable": True,
+        "report_positive_scoreability_rate": True,
+        "compare_to_2025": True,
+    },
+    "guardrails": {
+        "one_time_holdout": True,
+        "rerun_after_completion_prohibited": True,
+        "no_model_mutation": True,
+        "no_threshold_recalibration": True,
+        "no_feature_change": True,
+        "no_anchor_change": True,
+        "no_direction_change": True,
+        "no_weight_change": True,
+        "no_criteria_reinterpretation": True,
+        "stop_and_review_after_holdout": True,
+        "no_live_or_profitability_claim": True,
+    },
+}
+FINAL_HOLDOUT_2026_SHA256 = hashlib.sha256(json.dumps(FINAL_HOLDOUT_2026_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 
@@ -1779,6 +1823,8 @@ class IndependentPriorityRadar:
         self.validation_2025_lock=threading.RLock(); self.validation_2025_thread=None; self.validation_2025_stop_event=threading.Event()
         self.validation_2025_state={"status":"IDLE","phase":"NOT_STARTED","message":"2025 Validation not started","validation_id":VALIDATION_2025_SPEC["validation_id"],"validation_2025_opened":False,"holdout_2026_opened":False,"updated_at":iso()}
         self.holdout_criteria_state={"status":"IDLE","phase":"NOT_STARTED","message":"2026 Holdout Success Criteria Freeze has not started","criteria_id":HOLDOUT_SUCCESS_CRITERIA_SPEC["criteria_id"],"holdout_2026_opened":False,"updated_at":iso()}
+        self.final_holdout_2026_lock=threading.RLock(); self.final_holdout_2026_thread=None; self.final_holdout_2026_stop_event=threading.Event()
+        self.final_holdout_2026_state={"status":"IDLE","phase":"NOT_STARTED","message":"Final 2026 Holdout not started","holdout_id":FINAL_HOLDOUT_2026_SPEC["holdout_id"],"holdout_2026_opened":False,"holdout_2026_read":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -3790,6 +3836,120 @@ class IndependentPriorityRadar:
         with self.validation_2025_lock:
             if self.validation_2025_thread and self.validation_2025_thread.is_alive():return False,"already_running"
             self.validation_2025_thread=threading.Thread(target=self.frozen_model_validation_2025_loop,daemon=True);self.validation_2025_thread.start()
+        return True,"started"
+
+    def final_holdout_2026_key(self,suffix): return self.key(f"final_frozen_holdout_2026:v1:{suffix}")
+    def _set_final_holdout_2026_state(self,**u):
+        with self.final_holdout_2026_lock:
+            self.final_holdout_2026_state.update(u); self.final_holdout_2026_state["updated_at"]=iso(); snap=dict(self.final_holdout_2026_state)
+        if self.redis.configured:self.redis.set_json(self.final_holdout_2026_key("status"),snap)
+    def _final_holdout_2026_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        m=self.redis.get_json(self.feature_scoring_freeze_key("report"),None)
+        pre=self.redis.get_json(self.validation_criteria_key("report"),None)
+        val=self.redis.get_json(self.validation_2025_key("report"),None)
+        hc=self.redis.get_json(self.holdout_criteria_key("report"),None)
+        if not isinstance(m,dict) or m.get("frozen_model_sha256")!=FINAL_HOLDOUT_2026_SPEC["required_frozen_model_sha256"]:return False,"Frozen model SHA mismatch"
+        if not isinstance(pre,dict) or pre.get("criteria_sha256")!=FINAL_HOLDOUT_2026_SPEC["required_pre2025_criteria_sha256"]:return False,"Pre-2025 criteria SHA mismatch"
+        if not isinstance(val,dict) or val.get("validation_result_sha256")!=FINAL_HOLDOUT_2026_SPEC["required_validation_result_sha256"] or val.get("overall_classification")!="PASS":return False,"2025 Validation provenance mismatch"
+        if not isinstance(hc,dict) or hc.get("status")!="COMPLETED" or hc.get("phase")!="HOLDOUT_CRITERIA_FROZEN_STOP_REVIEW":return False,"Completed Holdout Protocol Lock required"
+        if hc.get("criteria_id")!=FINAL_HOLDOUT_2026_SPEC["required_holdout_criteria_id"] or hc.get("criteria_sha256")!=FINAL_HOLDOUT_2026_SPEC["required_holdout_criteria_sha256"] or hc.get("criteria_artifact_sha256")!=FINAL_HOLDOUT_2026_SPEC["required_holdout_criteria_artifact_sha256"]:return False,"Holdout Protocol Lock SHA mismatch"
+        if hc.get("holdout_2026_opened") is not False or hc.get("holdout_2026_read") is not False:return False,"2026 contamination flag"
+        old=self.redis.get_json(self.final_holdout_2026_key("report"),None)
+        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"2026 final holdout already completed; rerun prohibited"
+        return True,"allowed"
+    @staticmethod
+    def _h26_class(pr,hr,dev,perf):
+        if pr is None or hr is None or dev is None or hr>float(perf["max_hard_negative_symbol_pass_rate"]):return "FAIL"
+        if pr>=float(dev)*float(perf["pass_min_development_recall_retention"]):return "PASS"
+        if pr>=float(dev)*float(perf["weak_min_development_recall_retention"]):return "WEAK_PASS"
+        return "FAIL"
+    def final_frozen_holdout_2026_loop(self):
+        opened=False
+        try:
+            ok,why=self._final_holdout_2026_gate()
+            if not ok:raise RuntimeError(why)
+            m=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}
+            val=self.redis.get_json(self.validation_2025_key("report"),{}) or {}
+            hc=self.redis.get_json(self.holdout_criteria_key("report"),{}) or {}
+            roles=m["roles"]; cal=m["calibration"]; perf=hc["criteria"]["performance_rules"]
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.phase0b_full_key("completed_sessions"),[]) or []) if str(x).startswith("2026-") and str(x)<=FINAL_HOLDOUT_2026_SPEC["last_allowed_session"])
+            if not sessions:raise RuntimeError("No persisted 2026 Phase0B sessions through 2026-08-31")
+            done=set(self.redis.get_json(self.final_holdout_2026_key("completed_sessions"),[]) or [])
+            if any(not str(x).startswith("2026-") or str(x)>FINAL_HOLDOUT_2026_SPEC["last_allowed_session"] for x in done):raise RuntimeError("Invalid persisted holdout resume session")
+            self.final_holdout_2026_stop_event.clear(); opened=True
+            self._set_final_holdout_2026_state(status="RUNNING",phase="FINAL_HOLDOUT_2026",message="2026 final holdout opened; frozen model and criteria locked",holdout_2026_opened=True,holdout_2026_read=True,total_sessions=len(sessions),sessions_scanned=len(done))
+            for si,sess in enumerate(sessions,1):
+                if sess in done:continue
+                if self.final_holdout_2026_stop_event.is_set():
+                    self._set_final_holdout_2026_state(status="PAUSED",phase="FINAL_HOLDOUT_2026",holdout_2026_opened=True,holdout_2026_read=True,sessions_scanned=len(done),total_sessions=len(sessions));return
+                target=date.fromisoformat(sess); p0=self.redis.get_json(self.phase0b_full_key(f"results:{sess}"),None)
+                if p0 is None:raise RuntimeError(f"Missing 2026 Phase0B {sess}")
+                coarse={str(x.get("symbol") or "").upper():x for x in (self.redis.get_json(self.historical_census_key(f"candidates:{sess}"),[]) or [])}
+                pos=[x for x in p0 if x.get("classification")=="verified"]; fail=[x for x in p0 if x.get("classification")=="failed"]; fctx=[]
+                for r in fail:
+                    sym=str(r.get("symbol") or "").upper(); cut=self._fd_coarse_cutoff(coarse.get(sym,{}))
+                    if cut:fctx.append((r,sym,cut,self._fd_phase(cut,target),self._fd_price_band(r.get("t1_low"))))
+                sel=[]
+                for pi,r in enumerate(pos):
+                    sym=str(r.get("symbol") or "").upper(); phase=self._fd_phase(str(r.get("t2") or ""),target); pb=self._fd_price_band(r.get("t1_low")); exact=[x for x in fctx if x[3]==phase and x[4]==pb]; pool=exact or [x for x in fctx if x[3]==phase] or fctx; base=int(hashlib.sha256(f"{sess}|{sym}|{r.get('t2')}".encode()).hexdigest()[:12],16); match=hashlib.sha256(f"{sess}|{sym}|{r.get('t2')}|{pi}".encode()).hexdigest()[:20]; sel.append(("positive",r,sym,str(r.get("t2")),match))
+                    for j in range(min(3,len(pool))):x=pool[(base+j*7919)%len(pool)];sel.append(("hard_negative",x[0],x[1],x[2],match))
+                syms=sorted({x[2] for x in sel}); start,end=self._probe_cycle_bounds(target); rows=self._fd_fetch_session_rows(syms,target,start,end) if syms else {}; obs=[]
+                for cls,r,sym,cut,match in sel:
+                    try:dt=datetime.fromisoformat(str(cut).replace("Z","+00:00"))
+                    except:continue
+                    aa={}
+                    for off in FEATURE_DISCOVERY_EXEC_SPEC["anchors_minutes"]:
+                        f=self._fd_features(rows.get(sym,[]),dt-timedelta(minutes=off))
+                        if f:aa[str(off)]=f
+                    if aa:obs.append({"class":cls,"symbol":sym,"match_id":match,"anchors":aa})
+                groups=defaultdict(list)
+                for o in obs:groups[o["match_id"]].append(o)
+                filt=[]
+                for g in groups.values():
+                    po=next((o for o in g if o["class"]=="positive"),None)
+                    if not po:continue
+                    pa=(po["anchors"].get("5") or {}).get("bars_available");filt.append(po)
+                    for o in g:
+                        if o is po:continue
+                        ca=(o["anchors"].get("5") or {}).get("bars_available")
+                        if isinstance(pa,(int,float)) and isinstance(ca,(int,float)) and pa>0 and .5<=ca/pa<=2:filt.append(o)
+                scored=[]
+                for o in filt:
+                    ss={}
+                    for role,defs in roles.items():
+                        num=den=0.0
+                        for d in defs:
+                            v=(o["anchors"].get(str(d["anchor_minutes"])) or {}).get(d["feature"])
+                            if not isinstance(v,(int,float)) or not math.isfinite(v):continue
+                            z=d["direction"]*(float(v)-d["hard_negative_center"])/d["pooled_symbol_sd"];num+=d["weight"]*max(-3,min(3,z));den+=d["weight"]
+                        if den>=.5:ss[role]=num/den
+                    scored.append({"class":o["class"],"symbol":o["symbol"],"scores":ss})
+                self.redis.set_json(self.final_holdout_2026_key(f"scores:{sess}"),scored);done.add(sess);self.redis.set_json(self.final_holdout_2026_key("completed_sessions"),sorted(done))
+                if si==1 or si%20==0 or si==len(sessions):self._set_final_holdout_2026_state(status="RUNNING",phase="FINAL_HOLDOUT_2026",message=f"2026 final frozen holdout {len(done)}/{len(sessions)}",holdout_2026_opened=True,holdout_2026_read=True,sessions_scanned=len(done),total_sessions=len(sessions),current_session=sess)
+            ps=defaultdict(list);hs=defaultdict(lambda:defaultdict(list));raw=defaultdict(int)
+            for sess in sessions:
+                for o in self.redis.get_json(self.final_holdout_2026_key(f"scores:{sess}"),[]) or []:
+                    raw[o["class"]]+=1
+                    for role,v in o["scores"].items():
+                        if o["class"]=="positive":ps[role].append(float(v))
+                        elif o["class"]=="hard_negative":hs[role][o["symbol"]].append(float(v))
+            rr={}
+            for role in roles:
+                thr=float(cal[role]["frozen_threshold"]); dev=float(cal[role]["development_positive_event_pass_rate"]); pa=np.asarray(ps[role]); ha=np.asarray([np.mean(v) for v in hs[role].values()]); pr=float(np.mean(pa>=thr)) if len(pa) else None; hr=float(np.mean(ha>=thr)) if len(ha) else None; rawp=int(raw["positive"]); scoreability=(len(pa)/rawp if rawp else None); v25=(val.get("role_results") or {}).get(role,{})
+                rr[role]={"classification":self._h26_class(pr,hr,dev,perf),"frozen_threshold":thr,"development_positive_event_pass_rate":dev,"pass_min_2026_positive_event_pass_rate":dev*float(perf["pass_min_development_recall_retention"]),"weak_min_2026_positive_event_pass_rate":dev*float(perf["weak_min_development_recall_retention"]),"max_2026_hard_negative_symbol_pass_rate":float(perf["max_hard_negative_symbol_pass_rate"]),"positive_event_pass_rate":pr,"hard_negative_symbol_pass_rate":hr,"positive_events_scoreable":len(pa),"hard_negative_symbols_scoreable":len(ha),"positive_events_raw_selected":rawp,"hard_negative_events_raw_selected":int(raw["hard_negative"]),"positive_scoreability_rate":scoreability,"scoreability_classification_role":"diagnostic_only","validation_2025_positive_event_pass_rate":v25.get("positive_event_pass_rate"),"validation_2025_hard_negative_symbol_pass_rate":v25.get("hard_negative_symbol_pass_rate"),"validation_2025_positive_scoreability_rate":((float(v25.get("positive_events_scoreable"))/float(v25.get("positive_events_raw_selected"))) if v25.get("positive_events_raw_selected") else None)}
+            critical=[rr["early_core"]["classification"],rr["confirmation"]["classification"]];overall="FAIL" if "FAIL" in critical else ("PASS" if critical==["PASS","PASS"] else "WEAK_PASS")
+            report={"version":VERSION,"build":BUILD,"holdout_id":FINAL_HOLDOUT_2026_SPEC["holdout_id"],"holdout_spec_sha256":FINAL_HOLDOUT_2026_SHA256,"status":"COMPLETED","phase":"FINAL_HOLDOUT_2026_STOP_REVIEW","scope":FINAL_HOLDOUT_2026_SPEC["scope"],"source_frozen_model_sha256":m["frozen_model_sha256"],"source_pre2025_criteria_sha256":FINAL_HOLDOUT_2026_SPEC["required_pre2025_criteria_sha256"],"source_validation_result_sha256":val.get("validation_result_sha256"),"source_holdout_criteria_sha256":hc.get("criteria_sha256"),"source_holdout_criteria_artifact_sha256":hc.get("criteria_artifact_sha256"),"sessions":len(sessions),"first_session":sessions[0],"last_session":sessions[-1],"role_results":rr,"overall_classification":overall,"holdout_2026_opened":True,"holdout_2026_read":True,"model_mutated":False,"thresholds_recalibrated":False,"criteria_reinterpreted":False,"scoreability_diagnostic_only":True,"stop_and_review_required":True,"live_or_profitability_claim_allowed":False,"completed_at":iso()};canon=dict(report);canon.pop("completed_at");report["holdout_result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",", ":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.final_holdout_2026_key("report"),report);self._set_final_holdout_2026_state(status="COMPLETED",phase="FINAL_HOLDOUT_2026_STOP_REVIEW",message=f"2026 Final Holdout {overall}; STOP REVIEW",overall_classification=overall,holdout_2026_opened=True,holdout_2026_read=True,sessions_scanned=len(sessions),total_sessions=len(sessions),first_session=sessions[0],last_session=sessions[-1],stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("2026 final holdout failed");self._set_final_holdout_2026_state(status="ERROR",phase="BLOCKED",message="2026 final holdout failed closed",last_error=f"{type(e).__name__}: {e}",holdout_2026_opened=opened,holdout_2026_read=opened)
+        finally:
+            with self.final_holdout_2026_lock:self.final_holdout_2026_thread=None
+    def start_final_frozen_holdout_2026(self):
+        ok,why=self._final_holdout_2026_gate()
+        if not ok:return False,why
+        with self.final_holdout_2026_lock:
+            if self.final_holdout_2026_thread and self.final_holdout_2026_thread.is_alive():return False,"already_running"
+            self.final_holdout_2026_thread=threading.Thread(target=self.final_frozen_holdout_2026_loop,name="final-frozen-holdout-2026",daemon=True);self.final_holdout_2026_thread.start()
         return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
@@ -7743,6 +7903,24 @@ def validation_success_criteria_result():
     report=radar.redis.get_json(radar.validation_criteria_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/validation-success-criteria/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
     return jsonify(report)
+
+@app.get("/research/final-frozen-holdout-2026/protocol")
+def final_frozen_holdout_2026_protocol():
+    allowed,reason=radar._final_holdout_2026_gate();return jsonify({"version":VERSION,"build":BUILD,"holdout_spec":FINAL_HOLDOUT_2026_SPEC,"holdout_spec_sha256":FINAL_HOLDOUT_2026_SHA256,"gate_allowed":allowed,"gate_reason":reason,"holdout_2026_opened":False,"holdout_2026_read":False})
+@app.get("/research/final-frozen-holdout-2026/start")
+def final_frozen_holdout_2026_start():
+    ok,why=radar.start_final_frozen_holdout_2026();return jsonify({"ok":ok,"status":"started" if ok else why,"status_url":"/research/final-frozen-holdout-2026/status","result_url":"/research/final-frozen-holdout-2026/result"}),(200 if ok else 409)
+@app.get("/research/final-frozen-holdout-2026/pause")
+def final_frozen_holdout_2026_pause():
+    radar.final_holdout_2026_stop_event.set();return jsonify({"ok":True,"status":"pause_requested"})
+@app.get("/research/final-frozen-holdout-2026/status")
+def final_frozen_holdout_2026_status():
+    x=radar.redis.get_json(radar.final_holdout_2026_key("status"),None) if radar.redis.configured else None;out=x if isinstance(x,dict) else dict(radar.final_holdout_2026_state);out["worker_alive"]=bool(radar.final_holdout_2026_thread and radar.final_holdout_2026_thread.is_alive());return jsonify(out)
+@app.get("/research/final-frozen-holdout-2026/result")
+def final_frozen_holdout_2026_result():
+    x=radar.redis.get_json(radar.final_holdout_2026_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/final-frozen-holdout-2026/status"}),202
+    return jsonify(x)
 
 @app.get("/research/holdout-success-criteria/protocol")
 def holdout_success_criteria_protocol():
