@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.28"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-FEATURE-PROBE-EXECUTION"
+VERSION = "1.7.29"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-FEATURE-LEVEL-DISCOVERY-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -786,6 +786,100 @@ EARLY_FEATURE_PROBE_EXEC_SPEC = {
     }
 }
 EARLY_FEATURE_PROBE_EXEC_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_PROBE_EXEC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC = {
+    "prefreeze_id": "IPR-EARLY-FEATURE-LEVEL-DISCOVERY-PREFREEZE-2026-09-13-A",
+    "purpose": "Freeze the Early Feature-Level Discovery design before any feature-level result is inspected.",
+    "required_probe_execution_id": EARLY_FEATURE_PROBE_EXEC_SPEC["execution_id"],
+    "required_probe_execution_spec_sha256": EARLY_FEATURE_PROBE_EXEC_SHA256,
+    "required_probe_result_sha256": "8da743ea7f17470dfc27405f7a31130a1291148141813bb361b4756d670b3853",
+    "required_probe_decision": "GO",
+    "required_qualifying_windows_minutes": [30, 60],
+    "time_split": {
+        "discovery_years": [2019, 2020, 2021, 2022, 2023, 2024],
+        "validation_year": 2025,
+        "validation_locked_during_feature_selection": True,
+        "year_2026": "LOCKED_REGIME_OR_DATA_SHIFT_REVIEW_ONLY_AFTER_DISCOVERY_AND_VALIDATION_FREEZE",
+        "fresh_oos_opened": False
+    },
+    "windows_minutes": [30, 60],
+    "feature_universe": {
+        "freeze_rule": "Only the named causal features already defined in code before this pre-freeze may be tested; no post-result feature additions, transformations, interactions, or direction changes.",
+        "features": ["discovery_body_pct","discovery_range_pct","discovery_close_location","discovery_upper_wick_to_range","discovery_upper_wick_to_body","log_discovery_volume","volume_ratio_to_prior5","volume_acceleration_3v3","return_2m_pct","return_3m_pct","return_5m_pct","distance_to_resistance_pct","distance_above_vwap_pct","price_change_pct_last45m","er45","price_change_x_er45","log_signal_price","opportunity","failure_pressure","minutes_since_regular_open"],
+        "families": {
+            "candle_structure": ["discovery_body_pct", "discovery_range_pct", "discovery_close_location", "discovery_upper_wick_to_range", "discovery_upper_wick_to_body"],
+            "volume_participation": ["log_discovery_volume", "volume_ratio_to_prior5", "volume_acceleration_3v3"],
+            "short_return_path": ["return_2m_pct", "return_3m_pct", "return_5m_pct"],
+            "location_structure": ["distance_to_resistance_pct", "distance_above_vwap_pct"],
+            "legacy_causal_features": ["price_change_pct_last45m","er45","price_change_x_er45","log_signal_price","opportunity","failure_pressure","minutes_since_regular_open"]
+        }
+    },
+    "aggregation_and_denominators": {
+        "unit_of_observation": "event/checkpoint observation at the frozen causal cutoff; no post-cutoff information",
+        "class_contrast": "Positive versus Hard-Negative only for promotion; random controls, if present, are diagnostic only.",
+        "event_rate_denominator": "For any reported pass/rate metric, denominator is all eligible observations of that class in the stated year/window after the same frozen scoreability/availability rule; never only passing observations.",
+        "pooled_rate": "Compute from pooled eligible event counts (sum numerators / sum denominators), never unweighted mean of yearly percentages.",
+        "symbol_weighting_for_feature_effects": "Equal-symbol weighting: each symbol contributes total class weight 1 within the analysis cell; repeated events from a symbol divide that symbol weight.",
+        "missing_feature_policy": "Pairwise feature availability must be reported; no imputation invented after results. A feature must meet frozen support using observations where that feature is causally available.",
+        "rounding_for_decisions": False
+    },
+    "statistics": {
+        "primary_effect": "Equal-symbol weighted standardized mean difference, Positive minus Hard-Negative, computed separately per Feature x Window.",
+        "direction": "Direction is learned from pooled 2019-2024 Discovery only and may not be flipped after 2025 is opened.",
+        "fdr": "Benjamini-Hochberg within each frozen feature family across both 30m and 60m tests.",
+        "fdr_q_max": 0.05,
+        "minimum_absolute_standardized_effect": 0.10,
+        "minimum_discovery_same_direction_years": 5,
+        "discovery_year_count": 6,
+        "minimum_positive_events": 500,
+        "minimum_hard_negative_events": 500,
+        "minimum_positive_symbols": 100,
+        "minimum_hard_negative_symbols": 100,
+        "no_threshold_search": True,
+        "no_feature_interaction_search": True
+    },
+    "discovery_go_rule": {
+        "feature_qualifies_in_discovery_if_all": [
+            "BH-FDR q <= 0.05 in its frozen family",
+            "absolute standardized Positive-vs-Hard-Negative effect >= 0.10",
+            "same learned direction in at least 5 of 6 Discovery years",
+            "meets all frozen event and symbol support minima"
+        ],
+        "GO": "At least one frozen feature qualifies at BOTH 30m and 60m with the same learned direction.",
+        "NO_GO": "No frozen feature satisfies the complete BOTH-window rule; stop this path with no discretionary rescue.",
+        "no_discretionary_override": True
+    },
+    "validation_2025_rule": {
+        "opened_only_after_discovery_feature_set_is_frozen": True,
+        "no_reselection_on_2025": True,
+        "required_for_each_promoted_feature": "same direction as Discovery and absolute standardized effect >= 0.10 in 2025 with support >=500 events and >=100 symbols per class where available",
+        "failure_semantics": "A Discovery GO that fails 2025 validation cannot proceed to 2026 review or Fresh OOS under this path."
+    },
+    "year_2026_policy": {
+        "excluded_from_feature_selection": True,
+        "excluded_from_2025_validation": True,
+        "mandatory_regime_or_data_shift_review": True,
+        "review_allowed_only_after_discovery_and_2025_validation_freeze": True,
+        "fresh_oos_forbidden_until_review_passes_separately_prefrozen_rule": True
+    },
+    "decision_semantics": {
+        "discovery_go_is_not_strategy_pass": True,
+        "bot_authorized": False,
+        "profitability_claim_authorized": False,
+        "fresh_oos_authorized": False,
+        "next_stage_requires_separate_execution_gate_and_exact_prefreeze_sha": True
+    },
+    "guardrails": {
+        "alpaca_requests_during_prefreeze": 0,
+        "replay_restarted": False,
+        "no_feature_results_read_by_this_prefreeze": True,
+        "no_2026_read_by_discovery": True,
+        "no_fresh_oos": True,
+        "no_live_model_or_bot_change": True
+    }
+}
+EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC = {
     "amendment_id": "IPR-EARLY-CAUSAL-ENTRY-THRESHOLD-FAMILY-AMENDMENT-2026-09-13-A",
@@ -4576,6 +4670,21 @@ class IndependentPriorityRadar:
         with self.post_failure_diagnostic_lock:
             self.post_failure_diagnostic_state.update(updates); self.post_failure_diagnostic_state["updated_at"] = iso(); snap=dict(self.post_failure_diagnostic_state)
         if self.redis.configured:self.redis.set_json(self.post_failure_diagnostic_key("status"),snap)
+
+    def _early_feature_level_discovery_prefreeze_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        r=self.redis.get_json(self.early_feature_probe_key("report"),None)
+        if not isinstance(r,dict):return False,"Completed Early Feature Probe result required"
+        if r.get("status")!="COMPLETED" or r.get("phase")!="EARLY_FEATURE_PROBE_STOP_REVIEW":return False,"Early Feature Probe STOP_REVIEW required"
+        if r.get("execution_id")!=EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC["required_probe_execution_id"]:return False,"Probe execution ID mismatch"
+        if r.get("execution_spec_sha256")!=EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC["required_probe_execution_spec_sha256"]:return False,"Probe execution spec SHA mismatch"
+        if r.get("result_sha256")!=EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC["required_probe_result_sha256"]:return False,"Probe result SHA mismatch"
+        if r.get("decision")!=EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC["required_probe_decision"]:return False,"Probe GO required"
+        if sorted(r.get("qualifying_windows_minutes") or [])!=sorted(EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC["required_qualifying_windows_minutes"]):return False,"Frozen qualifying windows mismatch"
+        if r.get("strategy_pass") is not False or r.get("bot_authorized") is not False:return False,"Probe must not authorize strategy/bot"
+        if r.get("fresh_oos_opened") is not False or r.get("fresh_oos_preserved") is not True:return False,"Fresh OOS must remain sealed"
+        if r.get("regime_or_data_shift_review_required_before_fresh_oos") is not True:return False,"2026 regime/data-shift barrier must remain mandatory"
+        return True,"allowed"
 
     def _post_failure_diagnostic_gate(self):
         if not self.redis.configured:return False,"Redis required"
@@ -9048,6 +9157,16 @@ def research_early_feature_probe_execution_result():
     x=radar.redis.get_json(radar.early_feature_probe_key("report"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/early-feature-probe/execution/status"}),202
     return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/prefreeze/protocol")
+def research_early_feature_level_discovery_prefreeze_protocol():
+    allowed,reason=radar._early_feature_level_discovery_prefreeze_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"discovery_implemented":False,"discovery_started":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"alpaca_requests_made":0,"replay_restarted":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/prefreeze/artifact")
+def research_early_feature_level_discovery_prefreeze_artifact():
+    allowed,reason=radar._early_feature_level_discovery_prefreeze_gate()
+    return jsonify({"prefreeze_id":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC["prefreeze_id"],"prefreeze_spec":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256,"source_gate_allowed":allowed,"source_gate_reason":reason,"immutable_feature_universe":True,"immutable_statistics_and_go_rule":True})
 
 @app.get("/research/early-causal-entry/post-failure-diagnostic/protocol")
 def research_early_causal_entry_post_failure_diagnostic_protocol():
