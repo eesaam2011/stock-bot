@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.25"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-CAUSAL-ENTRY-RESEARCH-EXECUTION"
+VERSION = "1.7.25-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-CAUSAL-ENTRY-RESEARCH-EXECUTION-THRESHOLD-AMENDMENT-FREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -691,6 +691,32 @@ EARLY_CAUSAL_ENTRY_EXEC_SPEC = {
     }
 }
 EARLY_CAUSAL_ENTRY_EXEC_SHA256 = hashlib.sha256(json.dumps(EARLY_CAUSAL_ENTRY_EXEC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC = {
+    "amendment_id": "IPR-EARLY-CAUSAL-ENTRY-THRESHOLD-FAMILY-AMENDMENT-2026-09-13-A",
+    "purpose": "Pre-execution documentation freeze for the threshold family that was coded before any Early Causal Entry execution result was observed.",
+    "required_research_spec_sha256": "d68e30de9497742c4d887bcbf4c2646b022f35746e337568983d94ed57f45592",
+    "required_protocol_artifact_sha256": "2145af689499490a958d527a53755c07e1a3512529398c0c593813eda5d05c30",
+    "required_execution_spec_sha256": EARLY_CAUSAL_ENTRY_EXEC_SHA256,
+    "frozen_threshold_family": {
+        "threshold_multipliers_of_frozen_early_core": [0.25,0.50,0.75,1.00],
+        "within_checkpoint_selection": "Among predeclared thresholds satisfying every mandatory gate, select the highest threshold (most conservative).",
+        "checkpoint_selection": "Evaluate checkpoints strictly 240,120,60,30,15 and select the earliest checkpoint with a qualifying threshold.",
+        "selection_must_not_use": ["profit", "MFE", "MAE", "best_p_value", "largest_observed_effect"]
+    },
+    "timing_attestation": {
+        "frozen_before_execution_start": True,
+        "frozen_before_any_execution_result_observed": True,
+        "research_execution_must_remain_not_started_until_amendment_frozen": True
+    },
+    "guardrails": {
+        "no_new_post_2026_08_31_data_read": True,
+        "no_alpaca_requests_during_amendment_freeze": True,
+        "no_model_mutation": True,
+        "no_threshold_result_driven_recalibration": True
+    }
+}
+EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SHA256 = hashlib.sha256(json.dumps(EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 CAUSAL_DIAGNOSTIC_REPLAY_SPEC = {
@@ -4227,6 +4253,33 @@ class IndependentPriorityRadar:
     def early_causal_entry_exec_key(self, suffix: str) -> str:
         return self.key(f"early_causal_entry_exec:v1:{suffix}")
 
+    def early_causal_entry_threshold_amendment_key(self, suffix: str) -> str:
+        return self.key(f"early_causal_entry_threshold_amendment:v1:{suffix}")
+
+    def _early_causal_entry_threshold_amendment_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        fr=self.redis.get_json(self.early_causal_entry_research_key("report"),{}) or {}
+        if fr.get("status")!="COMPLETED" or fr.get("phase")!="EARLY_CAUSAL_ENTRY_RESEARCH_PROTOCOL_FROZEN_STOP_REVIEW":return False,"Frozen Early Causal Entry research protocol required"
+        if fr.get("research_spec_sha256")!=EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC["required_research_spec_sha256"]:return False,"Research spec SHA mismatch"
+        if fr.get("research_protocol_artifact_sha256")!=EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC["required_protocol_artifact_sha256"]:return False,"Research protocol artifact SHA mismatch"
+        existing_exec=self.redis.get_json(self.early_causal_entry_exec_key("status"),{}) or {}
+        completed=self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []
+        report=self.redis.get_json(self.early_causal_entry_exec_key("report"),None)
+        if existing_exec.get("status") not in (None,"IDLE") or completed or report:return False,"Execution already started; amendment freeze forbidden"
+        return True,"allowed"
+
+    def freeze_early_causal_entry_threshold_amendment(self):
+        ok,why=self._early_causal_entry_threshold_amendment_gate()
+        if not ok:return False,why
+        old=self.redis.get_json(self.early_causal_entry_threshold_amendment_key("report"),None)
+        if old:
+            if old.get("amendment_spec_sha256")==EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SHA256:return True,"already_frozen"
+            return False,"Different amendment already frozen"
+        report={"version":VERSION,"build":BUILD,"status":"COMPLETED","phase":"EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_FROZEN_STOP_REVIEW","amendment_spec":EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC,"amendment_spec_sha256":EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SHA256,"research_execution_started":False,"alpaca_requests_made":0,"new_post_2026_08_31_data_read":False,"model_mutated":False,"thresholds_recalibrated_from_results":False,"completed_at":iso()}
+        canon=dict(report);canon.pop("completed_at");report["amendment_artifact_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        self.redis.set_json(self.early_causal_entry_threshold_amendment_key("report"),report)
+        return True,"frozen"
+
     def _set_early_causal_entry_exec_state(self, **updates: Any) -> None:
         with self.early_causal_entry_exec_lock:
             self.early_causal_entry_exec_state.update(updates); self.early_causal_entry_exec_state["updated_at"] = iso(); snap=dict(self.early_causal_entry_exec_state)
@@ -4234,6 +4287,10 @@ class IndependentPriorityRadar:
 
     def _early_causal_entry_exec_gate(self):
         if not self.redis.configured:return False,"Redis required"
+        amend=self.redis.get_json(self.early_causal_entry_threshold_amendment_key("report"),{}) or {}
+        if amend.get("status")!="COMPLETED" or amend.get("phase")!="EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_FROZEN_STOP_REVIEW":return False,"Frozen threshold-family amendment required before execution"
+        if amend.get("amendment_spec_sha256")!=EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SHA256:return False,"Threshold amendment SHA mismatch"
+        if amend.get("research_execution_started") is not False or amend.get("new_post_2026_08_31_data_read") is not False:return False,"Threshold amendment timing/OOS lock failed"
         fr=self.redis.get_json(self.early_causal_entry_research_key("report"),{}) or {}
         if fr.get("status")!="COMPLETED" or fr.get("phase")!="EARLY_CAUSAL_ENTRY_RESEARCH_PROTOCOL_FROZEN_STOP_REVIEW":return False,"Frozen Early Causal Entry research protocol required"
         if fr.get("research_spec_sha256")!=EARLY_CAUSAL_ENTRY_EXEC_SPEC["required_research_spec_sha256"]:return False,"Research spec SHA mismatch"
@@ -8560,6 +8617,21 @@ def research_early_causal_entry_protocol_result():
     x = radar.redis.get_json(radar.early_causal_entry_research_key("report"), None) if radar.redis.configured else None
     if not x:
         return jsonify({"result_ready": False, "status_url": "/research/early-causal-entry/status"}), 202
+    return jsonify(x)
+
+@app.get("/research/early-causal-entry/execution/amendment/protocol")
+def research_early_causal_entry_threshold_amendment_protocol():
+    allowed,reason=radar._early_causal_entry_threshold_amendment_gate();return jsonify({"version":VERSION,"build":BUILD,"amendment_spec":EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC,"amendment_spec_sha256":EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SHA256,"gate_allowed":allowed,"gate_reason":reason,"research_execution_started":False,"alpaca_requests_made":0,"new_post_2026_08_31_data_read":False})
+
+@app.get("/research/early-causal-entry/execution/amendment/start")
+@app.post("/research/early-causal-entry/execution/amendment/start")
+def research_early_causal_entry_threshold_amendment_start():
+    ok,why=radar.freeze_early_causal_entry_threshold_amendment();return jsonify({"ok":ok,"status":why,"research_execution_started":False,"result_url":"/research/early-causal-entry/execution/amendment/result"}),(200 if ok else 409)
+
+@app.get("/research/early-causal-entry/execution/amendment/result")
+def research_early_causal_entry_threshold_amendment_result():
+    x=radar.redis.get_json(radar.early_causal_entry_threshold_amendment_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"protocol_url":"/research/early-causal-entry/execution/amendment/protocol"}),202
     return jsonify(x)
 
 @app.get("/research/early-causal-entry/execution/protocol")
