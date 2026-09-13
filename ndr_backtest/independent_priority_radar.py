@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.31"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-FEATURE-RECONSTRUCTION-AMENDMENT-PREFREEZE"
+VERSION = "1.7.32"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-FEATURE-RECONSTRUCTION-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -962,6 +962,21 @@ EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC = {
     },
 }
 EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC = {
+    "execution_id":"IPR-EARLY-FEATURE-RECONSTRUCTION-EXECUTION-2026-09-13-A",
+    "required_amendment_id":"IPR-EARLY-FEATURE-RECONSTRUCTION-AMENDMENT-PREFREEZE-2026-09-13-A",
+    "required_amendment_sha256":"bd9569a3b28a476290689822fa54ecf7763d4d45b01a9c707e53872cde570587",
+    "years":[2019,2020,2021,2022,2023,2024],"windows_minutes":[30,60],
+    "features":["discovery_body_pct","discovery_range_pct","discovery_close_location","log_discovery_volume","volume_ratio_to_prior5","volume_acceleration_3v3","return_3m_pct","return_5m_pct"],
+    "alpaca":{"authorized_by_this_execution_gate":True,"feeds":["sip","boats_overnight_when_available"],"timeframe":"1Min","adjustment":"raw","batch_size_symbols":200,"logical_request_budget":4000,"budget_definition":"One AlpacaClient.bars invocation per feed/batch/session range counts as one logical request; internal pagination is not an additional logical budget unit.","fail_closed_before_request_if_budget_would_be_exceeded":True},
+    "causal_rules":{"last_feature_bar_must_equal_checkpoint_eval_ts":True,"only_bars_at_or_before_checkpoint":True,"minimum_one_minute_bars":6,"no_t0_or_post_checkpoint_bars":True,"feature_definitions_exact_v1_7_29_subset":True},
+    "persistence":{"session_checkpoint_records":True,"completed_sessions_resume_without_intentional_refetch":True,"deterministic_record_key":"session|symbol|class|checkpoint_minutes|eval_ts","persist_provenance_and_feature_definition_sha":True},
+    "guardrails":{"no_feature_effects":True,"no_p_values":True,"no_fdr":True,"no_class_comparisons":True,"no_go_no_go_discovery_decision":True,"no_2025_read":True,"no_2026_read":True,"no_fresh_oos":True,"no_reserve_features":True,"no_invalid_features":True,"no_model_or_threshold_mutation":True,"replay_restarted":False}
+}
+EARLY_FEATURE_RECONSTRUCTION_EXEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256=hashlib.sha256(json.dumps({"features":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["features"],"definitions":{"discovery_body_pct":"(close-open)/open*100","discovery_range_pct":"(high-low)/open*100","discovery_close_location":"(close-low)/(high-low), 0.5 if zero range","log_discovery_volume":"log1p(max(0,last_volume))","volume_ratio_to_prior5":"last_volume/max(1,mean(previous_5_volumes))","volume_acceleration_3v3":"mean(last_3_volumes)/max(1,mean(previous_3_volumes))","return_3m_pct":"(last_close/close_3_bars_back-1)*100","return_5m_pct":"(last_close/close_5_bars_back-1)*100"}},sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -2356,6 +2371,8 @@ class IndependentPriorityRadar:
         self.post_failure_diagnostic_state={"status":"IDLE","phase":"NOT_STARTED","message":"Post-Failure Diagnostic not started","diagnostic_id":POST_FAILURE_DIAGNOSTIC_SPEC["diagnostic_id"],"alpaca_requests_made":0,"new_post_2026_08_31_data_read":False,"updated_at":iso()}
         self.early_feature_probe_lock=threading.RLock(); self.early_feature_probe_thread=None
         self.early_feature_probe_state={"status":"IDLE","phase":"NOT_STARTED","message":"Early Feature Probe not started","execution_id":EARLY_FEATURE_PROBE_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"replay_restarted":False,"fresh_oos_opened":False,"updated_at":iso()}
+        self.early_feature_reconstruction_lock=threading.RLock(); self.early_feature_reconstruction_thread=None; self.early_feature_reconstruction_stop_event=threading.Event()
+        self.early_feature_reconstruction_state={"status":"IDLE","phase":"NOT_STARTED","message":"Early Feature Reconstruction not started","execution_id":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -4885,6 +4902,100 @@ class IndependentPriorityRadar:
         with self.early_feature_probe_lock:
             if self.early_feature_probe_thread and self.early_feature_probe_thread.is_alive():return False,"already_running"
             self.early_feature_probe_thread=threading.Thread(target=self.early_feature_probe_loop,name="early-feature-probe",daemon=True);self.early_feature_probe_thread.start()
+        return True,"started"
+
+    def early_feature_reconstruction_key(self, suffix: str) -> str:
+        return self.key(f"early_feature_reconstruction:v1:{suffix}")
+
+    def _set_early_feature_reconstruction_state(self, **updates: Any) -> None:
+        with self.early_feature_reconstruction_lock:
+            self.early_feature_reconstruction_state.update(updates); self.early_feature_reconstruction_state["updated_at"]=iso(); snap=dict(self.early_feature_reconstruction_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_reconstruction_key("status"),snap)
+
+    def _early_feature_reconstruction_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        if not self.alpaca.configured:return False,"Alpaca credentials required"
+        if EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SHA256!=EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["required_amendment_sha256"]:return False,"Amendment SHA mismatch"
+        if EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC.get("amendment_id")!=EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["required_amendment_id"]:return False,"Amendment ID mismatch"
+        if list(EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC.get("first_batch_features") or [])!=list(EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["features"]):return False,"First-batch feature list mismatch"
+        scope=EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC.get("reconstruction_scope") or {}
+        if list(scope.get("years") or [])!=EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["years"] or list(scope.get("windows_minutes") or [])!=EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["windows_minutes"]:return False,"Frozen reconstruction scope mismatch"
+        sessions=self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []
+        if not any("2019-01-01"<=str(x)<="2024-12-31" for x in sessions):return False,"Persisted 2019-2024 checkpoint observations required"
+        return True,"allowed"
+
+    @staticmethod
+    def _efr_features_from_1m(rows, checkpoint):
+        causal=[]
+        for r in rows:
+            try:ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"));o=float(r["o"]);h=float(r["h"]);l=float(r["l"]);c=float(r["c"]);v=max(0.0,float(r.get("v") or 0))
+            except Exception:continue
+            if ts<=checkpoint and min(o,h,l,c)>0:causal.append((ts,o,h,l,c,v))
+        causal.sort(key=lambda x:x[0])
+        if len(causal)<6:return None,{"reason":"insufficient_1m_bars","bars_available":len(causal)}
+        last=causal[-1]
+        if last[0]!=checkpoint:return None,{"reason":"checkpoint_bar_missing","last_bar_ts":last[0].isoformat().replace("+00:00","Z"),"bars_available":len(causal)}
+        six=causal[-6:];_,o,h,l,c,v=last;full=max(0.0,h-l);vols=[x[5] for x in six];closes=[x[4] for x in six]
+        f={"discovery_body_pct":(c-o)/o*100,"discovery_range_pct":full/o*100,"discovery_close_location":max(0.0,min(1.0,(c-l)/full if full>1e-12 else .5)),"log_discovery_volume":math.log1p(v),"volume_ratio_to_prior5":v/max(1.0,mean(vols[:-1])),"volume_acceleration_3v3":mean(vols[-3:])/max(1.0,mean(vols[:3])),"return_3m_pct":(closes[-1]/closes[-4]-1)*100,"return_5m_pct":(closes[-1]/closes[-6]-1)*100}
+        return (f,{"reason":"ok","bars_available":len(causal),"last_bar_ts":last[0].isoformat().replace("+00:00","Z")}) if all(math.isfinite(float(x)) for x in f.values()) else (None,{"reason":"non_finite_feature"})
+
+    def _efr_fetch_1m(self,symbols,target,start,end,remaining):
+        merged={s:{} for s in symbols};used=0;bs=int(EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["alpaca"]["batch_size_symbols"]);boats_ok=target>=date.fromisoformat(HISTORICAL_CENSUS_SPEC["boats_launch_date"])
+        for off in range(0,len(symbols),bs):
+            batch=symbols[off:off+bs];need=1+(1 if boats_ok else 0)
+            if used+need>remaining:raise RuntimeError("ALPACA_LOGICAL_REQUEST_BUDGET_EXHAUSTED_BEFORE_REQUEST")
+            sip=self.alpaca.bars(batch,start,end,feed="sip",adjustment="raw",timeframe="1Min");used+=1;boats={}
+            if boats_ok:boats=self.alpaca.bars(batch,start,end,feed="boats",adjustment="raw",timeframe="1Min");used+=1
+            for sym in batch:
+                dst=merged[sym]
+                for row in boats.get(sym,[]) or []:
+                    ts=str(row.get("t") or "")
+                    if ts and self._probe_session(ts,target)=="Overnight":dst[ts]={**row,"source":"boats"}
+                for row in sip.get(sym,[]) or []:
+                    ts=str(row.get("t") or "")
+                    if ts:dst[ts]={**row,"source":"sip"}
+        return {s:[d[k] for k in sorted(d)] for s,d in merged.items()},used
+
+    def early_feature_reconstruction_loop(self):
+        try:
+            ok,why=self._early_feature_reconstruction_gate()
+            if not ok:raise RuntimeError(why)
+            years={str(x) for x in EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["years"]};wins=set(EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["windows_minutes"]);budget=int(EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["alpaca"]["logical_request_budget"])
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []) if str(x)[:4] in years);done=set(self.redis.get_json(self.early_feature_reconstruction_key("completed_sessions"),[]) or []);calls=int(self.redis.get_json(self.early_feature_reconstruction_key("alpaca_logical_requests"),0) or 0);total=int(self.redis.get_json(self.early_feature_reconstruction_key("record_count"),0) or 0);self.early_feature_reconstruction_stop_event.clear()
+            self._set_early_feature_reconstruction_state(status="RUNNING",phase="HISTORICAL_BAR_RECONSTRUCTION",message=f"Reconstruction {len(done)}/{len(sessions)} sessions",sessions_completed=len(done),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,validation_2025_opened=False,year_2026_opened=False,fresh_oos_opened=False)
+            for sess in sessions:
+                if sess in done:continue
+                if self.early_feature_reconstruction_stop_event.is_set():self._set_early_feature_reconstruction_state(status="PAUSED",phase="HISTORICAL_BAR_RECONSTRUCTION",message="Pause requested; resume-safe checkpoint preserved",sessions_completed=len(done),total_sessions=len(sessions),alpaca_requests_made=calls);return
+                src=[x for x in (self.redis.get_json(self.early_causal_entry_exec_key(f"observations:{sess}"),[]) or []) if int(x.get("checkpoint_minutes") or -1) in wins and x.get("class") in {"positive","hard_negative"} and x.get("symbol") and x.get("eval_ts")];ev=[]
+                for x in src:
+                    try:ev.append((x,datetime.fromisoformat(str(x["eval_ts"]).replace("Z","+00:00"))))
+                    except Exception:pass
+                if not ev:self.redis.set_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]);done.add(sess);self.redis.set_json(self.early_feature_reconstruction_key("completed_sessions"),sorted(done));continue
+                syms=sorted({str(x[0]["symbol"]).upper() for x in ev});rows,used=self._efr_fetch_1m(syms,date.fromisoformat(sess),min(dt for _,dt in ev)-timedelta(minutes=20),max(dt for _,dt in ev)+timedelta(minutes=1),budget-calls);calls+=used;self.redis.set_json(self.early_feature_reconstruction_key("alpaca_logical_requests"),calls);records=[]
+                for x,dt in ev:
+                    sym=str(x["symbol"]).upper();feat,diag=self._efr_features_from_1m(rows.get(sym,[]),dt);rid=f'{sess}|{sym}|{x["class"]}|{int(x["checkpoint_minutes"])}|{x["eval_ts"]}';records.append({"record_id":rid,"session":sess,"year":int(sess[:4]),"symbol":sym,"class":x["class"],"checkpoint_minutes":int(x["checkpoint_minutes"]),"eval_ts":x["eval_ts"],"features":feat,"feature_available":feat is not None,"diagnostic":diag,"last_allowed_bar_timestamp":x["eval_ts"],"feature_definition_sha256":EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256,"source":"alpaca_historical_1Min_raw"})
+                self.redis.set_json(self.early_feature_reconstruction_key(f"records:{sess}"),records);total+=len(records);self.redis.set_json(self.early_feature_reconstruction_key("record_count"),total);done.add(sess);self.redis.set_json(self.early_feature_reconstruction_key("completed_sessions"),sorted(done))
+                if len(done)%10==0 or len(done)==len(sessions):self._set_early_feature_reconstruction_state(status="RUNNING",phase="HISTORICAL_BAR_RECONSTRUCTION",message=f"Reconstruction {len(done)}/{len(sessions)} sessions",current_session=sess,sessions_completed=len(done),total_sessions=len(sessions),records=total,alpaca_requests_made=calls,alpaca_request_budget=budget,validation_2025_opened=False,year_2026_opened=False,fresh_oos_opened=False)
+            avail=miss=0
+            for sess in sessions:
+                for r in self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []:
+                    if r.get("feature_available"):avail+=1
+                    else:miss+=1
+            report={"version":VERSION,"build":BUILD,"execution_id":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["execution_id"],"execution_spec_sha256":EARLY_FEATURE_RECONSTRUCTION_EXEC_SHA256,"required_amendment_sha256":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["required_amendment_sha256"],"actual_amendment_sha256":EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SHA256,"status":"COMPLETED","phase":"FEATURE_RECONSTRUCTION_STOP_REVIEW","sessions":len(sessions),"records":total,"feature_available_records":avail,"feature_unavailable_records":miss,"alpaca_requests_made":calls,"alpaca_request_budget":budget,"feature_definition_sha256":EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256,"feature_results_computed":False,"p_values_computed":False,"fdr_computed":False,"discovery_decision_computed":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"replay_restarted":False,"strategy_pass":False,"bot_authorized":False,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_reconstruction_key("report"),report);self._set_early_feature_reconstruction_state(status="COMPLETED",phase="FEATURE_RECONSTRUCTION_STOP_REVIEW",message="Historical first-batch reconstruction completed; STOP REVIEW",sessions_completed=len(sessions),total_sessions=len(sessions),records=total,alpaca_requests_made=calls,alpaca_request_budget=budget,stop_and_review_required=True,validation_2025_opened=False,year_2026_opened=False,fresh_oos_opened=False)
+        except Exception as e:
+            logging.exception("Early Feature Reconstruction failed");self._set_early_feature_reconstruction_state(status="ERROR",phase="FEATURE_RECONSTRUCTION_BLOCKED",message=f"{type(e).__name__}: {e}",fresh_oos_opened=False,validation_2025_opened=False,year_2026_opened=False)
+        finally:
+            with self.early_feature_reconstruction_lock:self.early_feature_reconstruction_thread=None
+
+    def start_early_feature_reconstruction(self):
+        ok,why=self._early_feature_reconstruction_gate()
+        if not ok:return False,why
+        old=self.redis.get_json(self.early_feature_reconstruction_key("report"),None)
+        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_reconstruction_lock:
+            if self.early_feature_reconstruction_thread and self.early_feature_reconstruction_thread.is_alive():return False,"already_running"
+            self.early_feature_reconstruction_thread=threading.Thread(target=self.early_feature_reconstruction_loop,name="early-feature-reconstruction",daemon=True);self.early_feature_reconstruction_thread.start()
         return True,"started"
 
     @staticmethod
@@ -9272,6 +9383,27 @@ def research_early_feature_probe_execution_result():
 def research_early_feature_level_discovery_prefreeze_protocol():
     allowed,reason=radar._early_feature_level_discovery_prefreeze_gate()
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"discovery_implemented":False,"discovery_started":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"alpaca_requests_made":0,"replay_restarted":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/reconstruction/execution/protocol")
+def research_feature_reconstruction_execution_protocol():
+    allowed,reason=radar._early_feature_reconstruction_gate();calls=int(radar.redis.get_json(radar.early_feature_reconstruction_key("alpaca_logical_requests"),0) or 0) if radar.redis.configured else 0
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_RECONSTRUCTION_EXEC_SHA256,"required_amendment_sha256":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["required_amendment_sha256"],"actual_amendment_sha256":EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SHA256,"feature_definition_sha256":EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256,"gate_allowed":allowed,"gate_reason":reason,"alpaca_authorized":bool(allowed),"alpaca_requests_made":calls,"alpaca_request_budget":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["alpaca"]["logical_request_budget"],"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"replay_restarted":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/reconstruction/execution/start",methods=["GET","POST"])
+def research_feature_reconstruction_execution_start():
+    ok,why=radar.start_early_feature_reconstruction();calls=int(radar.redis.get_json(radar.early_feature_reconstruction_key("alpaca_logical_requests"),0) or 0) if radar.redis.configured else 0
+    return jsonify({"ok":ok,"status":"started" if ok else why,"alpaca_requests_made":calls,"alpaca_request_budget":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["alpaca"]["logical_request_budget"],"status_url":"/research/early-causal-entry/feature-level-discovery/reconstruction/execution/status","result_url":"/research/early-causal-entry/feature-level-discovery/reconstruction/execution/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/reconstruction/execution/status")
+def research_feature_reconstruction_execution_status():
+    x=radar.redis.get_json(radar.early_feature_reconstruction_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_reconstruction_lock:out=dict(x or radar.early_feature_reconstruction_state);out["worker_alive"]=bool(radar.early_feature_reconstruction_thread and radar.early_feature_reconstruction_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/reconstruction/execution/result")
+def research_feature_reconstruction_execution_result():
+    x=radar.redis.get_json(radar.early_feature_reconstruction_key("report"),None) if radar.redis.configured else None
+    return (jsonify(x),200) if x else (jsonify({"status":"not_ready"}),404)
 
 @app.get("/research/early-causal-entry/feature-level-discovery/reconstruction-amendment/prefreeze/protocol")
 def research_early_feature_reconstruction_amendment_prefreeze_protocol():
