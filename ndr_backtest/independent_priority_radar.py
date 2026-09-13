@@ -8396,17 +8396,17 @@ def early_causal_entry_protocol():
     return jsonify({"version": VERSION, "build": BUILD, "research_spec": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC, "research_spec_sha256": EARLY_CAUSAL_ENTRY_RESEARCH_SHA256, "gate_allowed": allowed, "gate_reason": reason, "alpaca_requests_made": 0, "new_post_2026_08_31_data_read": False})
 
 @app.get("/research/early-causal-entry/start")
-def early_causal_entry_start():
+def research_early_causal_entry_protocol_start():
     ok, why = radar.freeze_early_causal_entry_research_protocol()
     return jsonify({"ok": ok, "status": why, "status_url": "/research/early-causal-entry/status", "result_url": "/research/early-causal-entry/result", "research_execution_started": False}), (200 if ok else 409)
 
 @app.get("/research/early-causal-entry/status")
-def early_causal_entry_status():
+def research_early_causal_entry_protocol_status():
     x = radar.redis.get_json(radar.early_causal_entry_research_key("status"), None) if radar.redis.configured else None
     return jsonify(x or {"status": "IDLE", "phase": "NOT_STARTED", "research_id": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["research_id"], "alpaca_requests_made": 0})
 
 @app.get("/research/early-causal-entry/result")
-def early_causal_entry_result():
+def research_early_causal_entry_protocol_result():
     x = radar.redis.get_json(radar.early_causal_entry_research_key("report"), None) if radar.redis.configured else None
     if not x:
         return jsonify({"result_ready": False, "status_url": "/research/early-causal-entry/status"}), 202
