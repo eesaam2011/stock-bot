@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.29"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-FEATURE-LEVEL-DISCOVERY-PREFREEZE"
+VERSION = "1.7.30"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-FEATURE-AVAILABILITY-GATE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -880,6 +880,55 @@ EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC = {
     }
 }
 EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+EARLY_FEATURE_AVAILABILITY_GATE_SPEC = {
+    "gate_id": "IPR-EARLY-FEATURE-AVAILABILITY-GATE-2026-09-13-A",
+    "purpose": "Classify frozen v1.7.29 features by causal source availability before any feature result is computed.",
+    "required_prefreeze_id": "IPR-EARLY-FEATURE-LEVEL-DISCOVERY-PREFREEZE-2026-09-13-A",
+    "required_prefreeze_sha256": "f532df7beed1f7e07bb98ee9b5a41a133969456e216d9d70e18eb3f670db0448",
+    "allowed_labels": ["AVAILABLE", "ALPACA_REQUIRED", "CAUSALLY_INVALID_AT_CHECKPOINT"],
+    "rules": {
+        "AVAILABLE": "Exact frozen feature value at 30m/60m can be obtained from already-persisted causal data without new market-data reads or definition changes.",
+        "ALPACA_REQUIRED": "Frozen feature is causally computable at the checkpoint, but required checkpoint-time bar inputs are not persisted and would require a separately approved historical market-data reconstruction.",
+        "CAUSALLY_INVALID_AT_CHECKPOINT": "Exact frozen definition references signal/t0-derived state not available at the earlier checkpoint; making it causal would require redefining the feature, which this gate forbids.",
+    },
+    "guardrails": {
+        "alpaca_requests": 0, "no_feature_values_computed": True, "no_class_effects": True,
+        "no_p_values": True, "no_fdr": True, "no_2025_read": True, "no_2026_read": True,
+        "no_fresh_oos": True, "no_feature_definition_mutation": True, "replay_restarted": False,
+        "alpaca_required_does_not_authorize_alpaca": True,
+    },
+}
+EARLY_FEATURE_AVAILABILITY_GATE_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_AVAILABILITY_GATE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+# Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
+_EF_BAR_RECONSTRUCTABLE = {
+    "discovery_body_pct","discovery_range_pct","discovery_close_location","discovery_upper_wick_to_range",
+    "discovery_upper_wick_to_body","log_discovery_volume","volume_ratio_to_prior5","volume_acceleration_3v3",
+    "return_2m_pct","return_3m_pct","return_5m_pct",
+    "price_change_pct_last45m","er45","price_change_x_er45","log_signal_price","opportunity",
+    "failure_pressure","minutes_since_regular_open",
+}
+_EF_CAUSALLY_INVALID = {"distance_to_resistance_pct","distance_above_vwap_pct"}
+
+def early_feature_availability_classification():
+    rows=[]
+    for name in EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC["feature_universe"]["features"]:
+        if name in _EF_CAUSALLY_INVALID:
+            if name == "distance_to_resistance_pct":
+                reason = "Frozen early_causal_features definition uses candidate frozen_resistance and candidate signal_price from the later discovery/signal state; exact 30m/60m checkpoint use would leak later state or require redefinition."
+            else:
+                reason = "Frozen early_causal_features definition uses candidate signal_price from the later discovery/signal state in the VWAP-distance numerator; replacing it with checkpoint close would be a new definition."
+            label="CAUSALLY_INVALID_AT_CHECKPOINT"
+        elif name in _EF_BAR_RECONSTRUCTABLE:
+            label="ALPACA_REQUIRED"
+            reason="Causally reconstructable from bars available by the checkpoint under the pre-existing code definition, but the persisted Early Causal Entry observations do not store the required raw checkpoint bar path."
+        else:
+            label="AVAILABLE"
+            reason="Exact frozen checkpoint value is already persisted."
+        rows.append({"feature":name,"classification":label,"reason":reason})
+    return rows
 
 EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC = {
     "amendment_id": "IPR-EARLY-CAUSAL-ENTRY-THRESHOLD-FAMILY-AMENDMENT-2026-09-13-A",
@@ -9162,6 +9211,24 @@ def research_early_feature_probe_execution_result():
 def research_early_feature_level_discovery_prefreeze_protocol():
     allowed,reason=radar._early_feature_level_discovery_prefreeze_gate()
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"discovery_implemented":False,"discovery_started":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"alpaca_requests_made":0,"replay_restarted":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/availability/protocol")
+def research_early_feature_availability_protocol():
+    allowed,reason=radar._early_feature_level_discovery_prefreeze_gate()
+    actual_sha=EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256
+    allowed=bool(allowed and actual_sha==EARLY_FEATURE_AVAILABILITY_GATE_SPEC["required_prefreeze_sha256"])
+    if actual_sha!=EARLY_FEATURE_AVAILABILITY_GATE_SPEC["required_prefreeze_sha256"]: reason="Pre-freeze SHA mismatch"
+    return jsonify({"version":VERSION,"build":BUILD,"gate_spec":EARLY_FEATURE_AVAILABILITY_GATE_SPEC,"gate_spec_sha256":EARLY_FEATURE_AVAILABILITY_GATE_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_AVAILABILITY_GATE_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":actual_sha,"gate_allowed":allowed,"gate_reason":reason,"alpaca_requests_made":0,"feature_results_read":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"replay_restarted":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/availability/result")
+def research_early_feature_availability_result():
+    allowed,reason=radar._early_feature_level_discovery_prefreeze_gate()
+    actual_sha=EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256
+    allowed=bool(allowed and actual_sha==EARLY_FEATURE_AVAILABILITY_GATE_SPEC["required_prefreeze_sha256"])
+    if not allowed:
+        return jsonify({"ok":False,"gate_allowed":False,"gate_reason":reason,"alpaca_requests_made":0}),409
+    rows=early_feature_availability_classification(); counts={k:sum(1 for r in rows if r["classification"]==k) for k in EARLY_FEATURE_AVAILABILITY_GATE_SPEC["allowed_labels"]}
+    return jsonify({"ok":True,"version":VERSION,"build":BUILD,"gate_id":EARLY_FEATURE_AVAILABILITY_GATE_SPEC["gate_id"],"gate_spec_sha256":EARLY_FEATURE_AVAILABILITY_GATE_SHA256,"prefreeze_spec_sha256":actual_sha,"features":rows,"counts":counts,"total_features":len(rows),"decision":"STOP_REVIEW","alpaca_authorized":False,"alpaca_requests_made":0,"feature_results_read":False,"feature_values_computed":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"replay_restarted":False,"amendment_required_before_alpaca":counts.get("ALPACA_REQUIRED",0)>0})
 
 @app.get("/research/early-causal-entry/feature-level-discovery/prefreeze/artifact")
 def research_early_feature_level_discovery_prefreeze_artifact():
