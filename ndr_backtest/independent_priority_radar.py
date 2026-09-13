@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.26"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-POST-FAILURE-DIAGNOSTIC"
+VERSION = "1.7.27"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-FEATURE-PROBE-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -722,6 +722,50 @@ POST_FAILURE_DIAGNOSTIC_SPEC = {
     }
 }
 POST_FAILURE_DIAGNOSTIC_SHA256 = hashlib.sha256(json.dumps(POST_FAILURE_DIAGNOSTIC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+EARLY_FEATURE_PROBE_PREFREEZE_SPEC = {
+    "prefreeze_id": "IPR-EARLY-FEATURE-PROBE-PREFREEZE-2026-09-13-A",
+    "purpose": "Freeze the GO/NO-GO rule for a lightweight Early Feature-Level Probe before any probe result is observed.",
+    "required_post_failure_diagnostic_id": POST_FAILURE_DIAGNOSTIC_SPEC["diagnostic_id"],
+    "required_post_failure_diagnostic_spec_sha256": POST_FAILURE_DIAGNOSTIC_SHA256,
+    "required_post_failure_diagnostic_result_sha256": "d8453660f46c2e9b9270a9bd6e71f33360f95a65ebaa1488a2ebc1328f77402d",
+    "development_end": "2026-08-31",
+    "probe_windows_minutes": [15, 30, 60],
+    "go_rule": {
+        "minimum_separation_pp": 3.00,
+        "separation_definition": "Positive pass rate minus Hard-Negative pass rate, in percentage points.",
+        "minimum_qualifying_windows": 2,
+        "eligible_go_years": [2019, 2020, 2021, 2022, 2023, 2024, 2025],
+        "minimum_same_direction_years_per_qualifying_window": 5,
+        "same_direction_definition": "Positive pass rate > Hard-Negative pass rate.",
+        "rounding_forbidden": True,
+        "explicit_boundary_example": "2.99pp = NO_GO; 3.00pp may qualify only if every other frozen condition is also satisfied."
+    },
+    "year_2026_policy": {
+        "diagnostic_only": True,
+        "excluded_from_go_qualification": True,
+        "mandatory_if_go_and_2026_reversed": "REGIME_OR_DATA_SHIFT_REVIEW_BEFORE_ANY_FRESH_OOS"
+    },
+    "decision_semantics": {
+        "GO": "Authorizes only a separately pre-frozen Feature-Level Discovery stage; it is not a strategy PASS and does not authorize a bot.",
+        "NO_GO": "Stop this Early Feature-Level Probe path under the frozen rule; no discretionary override after seeing results.",
+        "probe_cannot_validate_strategy": True,
+        "feature_level_discovery_requires_separate_prefreeze": True,
+        "multiple_testing_control_fdr_deferred_to_full_feature_level_discovery": True
+    },
+    "guardrails": {
+        "read_persisted_data_only": True,
+        "alpaca_requests": 0,
+        "replay_restarted": False,
+        "no_post_2026_08_31_data": True,
+        "no_fresh_oos": True,
+        "no_model_feature_direction_weight_mutation": True,
+        "no_threshold_mutation": True,
+        "prefreeze_sha_required_before_probe_start": True
+    }
+}
+EARLY_FEATURE_PROBE_PREFREEZE_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_PROBE_PREFREEZE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC = {
     "amendment_id": "IPR-EARLY-CAUSAL-ENTRY-THRESHOLD-FAMILY-AMENDMENT-2026-09-13-A",
@@ -4522,6 +4566,17 @@ class IndependentPriorityRadar:
         if r.get("new_post_2026_08_31_data_read") is not False:return False,"Fresh OOS lock failed"
         sessions=self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []
         if len(sessions)!=int(r.get("sessions") or 0):return False,"Persisted session count mismatch"
+        return True,"allowed"
+
+    def _early_feature_probe_prefreeze_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        r=self.redis.get_json(self.post_failure_diagnostic_key("report"),{}) or {}
+        if r.get("status")!="COMPLETED" or r.get("phase")!="POST_FAILURE_DIAGNOSTIC_STOP_REVIEW":return False,"Completed Post-Failure Diagnostic STOP_REVIEW required"
+        if r.get("diagnostic_id")!=EARLY_FEATURE_PROBE_PREFREEZE_SPEC["required_post_failure_diagnostic_id"]:return False,"Post-Failure Diagnostic ID provenance mismatch"
+        if r.get("diagnostic_spec_sha256")!=EARLY_FEATURE_PROBE_PREFREEZE_SPEC["required_post_failure_diagnostic_spec_sha256"]:return False,"Post-Failure Diagnostic spec SHA mismatch"
+        if r.get("diagnostic_result_sha256")!=EARLY_FEATURE_PROBE_PREFREEZE_SPEC["required_post_failure_diagnostic_result_sha256"]:return False,"Post-Failure Diagnostic result SHA mismatch"
+        if r.get("fresh_oos_preserved") is not True or r.get("new_post_2026_08_31_data_read") is not False:return False,"Fresh OOS lock failed"
+        if r.get("alpaca_requests_made")!=0 or r.get("replay_restarted") is not False:return False,"Read-only provenance failed"
         return True,"allowed"
 
     @staticmethod
@@ -8871,6 +8926,16 @@ def research_early_causal_entry_execution_result():
     x=radar.redis.get_json(radar.early_causal_entry_exec_key("report"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/execution/status"}),202
     return jsonify(x)
+
+@app.get("/research/early-causal-entry/early-feature-probe/prefreeze/protocol")
+def research_early_feature_probe_prefreeze_protocol():
+    allowed,reason=radar._early_feature_probe_prefreeze_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":EARLY_FEATURE_PROBE_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_PROBE_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"probe_implemented":False,"probe_started":False,"alpaca_requests_made":0,"replay_restarted":False,"fresh_oos_opened":False})
+
+@app.get("/research/early-causal-entry/early-feature-probe/prefreeze/artifact")
+def research_early_feature_probe_prefreeze_artifact():
+    allowed,reason=radar._early_feature_probe_prefreeze_gate()
+    return jsonify({"prefreeze_id":EARLY_FEATURE_PROBE_PREFREEZE_SPEC["prefreeze_id"],"prefreeze_spec":EARLY_FEATURE_PROBE_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_PROBE_PREFREEZE_SHA256,"source_gate_allowed":allowed,"source_gate_reason":reason,"immutable_decision_rule":True})
 
 @app.get("/research/early-causal-entry/post-failure-diagnostic/protocol")
 def research_early_causal_entry_post_failure_diagnostic_protocol():
