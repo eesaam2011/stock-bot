@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.25-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-CAUSAL-ENTRY-RESEARCH-EXECUTION-THRESHOLD-AMENDMENT-FREEZE"
+VERSION = "1.7.25-R2"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-CAUSAL-ENTRY-FINALIZATION-RESCUE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -4389,6 +4389,87 @@ class IndependentPriorityRadar:
             self.early_causal_entry_exec_thread=threading.Thread(target=self.early_causal_entry_exec_loop,name="early-causal-entry-research",daemon=True);self.early_causal_entry_exec_thread.start()
         return True,"started"
 
+    def _ece_finalize_rescue_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        ok,why=self._early_causal_entry_exec_gate()
+        if not ok:return False,why
+        if self.redis.get_json(self.early_causal_entry_exec_key("report"),None):return False,"Execution report already exists; rescue not allowed"
+        sessions=sorted(str(x) for x in (self.redis.get_json(self.causal_diagnostic_replay_key("completed_sessions"),[]) or []) if "2019-01-02"<=str(x)<="2026-08-31")
+        done=set(str(x) for x in (self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []))
+        if not sessions or len(done)!=len(sessions) or any(x not in done for x in sessions):return False,f"Checkpoint replay incomplete: {len(done)}/{len(sessions)}"
+        if any(str(x)>"2026-08-31" for x in done):return False,"Post-2026-08-31 session detected; fail closed"
+        amend=self.redis.get_json(self.early_causal_entry_threshold_amendment_key("report"),{}) or {}
+        if amend.get("amendment_spec_sha256")!=EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SHA256:return False,"Frozen threshold amendment mismatch"
+        return True,"allowed"
+
+    def early_causal_entry_finalize_rescue_loop(self):
+        dbpath=None
+        try:
+            ok,why=self._ece_finalize_rescue_gate()
+            if not ok:raise RuntimeError(why)
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.causal_diagnostic_replay_key("completed_sessions"),[]) or []) if "2019-01-02"<=str(x)<="2026-08-31")
+            calls=int(self.redis.get_json(self.early_causal_entry_exec_key("alpaca_bar_calls"),0) or 0)
+            self._set_early_causal_entry_exec_state(status="RUNNING",phase="EARLY_CAUSAL_ENTRY_FINALIZATION_RESCUE",message="Read-only finalization rescue: spooling persisted checkpoint observations; Alpaca disabled",total_sessions=len(sessions),sessions_scanned=len(sessions),finalize_sessions_scanned=0,finalize_stage="SPOOL",alpaca_bar_calls_made=calls,alpaca_bar_calls_made_during_rescue=0,new_post_2026_08_31_data_read=False)
+            fd,dbpath=tempfile.mkstemp(prefix="ipr_ece_finalize_",suffix=".sqlite3");os.close(fd);con=sqlite3.connect(dbpath)
+            con.execute("PRAGMA journal_mode=OFF");con.execute("PRAGMA synchronous=OFF");con.execute("PRAGMA temp_store=FILE")
+            con.execute("CREATE TABLE obs (class TEXT,symbol TEXT,year TEXT,checkpoint_minutes INTEGER,score REAL,scoreable INTEGER)")
+            q="INSERT INTO obs(class,symbol,year,checkpoint_minutes,score,scoreable) VALUES (?,?,?,?,?,?)"
+            for i,sess in enumerate(sessions,1):
+                rows=self.redis.get_json(self.early_causal_entry_exec_key(f"observations:{sess}"),[]) or []
+                batch=[]
+                for x in rows:
+                    if x.get("class") not in {"positive","hard_negative"}:continue
+                    try:cp=int(x.get("checkpoint_minutes"))
+                    except:continue
+                    score=x.get("score");score=float(score) if isinstance(score,(int,float)) else None
+                    batch.append((str(x.get("class")),str(x.get("symbol") or ""),str(x.get("year") or sess[:4]),cp,score,1 if score is not None else 0))
+                if batch:con.executemany(q,batch)
+                if i%25==0 or i==len(sessions):
+                    con.commit();self._set_early_causal_entry_exec_state(status="RUNNING",phase="EARLY_CAUSAL_ENTRY_FINALIZATION_RESCUE",message=f"Finalization rescue spool {i}/{len(sessions)} sessions",total_sessions=len(sessions),sessions_scanned=len(sessions),finalize_sessions_scanned=i,finalize_stage="SPOOL",alpaca_bar_calls_made=calls,alpaca_bar_calls_made_during_rescue=0,new_post_2026_08_31_data_read=False)
+            con.commit();con.execute("CREATE INDEX idx_ece_cp_cls ON obs(checkpoint_minutes,class)");con.execute("CREATE INDEX idx_ece_cp_cls_sym ON obs(checkpoint_minutes,class,symbol)");con.execute("CREATE INDEX idx_ece_cp_cls_year ON obs(checkpoint_minutes,class,year)");con.commit()
+            cps=EARLY_CAUSAL_ENTRY_EXEC_SPEC["checkpoints_minutes_before_frozen_early_core"];base_thr=float(EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["baseline"]["threshold"]);mults=EARLY_CAUSAL_ENTRY_EXEC_SPEC["candidate_family"]["threshold_multipliers_of_frozen_early_core"];attempts=[];selected=None
+            for ci,cp in enumerate(cps,1):
+                self._set_early_causal_entry_exec_state(status="RUNNING",phase="EARLY_CAUSAL_ENTRY_FINALIZATION_RESCUE",message=f"Finalization rescue summarize checkpoint {cp}m ({ci}/{len(cps)})",total_sessions=len(sessions),sessions_scanned=len(sessions),finalize_sessions_scanned=len(sessions),finalize_stage="SUMMARY",finalize_checkpoint_minutes=cp,alpaca_bar_calls_made=calls,alpaca_bar_calls_made_during_rescue=0,new_post_2026_08_31_data_read=False)
+                totals={}
+                for cls in ("positive","hard_negative"):
+                    total,scoreable=con.execute("SELECT COUNT(*),COALESCE(SUM(scoreable),0) FROM obs WHERE checkpoint_minutes=? AND class=?",(cp,cls)).fetchone();totals[cls]=(int(total),int(scoreable))
+                for mult in sorted(mults,reverse=True):
+                    thr=base_thr*float(mult);pt,ps=totals["positive"];ht,hsco=totals["hard_negative"]
+                    pp=int(con.execute("SELECT COUNT(*) FROM obs WHERE checkpoint_minutes=? AND class='positive' AND score>=?",(cp,thr)).fetchone()[0]);hp=int(con.execute("SELECT COUNT(*) FROM obs WHERE checkpoint_minutes=? AND class='hard_negative' AND score>=?",(cp,thr)).fetchone()[0])
+                    pr=pp/pt if pt else None;he=hp/ht if ht else None
+                    pys=int(con.execute("SELECT COUNT(DISTINCT symbol) FROM obs WHERE checkpoint_minutes=? AND class='positive' AND score>=?",(cp,thr)).fetchone()[0])
+                    hsn=int(con.execute("SELECT COUNT(DISTINCT symbol) FROM obs WHERE checkpoint_minutes=? AND class='hard_negative'",(cp,)).fetchone()[0])
+                    hsr=con.execute("SELECT AVG(pass_rate) FROM (SELECT AVG(CASE WHEN score>=? THEN 1.0 ELSE 0.0 END) AS pass_rate FROM obs WHERE checkpoint_minutes=? AND class='hard_negative' GROUP BY symbol)",(thr,cp)).fetchone()[0];hsr=float(hsr) if hsr is not None else None
+                    year={};same=0
+                    for y in [str(z) for z in range(2019,2027)]:
+                        pyt=int(con.execute("SELECT COUNT(*) FROM obs WHERE checkpoint_minutes=? AND class='positive' AND year=?",(cp,y)).fetchone()[0]);hyt=int(con.execute("SELECT COUNT(*) FROM obs WHERE checkpoint_minutes=? AND class='hard_negative' AND year=?",(cp,y)).fetchone()[0]);pyp=int(con.execute("SELECT COUNT(*) FROM obs WHERE checkpoint_minutes=? AND class='positive' AND year=? AND score>=?",(cp,y,thr)).fetchone()[0]);hyp=int(con.execute("SELECT COUNT(*) FROM obs WHERE checkpoint_minutes=? AND class='hard_negative' AND year=? AND score>=?",(cp,y,thr)).fetchone()[0]);pyr=pyp/pyt if pyt else None;hyr=hyp/hyt if hyt else None;sd=bool(pyr is not None and hyr is not None and pyr>hyr);same+=1 if sd else 0;year[y]={"positive_pass_rate":pyr,"hard_negative_event_pass_rate":hyr,"same_direction":sd}
+                    support=pp>=EARLY_CAUSAL_ENTRY_EXEC_SPEC["gates"]["min_positive_events"] and pys>=EARLY_CAUSAL_ENTRY_EXEC_SPEC["gates"]["min_positive_symbols"]
+                    stable=same>=EARLY_CAUSAL_ENTRY_EXEC_SPEC["gates"]["min_same_direction_years"] and year.get("2025",{}).get("same_direction") and year.get("2026",{}).get("same_direction")
+                    passed=bool(pr is not None and pr>=.20 and hsr is not None and hsr<=.10 and support and stable)
+                    attempts.append({"checkpoint_minutes":cp,"threshold_multiplier":mult,"threshold":thr,"positive_total":pt,"positive_scoreable":ps,"positive_pass_events":pp,"positive_recall":pr,"positive_pass_symbols":pys,"hard_negative_total":ht,"hard_negative_scoreable":hsco,"hard_negative_event_pass_rate":he,"hard_negative_equal_symbol_pass_rate":hsr,"hard_negative_symbols":hsn,"same_direction_years":same,"by_year":year,"support_gate":support,"stability_gate":stable,"live_expressible":True,"classification":"PASS" if passed else "FAIL"})
+                passing=[a for a in attempts if a["checkpoint_minutes"]==cp and a["classification"]=="PASS"]
+                if passing and selected is None:selected=sorted(passing,key=lambda a:a["threshold"],reverse=True)[0]
+            report={"version":VERSION,"build":BUILD,"execution_id":EARLY_CAUSAL_ENTRY_EXEC_SPEC["execution_id"],"execution_spec_sha256":EARLY_CAUSAL_ENTRY_EXEC_SHA256,"source_research_spec_sha256":EARLY_CAUSAL_ENTRY_EXEC_SPEC["required_research_spec_sha256"],"source_protocol_artifact_sha256":EARLY_CAUSAL_ENTRY_EXEC_SPEC["required_protocol_artifact_sha256"],"source_causal_replay_result_sha256":EARLY_CAUSAL_ENTRY_EXEC_SPEC["required_causal_replay_result_sha256"],"source_frozen_model_sha256":EARLY_CAUSAL_ENTRY_EXEC_SPEC["required_frozen_model_sha256"],"status":"COMPLETED","phase":"EARLY_CAUSAL_ENTRY_RESEARCH_STOP_REVIEW","sessions":len(sessions),"first_session":sessions[0] if sessions else None,"last_session":sessions[-1] if sessions else None,"cohort":"persisted causal replay signals","attempted_rules":attempts,"selected_candidate":selected,"research_classification":"PASS" if selected else "FAIL","fresh_oos_preserved":True,"new_post_2026_08_31_data_read":False,"model_features_directions_weights_mutated":False,"entry_stop_exit_rules_selected":False,"profitability_used_for_selection":False,"alpaca_bar_calls_made":calls,"alpaca_bar_calls_made_during_rescue":0,"finalization_method":"read-only Redis persisted observations -> disk-backed SQLite spool -> original frozen gate equations","stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_causal_entry_exec_key("report"),report);self.redis.set_json(self.early_causal_entry_exec_key("finalization_rescue_provenance"),{"rescue_build":"IPR-1.7.25-R2-EARLY-CAUSAL-ENTRY-FINALIZATION-RESCUE","source_execution_id":EARLY_CAUSAL_ENTRY_EXEC_SPEC["execution_id"],"source_completed_sessions":len(sessions),"alpaca_bar_calls_made_during_rescue":0,"method":"read-only Redis -> disk-backed SQLite spool -> original frozen gate equations","completed_at":iso()});self._set_early_causal_entry_exec_state(status="COMPLETED",phase="EARLY_CAUSAL_ENTRY_RESEARCH_STOP_REVIEW",message="Early Causal Entry research finalized by read-only rescue; STOP REVIEW before fresh OOS",total_sessions=len(sessions),sessions_scanned=len(sessions),finalize_sessions_scanned=len(sessions),finalize_stage="COMPLETED",alpaca_bar_calls_made=calls,alpaca_bar_calls_made_during_rescue=0,new_post_2026_08_31_data_read=False,research_classification=report["research_classification"],stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Early causal entry finalization rescue failed");self._set_early_causal_entry_exec_state(status="ERROR",phase="EARLY_CAUSAL_ENTRY_FINALIZATION_RESCUE_BLOCKED",message="Finalization rescue failed closed",last_error=f"{type(e).__name__}: {e}",alpaca_bar_calls_made_during_rescue=0,new_post_2026_08_31_data_read=False)
+        finally:
+            try:
+                if 'con' in locals():con.close()
+            except:pass
+            if dbpath:
+                try:os.remove(dbpath)
+                except:pass
+            with self.early_causal_entry_exec_lock:self.early_causal_entry_exec_thread=None
+
+    def start_early_causal_entry_finalize_rescue(self):
+        ok,why=self._ece_finalize_rescue_gate()
+        if not ok:return False,why
+        with self.early_causal_entry_exec_lock:
+            if self.early_causal_entry_exec_thread and self.early_causal_entry_exec_thread.is_alive():return False,"already_running"
+            self.early_causal_entry_exec_thread=threading.Thread(target=self.early_causal_entry_finalize_rescue_loop,name="early-causal-entry-finalization-rescue",daemon=True);self.early_causal_entry_exec_thread.start()
+        return True,"started"
+
     def phase0a_key(self, suffix: str) -> str:
         return self.key(f"phase0a:v1:{suffix}")
 
@@ -8654,6 +8735,15 @@ def research_early_causal_entry_execution_status():
     with radar.early_causal_entry_exec_lock:
         out=dict(x or radar.early_causal_entry_exec_state);out["worker_alive"]=bool(radar.early_causal_entry_exec_thread and radar.early_causal_entry_exec_thread.is_alive())
     return jsonify(out)
+
+@app.get("/research/early-causal-entry/execution/finalize-rescue/protocol")
+def research_early_causal_entry_finalize_rescue_protocol():
+    allowed,reason=radar._ece_finalize_rescue_gate();return jsonify({"version":VERSION,"build":BUILD,"rescue_build":"IPR-1.7.25-R2-EARLY-CAUSAL-ENTRY-FINALIZATION-RESCUE","gate_allowed":allowed,"gate_reason":reason,"read_only_source":True,"replay_restarted":False,"alpaca_bar_calls_made_during_rescue":0,"normal_result_url":"/research/early-causal-entry/execution/result"})
+
+@app.get("/research/early-causal-entry/execution/finalize-rescue/start")
+@app.post("/research/early-causal-entry/execution/finalize-rescue/start")
+def research_early_causal_entry_finalize_rescue_start():
+    ok,why=radar.start_early_causal_entry_finalize_rescue();return jsonify({"ok":ok,"status":"started" if ok else why,"replay_restarted":False,"alpaca_bar_calls_made_during_rescue":0,"status_url":"/research/early-causal-entry/execution/status","result_url":"/research/early-causal-entry/execution/result"}),(202 if ok else 409)
 
 @app.get("/research/early-causal-entry/execution/result")
 def research_early_causal_entry_execution_result():
