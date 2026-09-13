@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.25-R2"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-CAUSAL-ENTRY-FINALIZATION-RESCUE"
+VERSION = "1.7.26"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-POST-FAILURE-DIAGNOSTIC"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -691,6 +691,37 @@ EARLY_CAUSAL_ENTRY_EXEC_SPEC = {
     }
 }
 EARLY_CAUSAL_ENTRY_EXEC_SHA256 = hashlib.sha256(json.dumps(EARLY_CAUSAL_ENTRY_EXEC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+POST_FAILURE_DIAGNOSTIC_SPEC = {
+    "diagnostic_id": "IPR-EARLY-CAUSAL-ENTRY-POST-FAILURE-DIAGNOSTIC-2026-09-13-A",
+    "purpose": "Read-only diagnosis of the failed Early Causal Entry Development result before any new hypothesis is frozen or tested.",
+    "required_execution_id": EARLY_CAUSAL_ENTRY_EXEC_SPEC["execution_id"],
+    "required_execution_spec_sha256": EARLY_CAUSAL_ENTRY_EXEC_SHA256,
+    "required_result_sha256": "e2b39b93d3081a99374510e1e68c9ef105d8cc349c299c7f1cd1c1ebfa0dcda5",
+    "required_research_classification": "FAIL",
+    "development_end": "2026-08-31",
+    "checkpoints_minutes": [240,120,60,30,15],
+    "primary_threshold_multiplier": 1.0,
+    "diagnostics": [
+        "2026 sample-size and direction versus prior years",
+        "like-for-like Jan-Aug comparison for 2019-2026",
+        "15/30/60/120/240 minute separation curve",
+        "scoreability and score-distribution diagnostics",
+        "threshold-family gate-failure map from the frozen final report"
+    ],
+    "guardrails": {
+        "read_persisted_execution_observations_only": True,
+        "alpaca_requests": 0,
+        "replay_restarted": False,
+        "no_post_2026_08_31_data": True,
+        "no_fresh_oos": True,
+        "no_model_or_threshold_mutation": True,
+        "diagnostic_cannot_declare_new_hypothesis_pass": True,
+        "new_hypothesis_requires_separate_prefreeze_with_numeric_success_criteria": True
+    }
+}
+POST_FAILURE_DIAGNOSTIC_SHA256 = hashlib.sha256(json.dumps(POST_FAILURE_DIAGNOSTIC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC = {
     "amendment_id": "IPR-EARLY-CAUSAL-ENTRY-THRESHOLD-FAMILY-AMENDMENT-2026-09-13-A",
@@ -2053,6 +2084,8 @@ class IndependentPriorityRadar:
         self.causal_diagnostic_replay_state={"status":"IDLE","phase":"NOT_STARTED","message":"Causal Diagnostic Replay not started","replay_id":CAUSAL_DIAGNOSTIC_REPLAY_SPEC["replay_id"],"post_signal_paths_read":False,"updated_at":iso()}
         self.early_causal_entry_exec_lock=threading.RLock(); self.early_causal_entry_exec_thread=None; self.early_causal_entry_exec_stop_event=threading.Event()
         self.early_causal_entry_exec_state={"status":"IDLE","phase":"NOT_STARTED","message":"Early Causal Entry Research execution not started","execution_id":EARLY_CAUSAL_ENTRY_EXEC_SPEC["execution_id"],"new_post_2026_08_31_data_read":False,"updated_at":iso()}
+        self.post_failure_diagnostic_lock=threading.RLock(); self.post_failure_diagnostic_thread=None
+        self.post_failure_diagnostic_state={"status":"IDLE","phase":"NOT_STARTED","message":"Post-Failure Diagnostic not started","diagnostic_id":POST_FAILURE_DIAGNOSTIC_SPEC["diagnostic_id"],"alpaca_requests_made":0,"new_post_2026_08_31_data_read":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -4468,6 +4501,94 @@ class IndependentPriorityRadar:
         with self.early_causal_entry_exec_lock:
             if self.early_causal_entry_exec_thread and self.early_causal_entry_exec_thread.is_alive():return False,"already_running"
             self.early_causal_entry_exec_thread=threading.Thread(target=self.early_causal_entry_finalize_rescue_loop,name="early-causal-entry-finalization-rescue",daemon=True);self.early_causal_entry_exec_thread.start()
+        return True,"started"
+
+    def post_failure_diagnostic_key(self, suffix: str) -> str:
+        return self.key(f"early_causal_entry_post_failure_diagnostic:v1:{suffix}")
+
+    def _set_post_failure_diagnostic_state(self, **updates: Any) -> None:
+        with self.post_failure_diagnostic_lock:
+            self.post_failure_diagnostic_state.update(updates); self.post_failure_diagnostic_state["updated_at"] = iso(); snap=dict(self.post_failure_diagnostic_state)
+        if self.redis.configured:self.redis.set_json(self.post_failure_diagnostic_key("status"),snap)
+
+    def _post_failure_diagnostic_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        r=self.redis.get_json(self.early_causal_entry_exec_key("report"),{}) or {}
+        if r.get("status")!="COMPLETED" or r.get("phase")!="EARLY_CAUSAL_ENTRY_RESEARCH_STOP_REVIEW":return False,"Completed Early Causal Entry STOP_REVIEW required"
+        if r.get("execution_id")!=POST_FAILURE_DIAGNOSTIC_SPEC["required_execution_id"]:return False,"Execution ID provenance mismatch"
+        if r.get("execution_spec_sha256")!=POST_FAILURE_DIAGNOSTIC_SPEC["required_execution_spec_sha256"]:return False,"Execution spec provenance mismatch"
+        if r.get("result_sha256")!=POST_FAILURE_DIAGNOSTIC_SPEC["required_result_sha256"]:return False,"Final FAIL result SHA mismatch"
+        if r.get("research_classification")!=POST_FAILURE_DIAGNOSTIC_SPEC["required_research_classification"] or r.get("selected_candidate") is not None:return False,"Diagnostic requires the frozen FAIL/null-candidate result"
+        if r.get("new_post_2026_08_31_data_read") is not False:return False,"Fresh OOS lock failed"
+        sessions=self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []
+        if len(sessions)!=int(r.get("sessions") or 0):return False,"Persisted session count mismatch"
+        return True,"allowed"
+
+    @staticmethod
+    def _pfd_quantiles(vals):
+        a=np.asarray([float(x) for x in vals if isinstance(x,(int,float)) and math.isfinite(float(x))],dtype=float)
+        if not len(a):return {"n":0,"mean":None,"median":None,"p25":None,"p75":None}
+        return {"n":int(len(a)),"mean":float(np.mean(a)),"median":float(np.median(a)),"p25":float(np.quantile(a,.25)),"p75":float(np.quantile(a,.75))}
+
+    def post_failure_diagnostic_loop(self):
+        try:
+            ok,why=self._post_failure_diagnostic_gate()
+            if not ok:raise RuntimeError(why)
+            src=self.redis.get_json(self.early_causal_entry_exec_key("report"),{}) or {}
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []) if "2019-01-02"<=str(x)<="2026-08-31")
+            base_thr=float(EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["baseline"]["threshold"])
+            cps=POST_FAILURE_DIAGNOSTIC_SPEC["checkpoints_minutes"]
+            # Keep only compact sufficient statistics; never hold the full observation corpus in RAM.
+            buckets=defaultdict(lambda:{"positive_total":0,"hard_negative_total":0,"positive_scoreable":0,"hard_negative_scoreable":0,"positive_pass":0,"hard_negative_pass":0,"positive_score_sum":0.0,"hard_negative_score_sum":0.0,"positive_score_sumsq":0.0,"hard_negative_score_sumsq":0.0,"positive_symbols":set(),"hard_negative_symbols":set()})
+            self._set_post_failure_diagnostic_state(status="RUNNING",phase="READ_ONLY_SCAN",message=f"Post-Failure Diagnostic 0/{len(sessions)}",sessions_scanned=0,total_sessions=len(sessions),alpaca_requests_made=0,replay_restarted=False,new_post_2026_08_31_data_read=False)
+            for i,sess in enumerate(sessions,1):
+                if sess>"2026-08-31":raise RuntimeError("Fresh OOS boundary violation")
+                year=sess[:4]
+                obs=self.redis.get_json(self.early_causal_entry_exec_key(f"observations:{sess}"),[]) or []
+                for x in obs:
+                    cls=x.get("class");cp=int(x.get("checkpoint_minutes") or -1)
+                    if cls not in {"positive","hard_negative"} or cp not in cps:continue
+                    for scope in (("ALL",year,"JA:"+year) if sess[5:] <= "08-31" else ("ALL",year)):
+                        b=buckets[(scope,cp)];b[f"{cls}_total"]+=1
+                        sc=x.get("score")
+                        if isinstance(sc,(int,float)) and math.isfinite(float(sc)):
+                            b[f"{cls}_scoreable"]+=1;b[f"{cls}_score_sum"]+=float(sc);b[f"{cls}_score_sumsq"]+=float(sc)*float(sc);b[f"{cls}_symbols"].add(str(x.get("symbol") or ""))
+                            if float(sc)>=base_thr:b[f"{cls}_pass"]+=1
+                if i%100==0 or i==len(sessions):self._set_post_failure_diagnostic_state(status="RUNNING",phase="READ_ONLY_SCAN",message=f"Post-Failure Diagnostic {i}/{len(sessions)}",sessions_scanned=i,total_sessions=len(sessions),alpaca_requests_made=0,replay_restarted=False,new_post_2026_08_31_data_read=False)
+            def summarize(scope,cp):
+                b=buckets[(scope,cp)];pt=b["positive_total"];ht=b["hard_negative_total"]
+                pr=b["positive_pass"]/pt if pt else None;hr=b["hard_negative_pass"]/ht if ht else None
+                
+                def moments(cls):
+                    n=b[f"{cls}_scoreable"]
+                    if not n:return {"n":0,"mean":None,"std":None}
+                    mu=b[f"{cls}_score_sum"]/n;var=max(0.0,b[f"{cls}_score_sumsq"]/n-mu*mu)
+                    return {"n":n,"mean":mu,"std":math.sqrt(var)}
+                return {"positive_total":pt,"hard_negative_total":ht,"positive_scoreable":b["positive_scoreable"],"hard_negative_scoreable":b["hard_negative_scoreable"],"positive_scoreability_rate":b["positive_scoreable"]/pt if pt else None,"hard_negative_scoreability_rate":b["hard_negative_scoreable"]/ht if ht else None,"positive_pass_rate":pr,"hard_negative_event_pass_rate":hr,"pass_rate_spread_pp":((pr-hr)*100 if pr is not None and hr is not None else None),"same_direction":bool(pr is not None and hr is not None and pr>hr),"positive_score_distribution":moments("positive"),"hard_negative_score_distribution":moments("hard_negative"),"positive_symbols_scoreable":len(b["positive_symbols"]),"hard_negative_symbols_scoreable":len(b["hard_negative_symbols"])}
+            curve={str(cp):summarize("ALL",cp) for cp in cps}
+            by_year={y:{str(cp):summarize(y,cp) for cp in cps} for y in [str(z) for z in range(2019,2027)]}
+            # Every year is cut at Aug 31 by construction for this like-for-like sensitivity view.
+            jan_aug={y:{str(cp):summarize("JA:"+y,cp) for cp in cps} for y in by_year}
+            attempts=src.get("attempted_rules") or []
+            gate_map=[]
+            for a in attempts:
+                gate_map.append({"checkpoint_minutes":a.get("checkpoint_minutes"),"threshold_multiplier":a.get("threshold_multiplier"),"positive_recall":a.get("positive_recall"),"hard_negative_equal_symbol_pass_rate":a.get("hard_negative_equal_symbol_pass_rate"),"same_direction_years":a.get("same_direction_years"),"support_gate":a.get("support_gate"),"stability_gate":a.get("stability_gate"),"recall_gate":bool(isinstance(a.get("positive_recall"),(int,float)) and a["positive_recall"]>=EARLY_CAUSAL_ENTRY_EXEC_SPEC["gates"]["min_positive_event_recall"]),"hard_negative_gate":bool(isinstance(a.get("hard_negative_equal_symbol_pass_rate"),(int,float)) and a["hard_negative_equal_symbol_pass_rate"]<=EARLY_CAUSAL_ENTRY_EXEC_SPEC["gates"]["max_hard_negative_equal_symbol_pass_rate"]),"classification":a.get("classification")})
+            report={"version":VERSION,"build":BUILD,"diagnostic_id":POST_FAILURE_DIAGNOSTIC_SPEC["diagnostic_id"],"diagnostic_spec_sha256":POST_FAILURE_DIAGNOSTIC_SHA256,"status":"COMPLETED","phase":"POST_FAILURE_DIAGNOSTIC_STOP_REVIEW","source_execution_id":src.get("execution_id"),"source_result_sha256":src.get("result_sha256"),"source_research_classification":src.get("research_classification"),"sessions":len(sessions),"first_session":sessions[0] if sessions else None,"last_session":sessions[-1] if sessions else None,"primary_threshold":base_thr,"checkpoint_curve":curve,"by_year":by_year,"jan_aug_like_for_like":jan_aug,"gate_failure_map":gate_map,"interpretation_limits":{"feature_level_causal_attribution_available":False,"reason":"Persisted Early Causal Entry observations contain checkpoint score/scoreability/price context, not per-feature component values. This diagnostic will not invent feature-level causes.","diagnostic_can_generate_hypothesis":True,"diagnostic_can_validate_new_hypothesis":False},"next_hypothesis_prefreeze_required":True,"next_hypothesis_success_criteria_frozen":False,"fresh_oos_preserved":True,"new_post_2026_08_31_data_read":False,"alpaca_requests_made":0,"replay_restarted":False,"model_mutated":False,"thresholds_mutated":False,"stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["diagnostic_result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+            self.redis.set_json(self.post_failure_diagnostic_key("report"),report);self._set_post_failure_diagnostic_state(status="COMPLETED",phase="POST_FAILURE_DIAGNOSTIC_STOP_REVIEW",message="Post-Failure Diagnostic completed; STOP REVIEW before freezing any new hypothesis",sessions_scanned=len(sessions),total_sessions=len(sessions),alpaca_requests_made=0,replay_restarted=False,new_post_2026_08_31_data_read=False,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Post-Failure Diagnostic failed");self._set_post_failure_diagnostic_state(status="ERROR",phase="POST_FAILURE_DIAGNOSTIC_BLOCKED",message="Post-Failure Diagnostic failed closed",last_error=f"{type(e).__name__}: {e}",alpaca_requests_made=0,replay_restarted=False,new_post_2026_08_31_data_read=False)
+        finally:
+            with self.post_failure_diagnostic_lock:self.post_failure_diagnostic_thread=None
+
+    def start_post_failure_diagnostic(self):
+        ok,why=self._post_failure_diagnostic_gate()
+        if not ok:return False,why
+        old=self.redis.get_json(self.post_failure_diagnostic_key("report"),None)
+        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"already_completed"
+        with self.post_failure_diagnostic_lock:
+            if self.post_failure_diagnostic_thread and self.post_failure_diagnostic_thread.is_alive():return False,"already_running"
+            self.post_failure_diagnostic_thread=threading.Thread(target=self.post_failure_diagnostic_loop,name="post-failure-diagnostic",daemon=True);self.post_failure_diagnostic_thread.start()
         return True,"started"
 
     def phase0a_key(self, suffix: str) -> str:
@@ -8749,6 +8870,28 @@ def research_early_causal_entry_finalize_rescue_start():
 def research_early_causal_entry_execution_result():
     x=radar.redis.get_json(radar.early_causal_entry_exec_key("report"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/execution/status"}),202
+    return jsonify(x)
+
+@app.get("/research/early-causal-entry/post-failure-diagnostic/protocol")
+def research_early_causal_entry_post_failure_diagnostic_protocol():
+    allowed,reason=radar._post_failure_diagnostic_gate();return jsonify({"version":VERSION,"build":BUILD,"diagnostic_spec":POST_FAILURE_DIAGNOSTIC_SPEC,"diagnostic_spec_sha256":POST_FAILURE_DIAGNOSTIC_SHA256,"gate_allowed":allowed,"gate_reason":reason,"read_only_source":True,"alpaca_requests_made":0,"replay_restarted":False,"new_post_2026_08_31_data_read":False})
+
+@app.get("/research/early-causal-entry/post-failure-diagnostic/start")
+@app.post("/research/early-causal-entry/post-failure-diagnostic/start")
+def research_early_causal_entry_post_failure_diagnostic_start():
+    ok,why=radar.start_post_failure_diagnostic();return jsonify({"ok":ok,"status":"started" if ok else why,"alpaca_requests_made":0,"replay_restarted":False,"status_url":"/research/early-causal-entry/post-failure-diagnostic/status","result_url":"/research/early-causal-entry/post-failure-diagnostic/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/post-failure-diagnostic/status")
+def research_early_causal_entry_post_failure_diagnostic_status():
+    x=radar.redis.get_json(radar.post_failure_diagnostic_key("status"),None) if radar.redis.configured else None
+    with radar.post_failure_diagnostic_lock:
+        out=dict(x or radar.post_failure_diagnostic_state);out["worker_alive"]=bool(radar.post_failure_diagnostic_thread and radar.post_failure_diagnostic_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/post-failure-diagnostic/result")
+def research_early_causal_entry_post_failure_diagnostic_result():
+    x=radar.redis.get_json(radar.post_failure_diagnostic_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/post-failure-diagnostic/status"}),202
     return jsonify(x)
 
 @app.get("/research/causal-diagnostic-replay/finalize-rescue/protocol")
