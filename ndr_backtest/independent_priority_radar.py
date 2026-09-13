@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.27"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-FEATURE-PROBE-PREFREEZE"
+VERSION = "1.7.28"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-FEATURE-PROBE-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -766,6 +766,26 @@ EARLY_FEATURE_PROBE_PREFREEZE_SPEC = {
     }
 }
 EARLY_FEATURE_PROBE_PREFREEZE_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_PROBE_PREFREEZE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+EARLY_FEATURE_PROBE_EXEC_SPEC = {
+    "execution_id": "IPR-EARLY-FEATURE-PROBE-EXECUTION-2026-09-13-A",
+    "required_prefreeze_id": EARLY_FEATURE_PROBE_PREFREEZE_SPEC["prefreeze_id"],
+    "required_prefreeze_sha256": "6434358b4f0e018d32e477d28a8bea666e79b1b0df71d881c5bb941402b3e469",
+    "required_post_failure_diagnostic_result_sha256": EARLY_FEATURE_PROBE_PREFREEZE_SPEC["required_post_failure_diagnostic_result_sha256"],
+    "source_metric": "Frozen Post-Failure Diagnostic primary-threshold pass rates; no threshold is selected or changed by this execution.",
+    "decision_rule": EARLY_FEATURE_PROBE_PREFREEZE_SPEC["go_rule"],
+    "year_2026_policy": EARLY_FEATURE_PROBE_PREFREEZE_SPEC["year_2026_policy"],
+    "guardrails": {
+        "read_frozen_post_failure_diagnostic_only": True,
+        "alpaca_requests": 0,
+        "replay_restarted": False,
+        "no_fresh_oos": True,
+        "no_post_2026_08_31_data": True,
+        "no_model_or_threshold_mutation": True,
+        "no_discretionary_override": True
+    }
+}
+EARLY_FEATURE_PROBE_EXEC_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_PROBE_EXEC_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 EARLY_CAUSAL_ENTRY_THRESHOLD_AMENDMENT_SPEC = {
     "amendment_id": "IPR-EARLY-CAUSAL-ENTRY-THRESHOLD-FAMILY-AMENDMENT-2026-09-13-A",
@@ -2130,6 +2150,8 @@ class IndependentPriorityRadar:
         self.early_causal_entry_exec_state={"status":"IDLE","phase":"NOT_STARTED","message":"Early Causal Entry Research execution not started","execution_id":EARLY_CAUSAL_ENTRY_EXEC_SPEC["execution_id"],"new_post_2026_08_31_data_read":False,"updated_at":iso()}
         self.post_failure_diagnostic_lock=threading.RLock(); self.post_failure_diagnostic_thread=None
         self.post_failure_diagnostic_state={"status":"IDLE","phase":"NOT_STARTED","message":"Post-Failure Diagnostic not started","diagnostic_id":POST_FAILURE_DIAGNOSTIC_SPEC["diagnostic_id"],"alpaca_requests_made":0,"new_post_2026_08_31_data_read":False,"updated_at":iso()}
+        self.early_feature_probe_lock=threading.RLock(); self.early_feature_probe_thread=None
+        self.early_feature_probe_state={"status":"IDLE","phase":"NOT_STARTED","message":"Early Feature Probe not started","execution_id":EARLY_FEATURE_PROBE_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"replay_restarted":False,"fresh_oos_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -4578,6 +4600,73 @@ class IndependentPriorityRadar:
         if r.get("fresh_oos_preserved") is not True or r.get("new_post_2026_08_31_data_read") is not False:return False,"Fresh OOS lock failed"
         if r.get("alpaca_requests_made")!=0 or r.get("replay_restarted") is not False:return False,"Read-only provenance failed"
         return True,"allowed"
+
+    def early_feature_probe_key(self, suffix: str) -> str:
+        return self.key(f"early_feature_probe_exec:v1:{suffix}")
+
+    def _set_early_feature_probe_state(self, **updates: Any) -> None:
+        with self.early_feature_probe_lock:
+            self.early_feature_probe_state.update(updates); self.early_feature_probe_state["updated_at"]=iso(); snap=dict(self.early_feature_probe_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_probe_key("status"),snap)
+
+    def _early_feature_probe_exec_gate(self):
+        ok,why=self._early_feature_probe_prefreeze_gate()
+        if not ok:return False,why
+        if EARLY_FEATURE_PROBE_PREFREEZE_SHA256!=EARLY_FEATURE_PROBE_EXEC_SPEC["required_prefreeze_sha256"]:return False,"Frozen prefreeze SHA mismatch"
+        if EARLY_FEATURE_PROBE_PREFREEZE_SPEC.get("prefreeze_id")!=EARLY_FEATURE_PROBE_EXEC_SPEC["required_prefreeze_id"]:return False,"Frozen prefreeze ID mismatch"
+        r=self.redis.get_json(self.post_failure_diagnostic_key("report"),{}) or {}
+        if r.get("diagnostic_result_sha256")!=EARLY_FEATURE_PROBE_EXEC_SPEC["required_post_failure_diagnostic_result_sha256"]:return False,"Frozen diagnostic result SHA mismatch"
+        if not isinstance(r.get("primary_threshold"),(int,float)):return False,"Frozen diagnostic primary threshold missing"
+        if not isinstance(r.get("by_year"),dict):return False,"Frozen diagnostic by_year metrics missing"
+        return True,"allowed"
+
+    def early_feature_probe_loop(self):
+        try:
+            ok,why=self._early_feature_probe_exec_gate()
+            if not ok:
+                self._set_early_feature_probe_state(status="ERROR",phase="PROBE_BLOCKED",message=why);return
+            self._set_early_feature_probe_state(status="RUNNING",phase="READ_ONLY_DECISION",message="Applying frozen GO/NO-GO rule to frozen diagnostic metrics")
+            src=self.redis.get_json(self.post_failure_diagnostic_key("report"),{}) or {}
+            years=[str(y) for y in EARLY_FEATURE_PROBE_PREFREEZE_SPEC["go_rule"]["eligible_go_years"]]
+            windows=EARLY_FEATURE_PROBE_PREFREEZE_SPEC["probe_windows_minutes"]
+            min_sep=float(EARLY_FEATURE_PROBE_PREFREEZE_SPEC["go_rule"]["minimum_separation_pp"]); min_years=int(EARLY_FEATURE_PROBE_PREFREEZE_SPEC["go_rule"]["minimum_same_direction_years_per_qualifying_window"]); min_windows=int(EARLY_FEATURE_PROBE_PREFREEZE_SPEC["go_rule"]["minimum_qualifying_windows"])
+            out={}; qualifying=[]
+            for cp in windows:
+                pt=hp=pp=hh=0.0; same=0; per_year={}
+                for y in years:
+                    m=(src.get("by_year",{}).get(y,{}) or {}).get(str(cp)) or (src.get("by_year",{}).get(y,{}) or {}).get(cp) or {}
+                    pyt=int(m.get("positive_total") or 0); hyt=int(m.get("hard_negative_total") or 0); pr=m.get("positive_pass_rate"); hr=m.get("hard_negative_event_pass_rate")
+                    if isinstance(pr,(int,float)) and isinstance(hr,(int,float)):
+                        pp+=float(pr)*pyt; hh+=float(hr)*hyt; pt+=pyt; hp+=hyt; sd=float(pr)>float(hr); same+=1 if sd else 0
+                    else: sd=False
+                    per_year[y]={"positive_pass_rate":pr,"hard_negative_pass_rate":hr,"same_direction":sd}
+                pr=pp/pt if pt else None; hr=hh/hp if hp else None; sep=((pr-hr)*100.0) if pr is not None and hr is not None else None
+                qualifies=bool(sep is not None and sep>=min_sep and same>=min_years)
+                if qualifies:qualifying.append(cp)
+                y26=(src.get("by_year",{}).get("2026",{}) or {}).get(str(cp)) or (src.get("by_year",{}).get("2026",{}) or {}).get(cp) or {}
+                p26=y26.get("positive_pass_rate");h26=y26.get("hard_negative_event_pass_rate");rev26=bool(isinstance(p26,(int,float)) and isinstance(h26,(int,float)) and p26<=h26)
+                out[str(cp)]={"positive_pass_rate_2019_2025":pr,"hard_negative_pass_rate_2019_2025":hr,"separation_pp_2019_2025":sep,"same_direction_years_2019_2025":same,"minimum_separation_pp":min_sep,"minimum_same_direction_years":min_years,"qualifies":qualifies,"per_year":per_year,"year_2026":{"positive_pass_rate":p26,"hard_negative_pass_rate":h26,"reversed_or_not_positive":rev26}}
+            decision="GO" if len(qualifying)>=min_windows else "NO_GO"
+            any_2026_reversed=any(out[str(cp)]["year_2026"]["reversed_or_not_positive"] for cp in qualifying) if qualifying else False
+            mandatory_review=bool(decision=="GO" and any_2026_reversed)
+            report={"version":VERSION,"build":BUILD,"execution_id":EARLY_FEATURE_PROBE_EXEC_SPEC["execution_id"],"execution_spec_sha256":EARLY_FEATURE_PROBE_EXEC_SHA256,"prefreeze_id":EARLY_FEATURE_PROBE_PREFREEZE_SPEC["prefreeze_id"],"prefreeze_spec_sha256":EARLY_FEATURE_PROBE_PREFREEZE_SHA256,"source_post_failure_diagnostic_result_sha256":src.get("diagnostic_result_sha256"),"source_primary_threshold":src.get("primary_threshold"),"source_metric":EARLY_FEATURE_PROBE_EXEC_SPEC["source_metric"],"status":"COMPLETED","phase":"EARLY_FEATURE_PROBE_STOP_REVIEW","decision":decision,"qualifying_windows_minutes":qualifying,"minimum_qualifying_windows":min_windows,"windows":out,"year_2026_excluded_from_go":True,"regime_or_data_shift_review_required_before_fresh_oos":mandatory_review,"strategy_pass":False,"bot_authorized":False,"feature_level_discovery_authorized":bool(decision=="GO"),"fresh_oos_preserved":True,"fresh_oos_opened":False,"alpaca_requests_made":0,"replay_restarted":False,"model_mutated":False,"thresholds_mutated":False,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+            self.redis.set_json(self.early_feature_probe_key("report"),report)
+            self._set_early_feature_probe_state(status="COMPLETED",phase="EARLY_FEATURE_PROBE_STOP_REVIEW",message=f"Early Feature Probe completed: {decision}",decision=decision,qualifying_windows_minutes=qualifying,alpaca_requests_made=0,replay_restarted=False,fresh_oos_opened=False,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Early Feature Probe failed");self._set_early_feature_probe_state(status="ERROR",phase="PROBE_BLOCKED",message=f"{type(e).__name__}: {e}",alpaca_requests_made=0,replay_restarted=False,fresh_oos_opened=False)
+        finally:
+            with self.early_feature_probe_lock:self.early_feature_probe_thread=None
+
+    def start_early_feature_probe(self):
+        ok,why=self._early_feature_probe_exec_gate()
+        if not ok:return False,why
+        old=self.redis.get_json(self.early_feature_probe_key("report"),None)
+        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_probe_lock:
+            if self.early_feature_probe_thread and self.early_feature_probe_thread.is_alive():return False,"already_running"
+            self.early_feature_probe_thread=threading.Thread(target=self.early_feature_probe_loop,name="early-feature-probe",daemon=True);self.early_feature_probe_thread.start()
+        return True,"started"
 
     @staticmethod
     def _pfd_quantiles(vals):
@@ -8930,12 +9019,35 @@ def research_early_causal_entry_execution_result():
 @app.get("/research/early-causal-entry/early-feature-probe/prefreeze/protocol")
 def research_early_feature_probe_prefreeze_protocol():
     allowed,reason=radar._early_feature_probe_prefreeze_gate()
-    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":EARLY_FEATURE_PROBE_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_PROBE_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"probe_implemented":False,"probe_started":False,"alpaca_requests_made":0,"replay_restarted":False,"fresh_oos_opened":False})
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":EARLY_FEATURE_PROBE_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_PROBE_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"probe_implemented":True,"probe_started":False,"alpaca_requests_made":0,"replay_restarted":False,"fresh_oos_opened":False})
 
 @app.get("/research/early-causal-entry/early-feature-probe/prefreeze/artifact")
 def research_early_feature_probe_prefreeze_artifact():
     allowed,reason=radar._early_feature_probe_prefreeze_gate()
     return jsonify({"prefreeze_id":EARLY_FEATURE_PROBE_PREFREEZE_SPEC["prefreeze_id"],"prefreeze_spec":EARLY_FEATURE_PROBE_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_PROBE_PREFREEZE_SHA256,"source_gate_allowed":allowed,"source_gate_reason":reason,"immutable_decision_rule":True})
+
+@app.get("/research/early-causal-entry/early-feature-probe/execution/protocol")
+def research_early_feature_probe_execution_protocol():
+    allowed,reason=radar._early_feature_probe_exec_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_PROBE_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_PROBE_EXEC_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_PROBE_EXEC_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":EARLY_FEATURE_PROBE_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"alpaca_requests_made":0,"replay_restarted":False,"fresh_oos_opened":False})
+
+@app.get("/research/early-causal-entry/early-feature-probe/execution/start")
+@app.post("/research/early-causal-entry/early-feature-probe/execution/start")
+def research_early_feature_probe_execution_start():
+    ok,why=radar.start_early_feature_probe();return jsonify({"ok":ok,"status":"started" if ok else why,"alpaca_requests_made":0,"replay_restarted":False,"fresh_oos_opened":False,"status_url":"/research/early-causal-entry/early-feature-probe/execution/status","result_url":"/research/early-causal-entry/early-feature-probe/execution/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/early-feature-probe/execution/status")
+def research_early_feature_probe_execution_status():
+    x=radar.redis.get_json(radar.early_feature_probe_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_probe_lock:
+        out=dict(x or radar.early_feature_probe_state);out["worker_alive"]=bool(radar.early_feature_probe_thread and radar.early_feature_probe_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/early-feature-probe/execution/result")
+def research_early_feature_probe_execution_result():
+    x=radar.redis.get_json(radar.early_feature_probe_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/early-feature-probe/execution/status"}),202
+    return jsonify(x)
 
 @app.get("/research/early-causal-entry/post-failure-diagnostic/protocol")
 def research_early_causal_entry_post_failure_diagnostic_protocol():
