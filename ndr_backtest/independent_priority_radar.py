@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.30"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-FEATURE-AVAILABILITY-GATE"
+VERSION = "1.7.31"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-FEATURE-RECONSTRUCTION-AMENDMENT-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -901,6 +901,67 @@ EARLY_FEATURE_AVAILABILITY_GATE_SPEC = {
     },
 }
 EARLY_FEATURE_AVAILABILITY_GATE_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_AVAILABILITY_GATE_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC = {
+    "amendment_id": "IPR-EARLY-FEATURE-RECONSTRUCTION-AMENDMENT-PREFREEZE-2026-09-13-A",
+    "purpose": "Pre-freeze a narrow first-batch historical bar reconstruction scope before any new Alpaca request or feature-level result is observed.",
+    "required_feature_level_discovery_prefreeze_id": "IPR-EARLY-FEATURE-LEVEL-DISCOVERY-PREFREEZE-2026-09-13-A",
+    "required_feature_level_discovery_prefreeze_sha256": "f532df7beed1f7e07bb98ee9b5a41a133969456e216d9d70e18eb3f670db0448",
+    "required_availability_gate_id": "IPR-EARLY-FEATURE-AVAILABILITY-GATE-2026-09-13-A",
+    "required_availability_gate_spec_sha256": "fa9d3fddd356bf241dc5cc10235186e47b7dad8d3300ae8b838692b63e4247bc",
+    "availability_finding_frozen": {
+        "AVAILABLE": 0,
+        "ALPACA_REQUIRED": 18,
+        "CAUSALLY_INVALID_AT_CHECKPOINT": 2,
+    },
+    "first_batch_features": [
+        "discovery_body_pct", "discovery_range_pct", "discovery_close_location",
+        "log_discovery_volume", "volume_ratio_to_prior5", "volume_acceleration_3v3",
+        "return_3m_pct", "return_5m_pct"
+    ],
+    "first_batch_selection_basis": "Chosen before feature results for causal/economic coverage of candle structure, volume participation/acceleration, and short return path; not chosen from observed class-effect performance.",
+    "reserve_alpaca_required_features_locked": [
+        "discovery_upper_wick_to_range", "discovery_upper_wick_to_body", "return_2m_pct",
+        "price_change_pct_last45m", "er45", "price_change_x_er45", "log_signal_price",
+        "opportunity", "failure_pressure", "minutes_since_regular_open"
+    ],
+    "causally_invalid_features_excluded": ["distance_to_resistance_pct", "distance_above_vwap_pct"],
+    "causally_invalid_policy": "No redefinition, substitution, checkpoint proxy, or rescue is permitted under this amendment.",
+    "reserve_policy": "Reserve features may not be opened automatically after a first-batch failure; any later use requires a separately frozen amendment before results are used to justify opening them.",
+    "reconstruction_scope": {
+        "years": [2019, 2020, 2021, 2022, 2023, 2024],
+        "windows_minutes": [30, 60],
+        "source": "Alpaca historical bars only in a later separately gated reconstruction execution.",
+        "causal_cutoff": "For each event/checkpoint, use only bars timestamped at or before that checkpoint cutoff; no t0/signal-time or post-checkpoint bars may enter feature construction.",
+        "feature_definitions": "Exact pre-existing frozen v1.7.29 definitions only; no transformations, interactions, threshold search, imputation invention, or direction changes.",
+        "persistence": "Reconstructed checkpoint inputs/feature values must be persisted with deterministic event/window keys so restart resumes without intentionally re-fetching completed work.",
+        "provenance": "Persist source session/event/window, last allowed bar timestamp, feature-definition identity, and reconstruction artifact hash sufficient for later audit.",
+    },
+    "locked_data": {
+        "validation_2025": "LOCKED",
+        "year_2026": "LOCKED_REGIME_OR_DATA_SHIFT_REVIEW_ONLY",
+        "fresh_oos": "LOCKED",
+    },
+    "statistics": "No feature effects, p-values, FDR, class comparisons, GO/NO-GO discovery decision, or profitability metrics are computed by this amendment pre-freeze.",
+    "next_execution_requirements": {
+        "separate_reconstruction_execution_gate": True,
+        "exact_amendment_sha_required": True,
+        "explicit_alpaca_request_budget_required_before_start": True,
+        "alpaca_requests_authorized_by_this_prefreeze": False,
+        "discovery_execution_after_reconstruction_requires_separate_gate": True,
+    },
+    "guardrails": {
+        "alpaca_requests_during_amendment_prefreeze": 0,
+        "no_feature_results_read": True,
+        "no_2025_read": True,
+        "no_2026_read": True,
+        "no_fresh_oos": True,
+        "no_live_model_or_bot_change": True,
+        "replay_restarted": False,
+    },
+}
+EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SHA256 = hashlib.sha256(json.dumps(EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -9211,6 +9272,22 @@ def research_early_feature_probe_execution_result():
 def research_early_feature_level_discovery_prefreeze_protocol():
     allowed,reason=radar._early_feature_level_discovery_prefreeze_gate()
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"discovery_implemented":False,"discovery_started":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"alpaca_requests_made":0,"replay_restarted":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/reconstruction-amendment/prefreeze/protocol")
+def research_early_feature_reconstruction_amendment_prefreeze_protocol():
+    allowed, reason = radar._early_feature_level_discovery_prefreeze_gate()
+    parent_sha = EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256
+    availability_sha = EARLY_FEATURE_AVAILABILITY_GATE_SHA256
+    allowed = bool(allowed and parent_sha == EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC["required_feature_level_discovery_prefreeze_sha256"] and availability_sha == EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC["required_availability_gate_spec_sha256"])
+    if parent_sha != EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC["required_feature_level_discovery_prefreeze_sha256"]:
+        reason = "Feature-Level Discovery pre-freeze SHA mismatch"
+    elif availability_sha != EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC["required_availability_gate_spec_sha256"]:
+        reason = "Availability gate spec SHA mismatch"
+    return jsonify({"version": VERSION, "build": BUILD, "amendment_spec": EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC, "amendment_spec_sha256": EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SHA256, "required_parent_prefreeze_sha256": EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC["required_feature_level_discovery_prefreeze_sha256"], "actual_parent_prefreeze_sha256": parent_sha, "required_availability_gate_spec_sha256": EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC["required_availability_gate_spec_sha256"], "actual_availability_gate_spec_sha256": availability_sha, "gate_allowed": allowed, "gate_reason": reason, "artifact_frozen": True, "alpaca_authorized": False, "alpaca_requests_made": 0, "feature_results_read": False, "validation_2025_opened": False, "year_2026_opened": False, "fresh_oos_opened": False, "replay_restarted": False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/reconstruction-amendment/prefreeze/artifact")
+def research_early_feature_reconstruction_amendment_prefreeze_artifact():
+    return jsonify({"amendment_id": EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC["amendment_id"], "amendment_spec": EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SPEC, "amendment_spec_sha256": EARLY_FEATURE_RECONSTRUCTION_AMENDMENT_SHA256, "immutable_first_batch": True, "alpaca_authorized": False})
 
 @app.get("/research/early-causal-entry/feature-level-discovery/availability/protocol")
 def research_early_feature_availability_protocol():
