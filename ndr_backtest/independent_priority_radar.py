@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.23-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-08-CAUSAL-DIAGNOSTIC-REPLAY-GATE-FIX"
+VERSION = "1.7.24"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-EARLY-CAUSAL-ENTRY-RESEARCH-PROTOCOL-FREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -568,6 +568,89 @@ CAUSAL_TRADING_TRANSLATION_SPEC = {
     "safety": {"alpaca_requests_during_freeze": False, "orders_enabled": False, "alerts_enabled": False},
 }
 CAUSAL_TRADING_TRANSLATION_SHA256 = hashlib.sha256(json.dumps(CAUSAL_TRADING_TRANSLATION_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+EARLY_CAUSAL_ENTRY_RESEARCH_SPEC = {
+    "research_id": "IPR-EARLY-CAUSAL-ENTRY-RESEARCH-2026-09-13-A",
+    "purpose": "Freeze the next Development/Research protocol before any new early-entry feature search, candidate-rule selection, or fresh post-2026-08-31 OOS inspection.",
+    "required_causal_replay_result_sha256": "980026ad16d290d61d2a1f244949e19b50091b0533ba116825ce25d4e5e97faa",
+    "required_causal_replay_spec_sha256": "30362daf7d213ef50293fe6d23686202e90a389b8daf822a4149d1efc1dc2ada",
+    "required_frozen_model_sha256": "c543ed4320a9cbc7eecef311675fb8955642d9bcb81e31fe7888728ee1c5c7c3",
+    "baseline": {
+        "name": "Frozen Early Core",
+        "threshold": 0.5205528990060366,
+        "positive_signal_coverage": 0.9435706369231495,
+        "hard_negative_signal_coverage_event_level_diagnostic": 0.7563769901800594,
+        "fraction_positive_signal_before_plus20_confirmation": 0.3885077722797021,
+        "positive_percent_move_already_realized_mean": 15.390776086711702,
+        "positive_percent_move_already_realized_median": 12.676056338028175,
+        "note": "Replay signal is the first causal completed-5m Frozen Early Core threshold crossing, not the Census/Phase0B candidate timestamp."
+    },
+    "development_data_policy": {
+        "development_research_window": "2019-01-02 through 2026-08-31; already research-open and may be used for Development diagnostics only.",
+        "fresh_oos_boundary": "strictly after 2026-08-31",
+        "fresh_oos_must_remain_unread_during_development": True,
+        "no_2019_2026_result_may_be_called_fresh_oos": True,
+        "entry_stop_exit_protocol_requires_fresh_independent_oos_after_freeze": True
+    },
+    "causal_search": {
+        "lookback_checkpoints_minutes_before_frozen_early_core": [240,120,60,30,15],
+        "features_at_checkpoint": "Only information completed and observable at that historical timestamp; no future/incomplete bars and no Phase0B confirmation fields as predictors.",
+        "labels_only_for_evaluation": "Verified positive vs contextual hard-negative labels may be used as outcomes, never as live-available inputs.",
+        "candidate_live_rule_requirement": "Any proposed rule must be expressible on a universal causal completed-5m timeline without knowing future Early Core or +20 confirmation time.",
+        "selection_order": [240,120,60,30,15],
+        "selection_rule": "Choose the earliest checkpoint (largest minutes-before-Early-Core) that independently meets every frozen success gate; never choose by largest observed effect, best p-value, or best retrospective profit.",
+        "no_entry_stop_exit_optimization": True
+    },
+    "frozen_early_success_criterion": {
+        "unit_for_false_positive_control": "symbol-level contextual hard-negative pass rate using equal-symbol aggregation; event-level FPR is diagnostic only",
+        "max_hard_negative_symbol_pass_rate": 0.10,
+        "minimum_positive_recall": 0.20,
+        "minimum_relative_recall_vs_frozen_early_core_before_plus20_fraction": 0.50,
+        "derived_minimum_positive_recall_from_baseline": 0.19425388613985105,
+        "effective_minimum_positive_recall": 0.20,
+        "minimum_years_same_direction": 6,
+        "recent_year_requirement": "2025 and 2026-through-2026-08-31 must each preserve the same direction; these remain Development diagnostics, not fresh OOS.",
+        "timing_requirement": "Candidate must be evaluable at the stated checkpoint and therefore precede the Frozen Early Core crossing by construction.",
+        "classification": {
+            "PASS": "HN symbol pass <=10%, positive recall >=20%, same-direction stability in >=6 calendar years including 2025 and 2026-to-Aug31, and universal causal live-expressibility passes.",
+            "FAIL": "Any mandatory PASS condition fails.",
+            "NO_RESULT": "Insufficient scoreable support or causal live-expressibility cannot be established."
+        },
+        "rationale": "Pre-frozen before new early-search results. The 20% recall floor is slightly stricter than 50% of the observed 38.8508% baseline-before-+20 fraction and prevents declaring a tiny early subset a success."
+    },
+    "support_and_inference": {
+        "minimum_positive_events": 500,
+        "minimum_positive_symbols": 100,
+        "minimum_calendar_years": 6,
+        "equal_symbol_weighting": True,
+        "symbol_clustered_inference": True,
+        "multiple_testing_control": "BH FDR q<=0.05 within the predeclared early-search family when feature-level hypothesis testing is used",
+        "effect_size_must_be_reported": True
+    },
+    "reporting_required": [
+        "scoreability by checkpoint/class/year",
+        "positive recall and hard-negative symbol pass rate by checkpoint",
+        "year stability including 2025 and 2026-through-Aug31",
+        "lead minutes versus Frozen Early Core",
+        "fraction candidate signal before Phase0B +20 confirmation",
+        "percent move already realized at candidate signal",
+        "comparison with unchanged Frozen Early Core baseline",
+        "all attempted checkpoints including failures"
+    ],
+    "guardrails": {
+        "frozen_early_core_remains_immutable_baseline": True,
+        "no_model_mutation_in_protocol_freeze": True,
+        "no_threshold_recalibration_in_protocol_freeze": True,
+        "no_new_post_2026_08_31_data_read_in_protocol_freeze": True,
+        "no_profitability_claim": True,
+        "no_entry_stop_exit_claim": True,
+        "no_live_alert_claim": True,
+        "stop_and_review_after_research": True
+    },
+    "safety": {"alpaca_requests_during_freeze": False, "orders_enabled": False, "alerts_enabled": False}
+}
+EARLY_CAUSAL_ENTRY_RESEARCH_SHA256 = hashlib.sha256(json.dumps(EARLY_CAUSAL_ENTRY_RESEARCH_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 CAUSAL_DIAGNOSTIC_REPLAY_SPEC = {
@@ -4047,6 +4130,57 @@ class IndependentPriorityRadar:
         self.redis.set_json(self.causal_translation_protocol_key("report"),report)
         self.redis.set_json(self.causal_translation_protocol_key("status"),{"status":"COMPLETED","phase":"CAUSAL_TRANSLATION_PROTOCOL_FROZEN_STOP_REVIEW","message":"Causal Trading Translation diagnostic protocol frozen; no post-signal paths read; STOP REVIEW before replay","translation_id":CAUSAL_TRADING_TRANSLATION_SPEC["translation_id"],"post_signal_paths_read":False,"updated_at":iso()})
         return True,"frozen"
+
+
+    def early_causal_entry_research_key(self, suffix: str) -> str:
+        return self.key(f"early_causal_entry_research:v1:{suffix}")
+
+    def _early_causal_entry_research_protocol_gate(self):
+        if not self.redis.configured:
+            return False, "Redis required"
+        r = self.redis.get_json(self.causal_diagnostic_replay_key("report"), None)
+        if not isinstance(r, dict) or r.get("status") != "COMPLETED" or r.get("phase") != "CAUSAL_DIAGNOSTIC_REPLAY_STOP_REVIEW":
+            return False, "Completed Causal Diagnostic Replay STOP_REVIEW required"
+        if r.get("replay_result_sha256") != EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["required_causal_replay_result_sha256"]:
+            return False, "Causal replay result provenance mismatch"
+        if r.get("replay_spec_sha256") != EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["required_causal_replay_spec_sha256"]:
+            return False, "Causal replay spec provenance mismatch"
+        if r.get("source_frozen_model_sha256") != EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["required_frozen_model_sha256"]:
+            return False, "Frozen model provenance mismatch"
+        if r.get("model_mutated") is not False or r.get("thresholds_recalibrated") is not False:
+            return False, "Replay immutability provenance failed"
+        return True, "allowed"
+
+    def freeze_early_causal_entry_research_protocol(self):
+        ok, why = self._early_causal_entry_research_protocol_gate()
+        if not ok:
+            return False, why
+        old = self.redis.get_json(self.early_causal_entry_research_key("report"), None)
+        if isinstance(old, dict) and old.get("status") == "COMPLETED":
+            return False, "already_frozen"
+        report = {
+            "version": VERSION, "build": BUILD,
+            "research_id": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["research_id"],
+            "research_spec": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC,
+            "research_spec_sha256": EARLY_CAUSAL_ENTRY_RESEARCH_SHA256,
+            "status": "COMPLETED", "phase": "EARLY_CAUSAL_ENTRY_RESEARCH_PROTOCOL_FROZEN_STOP_REVIEW",
+            "source_causal_replay_result_sha256": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["required_causal_replay_result_sha256"],
+            "source_frozen_model_sha256": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["required_frozen_model_sha256"],
+            "new_post_2026_08_31_data_read": False, "alpaca_requests_made": 0,
+            "model_mutated": False, "thresholds_recalibrated": False,
+            "entry_stop_exit_rules_selected": False, "fresh_oos_preserved": True,
+            "stop_and_review_required": True, "completed_at": iso()
+        }
+        canon = dict(report); canon.pop("completed_at")
+        report["research_protocol_artifact_sha256"] = hashlib.sha256(json.dumps(canon, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+        self.redis.set_json(self.early_causal_entry_research_key("report"), report)
+        self.redis.set_json(self.early_causal_entry_research_key("status"), {
+            "status": "COMPLETED", "phase": "EARLY_CAUSAL_ENTRY_RESEARCH_PROTOCOL_FROZEN_STOP_REVIEW",
+            "message": "Early Causal Entry Research protocol frozen; fresh post-2026-08-31 OOS remains unread; STOP REVIEW before research execution",
+            "research_id": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["research_id"], "alpaca_requests_made": 0,
+            "new_post_2026_08_31_data_read": False, "updated_at": iso()
+        })
+        return True, "frozen"
 
     def phase0a_key(self, suffix: str) -> str:
         return self.key(f"phase0a:v1:{suffix}")
@@ -8254,6 +8388,29 @@ def validation_success_criteria_result():
     return jsonify(report)
 
 
+
+
+@app.get("/research/early-causal-entry/protocol")
+def early_causal_entry_protocol():
+    allowed, reason = radar._early_causal_entry_research_protocol_gate()
+    return jsonify({"version": VERSION, "build": BUILD, "research_spec": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC, "research_spec_sha256": EARLY_CAUSAL_ENTRY_RESEARCH_SHA256, "gate_allowed": allowed, "gate_reason": reason, "alpaca_requests_made": 0, "new_post_2026_08_31_data_read": False})
+
+@app.get("/research/early-causal-entry/start")
+def early_causal_entry_start():
+    ok, why = radar.freeze_early_causal_entry_research_protocol()
+    return jsonify({"ok": ok, "status": why, "status_url": "/research/early-causal-entry/status", "result_url": "/research/early-causal-entry/result", "research_execution_started": False}), (200 if ok else 409)
+
+@app.get("/research/early-causal-entry/status")
+def early_causal_entry_status():
+    x = radar.redis.get_json(radar.early_causal_entry_research_key("status"), None) if radar.redis.configured else None
+    return jsonify(x or {"status": "IDLE", "phase": "NOT_STARTED", "research_id": EARLY_CAUSAL_ENTRY_RESEARCH_SPEC["research_id"], "alpaca_requests_made": 0})
+
+@app.get("/research/early-causal-entry/result")
+def early_causal_entry_result():
+    x = radar.redis.get_json(radar.early_causal_entry_research_key("report"), None) if radar.redis.configured else None
+    if not x:
+        return jsonify({"result_ready": False, "status_url": "/research/early-causal-entry/status"}), 202
+    return jsonify(x)
 
 @app.get("/research/causal-diagnostic-replay/finalize-rescue/protocol")
 def causal_diagnostic_replay_finalize_rescue_protocol():
