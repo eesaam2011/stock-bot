@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import time
@@ -7231,6 +7232,120 @@ class IndependentPriorityRadar:
         a=np.asarray([float(x) for x in vals if isinstance(x,(int,float)) and math.isfinite(x)],dtype=float)
         if not len(a):return {"n":0,"mean":None,"quantiles":{}}
         qs=[.1,.25,.5,.75,.9];return {"n":len(a),"mean":float(a.mean()),"quantiles":{str(q):float(np.quantile(a,q)) for q in qs}}
+    def _ctr_rescue_gate(self):
+        """Read-only gate for finalization rescue. Never requires or calls Alpaca."""
+        if not self.redis.configured:return False,"Redis is required"
+        old=self.redis.get_json(self.causal_diagnostic_replay_key("report"),None)
+        if isinstance(old,dict) and old.get("status")=="COMPLETED":return False,"completed_replay_exists_rescue_not_needed"
+        sessions=sorted(str(x) for x in (self.redis.get_json(self.phase0b_full_key("completed_sessions"),[]) or []) if "2019-"<=str(x)<="2026-08-31")
+        done=set(str(x) for x in (self.redis.get_json(self.causal_diagnostic_replay_key("completed_sessions"),[]) or []))
+        missing=[x for x in sessions if x not in done]
+        if not sessions:return False,"no_source_sessions"
+        if missing:return False,f"replay_incomplete_missing_{len(missing)}_sessions"
+        pr=self.redis.get_json(self.causal_translation_protocol_key("report"),{}) or {};m=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}
+        if pr.get("translation_spec_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_translation_spec_sha256"]:return False,"translation_spec_sha_mismatch"
+        if pr.get("translation_protocol_artifact_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_translation_protocol_artifact_sha256"]:return False,"translation_artifact_sha_mismatch"
+        if m.get("frozen_model_sha256")!=CAUSAL_DIAGNOSTIC_REPLAY_SPEC["required_frozen_model_sha256"]:return False,"frozen_model_sha_mismatch"
+        return True,"allowed"
+    @staticmethod
+    def _ctr_rescue_cols():
+        hs=[str(x) for x in CAUSAL_DIAGNOSTIC_REPLAY_SPEC["horizons_minutes"]]+["end_of_trading_cycle"]
+        mets=list(CAUSAL_DIAGNOSTIC_REPLAY_SPEC["forward_metrics"])
+        def safe(x):return re.sub(r"[^A-Za-z0-9_]","_",str(x))
+        return hs,mets,{(h,m):f"f_{safe(h)}_{safe(m)}" for h in hs for m in mets}
+    def _ctr_rescue_dist_sql(self,con,where,params,col):
+        vals=[]
+        cur=con.execute(f'SELECT "{col}" FROM signals WHERE {where} AND "{col}" IS NOT NULL',params)
+        while True:
+            batch=cur.fetchmany(20000)
+            if not batch:break
+            vals.extend(float(x[0]) for x in batch if x and x[0] is not None and math.isfinite(float(x[0])))
+        return self._ctr_dist(vals)
+    def _ctr_rescue_summarize_sql(self,con,where,params,cls):
+        hs,mets,cols=self._ctr_rescue_cols()
+        signals=int(con.execute(f"SELECT COUNT(*) FROM signals WHERE {where}",params).fetchone()[0])
+        symbols=int(con.execute(f"SELECT COUNT(DISTINCT symbol) FROM signals WHERE {where}",params).fetchone()[0])
+        z={"signals":signals,"symbols":symbols,
+           "percent_move_already_realized":self._ctr_rescue_dist_sql(con,where,params,"percent_move_already_realized"),
+           "minutes_signal_to_plus20_confirmation":self._ctr_rescue_dist_sql(con,where,params,"minutes_signal_to_plus20_confirmation")}
+        if cls=="positive":
+            before=int(con.execute(f"SELECT COUNT(*) FROM signals WHERE {where} AND signal_before_plus20_confirmation=1",params).fetchone()[0])
+            z["fraction_signal_before_plus20_confirmation"]=before/signals if signals else None
+        z["forward"]={}
+        for h in hs:
+            mfe=cols[(h,"MFE_pct_from_signal_close")]
+            n=int(con.execute(f'SELECT COUNT(*) FROM signals WHERE {where} AND "{mfe}" IS NOT NULL',params).fetchone()[0])
+            block={m:self._ctr_rescue_dist_sql(con,where,params,cols[(h,m)]) for m in mets}
+            block["fraction_MFE_ge"]={str(t):(int(con.execute(f'SELECT COUNT(*) FROM signals WHERE {where} AND "{mfe}">=?',params+(t*100,)).fetchone()[0])/n if n else None) for t in [.05,.1,.2]}
+            z["forward"][h]=block
+        return z
+    def causal_diagnostic_replay_finalize_rescue_loop(self):
+        dbpath=None
+        try:
+            ok,why=self._ctr_rescue_gate()
+            if not ok:raise RuntimeError(why)
+            pr=self.redis.get_json(self.causal_translation_protocol_key("report"),{}) or {};m=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.phase0b_full_key("completed_sessions"),[]) or []) if "2019-"<=str(x)<="2026-08-31")
+            self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_FINALIZATION_RESCUE",message="Read-only finalization rescue: spooling persisted replay results; Alpaca disabled",post_signal_paths_read=True,total_sessions=len(sessions),sessions_scanned=len(sessions),finalize_sessions_scanned=0,alpaca_requests_made=0)
+            fd,dbpath=tempfile.mkstemp(prefix="ipr_ctr_finalize_",suffix=".sqlite3");os.close(fd);con=sqlite3.connect(dbpath)
+            hs,mets,cols=self._ctr_rescue_cols();flat=list(cols.values())
+            con.execute("PRAGMA journal_mode=OFF");con.execute("PRAGMA synchronous=OFF");con.execute("PRAGMA temp_store=FILE")
+            defs=["class TEXT","symbol TEXT","signal_ts TEXT","year TEXT","phase TEXT","percent_move_already_realized REAL","minutes_signal_to_plus20_confirmation REAL","signal_before_plus20_confirmation INTEGER"]+[f'"{c}" REAL' for c in flat]
+            con.execute("CREATE TABLE signals ("+",".join(defs)+")")
+            names=["class","symbol","signal_ts","year","phase","percent_move_already_realized","minutes_signal_to_plus20_confirmation","signal_before_plus20_confirmation"]+flat
+            q="INSERT INTO signals ("+",".join('"'+x+'"' for x in names)+") VALUES ("+",".join("?" for _ in names)+")"
+            for i,sess in enumerate(sessions,1):
+                rows=self.redis.get_json(self.causal_diagnostic_replay_key(f"results:{sess}"),[]) or []
+                batch=[]
+                for x in rows:
+                    f=x.get("forward") or {};base=[x.get("class"),x.get("symbol"),x.get("signal_ts"),str(x.get("signal_ts") or "")[:4],x.get("phase"),x.get("percent_move_already_realized"),x.get("minutes_signal_to_plus20_confirmation"),1 if x.get("signal_before_plus20_confirmation") else 0]
+                    vals=[]
+                    for h in hs:
+                        a=f.get(h) or {}
+                        for mm in mets:vals.append(a.get(mm))
+                    batch.append(tuple(base+vals))
+                if batch:con.executemany(q,batch)
+                if i%25==0 or i==len(sessions):
+                    con.commit();self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_FINALIZATION_RESCUE",message=f"Finalization rescue spool {i}/{len(sessions)} sessions",post_signal_paths_read=True,total_sessions=len(sessions),sessions_scanned=len(sessions),finalize_sessions_scanned=i,finalize_stage="SPOOL",alpaca_requests_made=0)
+            con.commit();con.execute("CREATE INDEX idx_cls ON signals(class)");con.execute("CREATE INDEX idx_year_cls ON signals(year,class)");con.execute("CREATE INDEX idx_phase_cls ON signals(phase,class)");con.commit()
+            byclass={}
+            for j,c in enumerate(["positive","hard_negative"],1):
+                self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_FINALIZATION_RESCUE",message=f"Finalization rescue summarize class {c}",finalize_stage="SUMMARY_CLASS",finalize_group=c,alpaca_requests_made=0)
+                byclass[c]=self._ctr_rescue_summarize_sql(con,"class=?",(c,),c)
+            byyear={}
+            for y in range(2019,2027):
+                self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_FINALIZATION_RESCUE",message=f"Finalization rescue summarize year {y}",finalize_stage="SUMMARY_YEAR",finalize_group=str(y),alpaca_requests_made=0)
+                byyear[str(y)]={c:self._ctr_rescue_summarize_sql(con,"class=? AND year=?",(c,str(y)),c) for c in ["positive","hard_negative"]}
+            byphase={}
+            for ph in ["AH","Overnight","Premarket","Regular","Other"]:
+                self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_FINALIZATION_RESCUE",message=f"Finalization rescue summarize phase {ph}",finalize_stage="SUMMARY_PHASE",finalize_group=ph,alpaca_requests_made=0)
+                byphase[ph]={c:self._ctr_rescue_summarize_sql(con,"class=? AND phase=?",(c,ph),c) for c in ["positive","hard_negative"]}
+            rawpos=rawhard=scorepos=scorehard=0
+            for i,sess in enumerate(sessions,1):
+                x=self.redis.get_json(self.causal_diagnostic_replay_key(f"stats:{sess}"),{}) or {};rawpos+=int(x.get("positive_selected") or 0);rawhard+=int(x.get("hard_negative_selected") or 0);scorepos+=int(x.get("positive_scoreable") or 0);scorehard+=int(x.get("hard_negative_scoreable") or 0)
+                if i%100==0:self._set_causal_diagnostic_replay_state(status="RUNNING",phase="CAUSAL_DIAGNOSTIC_FINALIZATION_RESCUE",message=f"Finalization rescue stats {i}/{len(sessions)}",finalize_stage="STATS",finalize_sessions_scanned=i,alpaca_requests_made=0)
+            report={"version":VERSION,"build":BUILD,"replay_id":CAUSAL_DIAGNOSTIC_REPLAY_SPEC["replay_id"],"replay_spec_sha256":CAUSAL_DIAGNOSTIC_REPLAY_SHA256,"translation_spec_sha256":pr.get("translation_spec_sha256"),"translation_protocol_artifact_sha256":pr.get("translation_protocol_artifact_sha256"),"source_frozen_model_sha256":m.get("frozen_model_sha256"),"status":"COMPLETED","phase":"CAUSAL_DIAGNOSTIC_REPLAY_STOP_REVIEW","sessions":len(sessions),"first_session":sessions[0] if sessions else None,"last_session":sessions[-1] if sessions else None,"positive_verified_events":rawpos,"hard_negative_events_selected":rawhard,"positive_events_ever_scoreable":scorepos,"hard_negative_events_ever_scoreable":scorehard,"positive_scoreability_rate":scorepos/rawpos if rawpos else None,"hard_negative_scoreability_rate":scorehard/rawhard if rawhard else None,"positive_signal_events":byclass["positive"]["signals"],"hard_negative_signal_events":byclass["hard_negative"]["signals"],"positive_signal_coverage":byclass["positive"]["signals"]/rawpos if rawpos else None,"hard_negative_signal_coverage":byclass["hard_negative"]["signals"]/rawhard if rawhard else None,"summary_by_class":byclass,"summary_by_year":byyear,"summary_by_signal_phase":byphase,"post_signal_paths_read":True,"model_mutated":False,"thresholds_recalibrated":False,"entry_stop_exit_rules_selected":False,"expectancy_or_profit_factor_claim_allowed":False,"stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["replay_result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+            self.redis.set_json(self.causal_diagnostic_replay_key("report"),report);self.redis.set_json(self.causal_diagnostic_replay_key("finalization_rescue_provenance"),{"rescue_build":"IPR-1.7.23-R3-FINALIZATION-RESCUE","source_runtime_version":VERSION,"source_runtime_build":BUILD,"source_sessions":len(sessions),"alpaca_requests_made":0,"method":"read-only Redis -> disk-backed SQLite spool -> exact original summary equations","report_shape_preserved":True,"completed_at":iso()})
+            self._set_causal_diagnostic_replay_state(status="COMPLETED",phase="CAUSAL_DIAGNOSTIC_REPLAY_STOP_REVIEW",message="Causal Diagnostic Replay finalized by read-only rescue; STOP REVIEW",post_signal_paths_read=True,sessions_scanned=len(sessions),total_sessions=len(sessions),finalize_sessions_scanned=len(sessions),finalize_stage="COMPLETED",alpaca_requests_made=0,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Causal diagnostic finalization rescue failed");self._set_causal_diagnostic_replay_state(status="ERROR",phase="CAUSAL_DIAGNOSTIC_FINALIZATION_RESCUE_BLOCKED",message="Finalization rescue failed closed",last_error=f"{type(e).__name__}: {e}",post_signal_paths_read=True,alpaca_requests_made=0)
+        finally:
+            try:
+                if 'con' in locals():con.close()
+            except:pass
+            if dbpath:
+                try:os.remove(dbpath)
+                except:pass
+            with self.causal_diagnostic_replay_lock:self.causal_diagnostic_replay_thread=None
+    def start_causal_diagnostic_replay_finalize_rescue(self):
+        ok,why=self._ctr_rescue_gate()
+        if not ok:return False,why
+        with self.causal_diagnostic_replay_lock:
+            if self.causal_diagnostic_replay_thread and self.causal_diagnostic_replay_thread.is_alive():return False,"already_running"
+            self.causal_diagnostic_replay_thread=threading.Thread(target=self.causal_diagnostic_replay_finalize_rescue_loop,name="causal-diagnostic-finalization-rescue",daemon=True);self.causal_diagnostic_replay_thread.start()
+        return True,"started"
+
     def causal_diagnostic_replay_loop(self):
         try:
             pr=self.redis.get_json(self.causal_translation_protocol_key("report"),{}) or {};m=self.redis.get_json(self.feature_scoring_freeze_key("report"),{}) or {}
@@ -8138,6 +8253,14 @@ def validation_success_criteria_result():
     if not report:return jsonify({"result_ready":False,"status_url":"/research/validation-success-criteria/status","validation_2025_opened":False,"holdout_2026_opened":False}),202
     return jsonify(report)
 
+
+
+@app.get("/research/causal-diagnostic-replay/finalize-rescue/protocol")
+def causal_diagnostic_replay_finalize_rescue_protocol():
+    allowed,reason=radar._ctr_rescue_gate();return jsonify({"rescue_build":"IPR-1.7.23-R3-FINALIZATION-RESCUE","gate_allowed":allowed,"gate_reason":reason,"read_only_source":True,"alpaca_requests_made":0,"normal_result_url":"/research/causal-diagnostic-replay/result"})
+@app.get("/research/causal-diagnostic-replay/finalize-rescue/start")
+def causal_diagnostic_replay_finalize_rescue_start():
+    ok,why=radar.start_causal_diagnostic_replay_finalize_rescue();return jsonify({"ok":ok,"status":"started" if ok else why,"status_url":"/research/causal-diagnostic-replay/status","result_url":"/research/causal-diagnostic-replay/result"}),(200 if ok else 409)
 
 @app.get("/research/causal-diagnostic-replay/protocol")
 def causal_diagnostic_replay_protocol():
