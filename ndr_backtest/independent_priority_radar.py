@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.41"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-POST-FAILURE-RANKING-DIAGNOSTIC-EXECUTION"
+VERSION = "1.7.42"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-RANKING-HYPOTHESIS-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1198,6 +1198,32 @@ EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC = {
     "guardrails":{"alpaca_requests":False,"no_2025_read":True,"no_2026_read":True,"no_fresh_oos":True,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False,"strategy_pass":False,"bot_authorized":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC = {
+    "protocol_id":"IPR-EARLY-FEATURE-TWO-COMPONENT-RANKING-HYPOTHESIS-PREFREEZE-2026-09-14-A",
+    "required_post_failure_diagnostic_result_sha256":"2c55b7f1714c5c1750c4f032ae457c8cbdf2343182d1954cc6bdf2f9144fe866",
+    "required_post_failure_diagnostic_execution_spec_sha256":"2c7b8cb15988e4cdb5edad09e43e058e7cc474b3d7ace4f69ab7c9387f786c25",
+    "required_post_failure_diagnostic_status":"COMPLETED",
+    "required_post_failure_diagnostic_decision":None,
+    "required_v1_7_39_decision_immutable":"DISCOVERY_RANKING_NO_GO",
+    "hypothesis_origin":"Generated after the frozen v1.7.41 descriptive diagnostic. The v1.7.41 leave-one-out numbers are hypothesis-generating evidence only and are explicitly not validation evidence.",
+    "candidate_name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A",
+    "candidate_formula":"rank_score_2c = (z_discovery_range_pct + z_return_5m_pct) / 2",
+    "components":["discovery_range_pct","return_5m_pct"],
+    "weights":{"discovery_range_pct":0.5,"return_5m_pct":0.5},
+    "standardization":"Reuse the already-frozen v1.7.37-R1 2019-2024 Discovery-only mean/population-SD constants for each Feature x Window. No refit, no label-informed standardization, no new scaling.",
+    "windows_minutes":[30,60],
+    "window_policy":"30m and 60m remain separate mandatory ranking clocks. No combined score and no best-window selection.",
+    "missingness":"Score only when both frozen z-components are available. No imputation and no partial renormalization.",
+    "discovery_reuse_firewall":"Because this exact two-component form was already exposed descriptively on 2019-2024 in v1.7.41, its 2019-2024 AUC cannot be reused as independent confirmation and no new split of those already-inspected years may be relabeled independent validation.",
+    "next_independent_test":"Only a separately pre-frozen execution may open the previously locked 2025 ranking validation for this single frozen candidate. This protocol itself does not read 2025 and does not start validation.",
+    "future_2025_gate_to_freeze_before_execution":{"primary_metric":"equal_symbol_weighted_roc_auc","windows_required":[30,60],"minimum_pooled_auc_each_window":0.55,"minimum_year_auc_each_window":0.50,"support_minima_each_window":{"positive_events":500,"hard_negative_events":500,"positive_symbols":100,"hard_negative_symbols":100},"overall_rule":"VALIDATION_PASS iff BOTH 30m and 60m satisfy pooled AUC >=0.55, AUC >0.50, and all support minima. No rounding. Otherwise VALIDATION_FAIL and STOP REVIEW."},
+    "interpretation":"A future 2025 PASS would validate predictive ranking discrimination only. It would not establish a trading strategy, profitability, threshold, Top-K, entry, exit, stop, target, or bot authorization.",
+    "forbidden":["treating v1.7.41 leave-one-out AUC as validation","retesting or optimizing this candidate on 2019-2024","searching alternative subsets","feature addition or deletion","weight search or reweighting","threshold search","top-k optimization","best-window selection","dropping 30m or 60m","2025 ranking performance read by this protocol","2026 ranking performance read","Fresh OOS read","trading optimization","profitability claims","automatic downstream authorization"],
+    "guardrails":{"alpaca_requests":False,"hypothesis_frozen":True,"validation_execution_started":False,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -10292,6 +10318,33 @@ def research_feature_discovery_stat_result():
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/statistical-execution/status"}),202
     return jsonify(x)
 
+
+
+@app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-hypothesis-prefreeze/protocol")
+def early_feature_two_component_ranking_hypothesis_prefreeze_protocol():
+    if not radar.redis_ok:
+        return jsonify({"version":VERSION,"build":BUILD,"gate_allowed":False,"gate_reason":"Redis unavailable","protocol":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC,"protocol_sha256":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256}),503
+    report=radar._rjson_get(radar.early_feature_post_failure_ranking_diagnostic_key("report"),{}) or {}
+    actual=report.get("result_sha256")
+    allowed=(
+        report.get("status")==EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC["required_post_failure_diagnostic_status"]
+        and report.get("decision") is EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC["required_post_failure_diagnostic_decision"]
+        and actual==EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC["required_post_failure_diagnostic_result_sha256"]
+        and report.get("execution_spec_sha256")==EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC["required_post_failure_diagnostic_execution_spec_sha256"]
+        and report.get("diagnostic_only") is True
+        and report.get("v1_7_39_decision_immutable")==EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC["required_v1_7_39_decision_immutable"]
+        and report.get("feature_or_weight_change_authorized") is False
+        and report.get("leave_one_out_selection_authorized") is False
+        and report.get("ranking_validation_2025_opened") is False
+        and report.get("ranking_review_2026_opened") is False
+        and report.get("fresh_oos_opened") is False
+        and report.get("ranking_threshold_defined") is False
+        and report.get("top_k_optimized") is False
+        and report.get("automatic_downstream_authorization") is False
+        and report.get("alpaca_requests_made")==0
+    )
+    reason="allowed" if allowed else "required immutable v1.7.41 diagnostic artifact/guardrails mismatch"
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC,"protocol_sha256":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256,"required_post_failure_diagnostic_result_sha256":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC["required_post_failure_diagnostic_result_sha256"],"actual_post_failure_diagnostic_result_sha256":actual,"required_post_failure_diagnostic_execution_spec_sha256":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC["required_post_failure_diagnostic_execution_spec_sha256"],"actual_post_failure_diagnostic_execution_spec_sha256":report.get("execution_spec_sha256"),"actual_post_failure_diagnostic_status":report.get("status"),"actual_post_failure_diagnostic_decision":report.get("decision"),"actual_v1_7_39_decision_immutable":report.get("v1_7_39_decision_immutable"),"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"validation_execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
 
 @app.get("/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic-prefreeze/protocol")
 def research_post_failure_ranking_diagnostic_prefreeze_protocol():
