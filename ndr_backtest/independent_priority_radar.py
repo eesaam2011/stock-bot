@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.51"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-RESEARCH-EXECUTION"
+VERSION = "1.7.51-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-FINALIZATION-RESCUE-R1"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -10157,6 +10157,98 @@ app = Flask(__name__)
 radar = IndependentPriorityRadar()
 worker: threading.Thread | None = None
 
+ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC = {'rescue_id': 'IPR-ENTRY-CONFIRMATION-FINALIZATION-RESCUE-2026-09-14-R1', 'parent_execution_id': 'IPR-ENTRY-CONFIRMATION-RESEARCH-EXECUTION-2026-09-14-A', 'required_execution_spec_sha256': '8441aeade3ad0f478f44eaa5e9e485b2fa268318d8912f5feed16eb3101815b3', 'required_prefreeze_sha256': 'f706481c55dcfb5933cbb6c730cb7b07d81f097d59366d139cf75a5a4d0acabe', 'required_completed_sessions': 1926, 'required_alpaca_requests_made': 3245, 'alpaca_authorized': False, 'fresh_oos_opened': False, 'post_2026_08_31_read': False, 'purpose': 'Finalize already-persisted v1.7.51 confirmation records only; no path reconstruction and no historical market-data requests.', 'aggregation_policy': 'Memory-bounded offset-by-offset aggregation. Persist each of the 20 frozen views independently in Redis; final report stores immutable manifest plus overall outcomes and feature summaries. Full view artifacts remain retrievable by frozen coordinates.', 'windows_minutes': [30, 60], 'selections': [1, 3], 'confirmation_offsets_minutes': [1, 2, 3, 5, 10], 'decision': 'ENTRY_CONFIRMATION_RESEARCH_ONLY', 'entry_rule_selected': False, 'entry_rule_validated': False, 'selection_rule_validated': False, 'profitability_computed': False, 'strategy_pass': False, 'bot_authorized': False, 'automatic_downstream_authorization': False, 'stop_and_review_required': True}
+ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC_SHA256 = "ffb05efb35141de44a2f995af3642f787e84f64c582946185f9c11b28cb850b1"
+entry_confirmation_rescue_lock = threading.RLock()
+entry_confirmation_rescue_thread: threading.Thread | None = None
+
+def _ecr_rescue_key(suffix: str) -> str:
+    return radar.key(f"early_feature_entry_confirmation_research:v1:rescue_r1:{suffix}")
+
+def _ecr_rescue_gate():
+    if not radar.redis.configured: return False, "Redis required", {}
+    st=radar.redis.get_json(radar.early_feature_entry_confirmation_research_key("status"),{}) or {}
+    done=radar.redis.get_json(radar.early_feature_entry_confirmation_research_key("completed_sessions"),[]) or []
+    calls=int(radar.redis.get_json(radar.early_feature_entry_confirmation_research_key("alpaca_logical_requests"),0) or 0)
+    checks=[
+      (len(set(str(x) for x in done))==1926,"completed_sessions_not_1926"),
+      (int(st.get("sessions_completed") or 0)==1926,"status_sessions_not_1926"),
+      (calls==3245,"alpaca_request_count_mismatch"),
+      (st.get("fresh_oos_opened") is False,"fresh_oos_boundary_violation"),
+      (st.get("post_2026_08_31_read") is False,"post_2026_08_31_boundary_violation"),
+      (st.get("entry_rule_validated") is False,"entry_rule_unexpectedly_validated")
+    ]
+    ok=all(x for x,_ in checks); why="allowed" if ok else next(m for x,m in checks if not x)
+    return ok,why,{"status":st,"completed_sessions_count":len(set(str(x) for x in done)),"alpaca_requests_made":calls}
+
+def _ecr_rescue_compact_confirmation(c):
+    if not isinstance(c,dict): return None
+    out={"features":dict(c.get("features") or {}),"outcomes":{}}
+    for hz,v in (c.get("outcomes") or {}).items():
+        if not isinstance(v,dict) or not v.get("available"):
+            out["outcomes"][str(hz)]={"available":False}; continue
+        out["outcomes"][str(hz)]={
+          "available":True,"mfe_pct":v.get("mfe_pct"),"mae_pct":v.get("mae_pct"),
+          "targets":{k:{"reached":bool((z or {}).get("reached"))} for k,z in (v.get("targets") or {}).items()},
+          "adverse":{k:{"reached":bool((z or {}).get("reached"))} for k,z in (v.get("adverse") or {}).items()},
+          "path_ordering":{"target_5_adverse_-5":(v.get("path_ordering") or {}).get("target_5_adverse_-5")}
+        }
+    return out
+
+def _ecr_rescue_run():
+    global entry_confirmation_rescue_thread
+    try:
+        ok,why,meta=_ecr_rescue_gate()
+        if not ok: raise RuntimeError(why)
+        prior_report=radar.redis.get_json(radar.early_feature_entry_confirmation_research_key("report"),None)
+        if prior_report and prior_report.get("status")=="COMPLETED":
+            radar.redis.set_json(_ecr_rescue_key("status"),{"status":"COMPLETED","phase":"ALREADY_FINALIZED","message":"Original v1.7.51 report already exists; rescue made no changes.","alpaca_requests_made":3245,"rescue_alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"updated_at":iso()}); return
+        done=sorted(set(str(x) for x in (radar.redis.get_json(radar.early_feature_entry_confirmation_research_key("completed_sessions"),[]) or [])))
+        radar.redis.set_json(_ecr_rescue_key("status"),{"status":"RUNNING","phase":"MEMORY_BOUNDED_FINAL_AGGREGATION","message":"Finalization rescue started from 1926 persisted sessions","sessions_completed":1926,"total_sessions":1926,"alpaca_requests_made":3245,"rescue_alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"updated_at":iso()})
+        manifest=[]; compact_views=[]
+        for oi,off in enumerate(ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC["confirmation_offsets_minutes"],1):
+            buckets={(w,n):[] for w in (30,60) for n in (1,3)}
+            for sess in done:
+                rows=radar.redis.get_json(radar.early_feature_entry_confirmation_research_key(f"records:{sess}"),[]) or []
+                for r in rows:
+                    try: w=int(r.get("window_minutes") or -1); rank=int(r.get("within_session_rank") or 99)
+                    except Exception: continue
+                    c=(r.get("confirmations") or {}).get(str(off)); cc=_ecr_rescue_compact_confirmation(c)
+                    if cc is None or w not in (30,60): continue
+                    if rank<=1: buckets[(w,1)].append({"window_minutes":w,"within_session_rank":rank,"confirmations":{str(off):cc}})
+                    if rank<=3: buckets[(w,3)].append({"window_minutes":w,"within_session_rank":rank,"confirmations":{str(off):cc}})
+            for w in (30,60):
+                for n in (1,3):
+                    view=radar._ecr_aggregate_view(buckets[(w,n)],w,n,off)
+                    vcanon=json.dumps(view,sort_keys=True,separators=(",",":"),allow_nan=False); vsha=hashlib.sha256(vcanon.encode()).hexdigest(); key=f"view:w{w}:top{n}:o{off}"
+                    radar.redis.set_json(_ecr_rescue_key(key),view)
+                    manifest.append({"window_minutes":w,"selection":f"top_{n}","confirmation_offset_minutes":off,"redis_suffix":key,"sha256":vsha,"candidate_count":view.get("candidate_count")})
+                    compact_views.append({"window_minutes":w,"selection":f"top_{n}","confirmation_offset_minutes":off,"candidate_count":view.get("candidate_count"),"feature_summary":view.get("feature_summary"),"overall_outcomes":view.get("overall_outcomes"),"full_view_sha256":vsha})
+            radar.redis.set_json(_ecr_rescue_key("status"),{"status":"RUNNING","phase":"MEMORY_BOUNDED_FINAL_AGGREGATION","message":f"Finalized confirmation offset {off} min ({oi}/5)","offsets_completed":oi,"offsets_total":5,"sessions_completed":1926,"total_sessions":1926,"alpaca_requests_made":3245,"rescue_alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"updated_at":iso()})
+            del buckets
+        report={"version":VERSION,"build":BUILD,"rescue_id":ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC["rescue_id"],"parent_execution_id":ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC["parent_execution_id"],"execution_spec_sha256":ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC["required_execution_spec_sha256"],"required_prefreeze_sha256":ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC["required_prefreeze_sha256"],"rescue_spec_sha256":ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC_SHA256,"status":"COMPLETED","phase":"ENTRY_CONFIRMATION_RESEARCH_STOP_REVIEW","decision":"ENTRY_CONFIRMATION_RESEARCH_ONLY","sessions":1926,"alpaca_requests_made":3245,"rescue_alpaca_requests_made":0,"views_manifest":manifest,"views_summary":compact_views,"full_view_count":len(manifest),"selection_rule_validated":False,"entry_rule_selected":False,"entry_rule_validated":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"profitability_computed":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True,"completed_at":iso()}
+        c=dict(report);c.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(c,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        radar.redis.set_json(_ecr_rescue_key("report"),report)
+        # Canonical v1.7.51 report pointer is now finalized by rescue, while preserving rescue provenance.
+        radar.redis.set_json(radar.early_feature_entry_confirmation_research_key("report"),report)
+        radar.redis.set_json(radar.early_feature_entry_confirmation_research_key("status"),{"status":"COMPLETED","phase":"ENTRY_CONFIRMATION_RESEARCH_STOP_REVIEW","message":"Entry Confirmation Research finalized by v1.7.51-R1 rescue; STOP REVIEW","decision":"ENTRY_CONFIRMATION_RESEARCH_ONLY","sessions_completed":1926,"total_sessions":1926,"alpaca_requests_made":3245,"alpaca_request_budget":5000,"rescue_alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_validated":False,"stop_and_review_required":True,"updated_at":iso()})
+        radar.redis.set_json(_ecr_rescue_key("status"),{"status":"COMPLETED","phase":"ENTRY_CONFIRMATION_RESEARCH_STOP_REVIEW","message":"Finalization rescue completed; STOP REVIEW","offsets_completed":5,"offsets_total":5,"sessions_completed":1926,"total_sessions":1926,"alpaca_requests_made":3245,"rescue_alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_validated":False,"updated_at":iso()})
+    except Exception as e:
+        logging.exception("Entry Confirmation finalization rescue failed")
+        if radar.redis.configured: radar.redis.set_json(_ecr_rescue_key("status"),{"status":"ERROR","phase":"FINALIZATION_RESCUE_BLOCKED","message":f"{type(e).__name__}: {e}","rescue_alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"updated_at":iso()})
+    finally:
+        with entry_confirmation_rescue_lock: entry_confirmation_rescue_thread=None
+
+def _ecr_rescue_start():
+    global entry_confirmation_rescue_thread
+    ok,why,_=_ecr_rescue_gate()
+    if not ok:return False,why
+    existing=radar.redis.get_json(_ecr_rescue_key("report"),None) if radar.redis.configured else None
+    if existing and existing.get("status")=="COMPLETED": return False,"already_completed"
+    with entry_confirmation_rescue_lock:
+        if entry_confirmation_rescue_thread and entry_confirmation_rescue_thread.is_alive():return False,"already_running"
+        entry_confirmation_rescue_thread=threading.Thread(target=_ecr_rescue_run,name="entry-confirmation-finalization-rescue",daemon=True);entry_confirmation_rescue_thread.start()
+    return True,"started"
 
 def start_worker() -> None:
     global worker
@@ -11913,6 +12005,36 @@ def early_feature_entry_confirmation_research_execution_status():
 def early_feature_entry_confirmation_research_execution_result():
     x=radar.redis.get_json(radar.early_feature_entry_confirmation_research_key("report"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/execution/status"}),202
+    return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/protocol")
+def early_feature_entry_confirmation_finalize_rescue_protocol():
+    ok,why,meta=_ecr_rescue_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"rescue_spec":ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC,"rescue_spec_sha256":ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC_SHA256,"gate_allowed":ok,"gate_reason":why,"observed_parent_status":meta.get("status"),"completed_sessions_count":meta.get("completed_sessions_count"),"alpaca_requests_made":meta.get("alpaca_requests_made"),"rescue_alpaca_authorized":False,"rescue_alpaca_requests_made":0,"confirmation_results_aggregated_by_protocol":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_selected":False,"entry_rule_validated":False,"automatic_downstream_authorization":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/start",methods=["GET","POST"])
+def early_feature_entry_confirmation_finalize_rescue_start():
+    ok,why=_ecr_rescue_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/status","result_url":"/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/status")
+def early_feature_entry_confirmation_finalize_rescue_status():
+    x=radar.redis.get_json(_ecr_rescue_key("status"),{}) if radar.redis.configured else {};x=dict(x or {})
+    with entry_confirmation_rescue_lock:x["worker_alive"]=bool(entry_confirmation_rescue_thread and entry_confirmation_rescue_thread.is_alive())
+    return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/result")
+def early_feature_entry_confirmation_finalize_rescue_result():
+    x=radar.redis.get_json(_ecr_rescue_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/status"}),202
+    return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/view")
+def early_feature_entry_confirmation_finalize_rescue_view():
+    try:w=int(request.args.get("window","0"));n=int(request.args.get("top","0"));off=int(request.args.get("offset","0"))
+    except Exception:return jsonify({"error":"invalid coordinates"}),400
+    if w not in (30,60) or n not in (1,3) or off not in (1,2,3,5,10):return jsonify({"error":"coordinates outside frozen view grid"}),400
+    x=radar.redis.get_json(_ecr_rescue_key(f"view:w{w}:top{n}:o{off}"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False}),202
     return jsonify(x)
 
 if __name__ == "__main__":
