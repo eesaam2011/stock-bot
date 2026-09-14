@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.43-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION-R1-GET-START-HOTFIX"
+VERSION = "1.7.44"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-2026-REGIME-VALIDATION-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1225,6 +1225,45 @@ EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC = {
 }
 EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
+
+
+
+EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SPEC = {
+    "protocol_id":"IPR-EARLY-FEATURE-TWO-COMPONENT-2026-REGIME-VALIDATION-PREFREEZE-2026-09-14-A",
+    "required_two_component_2025_validation_result_sha256":"ebce6d512af5dff658c19a14b1225b05e875e2de59fbee8fc4edbbc9b8d7d8ca",
+    "required_two_component_2025_validation_decision":"VALIDATION_PASS",
+    "required_two_component_2025_execution_spec_sha256":"9ea19c32e65515264d37156e26fcb8f3c07762a60ccb12dbf8226877d42f3adc",
+    "required_2026_feature_regime_review_result_sha256":"cdd986fd7d54d0005c1562d2ae21d2f46e2363f1a8c47a65a409420e80bda17b",
+    "required_2026_feature_regime_review_status":"COMPLETED",
+    "required_2026_feature_regime_review_decision":"DESCRIPTIVE_REVIEW_ONLY",
+    "candidate_name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A",
+    "candidate_formula":"rank_score_2c = (z_discovery_range_pct + z_return_5m_pct) / 2",
+    "components":["discovery_range_pct","return_5m_pct"],
+    "weights":{"discovery_range_pct":0.5,"return_5m_pct":0.5},
+    "standardization":"Reuse exactly the frozen v1.7.37-R1 2019-2024 Discovery-only mean/population-SD constants for each Feature x Window. No refit, no 2025/2026 scaling, and no label-informed standardization.",
+    "review_period":{"start":"2026-01-01","end":"2026-08-31","hard_stop_after":"2026-08-31"},
+    "windows_minutes":[30,60],
+    "window_policy":"30m and 60m are separate mandatory clocks. BOTH must pass. No best-window selection and no combined 30m/60m score.",
+    "data_provenance_policy":{
+        "primary":"Reuse the already-persisted causal v1.7.35 2026 Jan-Aug feature records after exact provenance verification. Those records contain the frozen promoted features, including discovery_range_pct and return_5m_pct.",
+        "fallback":"Only if the required persisted raw feature records are absent, incomplete, or fail provenance checks may a separately frozen execution authorize new Alpaca historical reconstruction for 2026-01-01 through 2026-08-31 only. This pre-freeze itself authorizes zero Alpaca requests.",
+        "no_post_2026_08_31_read":True,
+        "fresh_oos_remains_closed":True
+    },
+    "missingness":"Score only when both frozen raw components are available and finite. No imputation and no partial renormalization.",
+    "primary_metric":"equal_symbol_weighted_roc_auc",
+    "gate":{
+        "minimum_auc_each_window":0.55,
+        "minimum_auc_strictly_above_each_window":0.50,
+        "support_minima_each_window":{"positive_events":500,"hard_negative_events":500,"positive_symbols":100,"hard_negative_symbols":100},
+        "overall_rule":"REGIME_VALIDATION_PASS iff BOTH 30m and 60m have AUC >= 0.55, AUC > 0.50, and all support minima. No rounding. Otherwise REGIME_VALIDATION_FAIL and STOP REVIEW."
+    },
+    "v1_7_35_comparison_firewall":"The old v1.7.35 three-feature 2026 review is provenance/data context only. Its feature-level effects may be reported later as descriptive context, but direct comparison of the old three-feature configuration with this two-component ranking cannot prove that deleting log_discovery_volume caused improvement or deterioration and cannot affect PASS/FAIL.",
+    "interpretation":"A future PASS validates persistence of predictive ranking discrimination for this frozen two-component candidate in 2026 Jan-Aug only. It does not establish strategy profitability, a threshold, Top-K, entry/exit/stop/target logic, or bot authorization, and it does not automatically open Fresh OOS.",
+    "forbidden":["changing components","changing weights","restandardizing on 2025 or 2026","threshold search","top-k optimization","best-window selection","dropping 30m or 60m","alternative subset search","using v1.7.35 comparison to alter PASS/FAIL","reading any session after 2026-08-31","Fresh OOS read","trading optimization","profitability claims","automatic downstream authorization"],
+    "guardrails":{"prefreeze_only":True,"execution_started":False,"alpaca_requests":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC = {
     "execution_id":"IPR-EARLY-FEATURE-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION-2026-09-14-A",
@@ -10962,6 +11001,27 @@ def ready():
     }
     return jsonify(payload), (200 if payload["ready"] else 503)
 
+
+
+@app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2026-regime-validation/prefreeze/protocol")
+def early_feature_two_component_2026_regime_validation_prefreeze_protocol():
+    if not radar.redis.configured:
+        return jsonify({"version":VERSION,"build":BUILD,"gate_allowed":False,"gate_reason":"Redis unavailable","protocol":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SPEC,"protocol_sha256":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SHA256}),503
+    spec=EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SPEC
+    v25=radar.redis.get_json(radar.early_feature_two_component_2025_validation_key("report"),{}) or {}
+    r26=radar.redis.get_json(radar.early_feature_2026_regime_review_key("report"),{}) or {}
+    checks=[
+        (v25.get("status")=="COMPLETED","2025 two-component validation not completed"),
+        (v25.get("decision")==spec["required_two_component_2025_validation_decision"],"2025 two-component decision mismatch"),
+        (v25.get("result_sha256")==spec["required_two_component_2025_validation_result_sha256"],"2025 two-component result SHA mismatch"),
+        (v25.get("execution_spec_sha256")==spec["required_two_component_2025_execution_spec_sha256"],"2025 execution spec SHA mismatch"),
+        (r26.get("status")==spec["required_2026_feature_regime_review_status"],"v1.7.35 2026 feature review status mismatch"),
+        (r26.get("decision")==spec["required_2026_feature_regime_review_decision"],"v1.7.35 2026 feature review decision mismatch"),
+        (r26.get("result_sha256")==spec["required_2026_feature_regime_review_result_sha256"],"v1.7.35 2026 feature review result SHA mismatch"),
+        (r26.get("fresh_oos_opened") is False and r26.get("post_2026_08_31_read") is False,"v1.7.35 Fresh OOS boundary mismatch")
+    ]
+    allowed=all(x for x,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"actual_two_component_2025_validation_result_sha256":v25.get("result_sha256"),"actual_two_component_2025_decision":v25.get("decision"),"actual_2026_feature_regime_review_result_sha256":r26.get("result_sha256"),"actual_2026_feature_regime_review_status":r26.get("status"),"actual_2026_feature_regime_review_decision":r26.get("decision"),"ranking_results_2026_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
 
 @app.get("/status")
 def status():
