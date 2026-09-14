@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.32"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-13-FEATURE-RECONSTRUCTION-EXECUTION"
+VERSION = "1.7.33"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-FEATURE-LEVEL-DISCOVERY-STATISTICAL-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -977,6 +977,24 @@ EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC = {
 }
 EARLY_FEATURE_RECONSTRUCTION_EXEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256=hashlib.sha256(json.dumps({"features":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["features"],"definitions":{"discovery_body_pct":"(close-open)/open*100","discovery_range_pct":"(high-low)/open*100","discovery_close_location":"(close-low)/(high-low), 0.5 if zero range","log_discovery_volume":"log1p(max(0,last_volume))","volume_ratio_to_prior5":"last_volume/max(1,mean(previous_5_volumes))","volume_acceleration_3v3":"mean(last_3_volumes)/max(1,mean(previous_3_volumes))","return_3m_pct":"(last_close/close_3_bars_back-1)*100","return_5m_pct":"(last_close/close_5_bars_back-1)*100"}},sort_keys=True,separators=(",",":")).encode()).hexdigest()
+
+EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC = {
+    "execution_id":"IPR-EARLY-FEATURE-DISCOVERY-STATISTICAL-EXECUTION-2026-09-14-A",
+    "required_prefreeze_sha256":"f532df7beed1f7e07bb98ee9b5a41a133969456e216d9d70e18eb3f670db0448",
+    "required_reconstruction_execution_sha256":"91965400ee402c18ff07aea58947472fa4092cf919811f65b71a8009df4ea61f",
+    "required_reconstruction_result_sha256":"d1a4af68ebb3af814b0358b819513912b89d53cf973f06233c5bbccdfc6b1e1c",
+    "required_feature_definition_sha256":"f615c7181c78da91e89c6ac7fa8608958043a4e029c52c76954d39ceaaee6b71",
+    "years":[2019,2020,2021,2022,2023,2024],
+    "windows_minutes":[30,60],
+    "features":["discovery_body_pct","discovery_range_pct","discovery_close_location","log_discovery_volume","volume_ratio_to_prior5","volume_acceleration_3v3","return_3m_pct","return_5m_pct"],
+    "families":{"candle_structure":["discovery_body_pct","discovery_range_pct","discovery_close_location"],"volume_participation":["log_discovery_volume","volume_ratio_to_prior5","volume_acceleration_3v3"],"short_return_path":["return_3m_pct","return_5m_pct"]},
+    "statistics":{"primary_effect":"Equal-symbol weighted standardized mean difference of per-symbol feature means, Positive minus Hard-Negative, separately per Feature x Window.","p_value":"Two-sided Welch t-test on equal-symbol per-symbol means; fixed before feature results are read.","fdr":"Benjamini-Hochberg within each original frozen v1.7.29 family across both windows; untested reserve hypotheses are conservatively padded with p=1 so original family multiplicity is not reduced.","fdr_q_max":0.05,"minimum_absolute_standardized_effect":0.10,"minimum_discovery_same_direction_years":5,"minimum_positive_events":500,"minimum_hard_negative_events":500,"minimum_positive_symbols":100,"minimum_hard_negative_symbols":100,"rounding_for_decisions":False},
+    "original_family_hypothesis_counts":{"candle_structure":10,"volume_participation":6,"short_return_path":6},
+    "coverage_audit":{"required_before_interpretation":True,"report_by_feature_window_class_year":True,"report_unavailability_reasons":True,"no_imputation":True,"missingness_does_not_modify_the_prefrozen_go_rule":True},
+    "decision_rule":"GO iff at least one tested first-batch feature qualifies at BOTH 30m and 60m with the same pooled Discovery direction; qualification requires BH-FDR q<=0.05, |effect|>=0.10, same learned direction >=5/6 years, and all frozen event/symbol support minima.",
+    "guardrails":{"alpaca_requests":0,"redis_reconstruction_only":True,"no_2025_read":True,"no_2026_read":True,"no_fresh_oos":True,"no_reserve_features":True,"no_invalid_features":True,"no_threshold_search":True,"no_interaction_search":True,"no_model_or_bot_change":True,"strategy_pass":False,"bot_authorized":False}
+}
+EARLY_FEATURE_DISCOVERY_STAT_EXEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -2373,6 +2391,8 @@ class IndependentPriorityRadar:
         self.early_feature_probe_state={"status":"IDLE","phase":"NOT_STARTED","message":"Early Feature Probe not started","execution_id":EARLY_FEATURE_PROBE_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"replay_restarted":False,"fresh_oos_opened":False,"updated_at":iso()}
         self.early_feature_reconstruction_lock=threading.RLock(); self.early_feature_reconstruction_thread=None; self.early_feature_reconstruction_stop_event=threading.Event()
         self.early_feature_reconstruction_state={"status":"IDLE","phase":"NOT_STARTED","message":"Early Feature Reconstruction not started","execution_id":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
+        self.early_feature_discovery_stat_lock=threading.RLock(); self.early_feature_discovery_stat_thread=None
+        self.early_feature_discovery_stat_state={"status":"IDLE","phase":"NOT_STARTED","message":"Feature-Level Discovery Statistical Execution not started","execution_id":EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -4987,6 +5007,151 @@ class IndependentPriorityRadar:
             logging.exception("Early Feature Reconstruction failed");self._set_early_feature_reconstruction_state(status="ERROR",phase="FEATURE_RECONSTRUCTION_BLOCKED",message=f"{type(e).__name__}: {e}",fresh_oos_opened=False,validation_2025_opened=False,year_2026_opened=False)
         finally:
             with self.early_feature_reconstruction_lock:self.early_feature_reconstruction_thread=None
+
+    def early_feature_discovery_stat_key(self, suffix: str) -> str:
+        return self.key(f"early_feature_discovery_stat:v1:{suffix}")
+
+    def _set_early_feature_discovery_stat_state(self, **updates: Any) -> None:
+        with self.early_feature_discovery_stat_lock:
+            self.early_feature_discovery_stat_state.update(updates); self.early_feature_discovery_stat_state["updated_at"]=iso(); snap=dict(self.early_feature_discovery_stat_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_discovery_stat_key("status"),snap)
+
+    def _early_feature_discovery_stat_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        if EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256!=EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["required_prefreeze_sha256"]:return False,"Feature-Level Discovery prefreeze SHA mismatch"
+        if EARLY_FEATURE_RECONSTRUCTION_EXEC_SHA256!=EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["required_reconstruction_execution_sha256"]:return False,"Reconstruction execution SHA mismatch"
+        if EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256!=EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["required_feature_definition_sha256"]:return False,"Feature definition SHA mismatch"
+        rr=self.redis.get_json(self.early_feature_reconstruction_key("report"),None) or {}
+        if rr.get("status")!="COMPLETED":return False,"Completed reconstruction required"
+        if rr.get("result_sha256")!=EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["required_reconstruction_result_sha256"]:return False,"Reconstruction result SHA mismatch"
+        if rr.get("feature_definition_sha256")!=EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["required_feature_definition_sha256"]:return False,"Persisted feature definition SHA mismatch"
+        if rr.get("validation_2025_opened") or rr.get("year_2026_opened") or rr.get("fresh_oos_opened"):return False,"Locked data was opened"
+        if list(EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["features"])!=list(EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["features"]):return False,"First-batch feature mismatch"
+        return True,"allowed"
+
+    @staticmethod
+    def _efd_betacf(a,b,x):
+        MAXIT=200;EPS=3e-14;FPMIN=1e-300
+        qab=a+b;qap=a+1.0;qam=a-1.0;c=1.0;d=1.0-qab*x/qap
+        if abs(d)<FPMIN:d=FPMIN
+        d=1.0/d;h=d
+        for m in range(1,MAXIT+1):
+            m2=2*m;aa=m*(b-m)*x/((qam+m2)*(a+m2));d=1.0+aa*d
+            if abs(d)<FPMIN:d=FPMIN
+            c=1.0+aa/c
+            if abs(c)<FPMIN:c=FPMIN
+            d=1.0/d;h*=d*c;aa=-(a+m)*(qab+m)*x/((a+m2)*(qap+m2));d=1.0+aa*d
+            if abs(d)<FPMIN:d=FPMIN
+            c=1.0+aa/c
+            if abs(c)<FPMIN:c=FPMIN
+            d=1.0/d;delta=d*c;h*=delta
+            if abs(delta-1.0)<EPS:break
+        return h
+
+    @classmethod
+    def _efd_betai(cls,a,b,x):
+        if x<=0:return 0.0
+        if x>=1:return 1.0
+        bt=math.exp(math.lgamma(a+b)-math.lgamma(a)-math.lgamma(b)+a*math.log(x)+b*math.log1p(-x))
+        return bt*cls._efd_betacf(a,b,x)/a if x<(a+1)/(a+b+2) else 1-bt*cls._efd_betacf(b,a,1-x)/b
+
+    @classmethod
+    def _efd_welch_p(cls,a,b):
+        n1=len(a);n2=len(b)
+        if n1<2 or n2<2:return 1.0
+        m1=mean(a);m2=mean(b);v1=sum((x-m1)**2 for x in a)/(n1-1);v2=sum((x-m2)**2 for x in b)/(n2-1);se2=v1/n1+v2/n2
+        if se2<=0:return 1.0 if abs(m1-m2)<1e-15 else 0.0
+        t=abs(m1-m2)/math.sqrt(se2);den=(v1/n1)**2/(n1-1)+(v2/n2)**2/(n2-1)
+        if den<=0:return 1.0
+        df=se2**2/den;x=df/(df+t*t)
+        return max(0.0,min(1.0,cls._efd_betai(df/2.0,0.5,x)))
+
+    @staticmethod
+    def _efd_effect(a,b):
+        if len(a)<2 or len(b)<2:return None
+        ma=mean(a);mb=mean(b);va=sum((x-ma)**2 for x in a)/(len(a)-1);vb=sum((x-mb)**2 for x in b)/(len(b)-1);den=len(a)+len(b)-2
+        if den<=0:return None
+        sp=math.sqrt(max(0.0,((len(a)-1)*va+(len(b)-1)*vb)/den))
+        if sp<=1e-15:return 0.0 if abs(ma-mb)<1e-15 else (999.0 if ma>mb else -999.0)
+        return (ma-mb)/sp
+
+    @staticmethod
+    def _efd_bh_with_padding(items, total_m):
+        # items: [(id,p)]. Pad omitted frozen-family hypotheses with p=1, preserving original multiplicity.
+        vals=[(str(i),max(0.0,min(1.0,float(p)))) for i,p in items]+[(f"__PAD_{k}",1.0) for k in range(max(0,total_m-len(items)))]
+        vals.sort(key=lambda x:(x[1],x[0]));m=len(vals);q={};prev=1.0
+        for rank in range(m,0,-1):
+            ident,p=vals[rank-1];cur=min(prev,p*m/rank,1.0);q[ident]=cur;prev=cur
+        return {i:q[i] for i,_ in items}
+
+    def early_feature_discovery_stat_loop(self):
+        try:
+            ok,why=self._early_feature_discovery_stat_gate()
+            if not ok:raise RuntimeError(why)
+            spec=EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC;features=spec["features"];wins=spec["windows_minutes"];years=set(spec["years"])
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.early_feature_reconstruction_key("completed_sessions"),[]) or []) if int(str(x)[:4]) in years)
+            self._set_early_feature_discovery_stat_state(status="RUNNING",phase="COVERAGE_AND_DISCOVERY_STATISTICS",message="Reading frozen reconstructed records only",sessions_processed=0,total_sessions=len(sessions),alpaca_requests_made=0,validation_2025_opened=False,year_2026_opened=False,fresh_oos_opened=False)
+            # cell -> symbol -> feature -> [values]; support counts are event-level feature availability.
+            symvals={};support={};coverage={};reasons={}
+            for idx,sess in enumerate(sessions,1):
+                for r in self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []:
+                    y=int(r.get("year") or int(sess[:4]));w=int(r.get("checkpoint_minutes") or -1);cl=str(r.get("class") or "");sym=str(r.get("symbol") or "").upper()
+                    if y not in years or w not in wins or cl not in {"positive","hard_negative"} or not sym:continue
+                    feats=r.get("features") if r.get("feature_available") else None;reason=str((r.get("diagnostic") or {}).get("reason") or "unknown")
+                    for f in features:
+                        ck=(y,w,cl,f);cv=coverage.setdefault(ck,{"eligible":0,"available":0});cv["eligible"]+=1
+                        if feats is not None and f in feats and math.isfinite(float(feats[f])):
+                            cv["available"]+=1;support.setdefault((w,cl,f),{"events":0,"symbols":set()});support[(w,cl,f)]["events"]+=1;support[(w,cl,f)]["symbols"].add(sym)
+                            symvals.setdefault((w,cl,f),{}).setdefault(sym,[]).append(float(feats[f]));symvals.setdefault((y,w,cl,f),{}).setdefault(sym,[]).append(float(feats[f]))
+                        else:reasons[(y,w,cl,f,reason)]=reasons.get((y,w,cl,f,reason),0)+1
+                if idx%100==0 or idx==len(sessions):self._set_early_feature_discovery_stat_state(status="RUNNING",phase="COVERAGE_AND_DISCOVERY_STATISTICS",message=f"Read {idx}/{len(sessions)} sessions",sessions_processed=idx,total_sessions=len(sessions),alpaca_requests_made=0,validation_2025_opened=False,year_2026_opened=False,fresh_oos_opened=False)
+            def means_for(key):return [mean(v) for v in symvals.get(key,{}).values() if v]
+            results=[]
+            for f in features:
+                for w in wins:
+                    a=means_for((w,"positive",f));b=means_for((w,"hard_negative",f));eff=self._efd_effect(a,b);p=self._efd_welch_p(a,b);direction="positive_gt_hard_negative" if (eff or 0)>0 else ("positive_lt_hard_negative" if (eff or 0)<0 else "tie")
+                    yearly=[];same=0
+                    for y in sorted(years):
+                        ya=means_for((y,w,"positive",f));yb=means_for((y,w,"hard_negative",f));ye=self._efd_effect(ya,yb);yd="positive_gt_hard_negative" if (ye or 0)>0 else ("positive_lt_hard_negative" if (ye or 0)<0 else "tie")
+                        if yd==direction and direction!="tie":same+=1
+                        yearly.append({"year":y,"effect":ye,"direction":yd,"positive_symbols":len(ya),"hard_negative_symbols":len(yb)})
+                    ps=support.get((w,"positive",f),{"events":0,"symbols":set()});hs=support.get((w,"hard_negative",f),{"events":0,"symbols":set()})
+                    results.append({"feature":f,"window_minutes":w,"effect":eff,"p_value":p,"direction":direction,"same_direction_years":same,"yearly":yearly,"support":{"positive_events":ps["events"],"hard_negative_events":hs["events"],"positive_symbols":len(ps["symbols"]),"hard_negative_symbols":len(hs["symbols"])}})
+            # FDR by original frozen family, with p=1 padding for untested reserve hypotheses.
+            fam_of={f:fam for fam,fs in spec["families"].items() for f in fs}
+            for fam in spec["families"]:
+                its=[(f'{r["feature"]}|{r["window_minutes"]}',r["p_value"]) for r in results if fam_of.get(r["feature"])==fam]
+                qs=self._efd_bh_with_padding(its,int(spec["original_family_hypothesis_counts"][fam]))
+                for r in results:
+                    ident=f'{r["feature"]}|{r["window_minutes"]}'
+                    if ident in qs:r["family"]=fam;r["q_value"]=qs[ident]
+            st=spec["statistics"]
+            for r in results:
+                su=r["support"];r["qualifies"]=bool(r.get("q_value",1)<=st["fdr_q_max"] and r["effect"] is not None and abs(r["effect"])>=st["minimum_absolute_standardized_effect"] and r["same_direction_years"]>=st["minimum_discovery_same_direction_years"] and su["positive_events"]>=st["minimum_positive_events"] and su["hard_negative_events"]>=st["minimum_hard_negative_events"] and su["positive_symbols"]>=st["minimum_positive_symbols"] and su["hard_negative_symbols"]>=st["minimum_hard_negative_symbols"])
+            promoted=[]
+            for f in features:
+                rr=[r for r in results if r["feature"]==f]
+                if len(rr)==2 and all(r["qualifies"] for r in rr) and rr[0]["direction"]==rr[1]["direction"] and rr[0]["direction"]!="tie":promoted.append({"feature":f,"direction":rr[0]["direction"]})
+            covout=[]
+            for (y,w,cl,f),v in sorted(coverage.items()):
+                covout.append({"year":y,"window_minutes":w,"class":cl,"feature":f,"eligible":v["eligible"],"available":v["available"],"unavailable":v["eligible"]-v["available"],"availability_rate":v["available"]/v["eligible"] if v["eligible"] else None})
+            reasonout=[{"year":y,"window_minutes":w,"class":cl,"feature":f,"reason":reason,"count":n} for (y,w,cl,f,reason),n in sorted(reasons.items())]
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":EARLY_FEATURE_DISCOVERY_STAT_EXEC_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"required_reconstruction_result_sha256":spec["required_reconstruction_result_sha256"],"actual_reconstruction_result_sha256":(self.redis.get_json(self.early_feature_reconstruction_key("report"),{}) or {}).get("result_sha256"),"feature_definition_sha256":EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256,"status":"COMPLETED","phase":"FEATURE_LEVEL_DISCOVERY_STOP_REVIEW","sessions":len(sessions),"alpaca_requests_made":0,"coverage_audit":{"cells":covout,"unavailability_reasons":reasonout,"note":"Coverage/missingness is descriptive and does not modify the pre-frozen GO rule; no imputation."},"feature_results":results,"promoted_features":promoted,"decision":"GO" if promoted else "NO_GO","validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"strategy_pass":False,"bot_authorized":False,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_discovery_stat_key("report"),report);self._set_early_feature_discovery_stat_state(status="COMPLETED",phase="FEATURE_LEVEL_DISCOVERY_STOP_REVIEW",message=f'Discovery {report["decision"]}; STOP REVIEW',sessions_processed=len(sessions),total_sessions=len(sessions),decision=report["decision"],promoted_features=promoted,alpaca_requests_made=0,stop_and_review_required=True,validation_2025_opened=False,year_2026_opened=False,fresh_oos_opened=False)
+        except Exception as e:
+            logging.exception("Feature-Level Discovery Statistical Execution failed");self._set_early_feature_discovery_stat_state(status="ERROR",phase="FEATURE_LEVEL_DISCOVERY_BLOCKED",message=f"{type(e).__name__}: {e}",alpaca_requests_made=0,validation_2025_opened=False,year_2026_opened=False,fresh_oos_opened=False)
+        finally:
+            with self.early_feature_discovery_stat_lock:self.early_feature_discovery_stat_thread=None
+
+    def start_early_feature_discovery_stat(self):
+        ok,why=self._early_feature_discovery_stat_gate()
+        if not ok:return False,why
+        old=self.redis.get_json(self.early_feature_discovery_stat_key("report"),None)
+        if old and old.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_discovery_stat_lock:
+            if self.early_feature_discovery_stat_thread and self.early_feature_discovery_stat_thread.is_alive():return False,"already_running"
+            self.early_feature_discovery_stat_thread=threading.Thread(target=self.early_feature_discovery_stat_loop,name="early-feature-discovery-stat",daemon=True);self.early_feature_discovery_stat_thread.start()
+        return True,"started"
 
     def start_early_feature_reconstruction(self):
         ok,why=self._early_feature_reconstruction_gate()
@@ -9383,6 +9548,28 @@ def research_early_feature_probe_execution_result():
 def research_early_feature_level_discovery_prefreeze_protocol():
     allowed,reason=radar._early_feature_level_discovery_prefreeze_gate()
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SPEC,"prefreeze_spec_sha256":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"discovery_implemented":False,"discovery_started":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"alpaca_requests_made":0,"replay_restarted":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/statistical-execution/protocol")
+def research_feature_discovery_stat_protocol():
+    allowed,reason=radar._early_feature_discovery_stat_gate();rr=radar.redis.get_json(radar.early_feature_reconstruction_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_DISCOVERY_STAT_EXEC_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256,"required_reconstruction_result_sha256":EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["required_reconstruction_result_sha256"],"actual_reconstruction_result_sha256":rr.get("result_sha256"),"feature_definition_sha256":EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256,"gate_allowed":allowed,"gate_reason":reason,"alpaca_authorized":False,"alpaca_requests_made":0,"feature_results_read_by_protocol":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/statistical-execution/start",methods=["GET","POST"])
+def research_feature_discovery_stat_start():
+    ok,why=radar.start_early_feature_discovery_stat()
+    return jsonify({"ok":ok,"status":"started" if ok else why,"alpaca_requests_made":0,"status_url":"/research/early-causal-entry/feature-level-discovery/statistical-execution/status","result_url":"/research/early-causal-entry/feature-level-discovery/statistical-execution/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/statistical-execution/status")
+def research_feature_discovery_stat_status():
+    x=radar.redis.get_json(radar.early_feature_discovery_stat_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_discovery_stat_lock:out=dict(x or radar.early_feature_discovery_stat_state);out["worker_alive"]=bool(radar.early_feature_discovery_stat_thread and radar.early_feature_discovery_stat_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/statistical-execution/result")
+def research_feature_discovery_stat_result():
+    x=radar.redis.get_json(radar.early_feature_discovery_stat_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/statistical-execution/status"}),202
+    return jsonify(x)
 
 @app.get("/research/early-causal-entry/feature-level-discovery/reconstruction/execution/protocol")
 def research_feature_reconstruction_execution_protocol():
