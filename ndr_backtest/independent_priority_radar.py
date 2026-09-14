@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.37-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-EQUAL-WEIGHT-RANKING-CONSTRUCTION-EXECUTION-R1"
+VERSION = "1.7.38"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-RANKING-EVALUATION-PROTOCOL-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1095,6 +1095,37 @@ EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC = {
     "guardrails":{"alpaca_requests":False,"no_2025_reference_fitting":True,"no_2026_reference_fitting":True,"no_fresh_oos":True,"no_post_2026_08_31_read":True,"no_label_conditioned_performance":True,"no_threshold_search":True,"no_top_k_optimization":True,"no_window_selection":True,"no_feature_reselection":True,"strategy_pass":False,"bot_authorized":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+EARLY_FEATURE_RANKING_EVALUATION_PREFREEZE_SPEC = {
+    "protocol_id":"IPR-EARLY-FEATURE-RANKING-EVALUATION-PREFREEZE-2026-09-14-A",
+    "required_ranking_construction_result_sha256":"00cb344337ca25c7e644adebf3aae73b8bd8c81bc986e10240ac2650295ce300",
+    "required_ranking_construction_execution_spec_sha256":"262bad4b9742a96c03ce626d7897b4103d8aa0331b9c4423c54a998f203db419",
+    "required_ranking_prefreeze_sha256":"47c9a2100101ca793c8b2eeb9ecbe156d5b63c553cf517360264d4166afda299",
+    "evaluation_period":{"start":"2019-01-01","end":"2024-12-31"},
+    "windows_minutes":[30,60],
+    "score":"Use the already-frozen v1.7.37-R1 rank_score exactly; no recomputation with outcome-informed constants or weights.",
+    "classes":{"positive":"Positive","hard_negative":"Hard Negative"},
+    "primary_metric":{
+        "name":"equal_symbol_weighted_roc_auc",
+        "definition":"Weighted probability that a randomly drawn Positive score exceeds a randomly drawn Hard-Negative score, plus 0.5 for ties. Within each class, every symbol has equal total weight 1 and that symbol weight is divided equally across its scoreable observations.",
+        "direction":"higher_score_is_more_positive",
+        "minimum_for_gate":0.55
+    },
+    "annual_stability":{
+        "years":[2019,2020,2021,2022,2023,2024],
+        "minimum_years_auc_above_0_50":5,
+        "strict_comparison":True,
+        "note":"AUC exactly 0.50 does not count as a positive-direction year."
+    },
+    "support_minima_per_window":{"positive_events":500,"hard_negative_events":500,"positive_symbols":100,"hard_negative_symbols":100},
+    "decision_rule":"DISCOVERY_RANKING_GO iff BOTH 30m and 60m have pooled equal-symbol weighted ROC AUC >=0.55, meet all frozen support minima, and have annual AUC >0.50 in at least 5 of 6 years. Otherwise DISCOVERY_RANKING_NO_GO. No rounding.",
+    "secondary_descriptive_only":["class score means and medians","AUC by year","score coverage by class/window","unavailability counts"],
+    "if_go":"GO authorizes only a separately pre-frozen 2025 locked ranking validation. It does not authorize threshold selection, trading evaluation, Fresh OOS, or a bot.",
+    "forbidden":["threshold search","top-k optimization","best-window selection","dropping 30m or 60m","feature or weight changes","restandardization using labels","2025 ranking performance read","2026 ranking performance read","Fresh OOS read","entry/exit/stop/target optimization","profitability claims"],
+    "guardrails":{"alpaca_requests":False,"ranking_performance_read_by_protocol":False,"ranking_threshold_defined":False,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_RANKING_EVALUATION_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_RANKING_EVALUATION_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -9935,6 +9966,14 @@ def research_feature_discovery_stat_result():
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/statistical-execution/status"}),202
     return jsonify(x)
 
+
+@app.get("/research/early-causal-entry/feature-level-discovery/ranking-evaluation-prefreeze/protocol")
+def research_feature_ranking_evaluation_prefreeze_protocol():
+    report=radar.redis.get_json(radar.early_feature_ranking_construction_key("report"),{}) if radar.redis.configured else {}
+    actual=report.get("result_sha256")
+    allowed=(report.get("status")=="COMPLETED" and actual==EARLY_FEATURE_RANKING_EVALUATION_PREFREEZE_SPEC["required_ranking_construction_result_sha256"] and report.get("execution_spec_sha256")==EARLY_FEATURE_RANKING_EVALUATION_PREFREEZE_SPEC["required_ranking_construction_execution_spec_sha256"] and report.get("ranking_performance_computed") is False and report.get("ranking_threshold_defined") is False and report.get("fresh_oos_opened") is False)
+    reason="allowed" if allowed else "ranking construction provenance/guardrail mismatch"
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":EARLY_FEATURE_RANKING_EVALUATION_PREFREEZE_SPEC,"protocol_sha256":EARLY_FEATURE_RANKING_EVALUATION_PREFREEZE_SHA256,"required_ranking_construction_result_sha256":EARLY_FEATURE_RANKING_EVALUATION_PREFREEZE_SPEC["required_ranking_construction_result_sha256"],"actual_ranking_construction_result_sha256":actual,"gate_allowed":allowed,"gate_reason":reason,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_performance_read_by_protocol":False,"ranking_threshold_defined":False,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False})
 
 @app.get("/research/early-causal-entry/feature-level-discovery/ranking-construction/protocol")
 def research_feature_ranking_construction_protocol():
