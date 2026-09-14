@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.46"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-SUCCESSFUL-RANKING-BASELINE-FREEZE-SELECTION-RESEARCH-PREFREEZE"
+VERSION = "1.7.46-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-SUCCESSFUL-RANKING-BASELINE-FREEZE-SELECTION-RESEARCH-PREFREEZE-R1-REDIS-REPORT-KEY-HOTFIX"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -11274,8 +11274,8 @@ def early_feature_successful_ranking_baseline_selection_research_prefreeze_proto
     spec=EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SPEC
     if not radar.redis.configured:
         return jsonify({"version":VERSION,"build":BUILD,"gate_allowed":False,"gate_reason":"Redis unavailable","protocol":spec,"protocol_sha256":EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256}),503
-    v25=radar.redis.get_json(radar.early_feature_two_component_2025_validation_key("result")) or {}
-    v26=radar.redis.get_json(radar.early_feature_two_component_2026_validation_key("result")) or {}
+    v25=radar.redis.get_json(radar.early_feature_two_component_2025_validation_key("report")) or {}
+    v26=radar.redis.get_json(radar.early_feature_two_component_2026_validation_key("report")) or {}
     checks=[
         (v25.get("result_sha256")==spec["required_two_component_2025_validation_result_sha256"],"v1.7.43 2025 result SHA mismatch"),
         (v25.get("decision")==spec["required_two_component_2025_validation_decision"],"v1.7.43 2025 decision mismatch"),
