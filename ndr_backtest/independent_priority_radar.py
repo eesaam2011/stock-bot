@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.55"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-A"
+VERSION = "1.7.55-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-B"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -282,7 +282,7 @@ FEATURE_DISCOVERY_EXEC_SPEC = {
         "eligible_pool": "Phase 0B failed clean candidates in 2019-2024 only; still_ambiguous is never a control.",
         "hard_negative_matching": ["same target session when available", "same trading phase", "same frozen log2 price band", "comparable 5-minute coverage"],
         "hard_negative_ratio": "up to 3 per positive; controls may be reused when a contextual cell is sparse, with reuse counted and reported",
-        "random_control": "one separate deterministic random failed clean candidate from the same target-session contextual failed pool (same session is a stricter subset of the frozen broad time/regime requirement); never selected using predictive feature values",
+        "random_control": "one separate deterministic random failed clean candidate from the same target-session contextual failed pool; exact execution parity confirmed from the original feature-discovery loop, which constructs failed/fctx and selects rnd inside each sess before moving to the next session; never selected using predictive feature values",
         "pseudo_cutoff": "failed controls use the frozen Phase 0A coarse first-20 timestamp as opportunity-time cutoff; no post-cutoff feature data",
     },
     "anchors_minutes": [5,15,30,60,120,240],
@@ -12734,7 +12734,7 @@ def backward_oos_2018_observed_universe_result():
 # NOT open H1.  It freezes the exact historical sampling semantics first.
 # -----------------------------------------------------------------------------
 BACKWARD_OOS_2018_SAMPLING_PARITY_SPEC = {
-    "prefreeze_id":"IPR-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-2026-09-14-A",
+    "prefreeze_id":"IPR-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-2026-09-14-B",
     "status":"FROZEN_PROTOCOL_ONLY",
     "purpose":"Freeze exact candidate, Phase0B, control-construction and support semantics inherited from the original 2019-2026 pipeline before any 2018 candidate census or H1 read.",
     "source_of_truth":{
