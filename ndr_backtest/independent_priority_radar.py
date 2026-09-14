@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.50-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-RESEARCH-PREFREEZE-R1-RUNTIME-ROUTE-BINDING-HOTFIX"
+VERSION = "1.7.51"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-RESEARCH-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -2654,6 +2654,10 @@ def update_live_tracking(
 EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SPEC = {'prefreeze_id': 'IPR-ENTRY-CONFIRMATION-RESEARCH-PREFREEZE-2026-09-14-A', 'purpose': 'Freeze a causal post-t0 Entry Confirmation Research design before computing any confirmation-feature/outcome relationship. Preserve the successful ranking and study whether short post-selection information can identify cleaner entry timing without using Fresh OOS.', 'required_top1_top3_entry_research_result_sha256': '61c800211f2335ce9d8b67275c59d2b308c57ecfcde22972801cacf9d7dc549c', 'required_top1_top3_entry_research_decision': 'ENTRY_RESEARCH_ONLY', 'hypothesis_origin': 'Entry Confirmation Research is motivated by v1.7.49, which showed substantial post-t0 upside potential together with material adverse excursion. This is a post-v1.7.49 research hypothesis, not an independently validated entry rule.', 'ranking_baseline': {'name': 'TWO_COMPONENT_COMPLEMENTARY_RANKING_A', 'formula': '(z_discovery_range_pct + z_return_5m_pct) / 2', 'components': ['discovery_range_pct', 'return_5m_pct'], 'weights': [0.5, 0.5], 'standardization': 'exact v1.7.37-R1 constants; no refit', 'mutation_allowed': False}, 'selection_hypotheses': {'selections': ['top_1', 'top_3'], 'windows_minutes': [30, 60], 'note': 'All four views remain mandatory and separate. No best selection/window may be chosen by this pre-freeze.'}, 't0_definition': 'Same frozen causal selection timestamp used by v1.7.49. The t0 bar close is available at t0. Confirmation features may use only bars with timestamps <= the confirmation timestamp.', 'confirmation_offsets_minutes': [1, 2, 3, 5, 10], 'confirmation_feature_families': {'price_path': ['return_from_t0_pct', 'max_runup_from_t0_pct', 'max_drawdown_from_t0_pct', 'close_location_in_post_t0_range'], 't0_reclaim_and_hold': ['close_above_t0', 'reclaimed_t0_after_trade_below', 'consecutive_closes_above_t0'], 'volume_behavior': ['current_1m_volume_ratio_to_pre_t0_5m_median', 'post_t0_avg_volume_ratio_to_pre_t0_5m_median', 'post_t0_volume_acceleration'], 'bar_structure': ['current_bar_body_pct', 'current_bar_range_pct', 'current_bar_close_location'], 'session_vwap_context': ['close_vs_session_vwap_pct', 'vwap_reclaim_after_post_t0_trade_below'], 'rule': 'Definitions must be mechanical and causal. Missing values stay missing; no imputation. No feature may use bars after the confirmation timestamp.'}, 'descriptive_views': {'continuous_summary': ['count', 'median', 'p25', 'p75'], 'fixed_feature_bins': 'quintiles computed within research-period/window/selection/offset for descriptive shape only; no bin becomes a rule automatically', 'outcome_conditioning': 'Report future outcomes by frozen feature bins and simple frozen boolean states; no model fitting, feature weighting, threshold optimization, or winner selection.'}, 'future_outcome_measurement': {'anchor': 'strictly after each confirmation timestamp, using that timestamp bar close as the candidate entry-reference price', 'forward_horizons_minutes': [5, 10, 15, 30, 60, 120], 'mfe_thresholds_pct': [2, 5, 10, 20], 'mae_thresholds_pct': [-2, -5, -10], 'path_ordering': 'target versus adverse ordering measured after confirmation timestamp', 'same_bar_policy': 'SAME_BAR_AMBIGUOUS; never target-first', 'note': 'These are research measurements only, not target/stop recommendations.'}, 'research_period': {'start': '2019-01-01', 'end': '2026-08-31', 'already_consumed_only': True, 'hard_stop_after_end': True}, 'historical_bar_policy': {'prefreeze_alpaca_authorized': False, 'prefreeze_alpaca_requests': 0, 'future_execution': 'May authorize historical 1-minute bars only after a separate execution protocol proves the persisted data are insufficient; no Fresh OOS and no post-2026-08-31 data.'}, 'decision_policy': {'decision': 'ENTRY_CONFIRMATION_RESEARCH_PREFROZEN', 'formal_entry_rule_selected': False, 'entry_rule_validated': False, 'selection_rule_validated': False, 'profitability_computed': False, 'strategy_pass': False, 'bot_authorized': False, 'automatic_downstream_authorization': False, 'stop_and_review_required': True}, 'fresh_oos_firewall': 'Fresh OOS remains reserved for one final fully frozen Ranking + Selection + Entry + Exit + Costs system. This research cannot open it.', 'anti_posthoc_firewall': ['No changing ranking components/weights/constants.', 'No selecting Top-1 vs Top-3 or 30m vs 60m as validated from this research.', 'No choosing a confirmation offset, feature, threshold, target, stop, or horizon as validated from the same descriptive execution.', 'Any later candidate Entry Rule must explicitly disclose that it was chosen after this research and must be frozen in a separate protocol.', 'No Fresh OOS, no post-2026-08-31 data, no profitability claim, and no automatic downstream authorization.'], 'protocol_only': True}
 EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SHA256 = "f706481c55dcfb5933cbb6c730cb7b07d81f097d59366d139cf75a5a4d0acabe"
 
+# v1.7.51 Entry Confirmation Research Execution
+EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC = {'execution_id': 'IPR-ENTRY-CONFIRMATION-RESEARCH-EXECUTION-2026-09-14-A', 'required_prefreeze_sha256': 'f706481c55dcfb5933cbb6c730cb7b07d81f097d59366d139cf75a5a4d0acabe', 'required_top1_top3_entry_research_result_sha256': '61c800211f2335ce9d8b67275c59d2b308c57ecfcde22972801cacf9d7dc549c', 'required_top1_top3_entry_research_decision': 'ENTRY_RESEARCH_ONLY', 'hypothesis_origin': 'Post-v1.7.49 descriptive Entry Confirmation Research; no confirmation rule is independently validated by this execution.', 'selections': ['top_1', 'top_3'], 'windows_minutes': [30, 60], 'confirmation_offsets_minutes': [1, 2, 3, 5, 10], 'forward_horizons_minutes': [5, 10, 15, 30, 60, 120], 'mfe_thresholds_pct': [2, 5, 10, 20], 'mae_thresholds_pct': [-2, -5, -10], 'feature_definitions': {'return_from_t0_pct': '(confirmation close / exact t0 close - 1)*100', 'max_runup_from_t0_pct': 'max high from bars strictly after t0 through confirmation, relative to t0 close', 'max_drawdown_from_t0_pct': 'min low from bars strictly after t0 through confirmation, relative to t0 close', 'close_location_in_post_t0_range': '(confirmation close - post-t0 min low)/(post-t0 max high - post-t0 min low), clipped [0,1]', 'close_above_t0': 'confirmation close > t0 close', 'reclaimed_t0_after_trade_below': 'some post-t0 pre/at-confirmation low < t0 close and confirmation close > t0 close', 'consecutive_closes_above_t0': 'number of consecutive closes ending at confirmation strictly above t0 close', 'current_1m_volume_ratio_to_pre_t0_5m_median': 'confirmation-bar volume / median volume of exact available five 1m bars immediately preceding t0; missing if fewer than 3 valid pre-t0 bars', 'post_t0_avg_volume_ratio_to_pre_t0_5m_median': 'mean volume of post-t0 bars through confirmation / same pre-t0 median', 'post_t0_volume_acceleration': 'mean volume of last up to 3 post-t0 bars through confirmation / mean volume of first up to 3 post-t0 bars; missing if fewer than 2 post-t0 bars', 'current_bar_body_pct': '(confirmation close-confirmation open)/confirmation open*100', 'current_bar_range_pct': '(confirmation high-confirmation low)/confirmation open*100', 'current_bar_close_location': '(confirmation close-confirmation low)/(confirmation high-confirmation low), 0.5 if zero range', 'close_vs_session_vwap_pct': '(confirmation close/session VWAP -1)*100; VWAP uses merged raw 1m bars for target session from 00:00 UTC through confirmation with typical price (H+L+C)/3 weighted by volume', 'vwap_reclaim_after_post_t0_trade_below': 'at least one post-t0 bar close below its causal session VWAP and confirmation close above confirmation-time causal session VWAP'}, 'missing_policy': 'No imputation. Exact t0 and exact confirmation bars required. Missing feature remains missing.', 'quintile_policy': 'For each window/selection/offset/continuous feature, compute fixed descriptive quintiles on the already-consumed research records only; bins are descriptive and cannot become a rule automatically.', 'boolean_policy': 'Report outcome conditioning for frozen boolean states only; no threshold optimization.', 'outcome_anchor': 'Strictly after confirmation timestamp; reference price is confirmation bar close.', 'same_bar_policy': 'SAME_BAR_AMBIGUOUS; never target-first', 'historical_bar_access': {'authorized': True, 'reason': 'Persisted v1.7.49 records contain t0/path summaries but not the causal per-minute bars required to reconstruct confirmation features, pre-t0 volume baseline, causal VWAP, and post-confirmation paths at every frozen offset.', 'feeds': 'SIP raw plus BOATS raw where historically available, same merge policy as feature reconstruction', 'logical_request_budget': 5000, 'hard_stop_on_budget': True, 'no_request_before_start': True}, 'research_period': {'start': '2019-01-01', 'end': '2026-08-31', 'already_consumed_only': True, 'hard_stop_after_end': True}, 'decision_policy': {'decision': 'ENTRY_CONFIRMATION_RESEARCH_ONLY', 'entry_rule_selected': False, 'entry_rule_validated': False, 'selection_rule_validated': False, 'profitability_computed': False, 'strategy_pass': False, 'bot_authorized': False, 'automatic_downstream_authorization': False, 'stop_and_review_required': True}, 'fresh_oos_opened': False, 'post_2026_08_31_read': False}
+EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC_SHA256 = "8441aeade3ad0f478f44eaa5e9e485b2fa268318d8912f5feed16eb3101815b3"
+
 class IndependentPriorityRadar:
     def __init__(self, redis_client: RedisREST | None = None, alpaca: AlpacaClient | None = None):
         self.redis = redis_client or RedisREST()
@@ -2840,6 +2844,8 @@ class IndependentPriorityRadar:
         self.early_feature_practical_selection_research_state={"status":"IDLE","phase":"NOT_STARTED","message":"Practical Selection Research not started","execution_id":EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"selection_rule_validated":False,"updated_at":iso()}
         self.early_feature_top1_top3_entry_research_lock=threading.RLock(); self.early_feature_top1_top3_entry_research_thread=None
         self.early_feature_top1_top3_entry_research_state={"status":"IDLE","phase":"NOT_STARTED","message":"Top-1/Top-3 Entry Research not started","execution_id":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_validated":False,"updated_at":iso()}
+        self.early_feature_entry_confirmation_research_lock=threading.RLock(); self.early_feature_entry_confirmation_research_thread=None
+        self.early_feature_entry_confirmation_research_state={"status":"IDLE","phase":"NOT_STARTED","message":"Entry Confirmation Research not started","execution_id":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_validated":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -9966,6 +9972,186 @@ class IndependentPriorityRadar:
         return True,"started"
 
 
+    def early_feature_entry_confirmation_research_key(self,suffix: str)->str:
+        return self.key(f"early_feature_entry_confirmation_research:v1:{suffix}")
+
+    def _set_early_feature_entry_confirmation_research_state(self,**updates: Any)->None:
+        with self.early_feature_entry_confirmation_research_lock:
+            self.early_feature_entry_confirmation_research_state.update(updates); self.early_feature_entry_confirmation_research_state["updated_at"]=iso(); snap=dict(self.early_feature_entry_confirmation_research_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_entry_confirmation_research_key("status"),snap)
+
+    def _early_feature_entry_confirmation_research_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        if not self.alpaca.configured:return False,"Alpaca required by frozen execution spec"
+        spec=EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC
+        if EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SHA256!=spec["required_prefreeze_sha256"]:return False,"v1.7.50 pre-freeze SHA mismatch"
+        prior=self.redis.get_json(self.early_feature_top1_top3_entry_research_key("report"),{}) or {}
+        if prior.get("status")!="COMPLETED" or prior.get("decision")!=spec["required_top1_top3_entry_research_decision"] or prior.get("result_sha256")!=spec["required_top1_top3_entry_research_result_sha256"]:return False,"v1.7.49 provenance mismatch"
+        if prior.get("fresh_oos_opened") is not False or prior.get("post_2026_08_31_read") is not False:return False,"Fresh OOS boundary provenance mismatch"
+        if prior.get("entry_rule_validated") is not False:return False,"entry rule unexpectedly validated"
+        return True,"allowed"
+
+    @staticmethod
+    def _ecr_median(xs):
+        vals=sorted(float(x) for x in xs if isinstance(x,(int,float)) and math.isfinite(float(x)))
+        if not vals:return None
+        n=len(vals);m=n//2
+        return vals[m] if n%2 else (vals[m-1]+vals[m])/2.0
+
+    @staticmethod
+    def _ecr_quantile(xs,q):
+        vals=sorted(float(x) for x in xs if isinstance(x,(int,float)) and math.isfinite(float(x)))
+        if not vals:return None
+        if len(vals)==1:return vals[0]
+        z=(len(vals)-1)*float(q);lo=int(math.floor(z));hi=int(math.ceil(z))
+        return vals[lo] if lo==hi else vals[lo]+(vals[hi]-vals[lo])*(z-lo)
+
+    def _ecr_feature_record(self,cand,bars,offset):
+        bm=self._entry_research_bar_map(bars)
+        try:t0=datetime.fromisoformat(cand["t0"].replace("Z","+00:00"));t0=t0 if t0.tzinfo else t0.replace(tzinfo=UTC)
+        except Exception:return None
+        ct=t0+timedelta(minutes=int(offset)); b0=bm.get(t0);bc=bm.get(ct)
+        if not b0 or not bc:return None
+        px=float(b0["c"]); cp=float(bc["c"]); post=[(ts,r) for ts,r in sorted(bm.items()) if t0<ts<=ct]
+        if not post:return None
+        highs=[float(r["h"]) for _,r in post];lows=[float(r["l"]) for _,r in post];closes=[float(r["c"]) for _,r in post];vols=[float(r.get("v") or 0) for _,r in post]
+        hi=max(highs);lo=min(lows);rng=hi-lo
+        pre=[r for ts,r in sorted(bm.items()) if t0-timedelta(minutes=5)<=ts<t0 and float(r.get("v") or 0)>=0]
+        prevol=[float(r.get("v") or 0) for r in pre][-5:]; premed=self._ecr_median(prevol) if len(prevol)>=3 else None
+        first=vols[:min(3,len(vols))];last=vols[-min(3,len(vols)):]
+        # causal session VWAP, and whether a post-t0 close traded below its own causal VWAP
+        session=[(ts,r) for ts,r in sorted(bm.items()) if ts.date()==t0.date() and ts<=ct and float(r.get("v") or 0)>0]
+        cum_pv=0.0;cum_v=0.0;vwap_by={}
+        for ts,r in session:
+            v=float(r.get("v") or 0);typ=(float(r["h"])+float(r["l"])+float(r["c"]))/3.0;cum_pv+=typ*v;cum_v+=v;vwap_by[ts]=(cum_pv/cum_v if cum_v>0 else None)
+        cvwap=vwap_by.get(ct);below=any(vwap_by.get(ts) and float(r["c"])<float(vwap_by[ts]) for ts,r in post)
+        consec=0
+        for c in reversed(closes):
+            if c>px:consec+=1
+            else:break
+        o=float(bc["o"]);h=float(bc["h"]);l=float(bc["l"]);br=h-l
+        feat={
+            "return_from_t0_pct":(cp/px-1)*100,
+            "max_runup_from_t0_pct":(hi/px-1)*100,
+            "max_drawdown_from_t0_pct":(lo/px-1)*100,
+            "close_location_in_post_t0_range":max(0.0,min(1.0,(cp-lo)/rng if rng>1e-12 else .5)),
+            "close_above_t0":cp>px,
+            "reclaimed_t0_after_trade_below":(lo<px and cp>px),
+            "consecutive_closes_above_t0":consec,
+            "current_1m_volume_ratio_to_pre_t0_5m_median":(float(bc.get("v") or 0)/premed if premed and premed>0 else None),
+            "post_t0_avg_volume_ratio_to_pre_t0_5m_median":(mean(vols)/premed if premed and premed>0 else None),
+            "post_t0_volume_acceleration":(mean(last)/mean(first) if len(vols)>=2 and mean(first)>0 else None),
+            "current_bar_body_pct":(cp-o)/o*100 if o>0 else None,
+            "current_bar_range_pct":br/o*100 if o>0 else None,
+            "current_bar_close_location":max(0.0,min(1.0,(cp-l)/br if br>1e-12 else .5)),
+            "close_vs_session_vwap_pct":((cp/cvwap-1)*100 if cvwap and cvwap>0 else None),
+            "vwap_reclaim_after_post_t0_trade_below":bool(below and cvwap and cp>cvwap),
+        }
+        # outcome strictly after confirmation, using confirmation close
+        outcomes={}
+        spec=EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC
+        for hz in spec["forward_horizons_minutes"]:
+            fut=[(ts,r) for ts,r in sorted(bm.items()) if ct<ts<=ct+timedelta(minutes=int(hz))]
+            if not fut:outcomes[str(hz)]={"available":False};continue
+            mfe=max((float(r["h"])/cp-1)*100 for _,r in fut);mae=min((float(r["l"])/cp-1)*100 for _,r in fut);targets={};adverse={};ordering={}
+            for x in spec["mfe_thresholds_pct"]:
+                hit=next((ts for ts,r in fut if float(r["h"])>=cp*(1+float(x)/100)),None);targets[str(x)]={"reached":hit is not None,"minutes":((hit-ct).total_seconds()/60 if hit else None)}
+            for x in spec["mae_thresholds_pct"]:
+                hit=next((ts for ts,r in fut if float(r["l"])<=cp*(1+float(x)/100)),None);adverse[str(x)]={"reached":hit is not None,"minutes":((hit-ct).total_seconds()/60 if hit else None)}
+            for x in spec["mfe_thresholds_pct"]:
+                for a in spec["mae_thresholds_pct"]:
+                    th=targets[str(x)]["minutes"];ah=adverse[str(a)]["minutes"]
+                    if th is not None and ah is not None and th==ah:z="SAME_BAR_AMBIGUOUS"
+                    elif th is not None and (ah is None or th<ah):z="TARGET_FIRST"
+                    elif ah is not None and (th is None or ah<th):z="ADVERSE_FIRST"
+                    else:z="NEITHER"
+                    ordering[f"target_{x}_adverse_{a}"]=z
+            outcomes[str(hz)]={"available":True,"mfe_pct":mfe,"mae_pct":mae,"targets":targets,"adverse":adverse,"path_ordering":ordering}
+        return {"confirmation_ts":ct.isoformat().replace("+00:00","Z"),"confirmation_price":cp,"features":feat,"outcomes":outcomes}
+
+    def _ecr_outcome_summary(self,records):
+        out={}
+        spec=EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC
+        for hz in spec["forward_horizons_minutes"]:
+            vals=[r["outcomes"].get(str(hz),{}) for r in records if r.get("outcomes",{}).get(str(hz),{}).get("available")]
+            n=len(vals)
+            if not n:out[str(hz)]={"count":0};continue
+            tr={str(x):sum(1 for v in vals if v["targets"][str(x)]["reached"])/n for x in spec["mfe_thresholds_pct"]};ar={str(x):sum(1 for v in vals if v["adverse"][str(x)]["reached"])/n for x in spec["mae_thresholds_pct"]}
+            pair="target_5_adverse_-5";ords={k:sum(1 for v in vals if v["path_ordering"].get(pair)==k)/n for k in ("TARGET_FIRST","ADVERSE_FIRST","SAME_BAR_AMBIGUOUS","NEITHER")}
+            out[str(hz)]={"count":n,"mfe_median":self._ecr_median([v["mfe_pct"] for v in vals]),"mae_median":self._ecr_median([v["mae_pct"] for v in vals]),"target_reach_rate":tr,"adverse_reach_rate":ar,"target5_adverse5_ordering":ords}
+        return out
+
+    def _ecr_aggregate_view(self,rows,w,n,offset):
+        rs=[r for r in rows if int(r.get("window_minutes") or -1)==w and int(r.get("within_session_rank") or 99)<=n and str(offset) in (r.get("confirmations") or {})]
+        rec=[r["confirmations"][str(offset)] for r in rs]
+        cont=["return_from_t0_pct","max_runup_from_t0_pct","max_drawdown_from_t0_pct","close_location_in_post_t0_range","consecutive_closes_above_t0","current_1m_volume_ratio_to_pre_t0_5m_median","post_t0_avg_volume_ratio_to_pre_t0_5m_median","post_t0_volume_acceleration","current_bar_body_pct","current_bar_range_pct","current_bar_close_location","close_vs_session_vwap_pct"]
+        bools=["close_above_t0","reclaimed_t0_after_trade_below","vwap_reclaim_after_post_t0_trade_below"]
+        fsum={};bins={};bstates={}
+        for f in cont:
+            vals=[x["features"].get(f) for x in rec if isinstance(x["features"].get(f),(int,float)) and math.isfinite(float(x["features"].get(f)))]
+            fsum[f]={"count":len(vals),"median":self._ecr_median(vals),"p25":self._ecr_quantile(vals,.25),"p75":self._ecr_quantile(vals,.75)}
+            if vals:
+                cuts=[self._ecr_quantile(vals,q) for q in (.2,.4,.6,.8)]; groups=[[] for _ in range(5)]
+                for x in rec:
+                    v=x["features"].get(f)
+                    if not isinstance(v,(int,float)) or not math.isfinite(float(v)):continue
+                    bi=sum(float(v)>float(c) for c in cuts);groups[min(4,bi)].append(x)
+                bins[f]={"cutpoints":cuts,"bins":[{"bin":i+1,"count":len(g),"outcomes":self._ecr_outcome_summary(g)} for i,g in enumerate(groups)]}
+        for f in bools:
+            bstates[f]={str(v).lower():{"count":len(g),"outcomes":self._ecr_outcome_summary(g)} for v in (False,True) for g in [[x for x in rec if x["features"].get(f) is v]]}
+        return {"window_minutes":w,"selection":f"top_{n}","confirmation_offset_minutes":offset,"candidate_count":len(rs),"feature_summary":fsum,"continuous_quintiles":bins,"boolean_states":bstates,"overall_outcomes":self._ecr_outcome_summary(rec)}
+
+    def early_feature_entry_confirmation_research_loop(self):
+        try:
+            ok,why=self._early_feature_entry_confirmation_research_gate()
+            if not ok:raise RuntimeError(why)
+            spec=EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC;budget=int(spec["historical_bar_access"]["logical_request_budget"]);calls=int(self.redis.get_json(self.early_feature_entry_confirmation_research_key("alpaca_logical_requests"),0) or 0)
+            prior_sessions=self.redis.get_json(self.early_feature_top1_top3_entry_research_key("completed_sessions"),[]) or [];sessions=sorted(str(x) for x in prior_sessions if "2019-01-01"<=str(x)<="2026-08-31")
+            if any(x>"2026-08-31" for x in sessions):raise RuntimeError("post-2026-08-31 session blocked")
+            done=set(self.redis.get_json(self.early_feature_entry_confirmation_research_key("completed_sessions"),[]) or [])
+            self._set_early_feature_entry_confirmation_research_state(status="RUNNING",phase="CONFIRMATION_PATH_RECONSTRUCTION",message=f"Confirmation research {len(done)}/{len(sessions)}",sessions_completed=len(done),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,fresh_oos_opened=False,post_2026_08_31_read=False,entry_rule_validated=False)
+            for sess in sessions:
+                if sess in done:continue
+                base=self.redis.get_json(self.early_feature_top1_top3_entry_research_key(f"records:{sess}"),[]) or []
+                selected=[{k:r.get(k) for k in ("session","symbol","t0","score","window_minutes","within_session_rank")} for r in base if r.get("symbol") and r.get("t0") and int(r.get("within_session_rank") or 99)<=3]
+                rec=[]
+                if selected:
+                    syms=sorted({r["symbol"] for r in selected});t0s=[datetime.fromisoformat(str(r["t0"]).replace("Z","+00:00")) for r in selected]
+                    # 00:00 UTC gives a deterministic causal session VWAP base; +131 covers max offset 10 + max horizon 120 + 1.
+                    start=datetime.combine(date.fromisoformat(sess),datetime.min.time(),tzinfo=UTC);end=max(t0s)+timedelta(minutes=131)
+                    rows,used=self._efr_fetch_1m(syms,date.fromisoformat(sess),start,end,budget-calls);calls+=used;self.redis.set_json(self.early_feature_entry_confirmation_research_key("alpaca_logical_requests"),calls)
+                    for c in selected:
+                        conf={}
+                        for off in spec["confirmation_offsets_minutes"]:
+                            z=self._ecr_feature_record(c,rows.get(c["symbol"],[]),off)
+                            if z is not None:conf[str(off)]=z
+                        rec.append({**c,"confirmations":conf})
+                self.redis.set_json(self.early_feature_entry_confirmation_research_key(f"records:{sess}"),rec);done.add(sess);self.redis.set_json(self.early_feature_entry_confirmation_research_key("completed_sessions"),sorted(done))
+                if len(done)%25==0 or len(done)==len(sessions):self._set_early_feature_entry_confirmation_research_state(message=f"Confirmation research {len(done)}/{len(sessions)}",sessions_completed=len(done),alpaca_requests_made=calls)
+            allrows=[]
+            for sess in sessions:allrows.extend(self.redis.get_json(self.early_feature_entry_confirmation_research_key(f"records:{sess}"),[]) or [])
+            views=[]
+            for w in spec["windows_minutes"]:
+                for n in (1,3):
+                    for off in spec["confirmation_offsets_minutes"]:views.append(self._ecr_aggregate_view(allrows,w,n,off))
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"status":"COMPLETED","phase":"ENTRY_CONFIRMATION_RESEARCH_STOP_REVIEW","decision":"ENTRY_CONFIRMATION_RESEARCH_ONLY","sessions":len(sessions),"alpaca_requests_made":calls,"alpaca_request_budget":budget,"views":views,"hypothesis_origin":spec["hypothesis_origin"],"selection_rule_validated":False,"entry_rule_selected":False,"entry_rule_validated":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"profitability_computed":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_entry_confirmation_research_key("report"),report)
+            self._set_early_feature_entry_confirmation_research_state(status="COMPLETED",phase="ENTRY_CONFIRMATION_RESEARCH_STOP_REVIEW",message="Entry Confirmation Research completed; STOP REVIEW",decision="ENTRY_CONFIRMATION_RESEARCH_ONLY",sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,fresh_oos_opened=False,post_2026_08_31_read=False,entry_rule_validated=False,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Entry Confirmation Research failed");self._set_early_feature_entry_confirmation_research_state(status="ERROR",phase="ENTRY_CONFIRMATION_RESEARCH_BLOCKED",message=f"{type(e).__name__}: {e}",fresh_oos_opened=False,post_2026_08_31_read=False,entry_rule_validated=False)
+        finally:
+            with self.early_feature_entry_confirmation_research_lock:self.early_feature_entry_confirmation_research_thread=None
+
+    def start_early_feature_entry_confirmation_research(self):
+        ok,why=self._early_feature_entry_confirmation_research_gate()
+        if not ok:return False,why
+        existing=self.redis.get_json(self.early_feature_entry_confirmation_research_key("report"),None) if self.redis.configured else None
+        if existing and existing.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_entry_confirmation_research_lock:
+            if self.early_feature_entry_confirmation_research_thread and self.early_feature_entry_confirmation_research_thread.is_alive():return False,"already_running"
+            self.early_feature_entry_confirmation_research_thread=threading.Thread(target=self.early_feature_entry_confirmation_research_loop,name="entry-confirmation-research",daemon=True);self.early_feature_entry_confirmation_research_thread.start()
+        return True,"started"
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 app = Flask(__name__)
 radar = IndependentPriorityRadar()
@@ -11706,6 +11892,28 @@ def early_feature_entry_confirmation_research_prefreeze_protocol():
     allowed=all(ok for ok,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
     return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SHA256,"artifact_frozen":True,"actual_top1_top3_entry_research_result_sha256":prior.get("result_sha256"),"actual_top1_top3_entry_research_decision":prior.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"confirmation_results_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"selection_rule_validated":False,"entry_rule_selected":False,"entry_rule_validated":False,"profitability_computed":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
 
+
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/execution/protocol")
+def early_feature_entry_confirmation_research_execution_protocol():
+    allowed,reason=radar._early_feature_entry_confirmation_research_gate();prior=radar.redis.get_json(radar.early_feature_top1_top3_entry_research_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SHA256,"actual_top1_top3_entry_research_result_sha256":prior.get("result_sha256"),"actual_top1_top3_entry_research_decision":prior.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"confirmation_results_read_by_protocol":False,"execution_started":False,"alpaca_authorized":True,"alpaca_requests_made":0,"alpaca_request_budget":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_EXEC_SPEC["historical_bar_access"]["logical_request_budget"],"fresh_oos_opened":False,"post_2026_08_31_read":False,"selection_rule_validated":False,"entry_rule_selected":False,"entry_rule_validated":False,"profitability_computed":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/execution/start",methods=["GET","POST"])
+def early_feature_entry_confirmation_research_execution_start():
+    ok,why=radar.start_early_feature_entry_confirmation_research();return jsonify({"ok":ok,"message":why,"status_url":"/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/execution/status","result_url":"/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/execution/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/execution/status")
+def early_feature_entry_confirmation_research_execution_status():
+    x=radar.redis.get_json(radar.early_feature_entry_confirmation_research_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_entry_confirmation_research_lock:out=dict(x or radar.early_feature_entry_confirmation_research_state);out["worker_alive"]=bool(radar.early_feature_entry_confirmation_research_thread and radar.early_feature_entry_confirmation_research_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/execution/result")
+def early_feature_entry_confirmation_research_execution_result():
+    x=radar.redis.get_json(radar.early_feature_entry_confirmation_research_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/execution/status"}),202
+    return jsonify(x)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
