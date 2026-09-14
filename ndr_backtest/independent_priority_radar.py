@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.56"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-CENSUS-PHASE0B-CONTROLS-A"
+VERSION = "1.7.56-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-CENSUS-PHASE0B-CONTROLS-B"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -12801,7 +12801,7 @@ def backward_oos_2018_sampling_parity_protocol():
 # lineage on the independently unseen 2018 Observed Historical SIP Universe.
 # -----------------------------------------------------------------------------
 BACKWARD_OOS_2018_EXEC_SPEC = {
-    "execution_id":"IPR-2018-CANDIDATE-CENSUS-PHASE0B-CONTROLS-2026-09-14-A",
+    "execution_id":"IPR-2018-CANDIDATE-CENSUS-PHASE0B-CONTROLS-2026-09-14-B",
     "required_sampling_parity_sha256":"d0fd091937acf600b05c11158e76ef75e428e53d920d540b00b833d7f7ce3906",
     "required_observed_universe_result_sha256":"1f6d11ec1b3de059a4b9cae2891f135a811c6f68478f0a09438e57fceb4b798a",
     "period":["2018-01-01","2018-12-31"],
@@ -12828,7 +12828,9 @@ BACKWARD_OOS_2018_EXEC_SPEC = {
     },
     "controls":{
         "frozen_feature_discovery_execution_sha256":FEATURE_DISCOVERY_EXEC_SHA256,
-        "eligible_pool":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["eligible_pool"],
+        "eligible_pool":"Phase 0B failed clean candidates from the 2018 Backward-OOS cohort only; still_ambiguous is never a control.",
+        "historical_control_methodology_source":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["eligible_pool"],
+        "scope_clarification":"The historical source text is preserved unchanged; only the cohort year is substituted mechanically from Discovery 2019-2024 to independent Backward-OOS 2018.",
         "hard_negative_matching":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["hard_negative_matching"],
         "hard_negative_ratio":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["hard_negative_ratio"],
         "random_control":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["random_control"],
