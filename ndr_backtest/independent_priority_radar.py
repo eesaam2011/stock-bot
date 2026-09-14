@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.37"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-EQUAL-WEIGHT-RANKING-CONSTRUCTION-EXECUTION"
+VERSION = "1.7.37-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-EQUAL-WEIGHT-RANKING-CONSTRUCTION-EXECUTION-R1"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -8876,6 +8876,87 @@ class IndependentPriorityRadar:
 
 
 
+    def early_feature_ranking_construction_key(self,suffix: str)->str:
+        return self.key(f"early_feature_ranking_construction:v1:{suffix}")
+
+    def _set_early_feature_ranking_construction_state(self,**updates: Any)->None:
+        with self.early_feature_ranking_construction_lock:
+            self.early_feature_ranking_construction_state.update(updates); self.early_feature_ranking_construction_state["updated_at"]=iso(); snap=dict(self.early_feature_ranking_construction_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_ranking_construction_key("status"),snap)
+
+    def _early_feature_ranking_construction_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        if EARLY_FEATURE_RANKING_PREFREEZE_SHA256!=EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_ranking_prefreeze_sha256"]:return False,"Ranking pre-freeze SHA mismatch"
+        if EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256!=EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_feature_definition_sha256"]:return False,"Feature definition SHA mismatch"
+        rr=self.redis.get_json(self.early_feature_reconstruction_key("report"),{}) or {}
+        if rr.get("status")!="COMPLETED" or rr.get("result_sha256")!=EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_reconstruction_result_sha256"]:return False,"2019-2024 reconstruction provenance mismatch"
+        if rr.get("validation_2025_opened") or rr.get("year_2026_opened") or rr.get("fresh_oos_opened"):return False,"Reconstruction provenance opened forbidden data"
+        return True,"allowed"
+
+    def early_feature_ranking_construction_loop(self):
+        try:
+            ok,why=self._early_feature_ranking_construction_gate()
+            if not ok:raise RuntimeError(why)
+            features=list(EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["features"]); wins=set(EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["windows_minutes"])
+            sessions=sorted(self.redis.get_json(self.early_feature_reconstruction_key("completed_sessions"),[]) or [])
+            self._set_early_feature_ranking_construction_state(status="RUNNING",phase="RANKING_REFERENCE_CONSTRUCTION",message=f"Ranking construction 0/{len(sessions)} sessions",sessions_completed=0,total_sessions=len(sessions),alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False)
+            # Pass 1: collect feature values by Feature x Window x Symbol. Labels are intentionally ignored.
+            vals={(f,w):{} for f in features for w in wins}; scanned=0
+            for sess in sessions:
+                if not ("2019-01-01"<=str(sess)<="2024-12-31"):continue
+                for r in self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []:
+                    w=int(r.get("checkpoint_minutes",-1)); sym=str(r.get("symbol","")).upper(); fd=r.get("features")
+                    if w not in wins or not sym or not isinstance(fd,dict):continue
+                    for f in features:
+                        x=fd.get(f)
+                        if isinstance(x,(int,float)) and math.isfinite(float(x)):vals[(f,w)].setdefault(sym,[]).append(float(x))
+                scanned+=1
+                if scanned%100==0:self._set_early_feature_ranking_construction_state(status="RUNNING",phase="RANKING_REFERENCE_CONSTRUCTION",message=f"Reference pass {scanned}/{len(sessions)} sessions",sessions_completed=scanned,total_sessions=len(sessions),alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False)
+            constants={}
+            for f in features:
+                for w in sorted(wins):
+                    by=vals[(f,w)]; ns=len(by)
+                    if ns<=0:raise RuntimeError(f"No reference symbols for {f}@{w}")
+                    mu=sum(sum(a)/len(a) for a in by.values())/ns
+                    var=sum(sum((x-mu)**2 for x in a)/len(a) for a in by.values())/ns
+                    sd=math.sqrt(var)
+                    if not math.isfinite(sd) or sd<=0:raise RuntimeError(f"Invalid reference SD for {f}@{w}")
+                    constants[f"{f}@{w}"]={"feature":f,"window_minutes":w,"mean":mu,"population_sd":sd,"symbols":ns,"observations":sum(map(len,by.values())),"weighting":"equal_symbol"}
+            self.redis.set_json(self.early_feature_ranking_construction_key("constants"),constants)
+            # Pass 2: write score fields only; omit outcome class to prevent this execution from becoming performance analysis.
+            scoreable=0;unscoreable=0;done=0
+            for sess in sessions:
+                if not ("2019-01-01"<=str(sess)<="2024-12-31"):continue
+                out=[]
+                for r in self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []:
+                    w=int(r.get("checkpoint_minutes",-1));fd=r.get("features");sym=str(r.get("symbol","")).upper()
+                    if w not in wins:continue
+                    score=None;zs=None
+                    if isinstance(fd,dict) and all(isinstance(fd.get(f),(int,float)) and math.isfinite(float(fd.get(f))) for f in features):
+                        zs={f:(float(fd[f])-constants[f"{f}@{w}"]["mean"])/constants[f"{f}@{w}"]["population_sd"] for f in features};score=sum(zs.values())/3.0;scoreable+=1
+                    else:unscoreable+=1
+                    out.append({"record_id":r.get("record_id"),"session":sess,"symbol":sym,"checkpoint_minutes":w,"eval_ts":r.get("eval_ts"),"rank_score":score,"z_features":zs,"scoreable":score is not None})
+                self.redis.set_json(self.early_feature_ranking_construction_key(f"scores:{sess}"),out);done+=1
+                if done%100==0:self._set_early_feature_ranking_construction_state(status="RUNNING",phase="RANK_SCORE_CONSTRUCTION",message=f"Score pass {done}/{len(sessions)} sessions",sessions_completed=done,total_sessions=len(sessions),scoreable_records=scoreable,unscoreable_records=unscoreable,alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False)
+            report={"version":VERSION,"build":BUILD,"execution_id":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["execution_id"],"execution_spec_sha256":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC_SHA256,"required_ranking_prefreeze_sha256":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_ranking_prefreeze_sha256"],"actual_ranking_prefreeze_sha256":EARLY_FEATURE_RANKING_PREFREEZE_SHA256,"required_reconstruction_result_sha256":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_reconstruction_result_sha256"],"status":"COMPLETED","phase":"RANKING_CONSTRUCTION_STOP_REVIEW","reference_period":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["reference_period"],"standardization_constants":constants,"scoreable_records":scoreable,"unscoreable_records":unscoreable,"ranking_performance_computed":False,"labels_used_for_reference_fit":False,"ranking_threshold_defined":False,"top_k_optimized":False,"alpaca_requests_made":0,"validation_2025_opened":False,"year_2026_opened":False,"post_2026_08_31_read":False,"fresh_oos_opened":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_ranking_construction_key("report"),report)
+            self._set_early_feature_ranking_construction_state(status="COMPLETED",phase="RANKING_CONSTRUCTION_STOP_REVIEW",message="Frozen equal-weight ranking construction completed; STOP REVIEW",sessions_completed=done,total_sessions=len(sessions),scoreable_records=scoreable,unscoreable_records=unscoreable,alpaca_requests_made=0,stop_and_review_required=True,fresh_oos_opened=False,post_2026_08_31_read=False)
+        except Exception as e:
+            logging.exception("Ranking construction failed");self._set_early_feature_ranking_construction_state(status="ERROR",phase="RANKING_CONSTRUCTION_BLOCKED",message=f"{type(e).__name__}: {e}",alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False)
+        finally:
+            with self.early_feature_ranking_construction_lock:self.early_feature_ranking_construction_thread=None
+
+    def start_early_feature_ranking_construction(self):
+        ok,why=self._early_feature_ranking_construction_gate()
+        if not ok:return False,why
+        with self.early_feature_ranking_construction_lock:
+            if self.early_feature_ranking_construction_thread and self.early_feature_ranking_construction_thread.is_alive():return False,"already_running"
+            existing=self.redis.get_json(self.early_feature_ranking_construction_key("report"),None) if self.redis.configured else None
+            if existing and existing.get("status")=="COMPLETED":return False,"already_completed"
+            self.early_feature_ranking_construction_thread=threading.Thread(target=self.early_feature_ranking_construction_loop,name="ranking-construction",daemon=True);self.early_feature_ranking_construction_thread.start()
+        return True,"started"
+
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 app = Flask(__name__)
 radar = IndependentPriorityRadar()
@@ -9854,85 +9935,6 @@ def research_feature_discovery_stat_result():
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/statistical-execution/status"}),202
     return jsonify(x)
 
-    def early_feature_ranking_construction_key(self,suffix: str)->str:
-        return self.key(f"early_feature_ranking_construction:v1:{suffix}")
-
-    def _set_early_feature_ranking_construction_state(self,**updates: Any)->None:
-        with self.early_feature_ranking_construction_lock:
-            self.early_feature_ranking_construction_state.update(updates); self.early_feature_ranking_construction_state["updated_at"]=iso(); snap=dict(self.early_feature_ranking_construction_state)
-        if self.redis.configured:self.redis.set_json(self.early_feature_ranking_construction_key("status"),snap)
-
-    def _early_feature_ranking_construction_gate(self):
-        if not self.redis.configured:return False,"Redis required"
-        if EARLY_FEATURE_RANKING_PREFREEZE_SHA256!=EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_ranking_prefreeze_sha256"]:return False,"Ranking pre-freeze SHA mismatch"
-        if EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256!=EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_feature_definition_sha256"]:return False,"Feature definition SHA mismatch"
-        rr=self.redis.get_json(self.early_feature_reconstruction_key("report"),{}) or {}
-        if rr.get("status")!="COMPLETED" or rr.get("result_sha256")!=EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_reconstruction_result_sha256"]:return False,"2019-2024 reconstruction provenance mismatch"
-        if rr.get("validation_2025_opened") or rr.get("year_2026_opened") or rr.get("fresh_oos_opened"):return False,"Reconstruction provenance opened forbidden data"
-        return True,"allowed"
-
-    def early_feature_ranking_construction_loop(self):
-        try:
-            ok,why=self._early_feature_ranking_construction_gate()
-            if not ok:raise RuntimeError(why)
-            features=list(EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["features"]); wins=set(EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["windows_minutes"])
-            sessions=sorted(self.redis.get_json(self.early_feature_reconstruction_key("completed_sessions"),[]) or [])
-            self._set_early_feature_ranking_construction_state(status="RUNNING",phase="RANKING_REFERENCE_CONSTRUCTION",message=f"Ranking construction 0/{len(sessions)} sessions",sessions_completed=0,total_sessions=len(sessions),alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False)
-            # Pass 1: collect feature values by Feature x Window x Symbol. Labels are intentionally ignored.
-            vals={(f,w):{} for f in features for w in wins}; scanned=0
-            for sess in sessions:
-                if not ("2019-01-01"<=str(sess)<="2024-12-31"):continue
-                for r in self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []:
-                    w=int(r.get("checkpoint_minutes",-1)); sym=str(r.get("symbol","")).upper(); fd=r.get("features")
-                    if w not in wins or not sym or not isinstance(fd,dict):continue
-                    for f in features:
-                        x=fd.get(f)
-                        if isinstance(x,(int,float)) and math.isfinite(float(x)):vals[(f,w)].setdefault(sym,[]).append(float(x))
-                scanned+=1
-                if scanned%100==0:self._set_early_feature_ranking_construction_state(status="RUNNING",phase="RANKING_REFERENCE_CONSTRUCTION",message=f"Reference pass {scanned}/{len(sessions)} sessions",sessions_completed=scanned,total_sessions=len(sessions),alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False)
-            constants={}
-            for f in features:
-                for w in sorted(wins):
-                    by=vals[(f,w)]; ns=len(by)
-                    if ns<=0:raise RuntimeError(f"No reference symbols for {f}@{w}")
-                    mu=sum(sum(a)/len(a) for a in by.values())/ns
-                    var=sum(sum((x-mu)**2 for x in a)/len(a) for a in by.values())/ns
-                    sd=math.sqrt(var)
-                    if not math.isfinite(sd) or sd<=0:raise RuntimeError(f"Invalid reference SD for {f}@{w}")
-                    constants[f"{f}@{w}"]={"feature":f,"window_minutes":w,"mean":mu,"population_sd":sd,"symbols":ns,"observations":sum(map(len,by.values())),"weighting":"equal_symbol"}
-            self.redis.set_json(self.early_feature_ranking_construction_key("constants"),constants)
-            # Pass 2: write score fields only; omit outcome class to prevent this execution from becoming performance analysis.
-            scoreable=0;unscoreable=0;done=0
-            for sess in sessions:
-                if not ("2019-01-01"<=str(sess)<="2024-12-31"):continue
-                out=[]
-                for r in self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []:
-                    w=int(r.get("checkpoint_minutes",-1));fd=r.get("features");sym=str(r.get("symbol","")).upper()
-                    if w not in wins:continue
-                    score=None;zs=None
-                    if isinstance(fd,dict) and all(isinstance(fd.get(f),(int,float)) and math.isfinite(float(fd.get(f))) for f in features):
-                        zs={f:(float(fd[f])-constants[f"{f}@{w}"]["mean"])/constants[f"{f}@{w}"]["population_sd"] for f in features};score=sum(zs.values())/3.0;scoreable+=1
-                    else:unscoreable+=1
-                    out.append({"record_id":r.get("record_id"),"session":sess,"symbol":sym,"checkpoint_minutes":w,"eval_ts":r.get("eval_ts"),"rank_score":score,"z_features":zs,"scoreable":score is not None})
-                self.redis.set_json(self.early_feature_ranking_construction_key(f"scores:{sess}"),out);done+=1
-                if done%100==0:self._set_early_feature_ranking_construction_state(status="RUNNING",phase="RANK_SCORE_CONSTRUCTION",message=f"Score pass {done}/{len(sessions)} sessions",sessions_completed=done,total_sessions=len(sessions),scoreable_records=scoreable,unscoreable_records=unscoreable,alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False)
-            report={"version":VERSION,"build":BUILD,"execution_id":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["execution_id"],"execution_spec_sha256":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC_SHA256,"required_ranking_prefreeze_sha256":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_ranking_prefreeze_sha256"],"actual_ranking_prefreeze_sha256":EARLY_FEATURE_RANKING_PREFREEZE_SHA256,"required_reconstruction_result_sha256":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["required_reconstruction_result_sha256"],"status":"COMPLETED","phase":"RANKING_CONSTRUCTION_STOP_REVIEW","reference_period":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["reference_period"],"standardization_constants":constants,"scoreable_records":scoreable,"unscoreable_records":unscoreable,"ranking_performance_computed":False,"labels_used_for_reference_fit":False,"ranking_threshold_defined":False,"top_k_optimized":False,"alpaca_requests_made":0,"validation_2025_opened":False,"year_2026_opened":False,"post_2026_08_31_read":False,"fresh_oos_opened":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"completed_at":iso()}
-            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_ranking_construction_key("report"),report)
-            self._set_early_feature_ranking_construction_state(status="COMPLETED",phase="RANKING_CONSTRUCTION_STOP_REVIEW",message="Frozen equal-weight ranking construction completed; STOP REVIEW",sessions_completed=done,total_sessions=len(sessions),scoreable_records=scoreable,unscoreable_records=unscoreable,alpaca_requests_made=0,stop_and_review_required=True,fresh_oos_opened=False,post_2026_08_31_read=False)
-        except Exception as e:
-            logging.exception("Ranking construction failed");self._set_early_feature_ranking_construction_state(status="ERROR",phase="RANKING_CONSTRUCTION_BLOCKED",message=f"{type(e).__name__}: {e}",alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False)
-        finally:
-            with self.early_feature_ranking_construction_lock:self.early_feature_ranking_construction_thread=None
-
-    def start_early_feature_ranking_construction(self):
-        ok,why=self._early_feature_ranking_construction_gate()
-        if not ok:return False,why
-        with self.early_feature_ranking_construction_lock:
-            if self.early_feature_ranking_construction_thread and self.early_feature_ranking_construction_thread.is_alive():return False,"already_running"
-            existing=self.redis.get_json(self.early_feature_ranking_construction_key("report"),None) if self.redis.configured else None
-            if existing and existing.get("status")=="COMPLETED":return False,"already_completed"
-            self.early_feature_ranking_construction_thread=threading.Thread(target=self.early_feature_ranking_construction_loop,name="ranking-construction",daemon=True);self.early_feature_ranking_construction_thread.start()
-        return True,"started"
 
 @app.get("/research/early-causal-entry/feature-level-discovery/ranking-construction/protocol")
 def research_feature_ranking_construction_protocol():
