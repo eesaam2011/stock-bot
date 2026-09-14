@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.45"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-2026-REGIME-VALIDATION-EXECUTION"
+VERSION = "1.7.46"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-SUCCESSFUL-RANKING-BASELINE-FREEZE-SELECTION-RESEARCH-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1286,6 +1286,60 @@ EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC = {
     "guardrails":{"alpaca_requests":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+
+EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SPEC = {
+    "protocol_id":"IPR-EARLY-FEATURE-SUCCESSFUL-RANKING-BASELINE-FREEZE-SELECTION-RESEARCH-PREFREEZE-2026-09-14-A",
+    "required_two_component_2025_validation_result_sha256":"ebce6d512af5dff658c19a14b1225b05e875e2de59fbee8fc4edbbc9b8d7d8ca",
+    "required_two_component_2025_validation_decision":"VALIDATION_PASS",
+    "required_two_component_2026_regime_validation_result_sha256":"0a398324b7647911180e0a4fdd1768f1ccc7e91da8857d1e4c1133e96f082c9b",
+    "required_two_component_2026_regime_validation_decision":"REGIME_VALIDATION_PASS",
+    "successful_ranking_baseline":{
+        "name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A",
+        "status":"FROZEN_BASELINE",
+        "formula":"rank_score_2c = (z_discovery_range_pct + z_return_5m_pct) / 2",
+        "components":["discovery_range_pct","return_5m_pct"],
+        "weights":{"discovery_range_pct":0.5,"return_5m_pct":0.5},
+        "windows_minutes":[30,60],
+        "window_policy":"30m and 60m remain separate mandatory clocks; no best-window selection and no combined score.",
+        "standardization":"Reuse exactly the frozen v1.7.37-R1 2019-2024 Discovery-only mean/population-SD constants. No refit or rescaling.",
+        "immutable_rule":"The successful ranking baseline is frozen and may not be changed by selection research. No feature, weight, formula, standardization, or window change is authorized."
+    },
+    "verified_evidence":{
+        "2025":{"auc_30m":0.5704355325040636,"auc_60m":0.5723154875532513,"decision":"VALIDATION_PASS"},
+        "2026_jan_aug":{"auc_30m":0.5688026269785689,"auc_60m":0.5684433924432744,"decision":"REGIME_VALIDATION_PASS"}
+    },
+    "research_purpose":"Study how the frozen successful ranking can be converted into a practical candidate-selection rule using only already-consumed research periods, without touching Fresh OOS and without changing the ranking baseline.",
+    "research_period_policy":{
+        "allowed":"Only already-consumed research data through 2026-08-31 may be used in a future separately frozen selection-research execution.",
+        "hard_stop_after":"2026-08-31",
+        "fresh_oos_remains_closed":True,
+        "no_post_2026_08_31_read":True
+    },
+    "selection_research_scope":{
+        "allowed_descriptive_views":[
+            "fixed score percentile bands",
+            "fixed within-session rank bands",
+            "fixed Top-N candidate counts",
+            "candidate count and class-composition by session",
+            "coverage and missingness by selection band",
+            "stability by year and by 30m/60m clock"
+        ],
+        "fixed_percentile_bands":["top_1pct","top_2pct","top_5pct","top_10pct","top_20pct"],
+        "fixed_top_n_per_session":[1,3,5,10,20],
+        "primary_outputs":["positive_rate","hard_negative_rate","positive_to_hard_negative_ratio","candidate_count","symbol_count","coverage"],
+        "no_profitability_metric":True,
+        "no_entry_exit_logic":True,
+        "no_threshold_is_selected_by_this_prefreeze":True
+    },
+    "selection_rule_firewall":"Any practical selection rule suggested by a future descriptive execution is hypothesis-generating only. It must be frozen in a later protocol before it can be treated as a candidate rule. This pre-freeze does not authorize choosing a threshold, Top-N, or percentile after seeing results as if it were validated.",
+    "fresh_oos_policy":"Fresh OOS is reserved for the final fully frozen practical system. It must not be spent on selection-rule discovery, threshold tuning, Top-N tuning, entry confirmation discovery, or stop/target tuning.",
+    "interpretation":"The ranking baseline is now a verified predictive-ranking asset. This protocol freezes it and authorizes only a future descriptive practical-selection research execution on already-consumed data. It does not establish strategy profitability or authorize a bot.",
+    "forbidden":["changing ranking components","changing ranking weights","restandardizing","dropping 30m or 60m","best-window selection","reading any session after 2026-08-31","Fresh OOS read","declaring a threshold validated from descriptive research","declaring Top-N validated from descriptive research","entry optimization","exit optimization","stop/target optimization","profitability claims","strategy PASS","bot authorization","automatic downstream authorization"],
+    "guardrails":{"prefreeze_only":True,"execution_started":False,"alpaca_requests":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"ranking_threshold_defined":False,"top_k_optimized":False,"selection_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC = {
     "execution_id":"IPR-EARLY-FEATURE-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION-2026-09-14-A",
@@ -11213,6 +11267,25 @@ def admin_scan_once():
 
 start_worker()
 
+
+
+@app.get("/research/early-causal-entry/feature-level-discovery/successful-ranking-baseline-selection-research/prefreeze/protocol")
+def early_feature_successful_ranking_baseline_selection_research_prefreeze_protocol():
+    spec=EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SPEC
+    if not radar.redis.configured:
+        return jsonify({"version":VERSION,"build":BUILD,"gate_allowed":False,"gate_reason":"Redis unavailable","protocol":spec,"protocol_sha256":EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256}),503
+    v25=radar.redis.get_json(radar.early_feature_two_component_2025_validation_key("result")) or {}
+    v26=radar.redis.get_json(radar.early_feature_two_component_2026_validation_key("result")) or {}
+    checks=[
+        (v25.get("result_sha256")==spec["required_two_component_2025_validation_result_sha256"],"v1.7.43 2025 result SHA mismatch"),
+        (v25.get("decision")==spec["required_two_component_2025_validation_decision"],"v1.7.43 2025 decision mismatch"),
+        (v26.get("result_sha256")==spec["required_two_component_2026_regime_validation_result_sha256"],"v1.7.45 2026 result SHA mismatch"),
+        (v26.get("decision")==spec["required_two_component_2026_regime_validation_decision"],"v1.7.45 2026 decision mismatch"),
+        (v26.get("fresh_oos_opened") is False,"Fresh OOS was opened"),
+        (v26.get("post_2026_08_31_read") is False,"post-2026-08-31 data was read")
+    ]
+    allowed=all(x for x,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"actual_two_component_2025_validation_result_sha256":v25.get("result_sha256"),"actual_two_component_2025_decision":v25.get("decision"),"actual_two_component_2026_regime_validation_result_sha256":v26.get("result_sha256"),"actual_two_component_2026_regime_validation_decision":v26.get("decision"),"selection_results_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"ranking_threshold_defined":False,"top_k_optimized":False,"selection_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
