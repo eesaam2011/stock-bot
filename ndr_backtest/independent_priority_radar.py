@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.51-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-FINALIZATION-RESCUE-R1"
+VERSION = "1.7.51-R2-S1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-FULL-VIEWS-EXPORT-R2-S1-SIMPLE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -10159,6 +10159,10 @@ worker: threading.Thread | None = None
 
 ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC = {'rescue_id': 'IPR-ENTRY-CONFIRMATION-FINALIZATION-RESCUE-2026-09-14-R1', 'parent_execution_id': 'IPR-ENTRY-CONFIRMATION-RESEARCH-EXECUTION-2026-09-14-A', 'required_execution_spec_sha256': '8441aeade3ad0f478f44eaa5e9e485b2fa268318d8912f5feed16eb3101815b3', 'required_prefreeze_sha256': 'f706481c55dcfb5933cbb6c730cb7b07d81f097d59366d139cf75a5a4d0acabe', 'required_completed_sessions': 1926, 'required_alpaca_requests_made': 3245, 'alpaca_authorized': False, 'fresh_oos_opened': False, 'post_2026_08_31_read': False, 'purpose': 'Finalize already-persisted v1.7.51 confirmation records only; no path reconstruction and no historical market-data requests.', 'aggregation_policy': 'Memory-bounded offset-by-offset aggregation. Persist each of the 20 frozen views independently in Redis; final report stores immutable manifest plus overall outcomes and feature summaries. Full view artifacts remain retrievable by frozen coordinates.', 'windows_minutes': [30, 60], 'selections': [1, 3], 'confirmation_offsets_minutes': [1, 2, 3, 5, 10], 'decision': 'ENTRY_CONFIRMATION_RESEARCH_ONLY', 'entry_rule_selected': False, 'entry_rule_validated': False, 'selection_rule_validated': False, 'profitability_computed': False, 'strategy_pass': False, 'bot_authorized': False, 'automatic_downstream_authorization': False, 'stop_and_review_required': True}
 ENTRY_CONFIRMATION_FINALIZATION_RESCUE_SPEC_SHA256 = "ffb05efb35141de44a2f995af3642f787e84f64c582946185f9c11b28cb850b1"
+
+ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC = {"export_id":"IPR-ENTRY-CONFIRMATION-FULL-VIEWS-EXPORT-2026-09-14-R2-S1","required_rescue_result_sha256":"5cd86922c2595cf9ed26535de8283c2eec0282d9f93e94fb58868157824816a3","required_full_view_count":20,"source":"v1.7.51-R1 persisted Redis full-view artifacts only","format":"single ordinary JSON envelope containing immutable manifest plus all 20 full views","memory_policy":"simple direct materialization of all 20 persisted full views; no streaming generator","verify_each_view_sha256":True,"sha_policy":"recompute canonical SHA256 for every view and require exact equality with that view original manifest sha256 before export","alpaca_authorized":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_selected":False,"entry_rule_validated":False,"profitability_computed":False,"strategy_pass":False,"automatic_downstream_authorization":False}
+ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC_SHA256 = hashlib.sha256(json.dumps(ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
 entry_confirmation_rescue_lock = threading.RLock()
 entry_confirmation_rescue_thread: threading.Thread | None = None
 
@@ -12036,6 +12040,30 @@ def early_feature_entry_confirmation_finalize_rescue_view():
     x=radar.redis.get_json(_ecr_rescue_key(f"view:w{w}:top{n}:o{off}"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False}),202
     return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/views-export/protocol")
+def early_feature_entry_confirmation_full_views_export_protocol():
+    report=radar.redis.get_json(_ecr_rescue_key("report"),None) if radar.redis.configured else None
+    ok=bool(isinstance(report,dict) and report.get("status")=="COMPLETED" and report.get("result_sha256")==ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC["required_rescue_result_sha256"] and int(report.get("full_view_count") or 0)==20)
+    return jsonify({"version":VERSION,"build":BUILD,"export_spec":ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC,"export_spec_sha256":ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC_SHA256,"gate_allowed":ok,"gate_reason":"allowed" if ok else "completed v1.7.51-R1 rescue report/SHA/full-view-count mismatch","alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_selected":False,"entry_rule_validated":False,"views_read_by_protocol":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/finalize-rescue/views-export")
+def early_feature_entry_confirmation_full_views_export():
+    if not radar.redis.configured:return jsonify({"error":"Redis unavailable"}),503
+    report=radar.redis.get_json(_ecr_rescue_key("report"),None)
+    if not isinstance(report,dict) or report.get("status")!="COMPLETED" or report.get("result_sha256")!=ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC["required_rescue_result_sha256"] or int(report.get("full_view_count") or 0)!=20:return jsonify({"error":"export gate blocked","fresh_oos_opened":False,"alpaca_requests_made":0}),409
+    manifest=list(report.get("views_manifest") or [])
+    if len(manifest)!=20:return jsonify({"error":"manifest count mismatch"}),409
+    views=[]
+    verified_manifest=[]
+    for item in manifest:
+        suffix=item.get("redis_suffix");view=radar.redis.get_json(_ecr_rescue_key(str(suffix)),None)
+        if not isinstance(view,dict):return jsonify({"error":f"missing persisted full view: {suffix}"}),409
+        payload=json.dumps(view,sort_keys=True,separators=(",",":"),allow_nan=False);actual=hashlib.sha256(payload.encode()).hexdigest();expected=item.get("sha256")
+        if actual!=expected:return jsonify({"error":f"full view SHA mismatch: {suffix}","expected_sha256":expected,"actual_sha256":actual}),409
+        views.append(view);verified_manifest.append({**item,"export_verified_sha256":actual,"sha256_match":True})
+    envelope={"version":VERSION,"build":BUILD,"export_id":ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC["export_id"],"export_spec_sha256":ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC_SHA256,"source_rescue_result_sha256":report.get("result_sha256"),"full_view_count":20,"all_view_sha256_verified":True,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_selected":False,"entry_rule_validated":False,"manifest":verified_manifest,"views":views}
+    response=jsonify(envelope);response.headers["Content-Disposition"]="attachment; filename=IPR_v1.7.51-R2-S1_ALL_20_FULL_VIEWS.json";response.headers["Cache-Control"]="no-store";return response
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
