@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.48"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TOP1-TOP3-ENTRY-RESEARCH-PREFREEZE-POST-DESCRIPTIVE-HYPOTHESIS"
+VERSION = "1.7.49"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TOP1-TOP3-ENTRY-RESEARCH-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1370,6 +1370,9 @@ EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SPEC = {
     "guardrails":{"prefreeze_only":True,"execution_started":False,"entry_outcomes_read_by_protocol":False,"alpaca_requests":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"selection_rule_validated":False,"entry_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC = {'execution_id': 'IPR-TOP1-TOP3-ENTRY-RESEARCH-EXECUTION-2026-09-14-A', 'required_prefreeze_sha256': '27d5da74413d5a2c82d4882bb5307f1ef831961d1156f601692c71664575bf87', 'required_practical_selection_result_sha256': 'aa1c15440913723ce4e9d789d4d08384053570bc34c057b128446b490c3f4698', 'selection_hypotheses': [{'name': 'WITHIN_SESSION_TOP_1', 'top_n': 1}, {'name': 'WITHIN_SESSION_TOP_3', 'top_n': 3}], 'windows_minutes': [30, 60], 'forward_horizons_minutes': [5, 10, 15, 30, 60, 120], 'mfe_thresholds_pct': [2, 5, 10, 20], 'mae_thresholds_pct': [-2, -5, -10], 't0_reference_price': 'Close of the exact 1-minute bar whose timestamp equals persisted eval_ts/t0. This close is available when the causal checkpoint ranking is computed. Outcome bars must have timestamp strictly greater than t0.', 'historical_bar_access': {'authorized': True, 'reason': 'Persisted feature/ranking records stop at t0 and do not contain the frozen post-t0 120-minute path required by v1.7.48. Historical raw 1-minute bars are therefore required only for already-consumed selected Top-1/Top-3 candidates.', 'feeds': 'SIP raw plus BOATS raw where historically available, using the same merge policy as feature reconstruction', 'logical_request_budget': 5000, 'hard_stop_on_budget': True, 'no_request_before_start': True}, 'research_period': {'start': '2019-01-01', 'end': '2026-08-31', 'hard_stop_after': '2026-08-31'}, 'same_bar_policy': 'SAME_BAR_AMBIGUOUS; never target-first', 'decision_policy': 'ENTRY_RESEARCH_ONLY. No entry rule, target, stop, selection rule, strategy PASS, profitability claim, or bot authorization may be produced.', 'hypothesis_origin': 'Top-1 and Top-3 are post-v1.7.47 descriptive hypotheses and are not independently validated.', 'fresh_oos_policy': 'Fresh OOS remains closed and reserved for the final fully frozen Ranking + Selection + Entry + Exit + Costs system.', 'forbidden': ['post-2026-08-31 read', 'Fresh OOS read', 'ranking changes', 'best-window selection', 'adding Top-N', 'post-hoc MFE/MAE thresholds', 'entry-rule validation', 'stop/target optimization', 'profitability claims', 'strategy PASS', 'bot authorization', 'automatic downstream authorization']}
+EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC_SHA256 = "61b1fbb3ad02cb7278fa1a60b33728111e751733ae5743b45da2184bda74433f"
 
 
 EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC = {
@@ -2830,6 +2833,8 @@ class IndependentPriorityRadar:
         self.early_feature_two_component_2026_validation_state={"status":"IDLE","phase":"NOT_STARTED","message":"Two-component 2026 regime validation not started","execution_id":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"updated_at":iso()}
         self.early_feature_practical_selection_research_lock=threading.RLock(); self.early_feature_practical_selection_research_thread=None
         self.early_feature_practical_selection_research_state={"status":"IDLE","phase":"NOT_STARTED","message":"Practical Selection Research not started","execution_id":EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"selection_rule_validated":False,"updated_at":iso()}
+        self.early_feature_top1_top3_entry_research_lock=threading.RLock(); self.early_feature_top1_top3_entry_research_thread=None
+        self.early_feature_top1_top3_entry_research_state={"status":"IDLE","phase":"NOT_STARTED","message":"Top-1/Top-3 Entry Research not started","execution_id":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_validated":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -9815,6 +9820,147 @@ class IndependentPriorityRadar:
         return True,"started"
 
 
+    def early_feature_top1_top3_entry_research_key(self,suffix: str)->str:
+        return self.key(f"early_feature_top1_top3_entry_research:v1:{suffix}")
+
+    def _set_early_feature_top1_top3_entry_research_state(self,**updates: Any)->None:
+        with self.early_feature_top1_top3_entry_research_lock:
+            self.early_feature_top1_top3_entry_research_state.update(updates); self.early_feature_top1_top3_entry_research_state["updated_at"]=iso(); snap=dict(self.early_feature_top1_top3_entry_research_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_top1_top3_entry_research_key("status"),snap)
+
+    def _early_feature_top1_top3_entry_research_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        if not self.alpaca.configured:return False,"Alpaca required by frozen execution spec"
+        spec=EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC
+        if EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SHA256!=spec["required_prefreeze_sha256"]:return False,"v1.7.48 pre-freeze SHA mismatch"
+        prior=self.redis.get_json(self.early_feature_practical_selection_research_key("report"),{}) or {}
+        if prior.get("status")!="COMPLETED" or prior.get("decision")!="DESCRIPTIVE_RESEARCH_ONLY" or prior.get("result_sha256")!=spec["required_practical_selection_result_sha256"]:return False,"v1.7.47 provenance mismatch"
+        if prior.get("fresh_oos_opened") is not False or prior.get("post_2026_08_31_read") is not False:return False,"Fresh OOS boundary provenance mismatch"
+        if prior.get("selection_rule_validated") is not False:return False,"selection unexpectedly validated"
+        return True,"allowed"
+
+    def _entry_research_selection_rows_for_session(self,sess,constants):
+        spec=EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC; feats=["discovery_range_pct","return_5m_pct"]; wins=spec["windows_minutes"]; rows={w:[] for w in wins}
+        if sess<="2024-12-31":
+            source=self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []
+            labels={r.get("record_id"):r for r in source}
+            for q in self.redis.get_json(self.early_feature_ranking_construction_key(f"scores:{sess}"),[]) or []:
+                r=labels.get(q.get("record_id"));z=q.get("z_features")
+                if not r or not isinstance(z,dict):continue
+                w=int(r.get("checkpoint_minutes") or -1);sym=str(r.get("symbol") or "").upper();ts=r.get("eval_ts")
+                if w in wins and sym and ts and all(isinstance(z.get(f),(int,float)) and math.isfinite(float(z[f])) for f in feats):
+                    rows[w].append({"session":sess,"symbol":sym,"t0":str(ts),"score":sum(float(z[f]) for f in feats)/2.0})
+        else:
+            keyfn=self.early_feature_2025_validation_key if sess<="2025-12-31" else self.early_feature_2026_regime_review_key
+            for r in self.redis.get_json(keyfn(f"records:{sess}"),[]) or []:
+                w=int(r.get("checkpoint_minutes") or -1);sym=str(r.get("symbol") or "").upper();ts=r.get("eval_ts");fd=r.get("features")
+                if w in wins and sym and ts and isinstance(fd,dict) and all(isinstance(fd.get(f),(int,float)) and math.isfinite(float(fd[f])) for f in feats):
+                    zs=[(float(fd[f])-float(constants[f"{f}@{w}"]["mean"]))/float(constants[f"{f}@{w}"]["population_sd"]) for f in feats]
+                    rows[w].append({"session":sess,"symbol":sym,"t0":str(ts),"score":sum(zs)/2.0})
+        return rows
+
+    @staticmethod
+    def _entry_research_bar_map(rows):
+        out={}
+        for r in rows or []:
+            try:
+                ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"))
+                if ts.tzinfo is None:ts=ts.replace(tzinfo=UTC)
+                if min(float(r.get(k) or 0) for k in ("o","h","l","c"))>0:out[ts]=r
+            except Exception:pass
+        return out
+
+    def _entry_research_measure_candidate(self,cand,bars):
+        spec=EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC;t0=datetime.fromisoformat(cand["t0"].replace("Z","+00:00"));t0=t0 if t0.tzinfo else t0.replace(tzinfo=UTC);bm=self._entry_research_bar_map(bars);ref=bm.get(t0)
+        if not ref:return {"available":False,"reason":"exact_t0_bar_missing"}
+        px=float(ref["c"]); horizons={}; targets=spec["mfe_thresholds_pct"]; adverse=[abs(float(x)) for x in spec["mae_thresholds_pct"]]
+        for h in spec["forward_horizons_minutes"]:
+            end=t0+timedelta(minutes=int(h)); fut=[(ts,r) for ts,r in sorted(bm.items()) if t0<ts<=end]
+            if not fut:horizons[str(h)]={"available":False,"bars":0};continue
+            mfe=max((float(r["h"])/px-1)*100 for _,r in fut);mae=min((float(r["l"])/px-1)*100 for _,r in fut)
+            tr={}; ar={}; pairs={}
+            for x in targets:
+                hit=next(((ts,r) for ts,r in fut if float(r["h"])>=px*(1+x/100)),None);tr[str(x)]={"reached":bool(hit),"minutes":((hit[0]-t0).total_seconds()/60 if hit else None)}
+            for a in adverse:
+                hit=next(((ts,r) for ts,r in fut if float(r["l"])<=px*(1-a/100)),None);ar[str(-a)]={"reached":bool(hit),"minutes":((hit[0]-t0).total_seconds()/60 if hit else None)}
+            for x in targets:
+                for a in adverse:
+                    th=tr[str(x)]["minutes"];ah=ar[str(-a)]["minutes"]
+                    if th is not None and ah is not None and th==ah:o="SAME_BAR_AMBIGUOUS"
+                    elif th is not None and (ah is None or th<ah):o="TARGET_FIRST"
+                    elif ah is not None and (th is None or ah<th):o="ADVERSE_FIRST"
+                    else:o="NEITHER"
+                    pairs[f"target_{x}_adverse_{-a}"]=o
+            horizons[str(h)]={"available":True,"bars":len(fut),"mfe_pct":mfe,"mae_pct":mae,"targets":tr,"adverse":ar,"path_ordering":pairs}
+        return {"available":True,"t0_reference_price":px,"t0":cand["t0"],"horizons":horizons}
+
+    def early_feature_top1_top3_entry_research_loop(self):
+        try:
+            ok,why=self._early_feature_top1_top3_entry_research_gate()
+            if not ok:raise RuntimeError(why)
+            spec=EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC; budget=int(spec["historical_bar_access"]["logical_request_budget"]); calls=int(self.redis.get_json(self.early_feature_top1_top3_entry_research_key("alpaca_logical_requests"),0) or 0)
+            rr=self.redis.get_json(self.early_feature_ranking_construction_key("report"),{}) or {};constants=rr.get("standardization_constants") or self.redis.get_json(self.early_feature_ranking_construction_key("constants"),{}) or {}
+            sessions=sorted(set([str(x) for x in (self.redis.get_json(self.early_feature_reconstruction_key("completed_sessions"),[]) or []) if "2019-01-01"<=str(x)<="2024-12-31"]+[str(x) for x in (self.redis.get_json(self.early_feature_2025_validation_key("completed_sessions"),[]) or []) if "2025-01-01"<=str(x)<="2025-12-31"]+[str(x) for x in (self.redis.get_json(self.early_feature_2026_regime_review_key("completed_sessions"),[]) or []) if "2026-01-01"<=str(x)<="2026-08-31"]))
+            if any(x>"2026-08-31" for x in sessions):raise RuntimeError("post-2026-08-31 session blocked")
+            done=set(self.redis.get_json(self.early_feature_top1_top3_entry_research_key("completed_sessions"),[]) or [])
+            self._set_early_feature_top1_top3_entry_research_state(status="RUNNING",phase="ENTRY_PATH_RECONSTRUCTION",message=f"Entry research {len(done)}/{len(sessions)}",sessions_completed=len(done),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,fresh_oos_opened=False,post_2026_08_31_read=False,entry_rule_validated=False)
+            for sess in sessions:
+                if sess in done:continue
+                bywin=self._entry_research_selection_rows_for_session(sess,constants);selected=[]
+                for w,sr in bywin.items():
+                    ordered=sorted(sr,key=lambda x:(-x["score"],x["symbol"]));
+                    for rank,c in enumerate(ordered[:3],1):selected.append({**c,"window_minutes":w,"within_session_rank":rank})
+                if selected:
+                    syms=sorted({c["symbol"] for c in selected}); t0s=[datetime.fromisoformat(c["t0"].replace("Z","+00:00")) for c in selected]; start=min(t0s);end=max(t0s)+timedelta(minutes=121)
+                    rows,used=self._efr_fetch_1m(syms,date.fromisoformat(sess),start,end,budget-calls);calls+=used;self.redis.set_json(self.early_feature_top1_top3_entry_research_key("alpaca_logical_requests"),calls)
+                    rec=[]
+                    for c in selected:
+                        m=self._entry_research_measure_candidate(c,rows.get(c["symbol"],[]));rec.append({**c,"measurement":m})
+                else:rec=[]
+                self.redis.set_json(self.early_feature_top1_top3_entry_research_key(f"records:{sess}"),rec);done.add(sess);self.redis.set_json(self.early_feature_top1_top3_entry_research_key("completed_sessions"),sorted(done))
+                if len(done)%25==0 or len(done)==len(sessions):self._set_early_feature_top1_top3_entry_research_state(message=f"Entry research {len(done)}/{len(sessions)}",sessions_completed=len(done),alpaca_requests_made=calls)
+            # aggregate frozen views Top-1 and Top-3, windows separately
+            results=[]
+            for w in spec["windows_minutes"]:
+                for n in (1,3):
+                    rs=[]
+                    for sess in sessions:
+                        rs.extend([r for r in (self.redis.get_json(self.early_feature_top1_top3_entry_research_key(f"records:{sess}"),[]) or []) if int(r.get("window_minutes") or -1)==w and int(r.get("within_session_rank") or 99)<=n])
+                    available=[r for r in rs if (r.get("measurement") or {}).get("available")]
+                    hout=[]
+                    for h in spec["forward_horizons_minutes"]:
+                        hv=[r["measurement"]["horizons"].get(str(h),{}) for r in available];hv=[x for x in hv if x.get("available")]
+                        mf=[float(x["mfe_pct"]) for x in hv];ma=[float(x["mae_pct"]) for x in hv]
+                        target_rates={str(t):sum(1 for x in hv if x["targets"][str(t)]["reached"])/len(hv) if hv else None for t in spec["mfe_thresholds_pct"]}
+                        adverse_rates={str(a):sum(1 for x in hv if x["adverse"][str(float(a))]["reached"])/len(hv) if hv else None for a in spec["mae_thresholds_pct"]}
+                        pair_rates={}
+                        for t in spec["mfe_thresholds_pct"]:
+                            for a in [abs(float(x)) for x in spec["mae_thresholds_pct"]]:
+                                k=f"target_{t}_adverse_{-a}";counts={z:sum(1 for x in hv if x["path_ordering"][k]==z) for z in ("TARGET_FIRST","ADVERSE_FIRST","NEITHER","SAME_BAR_AMBIGUOUS")};pair_rates[k]={z:(v/len(hv) if hv else None) for z,v in counts.items()}
+                        hout.append({"horizon_minutes":h,"available_candidates":len(hv),"mfe_pct":{"median":float(np.median(mf)) if mf else None,"p25":float(np.quantile(mf,.25)) if mf else None,"p75":float(np.quantile(mf,.75)) if mf else None},"mae_pct":{"median":float(np.median(ma)) if ma else None,"p25":float(np.quantile(ma,.25)) if ma else None,"p75":float(np.quantile(ma,.75)) if ma else None},"target_reach_rate":target_rates,"adverse_reach_rate":adverse_rates,"path_ordering_rates":pair_rates})
+                    annual=[]
+                    for y in range(2019,2027):
+                        yr=[r for r in available if str(r["session"]).startswith(str(y))];annual.append({"year":y,"candidate_count":len(yr),"coverage":len(yr)/sum(1 for r in rs if str(r["session"]).startswith(str(y))) if any(str(r["session"]).startswith(str(y)) for r in rs) else None})
+                    results.append({"window_minutes":w,"selection":f"top_{n}","candidate_count":len(rs),"available_count":len(available),"coverage":len(available)/len(rs) if rs else None,"horizons":hout,"year_stability":annual})
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"status":"COMPLETED","phase":"TOP1_TOP3_ENTRY_RESEARCH_STOP_REVIEW","decision":"ENTRY_RESEARCH_ONLY","hypothesis_origin":spec["hypothesis_origin"],"t0_reference_price":spec["t0_reference_price"],"historical_bar_access":spec["historical_bar_access"],"sessions":len(sessions),"alpaca_requests_made":calls,"results":results,"selection_rule_validated":False,"entry_rule_validated":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"strategy_pass":False,"profitability_computed":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_top1_top3_entry_research_key("report"),report)
+            self._set_early_feature_top1_top3_entry_research_state(status="COMPLETED",phase="TOP1_TOP3_ENTRY_RESEARCH_STOP_REVIEW",message="Top-1/Top-3 entry-shape research completed; STOP REVIEW",decision="ENTRY_RESEARCH_ONLY",sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=calls,fresh_oos_opened=False,post_2026_08_31_read=False,entry_rule_validated=False,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Top-1/Top-3 Entry Research failed");self._set_early_feature_top1_top3_entry_research_state(status="ERROR",phase="TOP1_TOP3_ENTRY_RESEARCH_BLOCKED",message=f"{type(e).__name__}: {e}",fresh_oos_opened=False,post_2026_08_31_read=False,entry_rule_validated=False)
+        finally:
+            with self.early_feature_top1_top3_entry_research_lock:self.early_feature_top1_top3_entry_research_thread=None
+
+    def start_early_feature_top1_top3_entry_research(self):
+        ok,why=self._early_feature_top1_top3_entry_research_gate()
+        if not ok:return False,why
+        existing=self.redis.get_json(self.early_feature_top1_top3_entry_research_key("report"),None) if self.redis.configured else None
+        if existing and existing.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_top1_top3_entry_research_lock:
+            if self.early_feature_top1_top3_entry_research_thread and self.early_feature_top1_top3_entry_research_thread.is_alive():return False,"already_running"
+            self.early_feature_top1_top3_entry_research_thread=threading.Thread(target=self.early_feature_top1_top3_entry_research_loop,name="top1-top3-entry-research",daemon=True);self.early_feature_top1_top3_entry_research_thread.start()
+        return True,"started"
+
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 app = Flask(__name__)
 radar = IndependentPriorityRadar()
@@ -11516,6 +11662,28 @@ def early_feature_top1_top3_entry_research_prefreeze_protocol():
     ]
     allowed=all(ok for ok,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
     return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SHA256,"artifact_frozen":True,"actual_practical_selection_result_sha256":prior.get("result_sha256"),"actual_practical_selection_decision":prior.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"entry_outcomes_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"selection_rule_validated":False,"entry_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
+
+
+@app.get("/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/execution/protocol")
+def early_feature_top1_top3_entry_research_execution_protocol():
+    allowed,reason=radar._early_feature_top1_top3_entry_research_gate();prior=radar.redis.get_json(radar.early_feature_practical_selection_research_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SHA256,"actual_practical_selection_result_sha256":prior.get("result_sha256"),"gate_allowed":allowed,"gate_reason":reason,"entry_outcomes_read_by_protocol":False,"execution_started":False,"alpaca_authorized":True,"alpaca_requests_made":0,"alpaca_request_budget":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_EXEC_SPEC["historical_bar_access"]["logical_request_budget"],"fresh_oos_opened":False,"post_2026_08_31_read":False,"selection_rule_validated":False,"entry_rule_validated":False,"strategy_pass":False,"profitability_computed":False,"bot_authorized":False,"automatic_downstream_authorization":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/execution/start",methods=["GET","POST"])
+def early_feature_top1_top3_entry_research_execution_start():
+    ok,why=radar.start_early_feature_top1_top3_entry_research();return jsonify({"ok":ok,"message":why,"status_url":"/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/execution/status","result_url":"/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/execution/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/execution/status")
+def early_feature_top1_top3_entry_research_execution_status():
+    x=radar.redis.get_json(radar.early_feature_top1_top3_entry_research_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_top1_top3_entry_research_lock:out=dict(x or radar.early_feature_top1_top3_entry_research_state);out["worker_alive"]=bool(radar.early_feature_top1_top3_entry_research_thread and radar.early_feature_top1_top3_entry_research_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/execution/result")
+def early_feature_top1_top3_entry_research_execution_result():
+    x=radar.redis.get_json(radar.early_feature_top1_top3_entry_research_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/execution/status"}),202
+    return jsonify(x)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
