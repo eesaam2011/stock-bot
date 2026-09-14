@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.46-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-SUCCESSFUL-RANKING-BASELINE-FREEZE-SELECTION-RESEARCH-PREFREEZE-R1-REDIS-REPORT-KEY-HOTFIX"
+VERSION = "1.7.47"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-PRACTICAL-SELECTION-RESEARCH-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1340,6 +1340,31 @@ EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SPEC = {
     "guardrails":{"prefreeze_only":True,"execution_started":False,"alpaca_requests":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"ranking_threshold_defined":False,"top_k_optimized":False,"selection_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC = {
+    "execution_id":"IPR-EARLY-FEATURE-PRACTICAL-SELECTION-RESEARCH-EXECUTION-2026-09-14-A",
+    "required_prefreeze_sha256":"ee9841e67c0e821fb337f598fa61c324704acbf8347acf58f3de84b4cfa6d732",
+    "required_two_component_2025_validation_result_sha256":"ebce6d512af5dff658c19a14b1225b05e875e2de59fbee8fc4edbbc9b8d7d8ca",
+    "required_two_component_2026_regime_validation_result_sha256":"0a398324b7647911180e0a4fdd1768f1ccc7e91da8857d1e4c1133e96f082c9b",
+    "required_ranking_construction_result_sha256":"00cb344337ca25c7e644adebf3aae73b8bd8c81bc986e10240ac2650295ce300",
+    "candidate_name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A",
+    "formula":"rank_score_2c = (z_discovery_range_pct + z_return_5m_pct) / 2",
+    "components":["discovery_range_pct","return_5m_pct"],
+    "weights":{"discovery_range_pct":0.5,"return_5m_pct":0.5},
+    "windows_minutes":[30,60],
+    "research_period":{"start":"2019-01-01","end":"2026-08-31","hard_stop_after":"2026-08-31","already_consumed_only":True},
+    "source_policy":"2019-2024: persisted v1.7.37 ranking z-components joined to v1.7.32 labels; 2025: persisted v1.7.34 feature records; 2026 Jan-Aug: persisted v1.7.35 feature records. Zero Alpaca and no post-2026-08-31 read.",
+    "standardization":"Reuse exactly frozen v1.7.37-R1 2019-2024 Discovery-only mean/population-SD constants; no refit.",
+    "fixed_percentile_bands":[1,2,5,10,20],
+    "fixed_top_n_per_session":[1,3,5,10,20],
+    "descriptive_views":["global_score_percentile","within_session_percentile","within_session_top_n"],
+    "primary_outputs":["positive_rate","hard_negative_rate","positive_to_hard_negative_ratio","candidate_count","symbol_count","coverage","year_stability","session_candidate_count"],
+    "interpretation":"Descriptive hypothesis-generation only. No selection rule is validated or selected by this execution.",
+    "forbidden":["new Alpaca requests","reading any session after 2026-08-31","Fresh OOS read","changing ranking components","changing ranking weights","restandardizing","dropping 30m or 60m","best-window selection","selecting a threshold as validated","selecting Top-N as validated","entry optimization","exit optimization","stop/target optimization","profitability claims","strategy PASS","bot authorization","automatic downstream authorization"],
+    "guardrails":{"alpaca_requests":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"ranking_threshold_defined":False,"top_k_optimized":False,"selection_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC = {
     "execution_id":"IPR-EARLY-FEATURE-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION-2026-09-14-A",
@@ -2773,6 +2798,8 @@ class IndependentPriorityRadar:
         self.early_feature_two_component_2025_validation_state={"status":"IDLE","phase":"NOT_STARTED","message":"Two-component 2025 locked ranking validation not started","execution_id":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
         self.early_feature_two_component_2026_validation_lock=threading.RLock(); self.early_feature_two_component_2026_validation_thread=None
         self.early_feature_two_component_2026_validation_state={"status":"IDLE","phase":"NOT_STARTED","message":"Two-component 2026 regime validation not started","execution_id":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"updated_at":iso()}
+        self.early_feature_practical_selection_research_lock=threading.RLock(); self.early_feature_practical_selection_research_thread=None
+        self.early_feature_practical_selection_research_state={"status":"IDLE","phase":"NOT_STARTED","message":"Practical Selection Research not started","execution_id":EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"selection_rule_validated":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -9623,6 +9650,141 @@ class IndependentPriorityRadar:
         return True,"started"
 
 
+
+    def early_feature_practical_selection_research_key(self,suffix: str)->str:
+        return self.key(f"early_feature_practical_selection_research:v1:{suffix}")
+
+    def _set_early_feature_practical_selection_research_state(self,**updates: Any)->None:
+        with self.early_feature_practical_selection_research_lock:
+            self.early_feature_practical_selection_research_state.update(updates); self.early_feature_practical_selection_research_state["updated_at"]=iso(); snap=dict(self.early_feature_practical_selection_research_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_practical_selection_research_key("status"),snap)
+
+    def _early_feature_practical_selection_research_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        spec=EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC
+        if EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256!=spec["required_prefreeze_sha256"]:return False,"v1.7.46 pre-freeze SHA mismatch"
+        v25=self.redis.get_json(self.early_feature_two_component_2025_validation_key("report"),{}) or {}
+        if v25.get("status")!="COMPLETED" or v25.get("decision")!="VALIDATION_PASS" or v25.get("result_sha256")!=spec["required_two_component_2025_validation_result_sha256"]:return False,"2025 two-component validation provenance mismatch"
+        v26=self.redis.get_json(self.early_feature_two_component_2026_validation_key("report"),{}) or {}
+        if v26.get("status")!="COMPLETED" or v26.get("decision")!="REGIME_VALIDATION_PASS" or v26.get("result_sha256")!=spec["required_two_component_2026_regime_validation_result_sha256"]:return False,"2026 two-component regime validation provenance mismatch"
+        if v26.get("fresh_oos_opened") is not False or v26.get("post_2026_08_31_read") is not False:return False,"Fresh OOS boundary provenance mismatch"
+        rr=self.redis.get_json(self.early_feature_ranking_construction_key("report"),{}) or {}
+        if rr.get("status")!="COMPLETED" or rr.get("result_sha256")!=spec["required_ranking_construction_result_sha256"]:return False,"Frozen ranking construction provenance mismatch"
+        return True,"allowed"
+
+    @staticmethod
+    def _selection_summary(selected, total_scoreable, total_eligible=None):
+        n=len(selected); pc=sum(1 for r in selected if r["class"]=="positive"); hc=sum(1 for r in selected if r["class"]=="hard_negative"); den=pc+hc
+        return {"candidate_count":n,"symbol_count":len({r["symbol"] for r in selected}),"positive_count":pc,"hard_negative_count":hc,"positive_rate":pc/den if den else None,"hard_negative_rate":hc/den if den else None,"positive_to_hard_negative_ratio":pc/hc if hc else (None if pc==0 else "inf"),"coverage_of_scoreable":n/total_scoreable if total_scoreable else None,"coverage_of_eligible":n/total_eligible if total_eligible else None}
+
+    def early_feature_practical_selection_research_loop(self):
+        try:
+            ok,why=self._early_feature_practical_selection_research_gate()
+            if not ok:raise RuntimeError(why)
+            spec=EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC; wins=spec["windows_minutes"]; feats=spec["components"]
+            rr=self.redis.get_json(self.early_feature_ranking_construction_key("report"),{}) or {}; constants=rr.get("standardization_constants") or self.redis.get_json(self.early_feature_ranking_construction_key("constants"),{}) or {}
+            for f in feats:
+                for w in wins:
+                    c=constants.get(f"{f}@{w}") or {}
+                    if not isinstance(c.get("mean"),(int,float)) or not isinstance(c.get("population_sd"),(int,float)) or float(c["population_sd"])<=0:raise RuntimeError(f"Missing frozen standardization constant {f}@{w}")
+            rows={w:[] for w in wins}; eligible={(w,c):0 for w in wins for c in ("positive","hard_negative")}; sessions_seen=set()
+            # 2019-2024: exact persisted z components, recompute frozen 2c score (not old 3c rank_score).
+            s19=sorted(str(x) for x in (self.redis.get_json(self.early_feature_reconstruction_key("completed_sessions"),[]) or []) if "2019-01-01"<=str(x)<="2024-12-31")
+            # 2025 and 2026 are already-consumed feature records.
+            s25=sorted(str(x) for x in (self.redis.get_json(self.early_feature_2025_validation_key("completed_sessions"),[]) or []) if "2025-01-01"<=str(x)<="2025-12-31")
+            s26=sorted(str(x) for x in (self.redis.get_json(self.early_feature_2026_regime_review_key("completed_sessions"),[]) or []) if "2026-01-01"<=str(x)<="2026-08-31")
+            all_sessions=s19+s25+s26
+            if any(x>"2026-08-31" for x in all_sessions):raise RuntimeError("post-2026-08-31 session blocked")
+            self._set_early_feature_practical_selection_research_state(status="RUNNING",phase="PRACTICAL_SELECTION_RESEARCH",message=f"Selection research 0/{len(all_sessions)} sessions",sessions_completed=0,total_sessions=len(all_sessions),alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False,selection_rule_validated=False)
+            idx=0
+            for sess in s19:
+                source=self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []
+                labels={r.get("record_id"):(str(r.get("class") or ""),str(r.get("symbol") or "").upper(),int(r.get("checkpoint_minutes") or -1)) for r in source}
+                for r in source:
+                    c=str(r.get("class") or "");w=int(r.get("checkpoint_minutes") or -1)
+                    if w in wins and c in ("positive","hard_negative"):eligible[(w,c)]+=1
+                for q in self.redis.get_json(self.early_feature_ranking_construction_key(f"scores:{sess}"),[]) or []:
+                    lab=labels.get(q.get("record_id")); z=q.get("z_features")
+                    if not lab or not isinstance(z,dict):continue
+                    c,sym,w=lab
+                    if w not in wins or c not in ("positive","hard_negative") or not sym:continue
+                    if all(isinstance(z.get(f),(int,float)) and math.isfinite(float(z[f])) for f in feats):
+                        score=sum(float(z[f]) for f in feats)/2.0
+                        if math.isfinite(score):rows[w].append({"session":sess,"year":int(sess[:4]),"symbol":sym,"class":c,"score":score})
+                sessions_seen.add(sess);idx+=1
+                if idx%100==0:self._set_early_feature_practical_selection_research_state(message=f"Selection research {idx}/{len(all_sessions)} sessions",sessions_completed=idx)
+            def consume_feature_session(sess,keyfn):
+                for r in self.redis.get_json(keyfn(f"records:{sess}"),[]) or []:
+                    w=int(r.get("checkpoint_minutes") or -1);c=str(r.get("class") or "");sym=str(r.get("symbol") or "").upper();fd=r.get("features")
+                    if w not in wins or c not in ("positive","hard_negative") or not sym:continue
+                    eligible[(w,c)]+=1
+                    if isinstance(fd,dict) and all(isinstance(fd.get(f),(int,float)) and math.isfinite(float(fd[f])) for f in feats):
+                        zs=[(float(fd[f])-float(constants[f"{f}@{w}"]["mean"]))/float(constants[f"{f}@{w}"]["population_sd"]) for f in feats];score=sum(zs)/2.0
+                        if math.isfinite(score):rows[w].append({"session":sess,"year":int(sess[:4]),"symbol":sym,"class":c,"score":score})
+            for sess in s25:
+                consume_feature_session(sess,self.early_feature_2025_validation_key);sessions_seen.add(sess);idx+=1
+                if idx%50==0:self._set_early_feature_practical_selection_research_state(message=f"Selection research {idx}/{len(all_sessions)} sessions",sessions_completed=idx)
+            for sess in s26:
+                consume_feature_session(sess,self.early_feature_2026_regime_review_key);sessions_seen.add(sess);idx+=1
+                if idx%50==0 or idx==len(all_sessions):self._set_early_feature_practical_selection_research_state(message=f"Selection research {idx}/{len(all_sessions)} sessions",sessions_completed=idx)
+            results=[]
+            for w in wins:
+                wr=rows[w]; bysess={}
+                for r in wr:bysess.setdefault(r["session"],[]).append(r)
+                total_eligible=eligible[(w,"positive")]+eligible[(w,"hard_negative")]
+                base=self._selection_summary(wr,len(wr),total_eligible); base["eligible_count"]=total_eligible; base["scoreable_count"]=len(wr); base["unavailable_count"]=total_eligible-len(wr)
+                views=[]
+                scores=np.asarray([r["score"] for r in wr],dtype=float) if wr else np.asarray([],dtype=float)
+                for pct in spec["fixed_percentile_bands"]:
+                    threshold=float(np.quantile(scores,1.0-pct/100.0)) if len(scores) else None
+                    sel=[r for r in wr if threshold is not None and r["score"]>=threshold]
+                    sm=self._selection_summary(sel,len(wr),total_eligible);sm.update({"view":"global_score_percentile","rule":f"top_{pct}pct","score_cutoff_descriptive":threshold});views.append(sm)
+                    per=[]
+                    for sess,sr in bysess.items():
+                        ordered=sorted(sr,key=lambda x:(-x["score"],x["symbol"]));k=max(1,int(math.ceil(len(ordered)*pct/100.0))) if ordered else 0;per.extend(ordered[:k])
+                    sm=self._selection_summary(per,len(wr),total_eligible);sm.update({"view":"within_session_percentile","rule":f"top_{pct}pct"});views.append(sm)
+                for n in spec["fixed_top_n_per_session"]:
+                    sel=[]; session_counts=[]
+                    for sess,sr in bysess.items():
+                        chosen=sorted(sr,key=lambda x:(-x["score"],x["symbol"]))[:n];sel.extend(chosen);session_counts.append(len(chosen))
+                    sm=self._selection_summary(sel,len(wr),total_eligible);sm.update({"view":"within_session_top_n","rule":f"top_{n}","sessions_with_scoreable_candidates":len(session_counts),"average_candidates_per_scoreable_session":float(np.mean(session_counts)) if session_counts else None,"median_candidates_per_scoreable_session":float(np.median(session_counts)) if session_counts else None,"max_candidates_per_scoreable_session":max(session_counts) if session_counts else 0});views.append(sm)
+                yearly=[]
+                for y in range(2019,2027):
+                    yr=[r for r in wr if r["year"]==y]
+                    if not yr:continue
+                    yb={};
+                    for r in yr:yb.setdefault(r["session"],[]).append(r)
+                    yviews=[]
+                    for pct in spec["fixed_percentile_bands"]:
+                        per=[]
+                        for sr in yb.values():
+                            ordered=sorted(sr,key=lambda x:(-x["score"],x["symbol"]));k=max(1,int(math.ceil(len(ordered)*pct/100.0))) if ordered else 0;per.extend(ordered[:k])
+                        sm=self._selection_summary(per,len(yr));sm.update({"view":"within_session_percentile","rule":f"top_{pct}pct"});yviews.append(sm)
+                    for n in spec["fixed_top_n_per_session"]:
+                        per=[]
+                        for sr in yb.values():per.extend(sorted(sr,key=lambda x:(-x["score"],x["symbol"]))[:n])
+                        sm=self._selection_summary(per,len(yr));sm.update({"view":"within_session_top_n","rule":f"top_{n}"});yviews.append(sm)
+                    yearly.append({"year":y,"scoreable_count":len(yr),"sessions":len(yb),"views":yviews})
+                results.append({"window_minutes":w,"baseline":base,"views":views,"year_stability":yearly})
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"required_two_component_2025_validation_result_sha256":spec["required_two_component_2025_validation_result_sha256"],"required_two_component_2026_regime_validation_result_sha256":spec["required_two_component_2026_regime_validation_result_sha256"],"status":"COMPLETED","phase":"PRACTICAL_SELECTION_RESEARCH_STOP_REVIEW","candidate_name":spec["candidate_name"],"formula":spec["formula"],"research_period":spec["research_period"],"sessions":len(sessions_seen),"results":results,"decision":"DESCRIPTIVE_RESEARCH_ONLY","alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"ranking_threshold_defined":False,"top_k_optimized":False,"selection_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_practical_selection_research_key("report"),report)
+            self._set_early_feature_practical_selection_research_state(status="COMPLETED",phase="PRACTICAL_SELECTION_RESEARCH_STOP_REVIEW",message="Practical selection descriptive research complete; STOP REVIEW",decision="DESCRIPTIVE_RESEARCH_ONLY",sessions_completed=len(all_sessions),total_sessions=len(all_sessions),alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False,selection_rule_validated=False,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Practical Selection Research failed");self._set_early_feature_practical_selection_research_state(status="ERROR",phase="PRACTICAL_SELECTION_RESEARCH_BLOCKED",message=f"{type(e).__name__}: {e}",alpaca_requests_made=0,fresh_oos_opened=False,post_2026_08_31_read=False,selection_rule_validated=False)
+        finally:
+            with self.early_feature_practical_selection_research_lock:self.early_feature_practical_selection_research_thread=None
+
+    def start_early_feature_practical_selection_research(self):
+        ok,why=self._early_feature_practical_selection_research_gate()
+        if not ok:return False,why
+        existing=self.redis.get_json(self.early_feature_practical_selection_research_key("report"),None) if self.redis.configured else None
+        if existing and existing.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_practical_selection_research_lock:
+            if self.early_feature_practical_selection_research_thread and self.early_feature_practical_selection_research_thread.is_alive():return False,"already_running"
+            self.early_feature_practical_selection_research_thread=threading.Thread(target=self.early_feature_practical_selection_research_loop,name="practical-selection-research",daemon=True);self.early_feature_practical_selection_research_thread.start()
+        return True,"started"
+
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 app = Flask(__name__)
 radar = IndependentPriorityRadar()
@@ -11286,6 +11448,28 @@ def early_feature_successful_ranking_baseline_selection_research_prefreeze_proto
     ]
     allowed=all(x for x,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
     return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"actual_two_component_2025_validation_result_sha256":v25.get("result_sha256"),"actual_two_component_2025_decision":v25.get("decision"),"actual_two_component_2026_regime_validation_result_sha256":v26.get("result_sha256"),"actual_two_component_2026_regime_validation_decision":v26.get("decision"),"selection_results_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"ranking_threshold_defined":False,"top_k_optimized":False,"selection_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
+
+
+@app.get("/research/early-causal-entry/feature-level-discovery/practical-selection-research/protocol")
+def early_feature_practical_selection_research_protocol():
+    allowed,reason=radar._early_feature_practical_selection_research_gate(); v25=radar.redis.get_json(radar.early_feature_two_component_2025_validation_key("report"),{}) if radar.redis.configured else {}; v26=radar.redis.get_json(radar.early_feature_two_component_2026_validation_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256,"actual_2025_result_sha256":v25.get("result_sha256"),"actual_2026_result_sha256":v26.get("result_sha256"),"gate_allowed":allowed,"gate_reason":reason,"selection_results_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"ranking_threshold_defined":False,"top_k_optimized":False,"selection_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/practical-selection-research/start",methods=["GET","POST"])
+def early_feature_practical_selection_research_start():
+    ok,why=radar.start_early_feature_practical_selection_research();return jsonify({"ok":ok,"message":why,"status_url":"/research/early-causal-entry/feature-level-discovery/practical-selection-research/status","result_url":"/research/early-causal-entry/feature-level-discovery/practical-selection-research/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/practical-selection-research/status")
+def early_feature_practical_selection_research_status():
+    x=radar.redis.get_json(radar.early_feature_practical_selection_research_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_practical_selection_research_lock:out=dict(x or radar.early_feature_practical_selection_research_state);out["worker_alive"]=bool(radar.early_feature_practical_selection_research_thread and radar.early_feature_practical_selection_research_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/practical-selection-research/result")
+def early_feature_practical_selection_research_result():
+    x=radar.redis.get_json(radar.early_feature_practical_selection_research_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/practical-selection-research/status"}),202
+    return jsonify(x)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
