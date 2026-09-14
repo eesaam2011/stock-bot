@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.44"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-2026-REGIME-VALIDATION-PREFREEZE"
+VERSION = "1.7.45"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-2026-REGIME-VALIDATION-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1264,6 +1264,28 @@ EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SPEC = {
     "guardrails":{"prefreeze_only":True,"execution_started":False,"alpaca_requests":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC = {
+    "execution_id":"IPR-EARLY-FEATURE-TWO-COMPONENT-2026-REGIME-VALIDATION-EXECUTION-2026-09-14-A",
+    "required_prefreeze_sha256":"c1f51219eb62d565ebe077d6ee0205c6f249207c9c874c9d2f08a6f9be2409db",
+    "required_two_component_2025_validation_result_sha256":"ebce6d512af5dff658c19a14b1225b05e875e2de59fbee8fc4edbbc9b8d7d8ca",
+    "required_2026_feature_regime_review_result_sha256":"cdd986fd7d54d0005c1562d2ae21d2f46e2363f1a8c47a65a409420e80bda17b",
+    "review_period":{"start":"2026-01-01","end":"2026-08-31","hard_stop_after":"2026-08-31"},
+    "candidate_name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A",
+    "formula":"rank_score_2c = (z_discovery_range_pct + z_return_5m_pct) / 2",
+    "components":["discovery_range_pct","return_5m_pct"],
+    "weights":{"discovery_range_pct":0.5,"return_5m_pct":0.5},
+    "windows_minutes":[30,60],
+    "data_source":"Reuse only persisted causal v1.7.35 2026 Jan-Aug feature records after exact provenance verification; zero new Alpaca requests in this execution.",
+    "standardization":"Reuse exactly frozen v1.7.37-R1 2019-2024 Discovery-only mean/population-SD constants; no refit.",
+    "missingness":"Score only when both components are available and finite. No imputation or partial renormalization.",
+    "primary_metric":"equal_symbol_weighted_roc_auc",
+    "gate":{"minimum_auc_each_window":0.55,"minimum_auc_strictly_above_each_window":0.50,"support_minima_each_window":{"positive_events":500,"hard_negative_events":500,"positive_symbols":100,"hard_negative_symbols":100},"overall_rule":"REGIME_VALIDATION_PASS iff BOTH 30m and 60m have AUC >= 0.55, AUC > 0.50, and all support minima. No rounding. Otherwise REGIME_VALIDATION_FAIL and STOP REVIEW."},
+    "forbidden":["reading any session after 2026-08-31","Fresh OOS read","new Alpaca requests","changing components","changing weights","restandardizing","threshold search","top-k optimization","best-window selection","dropping 30m or 60m","alternative subset search","trading optimization","profitability claims","automatic downstream authorization"],
+    "guardrails":{"alpaca_requests":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC = {
     "execution_id":"IPR-EARLY-FEATURE-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION-2026-09-14-A",
@@ -2695,6 +2717,8 @@ class IndependentPriorityRadar:
         self.early_feature_post_failure_ranking_diagnostic_state={"status":"IDLE","phase":"NOT_STARTED","message":"Post-Failure Ranking Diagnostic not started","diagnostic_id":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["diagnostic_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
         self.early_feature_two_component_2025_validation_lock=threading.RLock(); self.early_feature_two_component_2025_validation_thread=None
         self.early_feature_two_component_2025_validation_state={"status":"IDLE","phase":"NOT_STARTED","message":"Two-component 2025 locked ranking validation not started","execution_id":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
+        self.early_feature_two_component_2026_validation_lock=threading.RLock(); self.early_feature_two_component_2026_validation_thread=None
+        self.early_feature_two_component_2026_validation_state={"status":"IDLE","phase":"NOT_STARTED","message":"Two-component 2026 regime validation not started","execution_id":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -9334,6 +9358,77 @@ class IndependentPriorityRadar:
             self.early_feature_two_component_2025_validation_thread=threading.Thread(target=self.early_feature_two_component_2025_validation_loop,name="two-component-2025-validation",daemon=True);self.early_feature_two_component_2025_validation_thread.start()
         return True,"started"
 
+    def early_feature_two_component_2026_validation_key(self,suffix: str)->str:
+        return self.key(f"early_feature_two_component_2026_regime_validation:v1:{suffix}")
+
+    def _set_early_feature_two_component_2026_validation_state(self,**updates: Any)->None:
+        with self.early_feature_two_component_2026_validation_lock:
+            self.early_feature_two_component_2026_validation_state.update(updates); self.early_feature_two_component_2026_validation_state["updated_at"]=iso(); snap=dict(self.early_feature_two_component_2026_validation_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_two_component_2026_validation_key("status"),snap)
+
+    def _early_feature_two_component_2026_validation_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        spec=EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC
+        if EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SHA256!=spec["required_prefreeze_sha256"]:return False,"v1.7.44 pre-freeze SHA mismatch"
+        v25=self.redis.get_json(self.early_feature_two_component_2025_validation_key("report"),{}) or {}
+        if v25.get("status")!="COMPLETED" or v25.get("decision")!="VALIDATION_PASS" or v25.get("result_sha256")!=spec["required_two_component_2025_validation_result_sha256"]:return False,"2025 two-component validation provenance mismatch"
+        r26=self.redis.get_json(self.early_feature_2026_regime_review_key("report"),{}) or {}
+        if r26.get("status")!="COMPLETED" or r26.get("decision")!="DESCRIPTIVE_REVIEW_ONLY" or r26.get("result_sha256")!=spec["required_2026_feature_regime_review_result_sha256"]:return False,"v1.7.35 persisted 2026 feature provenance mismatch"
+        if r26.get("fresh_oos_opened") is not False or r26.get("post_2026_08_31_read") is not False:return False,"2026 source crossed Fresh OOS boundary"
+        rr=self.redis.get_json(self.early_feature_ranking_construction_key("report"),{}) or {}
+        if rr.get("status")!="COMPLETED" or rr.get("result_sha256")!="00cb344337ca25c7e644adebf3aae73b8bd8c81bc986e10240ac2650295ce300":return False,"Frozen ranking constants provenance mismatch"
+        return True,"allowed"
+
+    def early_feature_two_component_2026_validation_loop(self):
+        try:
+            ok,why=self._early_feature_two_component_2026_validation_gate()
+            if not ok:raise RuntimeError(why)
+            spec=EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC; wins=set(spec["windows_minutes"]); feats=list(spec["components"])
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.early_feature_2026_regime_review_key("completed_sessions"),[]) or []) if "2026-01-01"<=str(x)<="2026-08-31")
+            if any(x>"2026-08-31" for x in sessions):raise RuntimeError("post-2026-08-31 session blocked")
+            rr=self.redis.get_json(self.early_feature_ranking_construction_key("report"),{}) or {}; constants=rr.get("standardization_constants") or self.redis.get_json(self.early_feature_ranking_construction_key("constants"),{}) or {}
+            for f in feats:
+                for w in wins:
+                    c=constants.get(f"{f}@{w}") or {}
+                    if not isinstance(c.get("mean"),(int,float)) or not isinstance(c.get("population_sd"),(int,float)) or float(c["population_sd"])<=0:raise RuntimeError(f"Missing frozen standardization constant {f}@{w}")
+            self._set_early_feature_two_component_2026_validation_state(status="RUNNING",phase="TWO_COMPONENT_2026_REGIME_VALIDATION",message=f"2026 Jan-Aug regime validation 0/{len(sessions)} sessions",sessions_completed=0,total_sessions=len(sessions),alpaca_requests_made=0,ranking_review_2026_opened=True,fresh_oos_opened=False,post_2026_08_31_read=False)
+            rows={w:[] for w in wins}; eligible={(w,c):0 for w in wins for c in ("positive","hard_negative")}; scoreable={(w,c):0 for w in wins for c in ("positive","hard_negative")}
+            for idx,sess in enumerate(sessions,1):
+                if sess>"2026-08-31":raise RuntimeError("Fresh OOS boundary violation")
+                for r in self.redis.get_json(self.early_feature_2026_regime_review_key(f"records:{sess}"),[]) or []:
+                    w=int(r.get("checkpoint_minutes") or -1); cl=str(r.get("class") or ""); sym=str(r.get("symbol") or "").upper(); fd=r.get("features")
+                    if w not in wins or cl not in {"positive","hard_negative"} or not sym:continue
+                    eligible[(w,cl)]+=1
+                    if isinstance(fd,dict) and all(isinstance(fd.get(f),(int,float)) and math.isfinite(float(fd[f])) for f in feats):
+                        zs=[(float(fd[f])-float(constants[f"{f}@{w}"]["mean"]))/float(constants[f"{f}@{w}"]["population_sd"]) for f in feats]; score=sum(zs)/2.0
+                        if math.isfinite(score):rows[w].append((score,cl,sym));scoreable[(w,cl)]+=1
+                if idx%25==0 or idx==len(sessions):self._set_early_feature_two_component_2026_validation_state(status="RUNNING",phase="TWO_COMPONENT_2026_REGIME_VALIDATION",message=f"2026 Jan-Aug regime validation {idx}/{len(sessions)} sessions",sessions_completed=idx,total_sessions=len(sessions),alpaca_requests_made=0,ranking_review_2026_opened=True,fresh_oos_opened=False,post_2026_08_31_read=False)
+            results=[]; gate=spec["gate"]; mins=gate["support_minima_each_window"]
+            for w in sorted(wins):
+                auc=self._equal_symbol_weighted_auc(rows[w]); pe=scoreable[(w,"positive")]; he=scoreable[(w,"hard_negative")]; ps=len({sym for _,cl,sym in rows[w] if cl=="positive"}); hs=len({sym for _,cl,sym in rows[w] if cl=="hard_negative"}); support={"positive_events":pe,"hard_negative_events":he,"positive_symbols":ps,"hard_negative_symbols":hs}
+                support_pass=pe>=mins["positive_events"] and he>=mins["hard_negative_events"] and ps>=mins["positive_symbols"] and hs>=mins["hard_negative_symbols"]
+                passed=bool(auc is not None and auc>=gate["minimum_auc_each_window"] and auc>gate["minimum_auc_strictly_above_each_window"] and support_pass)
+                coverage={cl:{"eligible":eligible[(w,cl)],"scoreable":scoreable[(w,cl)],"unavailable":eligible[(w,cl)]-scoreable[(w,cl)],"rate":scoreable[(w,cl)]/eligible[(w,cl)] if eligible[(w,cl)] else None} for cl in ("positive","hard_negative")}
+                results.append({"window_minutes":w,"equal_symbol_weighted_roc_auc":auc,"minimum_auc_required":gate["minimum_auc_each_window"],"support":support,"support_pass":support_pass,"coverage":coverage,"passes_2026_regime_gate":passed})
+            decision="REGIME_VALIDATION_PASS" if len(results)==2 and all(x["passes_2026_regime_gate"] for x in results) else "REGIME_VALIDATION_FAIL"
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"required_two_component_2025_validation_result_sha256":spec["required_two_component_2025_validation_result_sha256"],"required_2026_feature_regime_review_result_sha256":spec["required_2026_feature_regime_review_result_sha256"],"status":"COMPLETED","phase":"TWO_COMPONENT_2026_REGIME_VALIDATION_STOP_REVIEW","candidate_name":spec["candidate_name"],"formula":spec["formula"],"review_period":spec["review_period"],"sessions":len(sessions),"results":results,"decision":decision,"alpaca_requests_made":0,"ranking_review_2026_opened":True,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_two_component_2026_validation_key("report"),report)
+            self._set_early_feature_two_component_2026_validation_state(status="COMPLETED",phase="TWO_COMPONENT_2026_REGIME_VALIDATION_STOP_REVIEW",message=f"2026 Jan-Aug {decision}; STOP REVIEW",decision=decision,sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=0,ranking_review_2026_opened=True,fresh_oos_opened=False,post_2026_08_31_read=False,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Two-component 2026 regime validation failed");self._set_early_feature_two_component_2026_validation_state(status="ERROR",phase="TWO_COMPONENT_2026_REGIME_VALIDATION_BLOCKED",message=f"{type(e).__name__}: {e}",alpaca_requests_made=0,ranking_review_2026_opened=True,fresh_oos_opened=False,post_2026_08_31_read=False)
+        finally:
+            with self.early_feature_two_component_2026_validation_lock:self.early_feature_two_component_2026_validation_thread=None
+
+    def start_early_feature_two_component_2026_validation(self):
+        ok,why=self._early_feature_two_component_2026_validation_gate()
+        if not ok:return False,why
+        existing=self.redis.get_json(self.early_feature_two_component_2026_validation_key("report"),None) if self.redis.configured else None
+        if existing and existing.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_two_component_2026_validation_lock:
+            if self.early_feature_two_component_2026_validation_thread and self.early_feature_two_component_2026_validation_thread.is_alive():return False,"already_running"
+            self.early_feature_two_component_2026_validation_thread=threading.Thread(target=self.early_feature_two_component_2026_validation_loop,name="two-component-2026-regime-validation",daemon=True);self.early_feature_two_component_2026_validation_thread.start()
+        return True,"started"
+
     def early_feature_post_failure_ranking_diagnostic_key(self,suffix: str)->str:
         return self.key(f"early_feature_post_failure_ranking_diagnostic:v1:{suffix}")
 
@@ -11022,6 +11117,28 @@ def early_feature_two_component_2026_regime_validation_prefreeze_protocol():
     ]
     allowed=all(x for x,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
     return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"actual_two_component_2025_validation_result_sha256":v25.get("result_sha256"),"actual_two_component_2025_decision":v25.get("decision"),"actual_2026_feature_regime_review_result_sha256":r26.get("result_sha256"),"actual_2026_feature_regime_review_status":r26.get("status"),"actual_2026_feature_regime_review_decision":r26.get("decision"),"ranking_results_2026_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2026-regime-validation/protocol")
+def early_feature_two_component_2026_regime_validation_protocol():
+    allowed,reason=radar._early_feature_two_component_2026_validation_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_EXEC_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":EARLY_FEATURE_TWO_COMPONENT_2026_REGIME_VALIDATION_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"ranking_results_2026_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2026-regime-validation/start",methods=["GET","POST"])
+def early_feature_two_component_2026_regime_validation_start():
+    ok,why=radar.start_early_feature_two_component_2026_validation(); return jsonify({"ok":ok,"message":why,"status_url":"/research/early-causal-entry/feature-level-discovery/two-component-ranking-2026-regime-validation/status","result_url":"/research/early-causal-entry/feature-level-discovery/two-component-ranking-2026-regime-validation/result"}), (202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2026-regime-validation/status")
+def early_feature_two_component_2026_regime_validation_status():
+    x=radar.redis.get_json(radar.early_feature_two_component_2026_validation_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_two_component_2026_validation_lock:out=dict(x or radar.early_feature_two_component_2026_validation_state);out["worker_alive"]=bool(radar.early_feature_two_component_2026_validation_thread and radar.early_feature_two_component_2026_validation_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2026-regime-validation/result")
+def early_feature_two_component_2026_regime_validation_result():
+    x=radar.redis.get_json(radar.early_feature_two_component_2026_validation_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/two-component-ranking-2026-regime-validation/status"}),202
+    return jsonify(x)
+
 
 @app.get("/status")
 def status():
