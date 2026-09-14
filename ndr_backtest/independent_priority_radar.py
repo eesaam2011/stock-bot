@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.42"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-RANKING-HYPOTHESIS-PREFREEZE"
+VERSION = "1.7.42-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-RANKING-HYPOTHESIS-PREFREEZE-R1-RUNTIME-HOTFIX"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -10322,9 +10322,9 @@ def research_feature_discovery_stat_result():
 
 @app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-hypothesis-prefreeze/protocol")
 def early_feature_two_component_ranking_hypothesis_prefreeze_protocol():
-    if not radar.redis_ok:
+    if not radar.redis.configured:
         return jsonify({"version":VERSION,"build":BUILD,"gate_allowed":False,"gate_reason":"Redis unavailable","protocol":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC,"protocol_sha256":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256}),503
-    report=radar._rjson_get(radar.early_feature_post_failure_ranking_diagnostic_key("report"),{}) or {}
+    report=radar.redis.get_json(radar.early_feature_post_failure_ranking_diagnostic_key("report"),{}) or {}
     actual=report.get("result_sha256")
     allowed=(
         report.get("status")==EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC["required_post_failure_diagnostic_status"]
