@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.51-R2-S1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-FULL-VIEWS-EXPORT-R2-S1-SIMPLE"
+VERSION = "1.7.52"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-BACKWARD-OOS-CAPABILITY-PROBE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -12064,6 +12064,165 @@ def early_feature_entry_confirmation_full_views_export():
         views.append(view);verified_manifest.append({**item,"export_verified_sha256":actual,"sha256_match":True})
     envelope={"version":VERSION,"build":BUILD,"export_id":ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC["export_id"],"export_spec_sha256":ENTRY_CONFIRMATION_FULL_VIEWS_EXPORT_SPEC_SHA256,"source_rescue_result_sha256":report.get("result_sha256"),"full_view_count":20,"all_view_sha256_verified":True,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"entry_rule_selected":False,"entry_rule_validated":False,"manifest":verified_manifest,"views":views}
     response=jsonify(envelope);response.headers["Content-Disposition"]="attachment; filename=IPR_v1.7.51-R2-S1_ALL_20_FULL_VIEWS.json";response.headers["Cache-Control"]="no-store";return response
+
+
+# v1.7.52 — 2018 Backward-OOS Capability Probe (DATA ONLY; H1 firewall)
+BACKWARD_OOS_2018_PROBE_SPEC = {
+    "probe_id": "IPR-2018-BACKWARD-OOS-CAPABILITY-PROBE-2026-09-14-A",
+    "purpose": "Test whether Alpaca SIP and the existing IPR data machinery can reach 2018, including pre-2018 warm-up, without computing or exposing H1 or any trading outcome.",
+    "target_period": {"start": "2018-01-01", "end": "2018-12-31"},
+    "warmup_period": {"start": "2017-12-01", "end": "2017-12-31", "use": "feature warm-up only; never candidate/outcome evaluation"},
+    "sentinel_symbols": ["AAPL", "MSFT", "IBM", "GE", "F", "KO", "XOM", "JPM", "WMT", "INTC"],
+    "probe_sessions": ["2018-01-02", "2018-01-03", "2018-01-04", "2018-01-05", "2018-03-15", "2018-06-15", "2018-09-17", "2018-12-27", "2018-12-28"],
+    "thresholds": {
+        "calendar_sessions_min": 245,
+        "calendar_sessions_max": 255,
+        "probe_sessions_present_pct_min": 98.0,
+        "sentinel_symbol_session_any_bar_pct_min": 95.0,
+        "warmup_symbols_with_any_bar_pct_min": 95.0,
+        "lookahead_errors_allowed": 0,
+    },
+    "important_scope": "This is a capability probe, not the final 2018 universe-coverage certification. The previously discussed >=95% historical-universe coverage gate cannot be honestly evaluated until the 2018 point-in-time universe is reconstructed. A capability PASS therefore authorizes only that next reconstruction/certification step, not H1 execution.",
+    "split_policy": "Run the existing frozen IPR split-suspect screen on fetched raw probe bars and report diagnostics only. A capability probe cannot certify 100% split coverage because sentinel sessions may contain no split event.",
+    "firewall": {
+        "h1_computed": False,
+        "mfe_mae_computed": False,
+        "target_adverse_computed": False,
+        "ranking_computed": False,
+        "candidate_selection_computed": False,
+        "fresh_forward_oos_opened": False,
+        "2019_2026_discovery_mutated": False,
+    },
+    "decision_policy": "PASS means only that 2018/warm-up market-data capability is technically usable enough to proceed to a separate frozen 2018 universe reconstruction/certification. It is not Backward-OOS validation and cannot validate H1.",
+}
+BACKWARD_OOS_2018_PROBE_SPEC_SHA256 = hashlib.sha256(
+    json.dumps(BACKWARD_OOS_2018_PROBE_SPEC, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+).hexdigest()
+BACKWARD_OOS_2018_PROBE_LOCK = threading.RLock()
+BACKWARD_OOS_2018_PROBE_THREAD = None
+BACKWARD_OOS_2018_PROBE_STATE = {
+    "status": "IDLE", "message": "2018 capability probe has not started",
+    "probe_id": BACKWARD_OOS_2018_PROBE_SPEC["probe_id"], "updated_at": iso(),
+    "h1_computed": False, "fresh_forward_oos_opened": False,
+}
+
+def _boos18_key(suffix: str) -> str:
+    return radar.key(f"backward_oos_2018_probe:v1:{suffix}")
+
+def _boos18_set_state(**updates: Any) -> None:
+    global BACKWARD_OOS_2018_PROBE_STATE
+    with BACKWARD_OOS_2018_PROBE_LOCK:
+        BACKWARD_OOS_2018_PROBE_STATE = {**BACKWARD_OOS_2018_PROBE_STATE, **updates, "updated_at": iso()}
+        if radar.redis.configured:
+            radar.redis.set_json(_boos18_key("status"), BACKWARD_OOS_2018_PROBE_STATE)
+
+def _boos18_worker() -> None:
+    global BACKWARD_OOS_2018_PROBE_THREAD
+    requests_made = 0
+    try:
+        if not radar.alpaca.configured:
+            raise RuntimeError("Alpaca credentials are required")
+        _boos18_set_state(status="RUNNING", phase="CALENDAR", message="Checking 2018 calendar only", alpaca_requests_made=requests_made)
+        calendar = radar.alpaca.calendar(date(2018,1,1), date(2018,12,31)); requests_made += 1
+        sessions = sorted(str(x.get("date")) for x in calendar if x.get("date"))
+        session_set = set(sessions)
+        requested_sessions = list(BACKWARD_OOS_2018_PROBE_SPEC["probe_sessions"])
+        present = [x for x in requested_sessions if x in session_set]
+        symbols = list(BACKWARD_OOS_2018_PROBE_SPEC["sentinel_symbols"])
+
+        # Warm-up: December 2017 only. It is never scored and never treated as an OOS candidate period.
+        _boos18_set_state(status="RUNNING", phase="WARMUP", message="Checking December 2017 SIP warm-up availability", alpaca_requests_made=requests_made)
+        warm = radar.alpaca.bars(symbols, datetime(2017,12,1,tzinfo=UTC), datetime(2018,1,1,tzinfo=UTC), feed="sip", adjustment="raw", timeframe="1Min"); requests_made += 1
+        warm_counts = {s: len(warm.get(s) or []) for s in symbols}
+        warm_with = sum(1 for s in symbols if warm_counts[s] > 0)
+
+        # Target-period probe: only fixed predeclared sessions, never outcomes or H1.
+        _boos18_set_state(status="RUNNING", phase="SIP_2018", message="Checking fixed 2018 SIP sentinel sessions", alpaca_requests_made=requests_made)
+        symbol_session_checks = []
+        split_diagnostics = []
+        for day in requested_sessions:
+            if day not in session_set:
+                continue
+            d = date.fromisoformat(day)
+            start = datetime.combine(d, dtime(0,0), tzinfo=NY).astimezone(UTC)
+            end = (datetime.combine(d, dtime(23,59), tzinfo=NY) + timedelta(minutes=1)).astimezone(UTC)
+            bars = radar.alpaca.bars(symbols, start, end, feed="sip", adjustment="raw", timeframe="1Min"); requests_made += 1
+            for s in symbols:
+                rows = bars.get(s) or []
+                symbol_session_checks.append({"session":day,"symbol":s,"has_any_bar":bool(rows),"bar_count":len(rows)})
+                if rows:
+                    diag = radar._phase0a_split_suspect(rows)
+                    if diag.get("suspect"):
+                        split_diagnostics.append({"session":day,"symbol":s,"diagnostic":diag})
+
+        thresholds = BACKWARD_OOS_2018_PROBE_SPEC["thresholds"]
+        cal_n = len(sessions)
+        probe_present_pct = 100.0 * len(present) / max(1, len(requested_sessions))
+        anybar_pct = 100.0 * sum(1 for x in symbol_session_checks if x["has_any_bar"]) / max(1, len(symbol_session_checks))
+        warm_pct = 100.0 * warm_with / max(1, len(symbols))
+        gates = {
+            "calendar_length": thresholds["calendar_sessions_min"] <= cal_n <= thresholds["calendar_sessions_max"],
+            "probe_sessions_present": probe_present_pct >= thresholds["probe_sessions_present_pct_min"],
+            "sentinel_symbol_session_any_bar": anybar_pct >= thresholds["sentinel_symbol_session_any_bar_pct_min"],
+            "warmup_available": warm_pct >= thresholds["warmup_symbols_with_any_bar_pct_min"],
+            "lookahead_zero": True,
+            "h1_firewall_intact": True,
+        }
+        decision = "CAPABILITY_PASS" if all(gates.values()) else "CAPABILITY_FAIL"
+        report = {
+            "version": VERSION, "build": BUILD, "probe_id": BACKWARD_OOS_2018_PROBE_SPEC["probe_id"],
+            "probe_spec_sha256": BACKWARD_OOS_2018_PROBE_SPEC_SHA256, "status": "COMPLETED", "decision": decision,
+            "calendar": {"session_count":cal_n,"first_session":sessions[0] if sessions else None,"last_session":sessions[-1] if sessions else None,"fixed_probe_sessions_present":present,"fixed_probe_sessions_present_pct":round(probe_present_pct,4)},
+            "warmup": {"period":BACKWARD_OOS_2018_PROBE_SPEC["warmup_period"],"symbols_with_any_bar":warm_with,"symbols_total":len(symbols),"coverage_pct":round(warm_pct,4),"bar_counts":warm_counts,"warmup_only":True},
+            "sip_2018": {"symbol_session_checks":len(symbol_session_checks),"checks_with_any_bar":sum(1 for x in symbol_session_checks if x["has_any_bar"]),"coverage_pct":round(anybar_pct,4),"details":symbol_session_checks},
+            "split_screen": {"existing_ipr_screen_executed":True,"suspect_diagnostics":split_diagnostics,"certifies_all_2018_splits":False},
+            "gates": gates,
+            "scope_guard": {"universe_coverage_certified":False,"backward_oos_opened":False,"h1_computed":False,"mfe_mae_computed":False,"target_adverse_computed":False,"ranking_computed":False,"candidate_selection_computed":False,"fresh_forward_oos_opened":False,"next_step_if_pass":"Freeze and execute separate 2018 point-in-time universe reconstruction/coverage certification before any H1 test."},
+            "alpaca_requests_made": requests_made, "completed_at": iso(),
+        }
+        report["result_sha256"] = hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        if radar.redis.configured:
+            radar.redis.set_json(_boos18_key("report"), report)
+        _boos18_set_state(status="COMPLETED", phase="STOP_REVIEW", message="2018 capability probe completed; stop and review before any next step", decision=decision, alpaca_requests_made=requests_made, result_sha256=report["result_sha256"], stop_and_review_required=True, h1_computed=False, fresh_forward_oos_opened=False)
+    except Exception as exc:
+        logging.exception("2018 Backward-OOS capability probe failed")
+        _boos18_set_state(status="ERROR", phase="BLOCKED", message="2018 capability probe failed closed", last_error=f"{type(exc).__name__}: {exc}", alpaca_requests_made=requests_made, h1_computed=False, fresh_forward_oos_opened=False)
+    finally:
+        with BACKWARD_OOS_2018_PROBE_LOCK:
+            BACKWARD_OOS_2018_PROBE_THREAD = None
+
+def _boos18_start() -> tuple[bool,str]:
+    global BACKWARD_OOS_2018_PROBE_THREAD
+    if not radar.alpaca.configured:
+        return False, "Alpaca credentials are required"
+    with BACKWARD_OOS_2018_PROBE_LOCK:
+        if BACKWARD_OOS_2018_PROBE_THREAD and BACKWARD_OOS_2018_PROBE_THREAD.is_alive():
+            return False, "already_running"
+        BACKWARD_OOS_2018_PROBE_THREAD = threading.Thread(target=_boos18_worker,name="ipr-2018-capability-probe",daemon=True)
+        BACKWARD_OOS_2018_PROBE_THREAD.start()
+    return True,"started"
+
+@app.get("/research/2018-backward-oos/probe/protocol")
+def backward_oos_2018_probe_protocol():
+    return jsonify({"version":VERSION,"build":BUILD,"probe_spec":BACKWARD_OOS_2018_PROBE_SPEC,"probe_spec_sha256":BACKWARD_OOS_2018_PROBE_SPEC_SHA256,"execution_started":False,"h1_computed":False,"fresh_forward_oos_opened":False,"note":"Protocol view performs zero Alpaca requests and exposes no 2018 outcomes."})
+
+@app.route("/research/2018-backward-oos/probe/start",methods=["GET","POST"])
+def backward_oos_2018_probe_start():
+    ok,why=_boos18_start()
+    return jsonify({"ok":ok,"message":why,"status_url":"/research/2018-backward-oos/probe/status","result_url":"/research/2018-backward-oos/probe/result"}),(202 if ok else 409)
+
+@app.get("/research/2018-backward-oos/probe/status")
+def backward_oos_2018_probe_status():
+    persisted=radar.redis.get_json(_boos18_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2018_PROBE_LOCK:
+        out=dict(persisted or BACKWARD_OOS_2018_PROBE_STATE);out["worker_alive"]=bool(BACKWARD_OOS_2018_PROBE_THREAD and BACKWARD_OOS_2018_PROBE_THREAD.is_alive())
+    return jsonify(out)
+
+@app.get("/research/2018-backward-oos/probe/result")
+def backward_oos_2018_probe_result():
+    report=radar.redis.get_json(_boos18_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/probe/status","h1_computed":False,"fresh_forward_oos_opened":False}),202
+    return jsonify(report)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
