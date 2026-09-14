@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.55-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-B"
+VERSION = "1.7.55-R2"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-C"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -282,7 +282,7 @@ FEATURE_DISCOVERY_EXEC_SPEC = {
         "eligible_pool": "Phase 0B failed clean candidates in 2019-2024 only; still_ambiguous is never a control.",
         "hard_negative_matching": ["same target session when available", "same trading phase", "same frozen log2 price band", "comparable 5-minute coverage"],
         "hard_negative_ratio": "up to 3 per positive; controls may be reused when a contextual cell is sparse, with reuse counted and reported",
-        "random_control": "one separate deterministic random failed clean candidate from the same target-session contextual failed pool; exact execution parity confirmed from the original feature-discovery loop, which constructs failed/fctx and selects rnd inside each sess before moving to the next session; never selected using predictive feature values",
+        "random_control": "one separate deterministic random failed clean candidate from the same target-session contextual failed pool (same session is a stricter subset of the frozen broad time/regime requirement); never selected using predictive feature values",
         "pseudo_cutoff": "failed controls use the frozen Phase 0A coarse first-20 timestamp as opportunity-time cutoff; no post-cutoff feature data",
     },
     "anchors_minutes": [5,15,30,60,120,240],
@@ -12734,7 +12734,7 @@ def backward_oos_2018_observed_universe_result():
 # NOT open H1.  It freezes the exact historical sampling semantics first.
 # -----------------------------------------------------------------------------
 BACKWARD_OOS_2018_SAMPLING_PARITY_SPEC = {
-    "prefreeze_id":"IPR-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-2026-09-14-B",
+    "prefreeze_id":"IPR-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-2026-09-14-C",
     "status":"FROZEN_PROTOCOL_ONLY",
     "purpose":"Freeze exact candidate, Phase0B, control-construction and support semantics inherited from the original 2019-2026 pipeline before any 2018 candidate census or H1 read.",
     "source_of_truth":{
@@ -12773,6 +12773,8 @@ BACKWARD_OOS_2018_SAMPLING_PARITY_SPEC = {
         "hard_negative_matching":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["hard_negative_matching"],
         "hard_negative_ratio":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["hard_negative_ratio"],
         "random_control":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["random_control"],
+        "random_control_parity_finding":"The frozen historical artifact above is preserved byte-for-byte. Independent source inspection confirms that the original feature-discovery execution builds failed/fctx and selects the deterministic random control inside each target-session (sess) loop before advancing to the next session. This finding clarifies 2018 parity only and does not rewrite the historical frozen control text.",
+        "historical_frozen_artifact_rewritten":False,
         "pseudo_cutoff":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["pseudo_cutoff"],
         "predictive_feature_matching_forbidden":True,
         "no_redefinition_for_2018":True,
