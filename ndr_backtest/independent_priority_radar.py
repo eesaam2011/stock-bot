@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.52"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-BACKWARD-OOS-CAPABILITY-PROBE-A"
+VERSION = "1.7.53"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-UNIVERSE-RECONSTRUCTION-CERTIFICATION-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -12222,6 +12222,314 @@ def backward_oos_2018_probe_status():
 def backward_oos_2018_probe_result():
     report=radar.redis.get_json(_boos18_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/probe/status","h1_computed":False,"fresh_forward_oos_opened":False}),202
+    return jsonify(report)
+
+
+# ---------------------------------------------------------------------------
+# v1.7.53 — 2018 point-in-time universe reconstruction / coverage certification
+# This stage remains outcome-blind: no H1, candidates, ranking, MFE/MAE, or
+# target/adverse calculations are permitted.
+# ---------------------------------------------------------------------------
+
+BACKWARD_OOS_2018_UNIVERSE_SPEC = {
+    "reconstruction_id": "IPR-2018-POINT-IN-TIME-UNIVERSE-RECONSTRUCTION-2026-09-14-A",
+    "required_capability_probe_result_sha256": "723f3d3ecf9fb91fd629f23bcda6dec768f41aa76e40899c3138841a72df5c36",
+    "required_capability_probe_spec_sha256": "0b2f2986cafa901151d5c2359e56c5ff43838ffb492d3468a86ba22e6dc4c151",
+    "target_period": {"start": "2018-01-01", "end": "2018-12-31"},
+    "warmup_period": {"start": "2017-12-01", "end": "2017-12-31", "use": "presence/warm-up diagnostics only"},
+    "sources": [
+        "Alpaca all US-equity assets (active + inactive where returned)",
+        "existing frozen 2019-2026 historical-universe source provenance/records",
+        "legacy NDR manifest",
+        "legacy NDR explosion catalog",
+        "frozen historical reference symbols",
+    ],
+    "identity_policy": "Ticker text is a request key, not permanent economic-entity identity. No cross-era entity merge.",
+    "presence_rule": "A source-union symbol is marked observed_in_2018 only if Alpaca SIP raw 1Month bars contain at least one 2018 bar.",
+    "batch_size": 200,
+    "coverage_gate_pct_min": 95.0,
+    "coverage_gate_definition": (
+        "The >=95% gate may be evaluated only against an independent point-in-time 2018 security-master denominator. "
+        "Source-union SIP presence alone is reconstruction evidence and MUST NOT be relabeled as true historical-universe completeness."
+    ),
+    "fail_closed_without_independent_denominator": True,
+    "split_policy": (
+        "This stage does not certify all 2018 corporate actions. It records universe provenance only; "
+        "strict split/corporate-action exclusion remains mandatory before any candidate/outcome evaluation."
+    ),
+    "firewall": {
+        "h1_computed": False,
+        "mfe_mae_computed": False,
+        "target_adverse_computed": False,
+        "ranking_computed": False,
+        "candidate_selection_computed": False,
+        "backward_oos_opened": False,
+        "fresh_forward_oos_opened": False,
+        "2019_2026_discovery_mutated": False,
+    },
+    "decision_policy": (
+        "RECONSTRUCTION_COMPLETE means the observable source-union/presence index was built successfully. "
+        "COVERAGE_CERTIFIED requires an independent 2018 point-in-time denominator and >=95% coverage. "
+        "Without that denominator the stage must stop as RECONSTRUCTION_COMPLETE_COVERAGE_UNCERTIFIED; H1 remains blocked."
+    ),
+}
+BACKWARD_OOS_2018_UNIVERSE_SPEC_SHA256 = hashlib.sha256(
+    json.dumps(BACKWARD_OOS_2018_UNIVERSE_SPEC, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+).hexdigest()
+BACKWARD_OOS_2018_UNIVERSE_LOCK = threading.RLock()
+BACKWARD_OOS_2018_UNIVERSE_THREAD = None
+BACKWARD_OOS_2018_UNIVERSE_STOP = threading.Event()
+BACKWARD_OOS_2018_UNIVERSE_STATE = {
+    "status": "IDLE", "phase": "NOT_STARTED",
+    "message": "2018 universe reconstruction/certification has not started",
+    "reconstruction_id": BACKWARD_OOS_2018_UNIVERSE_SPEC["reconstruction_id"],
+    "updated_at": iso(), "h1_computed": False, "backward_oos_opened": False,
+    "fresh_forward_oos_opened": False,
+}
+
+def _boos18u_key(suffix: str) -> str:
+    return radar.key(f"backward_oos_2018_universe:v1:{suffix}")
+
+def _boos18u_set_state(**updates: Any) -> None:
+    global BACKWARD_OOS_2018_UNIVERSE_STATE
+    with BACKWARD_OOS_2018_UNIVERSE_LOCK:
+        BACKWARD_OOS_2018_UNIVERSE_STATE = {
+            **BACKWARD_OOS_2018_UNIVERSE_STATE, **updates, "updated_at": iso(),
+            "h1_computed": False, "backward_oos_opened": False, "fresh_forward_oos_opened": False,
+        }
+        snapshot = dict(BACKWARD_OOS_2018_UNIVERSE_STATE)
+    if radar.redis.configured:
+        radar.redis.set_json(_boos18u_key("status"), snapshot)
+
+def _boos18u_source_union() -> tuple[dict[str, list[str]], dict[str, int]]:
+    all_assets = radar.alpaca.assets_by_status(None)
+    all_syms = radar._asset_symbol_set(all_assets)
+    manifest = radar.redis.get_json(f"{radar.source_prefix}:manifest", {}) if radar.redis.configured else {}
+    manifest_syms = {str(x).upper() for x in (manifest.get("symbols") or []) if SYMBOL_RE.fullmatch(str(x).upper())}
+    catalog = radar.redis.get_json(f"{radar.source_prefix}:explosions:catalog", {}) if radar.redis.configured else {}
+    catalog_syms = {str(x.get("symbol") or "").upper() for x in (catalog.get("cases") or []) if SYMBOL_RE.fullmatch(str(x.get("symbol") or "").upper())}
+    old_records = radar.redis.get_json(radar.universe_reconstruction_key("records"), {}) if radar.redis.configured else {}
+    old_syms = {str(x).upper() for x in (old_records or {}).keys() if SYMBOL_RE.fullmatch(str(x).upper())}
+    refs = {"CELG", "TWTR", "SIVB", "ATVI", "BBBY", "META"}
+    union = sorted(all_syms | manifest_syms | catalog_syms | old_syms | refs)
+    provenance = {}
+    for sym in union:
+        p = []
+        if sym in all_syms: p.append("alpaca_all_assets")
+        if sym in old_syms: p.append("frozen_2019_2026_reconstruction")
+        if sym in manifest_syms: p.append("legacy_manifest")
+        if sym in catalog_syms: p.append("legacy_ndr_catalog")
+        if sym in refs: p.append("frozen_probe_reference")
+        provenance[sym] = p
+    counts = {
+        "alpaca_all_assets": len(all_syms), "frozen_2019_2026_reconstruction": len(old_syms),
+        "legacy_manifest": len(manifest_syms), "legacy_ndr_catalog": len(catalog_syms),
+        "frozen_probe_reference": len(refs), "source_union": len(union),
+    }
+    return provenance, counts
+
+def _boos18u_worker() -> None:
+    global BACKWARD_OOS_2018_UNIVERSE_THREAD
+    requests_made = 0
+    try:
+        if not radar.alpaca.configured:
+            raise RuntimeError("Alpaca credentials are required")
+        if not radar.redis.configured:
+            raise RuntimeError("Redis is required for resumable 2018 universe reconstruction")
+
+        capability = radar.redis.get_json(_boos18_key("report"), None)
+        if not capability or capability.get("decision") != "CAPABILITY_PASS":
+            raise RuntimeError("Completed 2018 CAPABILITY_PASS report is required")
+        if capability.get("result_sha256") != BACKWARD_OOS_2018_UNIVERSE_SPEC["required_capability_probe_result_sha256"]:
+            raise RuntimeError("2018 capability result SHA mismatch")
+        if capability.get("probe_spec_sha256") != BACKWARD_OOS_2018_UNIVERSE_SPEC["required_capability_probe_spec_sha256"]:
+            raise RuntimeError("2018 capability protocol SHA mismatch")
+
+        _boos18u_set_state(status="RUNNING", phase="SOURCE_UNION",
+                           message="Building 2018 source union with provenance; no outcomes", alpaca_requests_made=requests_made)
+        provenance, source_counts = _boos18u_source_union()
+        requests_made += 1  # assets_by_status(None)
+        symbols = sorted(provenance)
+        radar.redis.set_json(_boos18u_key("source_provenance"), provenance)
+
+        batch_size = int(BACKWARD_OOS_2018_UNIVERSE_SPEC["batch_size"])
+        total_batches = math.ceil(len(symbols) / batch_size) if symbols else 0
+        completed = set(radar.redis.get_json(_boos18u_key("completed_batches"), []) or [])
+        BACKWARD_OOS_2018_UNIVERSE_STOP.clear()
+        start = datetime(2017, 12, 1, tzinfo=UTC)
+        end = datetime(2019, 1, 1, tzinfo=UTC)
+
+        _boos18u_set_state(status="RUNNING", phase="SIP_PRESENCE_INDEX",
+                           message="Indexing Dec-2017 warm-up and 2018 SIP monthly presence only",
+                           symbol_count=len(symbols), total_batches=total_batches,
+                           completed_batches=len(completed), alpaca_requests_made=requests_made)
+
+        for bi in range(total_batches):
+            if BACKWARD_OOS_2018_UNIVERSE_STOP.is_set():
+                _boos18u_set_state(status="PAUSED", phase="SIP_PRESENCE_INDEX",
+                                   message="Paused safely between batches", completed_batches=len(completed),
+                                   total_batches=total_batches, alpaca_requests_made=requests_made)
+                return
+            if bi in completed:
+                continue
+            batch = symbols[bi * batch_size:(bi + 1) * batch_size]
+            bars = radar.alpaca.bars(batch, start, end, feed="sip", adjustment="raw", timeframe="1Month")
+            requests_made += 1
+            chunk = {}
+            for sym in batch:
+                rows = bars.get(sym) or []
+                months = sorted({str(r.get("t") or "")[:7] for r in rows if str(r.get("t") or "")[:7]})
+                months_2018 = [m for m in months if m.startswith("2018-")]
+                warmup = any(m == "2017-12" for m in months)
+                chunk[sym] = {
+                    "symbol": sym, "sources": provenance.get(sym, []),
+                    "observed_in_2018": bool(months_2018),
+                    "months_with_sip_2018": len(set(months_2018)),
+                    "first_sip_month_2018": min(months_2018) if months_2018 else None,
+                    "last_sip_month_2018": max(months_2018) if months_2018 else None,
+                    "warmup_dec_2017_present": warmup,
+                }
+            radar.redis.set_json(_boos18u_key(f"batch:{bi}"), chunk)
+            completed.add(bi)
+            radar.redis.set_json(_boos18u_key("completed_batches"), sorted(completed))
+            _boos18u_set_state(status="RUNNING", phase="SIP_PRESENCE_INDEX",
+                               message=f"Completed 2018 presence batch {bi+1}/{total_batches}",
+                               symbol_count=len(symbols), completed_batches=len(completed),
+                               total_batches=total_batches, alpaca_requests_made=requests_made)
+
+        records = {}
+        observed = 0
+        warmup_present = 0
+        month_hist = {str(m): 0 for m in range(1, 13)}
+        source_observed = {k: 0 for k in source_counts if k != "source_union"}
+        for bi in range(total_batches):
+            chunk = radar.redis.get_json(_boos18u_key(f"batch:{bi}"), {}) or {}
+            for sym, rec in chunk.items():
+                records[sym] = rec
+                if rec.get("observed_in_2018"):
+                    observed += 1
+                    for source in rec.get("sources") or []:
+                        if source in source_observed:
+                            source_observed[source] += 1
+                if rec.get("warmup_dec_2017_present"):
+                    warmup_present += 1
+
+        # The true 2018 listed-security denominator is intentionally not inferred from SIP presence.
+        independent_denominator_available = False
+        certified_coverage_pct = None
+        coverage_gate_pass = False
+        decision = "RECONSTRUCTION_COMPLETE_COVERAGE_UNCERTIFIED"
+
+        report = {
+            "version": VERSION, "build": BUILD,
+            "reconstruction_id": BACKWARD_OOS_2018_UNIVERSE_SPEC["reconstruction_id"],
+            "universe_spec_sha256": BACKWARD_OOS_2018_UNIVERSE_SPEC_SHA256,
+            "required_capability_probe_result_sha256": BACKWARD_OOS_2018_UNIVERSE_SPEC["required_capability_probe_result_sha256"],
+            "status": "COMPLETED", "decision": decision,
+            "source_counts": source_counts,
+            "source_union_symbols": len(symbols),
+            "symbols_observed_in_2018_sip": observed,
+            "symbols_with_dec2017_warmup_presence": warmup_present,
+            "observed_2018_by_source": source_observed,
+            "records_key": _boos18u_key("records"),
+            "coverage_certification": {
+                "required_pct_min": BACKWARD_OOS_2018_UNIVERSE_SPEC["coverage_gate_pct_min"],
+                "independent_point_in_time_denominator_available": independent_denominator_available,
+                "certified_coverage_pct": certified_coverage_pct,
+                "gate_pass": coverage_gate_pass,
+                "reason": (
+                    "No independent point-in-time 2018 security-master denominator is available in the frozen sources. "
+                    "The observable source-union was reconstructed, but SIP presence cannot honestly certify completeness of the true 2018 universe."
+                ),
+            },
+            "split_certification": {
+                "all_2018_splits_certified": False,
+                "reason": "Universe presence reconstruction does not enumerate/validate all 2018 corporate actions."
+            },
+            "scope_guard": {
+                "universe_reconstruction_complete": True, "universe_coverage_certified": False,
+                "backward_oos_opened": False, "h1_computed": False, "mfe_mae_computed": False,
+                "target_adverse_computed": False, "ranking_computed": False,
+                "candidate_selection_computed": False, "fresh_forward_oos_opened": False,
+                "2019_2026_discovery_mutated": False,
+                "h1_execution_allowed": False,
+                "next_step": "STOP_REVIEW: obtain/validate an independent point-in-time 2018 security-master denominator before H1 can be opened."
+            },
+            "alpaca_requests_made": requests_made, "stop_and_review_required": True, "completed_at": iso(),
+        }
+        report["result_sha256"] = hashlib.sha256(
+            json.dumps(report, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest()
+        radar.redis.set_json(_boos18u_key("records"), records)
+        radar.redis.set_json(_boos18u_key("report"), report)
+        _boos18u_set_state(status="COMPLETED", phase="STOP_REVIEW",
+                           message="2018 observable universe reconstructed; independent coverage denominator still required",
+                           decision=decision, source_union_symbols=len(symbols),
+                           symbols_observed_in_2018_sip=observed, coverage_certified=False,
+                           h1_execution_allowed=False, alpaca_requests_made=requests_made,
+                           result_sha256=report["result_sha256"], stop_and_review_required=True)
+    except Exception as exc:
+        logging.exception("2018 universe reconstruction/certification failed")
+        _boos18u_set_state(status="ERROR", phase="BLOCKED",
+                           message="2018 universe reconstruction failed closed",
+                           last_error=f"{type(exc).__name__}: {exc}",
+                           h1_execution_allowed=False, alpaca_requests_made=requests_made)
+    finally:
+        with BACKWARD_OOS_2018_UNIVERSE_LOCK:
+            BACKWARD_OOS_2018_UNIVERSE_THREAD = None
+
+def _boos18u_start() -> tuple[bool, str]:
+    global BACKWARD_OOS_2018_UNIVERSE_THREAD
+    if not radar.alpaca.configured:
+        return False, "Alpaca credentials are required"
+    if not radar.redis.configured:
+        return False, "Redis is required"
+    with BACKWARD_OOS_2018_UNIVERSE_LOCK:
+        if BACKWARD_OOS_2018_UNIVERSE_THREAD and BACKWARD_OOS_2018_UNIVERSE_THREAD.is_alive():
+            return False, "already_running"
+        BACKWARD_OOS_2018_UNIVERSE_THREAD = threading.Thread(
+            target=_boos18u_worker, name="ipr-2018-universe-reconstruction", daemon=True
+        )
+        BACKWARD_OOS_2018_UNIVERSE_THREAD.start()
+    return True, "started"
+
+@app.get("/research/2018-backward-oos/universe/protocol")
+def backward_oos_2018_universe_protocol():
+    return jsonify({
+        "version": VERSION, "build": BUILD, "universe_spec": BACKWARD_OOS_2018_UNIVERSE_SPEC,
+        "universe_spec_sha256": BACKWARD_OOS_2018_UNIVERSE_SPEC_SHA256,
+        "execution_started": False, "h1_computed": False, "backward_oos_opened": False,
+        "fresh_forward_oos_opened": False,
+        "note": "Protocol view performs zero Alpaca requests and exposes no 2018 candidate/outcome results."
+    })
+
+@app.route("/research/2018-backward-oos/universe/start", methods=["GET", "POST"])
+def backward_oos_2018_universe_start():
+    ok, why = _boos18u_start()
+    return jsonify({
+        "ok": ok, "message": why,
+        "status_url": "/research/2018-backward-oos/universe/status",
+        "result_url": "/research/2018-backward-oos/universe/result",
+        "h1_execution_allowed": False
+    }), (202 if ok else 409)
+
+@app.get("/research/2018-backward-oos/universe/status")
+def backward_oos_2018_universe_status():
+    persisted = radar.redis.get_json(_boos18u_key("status"), None) if radar.redis.configured else None
+    with BACKWARD_OOS_2018_UNIVERSE_LOCK:
+        out = dict(persisted or BACKWARD_OOS_2018_UNIVERSE_STATE)
+        out["worker_alive"] = bool(BACKWARD_OOS_2018_UNIVERSE_THREAD and BACKWARD_OOS_2018_UNIVERSE_THREAD.is_alive())
+    return jsonify(out)
+
+@app.get("/research/2018-backward-oos/universe/result")
+def backward_oos_2018_universe_result():
+    report = radar.redis.get_json(_boos18u_key("report"), None) if radar.redis.configured else None
+    if not report:
+        return jsonify({
+            "result_ready": False,
+            "status_url": "/research/2018-backward-oos/universe/status",
+            "h1_computed": False, "backward_oos_opened": False, "fresh_forward_oos_opened": False
+        }), 202
     return jsonify(report)
 
 if __name__ == "__main__":
