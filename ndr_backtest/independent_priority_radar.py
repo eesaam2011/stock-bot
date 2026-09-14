@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.49"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TOP1-TOP3-ENTRY-RESEARCH-EXECUTION"
+VERSION = "1.7.50"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-RESEARCH-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -2648,6 +2648,11 @@ def update_live_tracking(
         current.update({"trough_price": price, "trough_ts": market_ts or captured_at, "drawdown_pct": round(gain_pct, 5)})
     return current, True
 
+
+
+# v1.7.50 Entry Confirmation Research Pre-Freeze
+EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SPEC = {'prefreeze_id': 'IPR-ENTRY-CONFIRMATION-RESEARCH-PREFREEZE-2026-09-14-A', 'purpose': 'Freeze a causal post-t0 Entry Confirmation Research design before computing any confirmation-feature/outcome relationship. Preserve the successful ranking and study whether short post-selection information can identify cleaner entry timing without using Fresh OOS.', 'required_top1_top3_entry_research_result_sha256': '61c800211f2335ce9d8b67275c59d2b308c57ecfcde22972801cacf9d7dc549c', 'required_top1_top3_entry_research_decision': 'ENTRY_RESEARCH_ONLY', 'hypothesis_origin': 'Entry Confirmation Research is motivated by v1.7.49, which showed substantial post-t0 upside potential together with material adverse excursion. This is a post-v1.7.49 research hypothesis, not an independently validated entry rule.', 'ranking_baseline': {'name': 'TWO_COMPONENT_COMPLEMENTARY_RANKING_A', 'formula': '(z_discovery_range_pct + z_return_5m_pct) / 2', 'components': ['discovery_range_pct', 'return_5m_pct'], 'weights': [0.5, 0.5], 'standardization': 'exact v1.7.37-R1 constants; no refit', 'mutation_allowed': False}, 'selection_hypotheses': {'selections': ['top_1', 'top_3'], 'windows_minutes': [30, 60], 'note': 'All four views remain mandatory and separate. No best selection/window may be chosen by this pre-freeze.'}, 't0_definition': 'Same frozen causal selection timestamp used by v1.7.49. The t0 bar close is available at t0. Confirmation features may use only bars with timestamps <= the confirmation timestamp.', 'confirmation_offsets_minutes': [1, 2, 3, 5, 10], 'confirmation_feature_families': {'price_path': ['return_from_t0_pct', 'max_runup_from_t0_pct', 'max_drawdown_from_t0_pct', 'close_location_in_post_t0_range'], 't0_reclaim_and_hold': ['close_above_t0', 'reclaimed_t0_after_trade_below', 'consecutive_closes_above_t0'], 'volume_behavior': ['current_1m_volume_ratio_to_pre_t0_5m_median', 'post_t0_avg_volume_ratio_to_pre_t0_5m_median', 'post_t0_volume_acceleration'], 'bar_structure': ['current_bar_body_pct', 'current_bar_range_pct', 'current_bar_close_location'], 'session_vwap_context': ['close_vs_session_vwap_pct', 'vwap_reclaim_after_post_t0_trade_below'], 'rule': 'Definitions must be mechanical and causal. Missing values stay missing; no imputation. No feature may use bars after the confirmation timestamp.'}, 'descriptive_views': {'continuous_summary': ['count', 'median', 'p25', 'p75'], 'fixed_feature_bins': 'quintiles computed within research-period/window/selection/offset for descriptive shape only; no bin becomes a rule automatically', 'outcome_conditioning': 'Report future outcomes by frozen feature bins and simple frozen boolean states; no model fitting, feature weighting, threshold optimization, or winner selection.'}, 'future_outcome_measurement': {'anchor': 'strictly after each confirmation timestamp, using that timestamp bar close as the candidate entry-reference price', 'forward_horizons_minutes': [5, 10, 15, 30, 60, 120], 'mfe_thresholds_pct': [2, 5, 10, 20], 'mae_thresholds_pct': [-2, -5, -10], 'path_ordering': 'target versus adverse ordering measured after confirmation timestamp', 'same_bar_policy': 'SAME_BAR_AMBIGUOUS; never target-first', 'note': 'These are research measurements only, not target/stop recommendations.'}, 'research_period': {'start': '2019-01-01', 'end': '2026-08-31', 'already_consumed_only': True, 'hard_stop_after_end': True}, 'historical_bar_policy': {'prefreeze_alpaca_authorized': False, 'prefreeze_alpaca_requests': 0, 'future_execution': 'May authorize historical 1-minute bars only after a separate execution protocol proves the persisted data are insufficient; no Fresh OOS and no post-2026-08-31 data.'}, 'decision_policy': {'decision': 'ENTRY_CONFIRMATION_RESEARCH_PREFROZEN', 'formal_entry_rule_selected': False, 'entry_rule_validated': False, 'selection_rule_validated': False, 'profitability_computed': False, 'strategy_pass': False, 'bot_authorized': False, 'automatic_downstream_authorization': False, 'stop_and_review_required': True}, 'fresh_oos_firewall': 'Fresh OOS remains reserved for one final fully frozen Ranking + Selection + Entry + Exit + Costs system. This research cannot open it.', 'anti_posthoc_firewall': ['No changing ranking components/weights/constants.', 'No selecting Top-1 vs Top-3 or 30m vs 60m as validated from this research.', 'No choosing a confirmation offset, feature, threshold, target, stop, or horizon as validated from the same descriptive execution.', 'Any later candidate Entry Rule must explicitly disclose that it was chosen after this research and must be frozen in a separate protocol.', 'No Fresh OOS, no post-2026-08-31 data, no profitability claim, and no automatic downstream authorization.'], 'protocol_only': True}
+EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SHA256 = "f706481c55dcfb5933cbb6c730cb7b07d81f097d59366d139cf75a5a4d0acabe"
 
 class IndependentPriorityRadar:
     def __init__(self, redis_client: RedisREST | None = None, alpaca: AlpacaClient | None = None):
@@ -11687,3 +11692,20 @@ def early_feature_top1_top3_entry_research_execution_result():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
+
+
+@app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/prefreeze/protocol")
+def early_feature_entry_confirmation_research_prefreeze_protocol():
+    spec=EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SPEC
+    if not radar.redis.configured:
+        return jsonify({"version":VERSION,"build":BUILD,"gate_allowed":False,"gate_reason":"Redis unavailable","protocol":spec,"protocol_sha256":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SHA256}),503
+    prior=radar.redis.get_json(radar.early_feature_top1_top3_entry_research_key("report"),{}) or {}
+    checks=[
+        (prior.get("result_sha256")==spec["required_top1_top3_entry_research_result_sha256"],"v1.7.49 entry research result SHA mismatch"),
+        (prior.get("decision")==spec["required_top1_top3_entry_research_decision"],"v1.7.49 entry research decision mismatch"),
+        (prior.get("fresh_oos_opened") is False,"Fresh OOS was opened"),
+        (prior.get("post_2026_08_31_read") is False,"post-2026-08-31 data was read"),
+        (prior.get("entry_rule_validated") is False,"v1.7.49 unexpectedly validated an entry rule")
+    ]
+    allowed=all(ok for ok,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SHA256,"artifact_frozen":True,"actual_top1_top3_entry_research_result_sha256":prior.get("result_sha256"),"actual_top1_top3_entry_research_decision":prior.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"confirmation_results_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"selection_rule_validated":False,"entry_rule_selected":False,"entry_rule_validated":False,"profitability_computed":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
