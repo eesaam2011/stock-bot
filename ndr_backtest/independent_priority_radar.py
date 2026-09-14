@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.39"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-RANKING-EVALUATION-EXECUTION"
+VERSION = "1.7.40"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-POST-FAILURE-RANKING-DIAGNOSTIC-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1142,6 +1142,38 @@ EARLY_FEATURE_RANKING_EVALUATION_EXEC_SPEC = {
     "guardrails":{"alpaca_requests":False,"no_threshold_search":True,"no_top_k_optimization":True,"no_best_window_selection":True,"no_feature_or_weight_changes":True,"no_2025_read":True,"no_2026_read":True,"no_fresh_oos":True,"strategy_pass":False,"bot_authorized":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_RANKING_EVALUATION_EXEC_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_RANKING_EVALUATION_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC = {
+    "protocol_id":"IPR-EARLY-FEATURE-POST-FAILURE-RANKING-DIAGNOSTIC-PREFREEZE-2026-09-14-A",
+    "required_ranking_evaluation_result_sha256":"71f5cf831eeb5f912197ace8bd1856f96ce9b33e18b5110811ad89536148bd1c",
+    "required_ranking_evaluation_execution_spec_sha256":"0ef46d6545e0158e20e3bf6e4c0eb24d2da749c9a2713dd5faa23a5ed554803e",
+    "required_ranking_evaluation_decision":"DISCOVERY_RANKING_NO_GO",
+    "diagnostic_period":{"start":"2019-01-01","end":"2024-12-31"},
+    "windows_minutes":[30,60],
+    "purpose":"Describe why the frozen equal-weight ranking stopped near its pre-frozen gate without rescuing, optimizing, or changing the failed v1.7.39 result.",
+    "status_of_v1_7_39":"FINAL_NO_GO_IMMUTABLE",
+    "data_sources":"Persisted v1.7.37-R1 score/component records plus persisted reconstruction labels/metadata already used inside Discovery. No Alpaca and no new market-data fetch.",
+    "diagnostics":{
+        "score_distribution":["class count","equal-symbol weighted mean","median","standard deviation","selected fixed quantiles: 0.01,0.05,0.10,0.25,0.50,0.75,0.90,0.95,0.99"],
+        "fixed_deciles":"Ten fixed score-rank bins per window, boundaries defined by pooled score quantiles without outcome optimization; report Positive/HN counts and equal-symbol weighted class composition descriptively.",
+        "component_redundancy":["pairwise Pearson correlation among the three frozen standardized components","pairwise Spearman rank correlation among the three frozen standardized components"],
+        "component_descriptive_discrimination":"For each frozen standardized component separately, report equal-symbol weighted Positive-vs-HN ROC AUC by window. This is descriptive only and cannot authorize dropping, reweighting, or selecting a component.",
+        "leave_one_component_out_sensitivity":"For each of the three components, report the descriptive AUC of the arithmetic mean of the other two using the already-frozen z values. This is sensitivity description only, not a candidate ranking and not an optimization search.",
+        "annual_shape":"Report the frozen full-ranking AUC by year and window as descriptive context only.",
+        "coverage":"Report scoreable/eligible counts and rates by class/window and unavailable counts where persisted."
+    },
+    "interpretation_firewalls":{
+        "component_observations":"Any observation that a component appears redundant, stronger, weaker, or performance-diluting is descriptive only. It cannot change features or weights. Any such change requires a separately written and frozen hypothesis before any additional performance number is read for that hypothesis.",
+        "deciles_percentiles":"Decile/percentile results describe distribution shape only. They may not be used to select or justify a Top-K, percentile cutoff, score threshold, candidate count, or trading trigger. Any later cutoff concept requires a separate pre-frozen hypothesis and independent test design.",
+        "leave_one_out":"Leave-one-out results cannot be treated as a winning model, cannot select a subset, and cannot authorize validation. A subset hypothesis, if later proposed, must be frozen separately before testing.",
+        "no_automatic_hypothesis":"This diagnostic may generate observations, not a selected successor model. No diagnostic output automatically becomes the next ranking design."
+    },
+    "decision_rule":"NONE. DESCRIPTIVE_DIAGNOSTIC_ONLY. No GO/NO_GO/PASS/FAIL and no automatic downstream authorization.",
+    "forbidden":["changing the v1.7.39 NO_GO","changing the 0.55 gate","threshold search","top-k optimization","best-window selection","dropping 30m or 60m","feature deletion","feature addition","feature reselection","weight search or reweighting","selecting a leave-one-out variant","outcome-informed restandardization","2025 ranking performance read","2026 ranking performance read","Fresh OOS read","entry/exit/stop/target optimization","profitability claims","automatic successor-model selection"],
+    "guardrails":{"alpaca_requests":False,"diagnostic_execution_started":False,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -10094,6 +10126,24 @@ def research_feature_discovery_stat_result():
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/statistical-execution/status"}),202
     return jsonify(x)
 
+
+@app.get("/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic-prefreeze/protocol")
+def research_post_failure_ranking_diagnostic_prefreeze_protocol():
+    report=radar.redis.get_json(radar.early_feature_ranking_evaluation_key("report"),{}) if radar.redis.configured else {}
+    actual=report.get("result_sha256")
+    allowed=(
+        report.get("status")=="COMPLETED"
+        and report.get("decision")==EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC["required_ranking_evaluation_decision"]
+        and actual==EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC["required_ranking_evaluation_result_sha256"]
+        and report.get("execution_spec_sha256")==EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC["required_ranking_evaluation_execution_spec_sha256"]
+        and report.get("ranking_validation_2025_opened") is False
+        and report.get("ranking_review_2026_opened") is False
+        and report.get("fresh_oos_opened") is False
+        and report.get("ranking_threshold_defined") is False
+        and report.get("top_k_optimized") is False
+    )
+    reason="allowed" if allowed else "v1.7.39 result provenance/guardrail mismatch"
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC,"protocol_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SHA256,"required_ranking_evaluation_result_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC["required_ranking_evaluation_result_sha256"],"actual_ranking_evaluation_result_sha256":actual,"required_ranking_evaluation_decision":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC["required_ranking_evaluation_decision"],"actual_ranking_evaluation_decision":report.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"diagnostic_execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
 
 @app.get("/research/early-causal-entry/feature-level-discovery/ranking-evaluation-prefreeze/protocol")
 def research_feature_ranking_evaluation_prefreeze_protocol():
