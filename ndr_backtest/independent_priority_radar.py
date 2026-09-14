@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.34"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-FEATURE-LEVEL-2025-LOCKED-VALIDATION"
+VERSION = "1.7.35"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-FEATURE-LEVEL-2026-REGIME-DATA-SHIFT-REVIEW"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1017,6 +1017,28 @@ EARLY_FEATURE_2025_VALIDATION_SPEC = {
     "guardrails":{"open_2025_only":True,"no_2026_read":True,"no_fresh_oos":True,"no_reserve_features":True,"no_invalid_features":True,"no_reselection":True,"no_threshold_search":True,"no_interaction_search":True,"no_model_or_bot_change":True,"strategy_pass":False,"bot_authorized":False}
 }
 EARLY_FEATURE_2025_VALIDATION_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_2025_VALIDATION_SPEC,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+
+
+EARLY_FEATURE_2026_REGIME_REVIEW_SPEC = {
+    "execution_id":"IPR-EARLY-FEATURE-2026-REGIME-DATA-SHIFT-REVIEW-2026-09-14-A",
+    "required_2025_validation_spec_sha256":"7f6c728250153fa710961542e9d280f9011ef7d6ffde3cca762e3ccc3264a2e1",
+    "required_2025_validation_result_sha256":"8d314542cedff0a0897a6e45c10bbf3b2524d6efd1f8322434c360a66b4af2f3",
+    "required_discovery_result_sha256":"1d961c83921ce451dc6100e40cb5780596cc173f44d0d0eab7f457ada49f57b0",
+    "required_feature_definition_sha256":"f615c7181c78da91e89c6ac7fa8608958043a4e029c52c76954d39ceaaee6b71",
+    "review_period":{"start":"2026-01-01","end":"2026-08-31","hard_stop_after":"2026-08-31"},
+    "windows_minutes":[30,60],
+    "promoted_features":[
+        {"feature":"discovery_range_pct","direction":"positive_gt_hard_negative"},
+        {"feature":"log_discovery_volume","direction":"positive_gt_hard_negative"},
+        {"feature":"return_5m_pct","direction":"positive_gt_hard_negative"}
+    ],
+    "purpose":"Descriptive Regime/Data-Shift review only. Measure 2026 Jan-Aug feature effect/direction/support/coverage using the exact frozen feature definitions and compare with frozen Discovery and 2025 validation. This review has no GO/NO-GO or automatic downstream authorization.",
+    "reconstruction":{"source":"Alpaca historical raw 1Min SIP plus BOATS overnight when historically available","causal_cutoff":"Only bars at or before checkpoint eval_ts; last feature bar must equal checkpoint eval_ts","no_imputation":True,"logical_request_budget":1000,"batch_size":200},
+    "statistics":{"primary_effect":"Equal-symbol weighted standardized mean difference of per-symbol feature means, Positive minus Hard-Negative, separately per promoted Feature x Window.","frozen_direction_reference":"2019-2024 Discovery direction; no direction flipping.","report_effect":True,"report_direction":True,"report_support":True,"report_coverage":True,"report_delta_vs_2025":True,"report_discovery_and_2025_baselines":True,"p_values_or_fdr_required":False,"rounding_for_decisions":False},
+    "decision_rule":"NONE. No GO/NO-GO, PASS/FAIL, feature dropping, reselection, rescue, threshold change, or automatic Fresh OOS opening is permitted from this review. Any later action requires a separate frozen protocol after STOP REVIEW.",
+    "guardrails":{"open_2026_jan_aug_only":True,"no_session_after_2026_08_31":True,"no_fresh_oos":True,"no_post_2026_08_31_read":True,"no_reserve_features":True,"no_invalid_features":True,"no_reselection":True,"no_threshold_search":True,"no_interaction_search":True,"no_model_or_bot_change":True,"strategy_pass":False,"bot_authorized":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_2026_REGIME_REVIEW_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_2026_REGIME_REVIEW_SPEC,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -2417,6 +2439,8 @@ class IndependentPriorityRadar:
         self.early_feature_discovery_stat_state={"status":"IDLE","phase":"NOT_STARTED","message":"Feature-Level Discovery Statistical Execution not started","execution_id":EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
         self.early_feature_2025_validation_lock=threading.RLock(); self.early_feature_2025_validation_thread=None
         self.early_feature_2025_validation_state={"status":"IDLE","phase":"NOT_STARTED","message":"2025 Locked Validation not started","execution_id":EARLY_FEATURE_2025_VALIDATION_SPEC["execution_id"],"alpaca_requests_made":0,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
+        self.early_feature_2026_regime_review_lock=threading.RLock(); self.early_feature_2026_regime_review_thread=None
+        self.early_feature_2026_regime_review_state={"status":"IDLE","phase":"NOT_STARTED","message":"2026 Regime/Data-Shift Review not started","execution_id":EARLY_FEATURE_2026_REGIME_REVIEW_SPEC["execution_id"],"alpaca_requests_made":0,"validation_2025_opened":True,"year_2026_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -5106,6 +5130,93 @@ class IndependentPriorityRadar:
         with self.early_feature_2025_validation_lock:
             if self.early_feature_2025_validation_thread and self.early_feature_2025_validation_thread.is_alive():return False,"already_running"
             self.early_feature_2025_validation_thread=threading.Thread(target=self.early_feature_2025_validation_loop,name="early-feature-2025-validation",daemon=True);self.early_feature_2025_validation_thread.start()
+        return True,"started"
+
+    def early_feature_2026_regime_review_key(self, suffix: str) -> str:
+        return self.key(f"early_feature_2026_regime_review:v1:{suffix}")
+
+    def _set_early_feature_2026_regime_review_state(self, **updates: Any) -> None:
+        with self.early_feature_2026_regime_review_lock:
+            self.early_feature_2026_regime_review_state.update(updates); self.early_feature_2026_regime_review_state["updated_at"]=iso(); snap=dict(self.early_feature_2026_regime_review_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_2026_regime_review_key("status"),snap)
+
+    def _early_feature_2026_regime_review_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        spec=EARLY_FEATURE_2026_REGIME_REVIEW_SPEC
+        if EARLY_FEATURE_2025_VALIDATION_SPEC_SHA256!=spec["required_2025_validation_spec_sha256"]:return False,"2025 validation spec SHA mismatch"
+        if EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256!=spec["required_feature_definition_sha256"]:return False,"Feature definition SHA mismatch"
+        vr=self.redis.get_json(self.early_feature_2025_validation_key("report"),None) or {}
+        if vr.get("status")!="COMPLETED" or vr.get("decision")!="VALIDATION_PASS":return False,"Completed 2025 VALIDATION_PASS required"
+        if vr.get("result_sha256")!=spec["required_2025_validation_result_sha256"]:return False,"2025 validation result SHA mismatch"
+        if vr.get("required_discovery_result_sha256")!=spec["required_discovery_result_sha256"]:return False,"Discovery provenance mismatch"
+        if vr.get("year_2026_opened") or vr.get("fresh_oos_opened"):return False,"2026/Fresh OOS was previously opened by 2025 validation"
+        if vr.get("promoted_features_frozen")!=spec["promoted_features"]:return False,"Promoted feature set/direction mismatch"
+        return True,"allowed"
+
+    def early_feature_2026_regime_review_loop(self):
+        try:
+            ok,why=self._early_feature_2026_regime_review_gate()
+            if not ok:raise RuntimeError(why)
+            spec=EARLY_FEATURE_2026_REGIME_REVIEW_SPEC;wins=set(spec["windows_minutes"]);features=[x["feature"] for x in spec["promoted_features"]];directions={x["feature"]:x["direction"] for x in spec["promoted_features"]};budget=int(spec["reconstruction"]["logical_request_budget"])
+            all_sessions=sorted(str(x) for x in (self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []))
+            sessions=[x for x in all_sessions if "2026-01-01"<=x<="2026-08-31"]
+            if any(x>"2026-08-31" for x in sessions):raise RuntimeError("hard stop violation")
+            done=set(self.redis.get_json(self.early_feature_2026_regime_review_key("completed_sessions"),[]) or []);calls=int(self.redis.get_json(self.early_feature_2026_regime_review_key("alpaca_logical_requests"),0) or 0)
+            self._set_early_feature_2026_regime_review_state(status="RUNNING",phase="REGIME_2026_RECONSTRUCTION",message=f"2026 Jan-Aug regime review {len(done)}/{len(sessions)} sessions",sessions_completed=len(done),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,validation_2025_opened=True,year_2026_opened=True,fresh_oos_opened=False)
+            for sess in sessions:
+                if sess in done:continue
+                if sess>"2026-08-31":raise RuntimeError("post-2026-08-31 session blocked")
+                src=[x for x in (self.redis.get_json(self.early_causal_entry_exec_key(f"observations:{sess}"),[]) or []) if int(x.get("checkpoint_minutes") or -1) in wins and x.get("class") in {"positive","hard_negative"} and x.get("symbol") and x.get("eval_ts")]
+                ev=[]
+                for x in src:
+                    try:
+                        dt=datetime.fromisoformat(str(x["eval_ts"]).replace("Z","+00:00"))
+                        if dt.date()>date(2026,8,31):raise RuntimeError("post-2026-08-31 eval_ts blocked")
+                        ev.append((x,dt))
+                    except RuntimeError:raise
+                    except Exception:pass
+                if not ev:self.redis.set_json(self.early_feature_2026_regime_review_key(f"records:{sess}"),[]);done.add(sess);self.redis.set_json(self.early_feature_2026_regime_review_key("completed_sessions"),sorted(done));continue
+                syms=sorted({str(x[0]["symbol"]).upper() for x in ev});rows,used=self._efr_fetch_1m(syms,date.fromisoformat(sess),min(dt for _,dt in ev)-timedelta(minutes=20),max(dt for _,dt in ev)+timedelta(minutes=1),budget-calls);calls+=used;self.redis.set_json(self.early_feature_2026_regime_review_key("alpaca_logical_requests"),calls);records=[]
+                for x,dt in ev:
+                    sym=str(x["symbol"]).upper();allfeat,diag=self._efr_features_from_1m(rows.get(sym,[]),dt);feat={f:allfeat[f] for f in features} if allfeat is not None and all(f in allfeat for f in features) else None;records.append({"session":sess,"year":2026,"symbol":sym,"class":x["class"],"checkpoint_minutes":int(x["checkpoint_minutes"]),"eval_ts":x["eval_ts"],"features":feat,"feature_available":feat is not None,"diagnostic":diag,"feature_definition_sha256":EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256})
+                self.redis.set_json(self.early_feature_2026_regime_review_key(f"records:{sess}"),records);done.add(sess);self.redis.set_json(self.early_feature_2026_regime_review_key("completed_sessions"),sorted(done))
+                if len(done)%10==0 or len(done)==len(sessions):self._set_early_feature_2026_regime_review_state(status="RUNNING",phase="REGIME_2026_RECONSTRUCTION",message=f"2026 Jan-Aug regime reconstruction {len(done)}/{len(sessions)}",current_session=sess,sessions_completed=len(done),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,validation_2025_opened=True,year_2026_opened=True,fresh_oos_opened=False)
+            self._set_early_feature_2026_regime_review_state(status="RUNNING",phase="REGIME_2026_STATISTICS",message="Computing descriptive 2026 regime/data-shift statistics",sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=calls,validation_2025_opened=True,year_2026_opened=True,fresh_oos_opened=False)
+            symvals={};support={};coverage={};reasons={}
+            for sess in sessions:
+                for r in self.redis.get_json(self.early_feature_2026_regime_review_key(f"records:{sess}"),[]) or []:
+                    w=int(r.get("checkpoint_minutes") or -1);cl=str(r.get("class") or "");sym=str(r.get("symbol") or "").upper();feats=r.get("features") if r.get("feature_available") else None;reason=str((r.get("diagnostic") or {}).get("reason") or "unknown")
+                    if w not in wins or cl not in {"positive","hard_negative"} or not sym:continue
+                    for f in features:
+                        ck=(w,cl,f);cv=coverage.setdefault(ck,{"eligible":0,"available":0});cv["eligible"]+=1
+                        if feats is not None and f in feats and math.isfinite(float(feats[f])):
+                            cv["available"]+=1;support.setdefault((w,cl,f),{"events":0,"symbols":set()});support[(w,cl,f)]["events"]+=1;support[(w,cl,f)]["symbols"].add(sym);symvals.setdefault((w,cl,f),{}).setdefault(sym,[]).append(float(feats[f]))
+                        else:reasons[(w,cl,f,reason)]=reasons.get((w,cl,f,reason),0)+1
+            def means_for(key):return [mean(v) for v in symvals.get(key,{}).values() if v]
+            vr=self.redis.get_json(self.early_feature_2025_validation_key("report"),{}) or {};dr=self.redis.get_json(self.early_feature_discovery_stat_key("report"),{}) or {}
+            vbase={(x.get("feature"),int(x.get("window_minutes") or -1)):x for x in (vr.get("validation_results") or [])}
+            drows=dr.get("feature_results") or dr.get("results") or []
+            dbase={(x.get("feature"),int(x.get("window_minutes") or -1)):x for x in drows if isinstance(x,dict)}
+            results=[]
+            for f in features:
+                for w in sorted(wins):
+                    a=means_for((w,"positive",f));b=means_for((w,"hard_negative",f));eff=self._efd_effect(a,b);direction="positive_gt_hard_negative" if (eff or 0)>0 else ("positive_lt_hard_negative" if (eff or 0)<0 else "tie");ps=support.get((w,"positive",f),{"events":0,"symbols":set()});hs=support.get((w,"hard_negative",f),{"events":0,"symbols":set()});su={"positive_events":ps["events"],"hard_negative_events":hs["events"],"positive_symbols":len(ps["symbols"]),"hard_negative_symbols":len(hs["symbols"])};vb=vbase.get((f,w),{});db=dbase.get((f,w),{});ve=vb.get("effect");de=db.get("effect")
+                    results.append({"feature":f,"window_minutes":w,"frozen_direction":directions[f],"observed_direction_2026":direction,"direction_vs_frozen":"same" if direction==directions[f] else ("tie" if direction=="tie" else "reversed"),"effect_2026":eff,"support_2026":su,"effect_2025":ve,"effect_delta_2026_minus_2025":(eff-ve) if eff is not None and isinstance(ve,(int,float)) else None,"discovery_2019_2024_effect":de})
+            covout=[{"window_minutes":w,"class":cl,"feature":f,"eligible":v["eligible"],"available":v["available"],"unavailable":v["eligible"]-v["available"],"availability_rate":v["available"]/v["eligible"] if v["eligible"] else None} for (w,cl,f),v in sorted(coverage.items())];reasonout=[{"window_minutes":w,"class":cl,"feature":f,"reason":reason,"count":n} for (w,cl,f,reason),n in sorted(reasons.items())]
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":EARLY_FEATURE_2026_REGIME_REVIEW_SPEC_SHA256,"required_2025_validation_result_sha256":spec["required_2025_validation_result_sha256"],"status":"COMPLETED","phase":"FEATURE_LEVEL_2026_REGIME_DATA_SHIFT_STOP_REVIEW","review_period":spec["review_period"],"sessions":len(sessions),"alpaca_requests_made":calls,"alpaca_request_budget":budget,"promoted_features_frozen":spec["promoted_features"],"coverage_audit":{"cells":covout,"unavailability_reasons":reasonout,"note":"Descriptive only; no imputation and no automatic decision."},"regime_review_results":results,"decision":"DESCRIPTIVE_REVIEW_ONLY","go_no_go":None,"automatic_downstream_authorization":False,"validation_2025_opened":True,"year_2026_opened":True,"fresh_oos_opened":False,"post_2026_08_31_read":False,"strategy_pass":False,"bot_authorized":False,"stop_and_review_required":True,"completed_at":iso()};canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_2026_regime_review_key("report"),report);self._set_early_feature_2026_regime_review_state(status="COMPLETED",phase="FEATURE_LEVEL_2026_REGIME_DATA_SHIFT_STOP_REVIEW",message="2026 Jan-Aug descriptive regime/data-shift review completed; STOP REVIEW",decision="DESCRIPTIVE_REVIEW_ONLY",sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,stop_and_review_required=True,validation_2025_opened=True,year_2026_opened=True,fresh_oos_opened=False,post_2026_08_31_read=False)
+        except Exception as e:
+            logging.exception("2026 Regime/Data-Shift Review failed");self._set_early_feature_2026_regime_review_state(status="ERROR",phase="FEATURE_LEVEL_2026_REGIME_DATA_SHIFT_BLOCKED",message=f"{type(e).__name__}: {e}",validation_2025_opened=True,year_2026_opened=True,fresh_oos_opened=False)
+        finally:
+            with self.early_feature_2026_regime_review_lock:self.early_feature_2026_regime_review_thread=None
+
+    def start_early_feature_2026_regime_review(self):
+        ok,why=self._early_feature_2026_regime_review_gate()
+        if not ok:return False,why
+        old=self.redis.get_json(self.early_feature_2026_regime_review_key("report"),None)
+        if old and old.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_2026_regime_review_lock:
+            if self.early_feature_2026_regime_review_thread and self.early_feature_2026_regime_review_thread.is_alive():return False,"already_running"
+            self.early_feature_2026_regime_review_thread=threading.Thread(target=self.early_feature_2026_regime_review_loop,name="early-feature-2026-regime-review",daemon=True);self.early_feature_2026_regime_review_thread.start()
         return True,"started"
 
     def early_feature_discovery_stat_key(self, suffix: str) -> str:
@@ -9691,6 +9802,28 @@ def research_feature_2025_validation_status():
 def research_feature_2025_validation_result():
     x=radar.redis.get_json(radar.early_feature_2025_validation_key("report"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/validation-2025/status"}),202
+    return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/regime-review-2026/protocol")
+def research_feature_2026_regime_review_protocol():
+    allowed,reason=radar._early_feature_2026_regime_review_gate();vr=radar.redis.get_json(radar.early_feature_2025_validation_key("report"),{}) if radar.redis.configured else {};calls=int(radar.redis.get_json(radar.early_feature_2026_regime_review_key("alpaca_logical_requests"),0) or 0) if radar.redis.configured else 0
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_2026_REGIME_REVIEW_SPEC,"execution_spec_sha256":EARLY_FEATURE_2026_REGIME_REVIEW_SPEC_SHA256,"required_2025_validation_result_sha256":EARLY_FEATURE_2026_REGIME_REVIEW_SPEC["required_2025_validation_result_sha256"],"actual_2025_validation_result_sha256":vr.get("result_sha256"),"actual_2025_decision":vr.get("decision"),"actual_promoted_features":vr.get("promoted_features_frozen"),"gate_allowed":allowed,"gate_reason":reason,"alpaca_authorized":bool(allowed),"alpaca_requests_made":calls,"alpaca_request_budget":EARLY_FEATURE_2026_REGIME_REVIEW_SPEC["reconstruction"]["logical_request_budget"],"review_results_read_by_protocol":False,"year_2026_opened":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"go_no_go_rule":None,"automatic_downstream_authorization":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/regime-review-2026/start",methods=["GET","POST"])
+def research_feature_2026_regime_review_start():
+    ok,why=radar.start_early_feature_2026_regime_review()
+    return jsonify({"ok":ok,"status":"started" if ok else why,"status_url":"/research/early-causal-entry/feature-level-discovery/regime-review-2026/status","result_url":"/research/early-causal-entry/feature-level-discovery/regime-review-2026/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/regime-review-2026/status")
+def research_feature_2026_regime_review_status():
+    x=radar.redis.get_json(radar.early_feature_2026_regime_review_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_2026_regime_review_lock:out=dict(x or radar.early_feature_2026_regime_review_state);out["worker_alive"]=bool(radar.early_feature_2026_regime_review_thread and radar.early_feature_2026_regime_review_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/regime-review-2026/result")
+def research_feature_2026_regime_review_result():
+    x=radar.redis.get_json(radar.early_feature_2026_regime_review_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/regime-review-2026/status"}),202
     return jsonify(x)
 
 @app.get("/research/early-causal-entry/feature-level-discovery/reconstruction/execution/protocol")
