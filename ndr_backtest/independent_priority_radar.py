@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.42-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-RANKING-HYPOTHESIS-PREFREEZE-R1-RUNTIME-HOTFIX"
+VERSION = "1.7.43"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1224,6 +1224,28 @@ EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC = {
     "guardrails":{"alpaca_requests":False,"hypothesis_frozen":True,"validation_execution_started":False,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC = {
+    "execution_id":"IPR-EARLY-FEATURE-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION-2026-09-14-A",
+    "required_hypothesis_prefreeze_sha256":"59154c2b573a991a31928cc33ee8dfe1d45ab7e26a716b8eda87041e1db0ee74",
+    "required_post_failure_diagnostic_result_sha256":"2c55b7f1714c5c1750c4f032ae457c8cbdf2343182d1954cc6bdf2f9144fe866",
+    "required_2025_feature_validation_result_sha256":"8d314542cedff0a0897a6e45c10bbf3b2524d6efd1f8322434c360a66b4af2f3",
+    "required_ranking_construction_result_sha256":"00cb344337ca25c7e644adebf3aae73b8bd8c81bc986e10240ac2650295ce300",
+    "validation_period":{"start":"2025-01-01","end":"2025-12-31"},
+    "candidate_name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A",
+    "formula":"rank_score_2c = (z_discovery_range_pct + z_return_5m_pct) / 2",
+    "components":["discovery_range_pct","return_5m_pct"],
+    "weights":{"discovery_range_pct":0.5,"return_5m_pct":0.5},
+    "windows_minutes":[30,60],
+    "data_source":"Reuse the already-persisted causal 2025 feature-validation records from v1.7.34; no new Alpaca request. Reuse v1.7.37-R1 2019-2024 Discovery-only standardization constants without refit.",
+    "primary_metric":"equal_symbol_weighted_roc_auc",
+    "gate":{"minimum_auc_each_window":0.55,"minimum_auc_strictly_above_each_window":0.50,"support_minima_each_window":{"positive_events":500,"hard_negative_events":500,"positive_symbols":100,"hard_negative_symbols":100},"overall_rule":"VALIDATION_PASS iff BOTH 30m and 60m have AUC >= 0.55, AUC > 0.50, and all support minima. No rounding. Otherwise VALIDATION_FAIL and STOP REVIEW."},
+    "missingness":"Score only when both frozen raw components are available and finite. No imputation, no partial renormalization.",
+    "forbidden":["2019-2024 retest","alternative subset search","feature change","weight change","threshold search","top-k optimization","best-window selection","dropping 30m or 60m","2026 ranking performance read","Fresh OOS read","trading optimization","profitability claims","automatic downstream authorization"],
+    "guardrails":{"alpaca_requests":False,"ranking_threshold_defined":False,"top_k_optimized":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -2632,6 +2654,8 @@ class IndependentPriorityRadar:
         self.early_feature_ranking_evaluation_state={"status":"IDLE","phase":"NOT_STARTED","message":"Ranking Evaluation not started","execution_id":EARLY_FEATURE_RANKING_EVALUATION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
         self.early_feature_post_failure_ranking_diagnostic_lock=threading.RLock(); self.early_feature_post_failure_ranking_diagnostic_thread=None
         self.early_feature_post_failure_ranking_diagnostic_state={"status":"IDLE","phase":"NOT_STARTED","message":"Post-Failure Ranking Diagnostic not started","diagnostic_id":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["diagnostic_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
+        self.early_feature_two_component_2025_validation_lock=threading.RLock(); self.early_feature_two_component_2025_validation_thread=None
+        self.early_feature_two_component_2025_validation_state={"status":"IDLE","phase":"NOT_STARTED","message":"Two-component 2025 locked ranking validation not started","execution_id":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -9200,6 +9224,77 @@ class IndependentPriorityRadar:
         return True,"started"
 
 
+    def early_feature_two_component_2025_validation_key(self,suffix: str)->str:
+        return self.key(f"early_feature_two_component_2025_validation:v1:{suffix}")
+
+    def _set_early_feature_two_component_2025_validation_state(self,**updates: Any)->None:
+        with self.early_feature_two_component_2025_validation_lock:
+            self.early_feature_two_component_2025_validation_state.update(updates); self.early_feature_two_component_2025_validation_state["updated_at"]=iso(); snap=dict(self.early_feature_two_component_2025_validation_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_two_component_2025_validation_key("status"),snap)
+
+    def _early_feature_two_component_2025_validation_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        spec=EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC
+        if EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256!=spec["required_hypothesis_prefreeze_sha256"]:return False,"v1.7.42 hypothesis pre-freeze SHA mismatch"
+        diag=self.redis.get_json(self.early_feature_post_failure_ranking_diagnostic_key("report"),{}) or {}
+        if diag.get("status")!="COMPLETED" or diag.get("result_sha256")!=spec["required_post_failure_diagnostic_result_sha256"]:return False,"v1.7.41 diagnostic provenance mismatch"
+        if diag.get("v1_7_39_decision_immutable")!="DISCOVERY_RANKING_NO_GO":return False,"v1.7.39 immutable decision mismatch"
+        vr=self.redis.get_json(self.early_feature_2025_validation_key("report"),{}) or {}
+        if vr.get("status")!="COMPLETED" or vr.get("result_sha256")!=spec["required_2025_feature_validation_result_sha256"]:return False,"Persisted causal 2025 feature records provenance mismatch"
+        if vr.get("fresh_oos_opened") or vr.get("year_2026_opened"):return False,"2025 feature source opened forbidden later data"
+        rr=self.redis.get_json(self.early_feature_ranking_construction_key("report"),{}) or {}
+        if rr.get("status")!="COMPLETED" or rr.get("result_sha256")!=spec["required_ranking_construction_result_sha256"]:return False,"Frozen ranking constants provenance mismatch"
+        if rr.get("ranking_performance_computed") is not False or rr.get("labels_used_for_reference_fit") is not False:return False,"Ranking reference provenance contaminated"
+        return True,"allowed"
+
+    def early_feature_two_component_2025_validation_loop(self):
+        try:
+            ok,why=self._early_feature_two_component_2025_validation_gate()
+            if not ok:raise RuntimeError(why)
+            spec=EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC; wins=set(spec["windows_minutes"]); feats=list(spec["components"])
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.early_feature_2025_validation_key("completed_sessions"),[]) or []) if str(x).startswith("2025-"))
+            rr=self.redis.get_json(self.early_feature_ranking_construction_key("report"),{}) or {}; constants=rr.get("standardization_constants") or self.redis.get_json(self.early_feature_ranking_construction_key("constants"),{}) or {}
+            for f in feats:
+                for w in wins:
+                    c=constants.get(f"{f}@{w}") or {}
+                    if not isinstance(c.get("mean"),(int,float)) or not isinstance(c.get("population_sd"),(int,float)) or float(c["population_sd"])<=0:raise RuntimeError(f"Missing frozen standardization constant {f}@{w}")
+            self._set_early_feature_two_component_2025_validation_state(status="RUNNING",phase="TWO_COMPONENT_2025_LOCKED_VALIDATION",message=f"2025 locked ranking validation 0/{len(sessions)} sessions",sessions_completed=0,total_sessions=len(sessions),alpaca_requests_made=0,ranking_validation_2025_opened=True,ranking_review_2026_opened=False,fresh_oos_opened=False)
+            rows={w:[] for w in wins}; eligible={(w,c):0 for w in wins for c in ("positive","hard_negative")}; scoreable={(w,c):0 for w in wins for c in ("positive","hard_negative")}
+            for idx,sess in enumerate(sessions,1):
+                for r in self.redis.get_json(self.early_feature_2025_validation_key(f"records:{sess}"),[]) or []:
+                    w=int(r.get("checkpoint_minutes") or -1); cl=str(r.get("class") or ""); sym=str(r.get("symbol") or "").upper(); fd=r.get("features")
+                    if w not in wins or cl not in {"positive","hard_negative"} or not sym:continue
+                    eligible[(w,cl)]+=1
+                    if isinstance(fd,dict) and all(isinstance(fd.get(f),(int,float)) and math.isfinite(float(fd[f])) for f in feats):
+                        zs=[(float(fd[f])-float(constants[f"{f}@{w}"]["mean"]))/float(constants[f"{f}@{w}"]["population_sd"]) for f in feats]; score=sum(zs)/2.0
+                        if math.isfinite(score):rows[w].append((score,cl,sym));scoreable[(w,cl)]+=1
+                if idx%25==0 or idx==len(sessions):self._set_early_feature_two_component_2025_validation_state(status="RUNNING",phase="TWO_COMPONENT_2025_LOCKED_VALIDATION",message=f"2025 locked ranking validation {idx}/{len(sessions)} sessions",sessions_completed=idx,total_sessions=len(sessions),alpaca_requests_made=0,ranking_validation_2025_opened=True,ranking_review_2026_opened=False,fresh_oos_opened=False)
+            results=[]; gate=spec["gate"]; mins=gate["support_minima_each_window"]
+            for w in sorted(wins):
+                auc=self._equal_symbol_weighted_auc(rows[w]); pe=scoreable[(w,"positive")]; he=scoreable[(w,"hard_negative")]; ps=len({sym for _,cl,sym in rows[w] if cl=="positive"}); hs=len({sym for _,cl,sym in rows[w] if cl=="hard_negative"}); support={"positive_events":pe,"hard_negative_events":he,"positive_symbols":ps,"hard_negative_symbols":hs}
+                support_pass=pe>=mins["positive_events"] and he>=mins["hard_negative_events"] and ps>=mins["positive_symbols"] and hs>=mins["hard_negative_symbols"]
+                passed=bool(auc is not None and auc>=gate["minimum_auc_each_window"] and auc>gate["minimum_auc_strictly_above_each_window"] and support_pass)
+                coverage={cl:{"eligible":eligible[(w,cl)],"scoreable":scoreable[(w,cl)],"unavailable":eligible[(w,cl)]-scoreable[(w,cl)],"rate":scoreable[(w,cl)]/eligible[(w,cl)] if eligible[(w,cl)] else None} for cl in ("positive","hard_negative")}
+                results.append({"window_minutes":w,"equal_symbol_weighted_roc_auc":auc,"minimum_auc_required":gate["minimum_auc_each_window"],"support":support,"support_pass":support_pass,"coverage":coverage,"passes_2025_gate":passed})
+            decision="VALIDATION_PASS" if len(results)==2 and all(x["passes_2025_gate"] for x in results) else "VALIDATION_FAIL"
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC_SHA256,"required_hypothesis_prefreeze_sha256":spec["required_hypothesis_prefreeze_sha256"],"required_post_failure_diagnostic_result_sha256":spec["required_post_failure_diagnostic_result_sha256"],"required_2025_feature_validation_result_sha256":spec["required_2025_feature_validation_result_sha256"],"required_ranking_construction_result_sha256":spec["required_ranking_construction_result_sha256"],"status":"COMPLETED","phase":"TWO_COMPONENT_2025_LOCKED_VALIDATION_STOP_REVIEW","candidate_name":spec["candidate_name"],"formula":spec["formula"],"validation_year":2025,"sessions":len(sessions),"results":results,"decision":decision,"alpaca_requests_made":0,"ranking_validation_2025_opened":True,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_two_component_2025_validation_key("report"),report)
+            self._set_early_feature_two_component_2025_validation_state(status="COMPLETED",phase="TWO_COMPONENT_2025_LOCKED_VALIDATION_STOP_REVIEW",message=f"2025 {decision}; STOP REVIEW",decision=decision,sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=0,ranking_validation_2025_opened=True,ranking_review_2026_opened=False,fresh_oos_opened=False,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Two-component 2025 locked validation failed");self._set_early_feature_two_component_2025_validation_state(status="ERROR",phase="TWO_COMPONENT_2025_LOCKED_VALIDATION_BLOCKED",message=f"{type(e).__name__}: {e}",alpaca_requests_made=0,ranking_validation_2025_opened=True,ranking_review_2026_opened=False,fresh_oos_opened=False)
+        finally:
+            with self.early_feature_two_component_2025_validation_lock:self.early_feature_two_component_2025_validation_thread=None
+
+    def start_early_feature_two_component_2025_validation(self):
+        ok,why=self._early_feature_two_component_2025_validation_gate()
+        if not ok:return False,why
+        existing=self.redis.get_json(self.early_feature_two_component_2025_validation_key("report"),None) if self.redis.configured else None
+        if existing and existing.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_two_component_2025_validation_lock:
+            if self.early_feature_two_component_2025_validation_thread and self.early_feature_two_component_2025_validation_thread.is_alive():return False,"already_running"
+            self.early_feature_two_component_2025_validation_thread=threading.Thread(target=self.early_feature_two_component_2025_validation_loop,name="two-component-2025-validation",daemon=True);self.early_feature_two_component_2025_validation_thread.start()
+        return True,"started"
+
     def early_feature_post_failure_ranking_diagnostic_key(self,suffix: str)->str:
         return self.key(f"early_feature_post_failure_ranking_diagnostic:v1:{suffix}")
 
@@ -10319,6 +10414,27 @@ def research_feature_discovery_stat_result():
     return jsonify(x)
 
 
+
+@app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/protocol")
+def early_feature_two_component_2025_validation_protocol():
+    allowed,reason=radar._early_feature_two_component_2025_validation_gate(); vr=radar.redis.get_json(radar.early_feature_2025_validation_key("report"),{}) if radar.redis.configured else {}; rr=radar.redis.get_json(radar.early_feature_ranking_construction_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC_SHA256,"required_hypothesis_prefreeze_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["required_hypothesis_prefreeze_sha256"],"actual_hypothesis_prefreeze_sha256":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256,"required_2025_feature_validation_result_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["required_2025_feature_validation_result_sha256"],"actual_2025_feature_validation_result_sha256":vr.get("result_sha256"),"required_ranking_construction_result_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["required_ranking_construction_result_sha256"],"actual_ranking_construction_result_sha256":rr.get("result_sha256"),"gate_allowed":allowed,"gate_reason":reason,"validation_results_read_by_protocol":False,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
+
+@app.post("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/start")
+def early_feature_two_component_2025_validation_start():
+    ok,why=radar.start_early_feature_two_component_2025_validation(); return jsonify({"ok":ok,"message":why,"status_url":"/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/status","result_url":"/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/result"}), (202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/status")
+def early_feature_two_component_2025_validation_status():
+    x=radar.redis.get_json(radar.early_feature_two_component_2025_validation_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_two_component_2025_validation_lock:out=dict(x or radar.early_feature_two_component_2025_validation_state);out["worker_alive"]=bool(radar.early_feature_two_component_2025_validation_thread and radar.early_feature_two_component_2025_validation_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/result")
+def early_feature_two_component_2025_validation_result():
+    x=radar.redis.get_json(radar.early_feature_two_component_2025_validation_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/status"}),202
+    return jsonify(x)
 
 @app.get("/research/early-causal-entry/feature-level-discovery/two-component-ranking-hypothesis-prefreeze/protocol")
 def early_feature_two_component_ranking_hypothesis_prefreeze_protocol():
