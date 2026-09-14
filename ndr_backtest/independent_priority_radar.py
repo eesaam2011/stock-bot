@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.43"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION"
+VERSION = "1.7.43-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TWO-COMPONENT-2025-LOCKED-VALIDATION-EXECUTION-R1-GET-START-HOTFIX"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -10420,7 +10420,7 @@ def early_feature_two_component_2025_validation_protocol():
     allowed,reason=radar._early_feature_two_component_2025_validation_gate(); vr=radar.redis.get_json(radar.early_feature_2025_validation_key("report"),{}) if radar.redis.configured else {}; rr=radar.redis.get_json(radar.early_feature_ranking_construction_key("report"),{}) if radar.redis.configured else {}
     return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC_SHA256,"required_hypothesis_prefreeze_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["required_hypothesis_prefreeze_sha256"],"actual_hypothesis_prefreeze_sha256":EARLY_FEATURE_TWO_COMPONENT_RANKING_HYPOTHESIS_PREFREEZE_SHA256,"required_2025_feature_validation_result_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["required_2025_feature_validation_result_sha256"],"actual_2025_feature_validation_result_sha256":vr.get("result_sha256"),"required_ranking_construction_result_sha256":EARLY_FEATURE_TWO_COMPONENT_2025_VALIDATION_EXEC_SPEC["required_ranking_construction_result_sha256"],"actual_ranking_construction_result_sha256":rr.get("result_sha256"),"gate_allowed":allowed,"gate_reason":reason,"validation_results_read_by_protocol":False,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
 
-@app.post("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/start")
+@app.route("/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/start", methods=["GET", "POST"])
 def early_feature_two_component_2025_validation_start():
     ok,why=radar.start_early_feature_two_component_2025_validation(); return jsonify({"ok":ok,"message":why,"status_url":"/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/status","result_url":"/research/early-causal-entry/feature-level-discovery/two-component-ranking-2025-validation/result"}), (202 if ok else 409)
 
