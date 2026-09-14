@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.47"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-PRACTICAL-SELECTION-RESEARCH-EXECUTION"
+VERSION = "1.7.48"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-TOP1-TOP3-ENTRY-RESEARCH-PREFREEZE-POST-DESCRIPTIVE-HYPOTHESIS"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1340,6 +1340,36 @@ EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SPEC = {
     "guardrails":{"prefreeze_only":True,"execution_started":False,"alpaca_requests":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"ranking_threshold_defined":False,"top_k_optimized":False,"selection_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_SUCCESSFUL_RANKING_BASELINE_SELECTION_RESEARCH_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SPEC = {
+    "protocol_id":"IPR-TOP1-TOP3-ENTRY-RESEARCH-PREFREEZE-2026-09-14-A",
+    "required_practical_selection_research_result_sha256":"aa1c15440913723ce4e9d789d4d08384053570bc34c057b128446b490c3f4698",
+    "required_practical_selection_research_decision":"DESCRIPTIVE_RESEARCH_ONLY",
+    "hypothesis_origin":"Top-1 and Top-3 were chosen after viewing the descriptive v1.7.47 Practical Selection Research results. They are post-descriptive hypotheses, not independently validated selection rules. Any later success on already-consumed 2019-2026-08-31 data must not be described as independent validation of Top-1/Top-3.",
+    "ranking_baseline":{"name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A","formula":"rank_score_2c = (z_discovery_range_pct + z_return_5m_pct) / 2","components":["discovery_range_pct","return_5m_pct"],"weights":{"discovery_range_pct":0.5,"return_5m_pct":0.5},"standardization":"Reuse exactly frozen v1.7.37-R1 constants; no refit.","status":"FROZEN_BASELINE"},
+    "selection_hypotheses":[{"name":"WITHIN_SESSION_TOP_1","top_n":1},{"name":"WITHIN_SESSION_TOP_3","top_n":3}],
+    "selection_status":"POST_DESCRIPTIVE_HYPOTHESIS_ONLY_NOT_VALIDATED",
+    "windows_minutes":[30,60],
+    "window_policy":"30m and 60m remain separate mandatory clocks; no best-window selection, pooling, or dropping a clock.",
+    "causal_t0_definition":"For each window, t0 is the causal selection timestamp at that window's checkpoint when the frozen ranking can first be computed using information available through that timestamp only. All future-return, MFE, MAE, target and adverse-path measurements start strictly after t0; the bar used to compute selection may not contribute post-selection high/low movement.",
+    "entry_research_measurement_grid":{
+        "forward_horizons_minutes":[5,10,15,30,60,120],
+        "mfe_thresholds_pct":[2,5,10,20],
+        "mae_thresholds_pct":[-2,-5,-10],
+        "path_ordering":"For every MFE target x adverse threshold pair, record whether +target was reached strictly before the adverse threshold, adverse first, neither, or same-bar ambiguous.",
+        "same_bar_policy":"If target and adverse threshold are both touched in the same 1-minute bar and intrabar order is unknowable, classify SAME_BAR_AMBIGUOUS; never credit it as target-first.",
+        "price_reference":"Freeze the causal t0 reference price before measurement. A future execution must state the exact persisted field/bar price used and prove it is available at t0; no hindsight price substitution is allowed.",
+        "primary_outputs":["MFE distribution","MAE distribution","target reach rate by horizon","adverse reach rate by horizon","target-before-adverse rate","time-to-target","time-to-adverse","candidate count","coverage","year stability"]
+    },
+    "research_period_policy":{"allowed":"Already-consumed data through 2026-08-31 only for hypothesis generation and entry-shape research.","hard_stop_after":"2026-08-31","fresh_oos_remains_closed":True,"no_post_2026_08_31_read":True},
+    "data_access_policy":"This pre-freeze performs zero Alpaca requests and reads no MFE/MAE outcomes. A later separately frozen execution must first use causally persisted data when sufficient. Any need for historical Alpaca bars must be explicitly disclosed and authorized in that later execution protocol before requests are made.",
+    "success_policy":"No strategy PASS/FAIL and no entry rule is selected by this pre-freeze. The complete measurement grid is frozen before any new MFE/MAE values are viewed so that attractive thresholds cannot be invented after seeing outcomes. Any entry rule suggested later is hypothesis-generating and requires a separate freeze before final system testing.",
+    "fresh_oos_policy":"Fresh OOS remains reserved for one final fully frozen practical system containing Ranking + Selection + Entry + Exit + Costs. It must not be spent on this entry research or on tuning targets/stops.",
+    "forbidden":["claiming Top-1 or Top-3 is independently validated","changing ranking components or weights","restandardizing","adding another Top-N after seeing entry outcomes","dropping 30m or 60m","best-window selection","reading sessions after 2026-08-31","Fresh OOS read","post-hoc MFE/MAE thresholds","selecting an entry rule as validated from this research","exit optimization","stop/target optimization","profitability claims","strategy PASS","bot authorization","automatic downstream authorization"],
+    "guardrails":{"prefreeze_only":True,"execution_started":False,"entry_outcomes_read_by_protocol":False,"alpaca_requests":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"selection_rule_validated":False,"entry_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 
 EARLY_FEATURE_PRACTICAL_SELECTION_RESEARCH_EXEC_SPEC = {
@@ -11470,6 +11500,22 @@ def early_feature_practical_selection_research_result():
     x=radar.redis.get_json(radar.early_feature_practical_selection_research_key("report"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/practical-selection-research/status"}),202
     return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/prefreeze/protocol")
+def early_feature_top1_top3_entry_research_prefreeze_protocol():
+    spec=EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SPEC
+    if not radar.redis.configured:
+        return jsonify({"version":VERSION,"build":BUILD,"gate_allowed":False,"gate_reason":"Redis unavailable","protocol":spec,"protocol_sha256":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SHA256}),503
+    prior=radar.redis.get_json(radar.early_feature_practical_selection_research_key("report")) or {}
+    checks=[
+        (prior.get("result_sha256")==spec["required_practical_selection_research_result_sha256"],"v1.7.47 result SHA mismatch"),
+        (prior.get("decision")==spec["required_practical_selection_research_decision"],"v1.7.47 decision mismatch"),
+        (prior.get("fresh_oos_opened") is False,"Fresh OOS was opened"),
+        (prior.get("post_2026_08_31_read") is False,"post-2026-08-31 data was read"),
+        (prior.get("selection_rule_validated") is False,"v1.7.47 unexpectedly marked selection validated")
+    ]
+    allowed=all(ok for ok,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_TOP1_TOP3_ENTRY_RESEARCH_PREFREEZE_SHA256,"artifact_frozen":True,"actual_practical_selection_result_sha256":prior.get("result_sha256"),"actual_practical_selection_decision":prior.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"entry_outcomes_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"selection_rule_validated":False,"entry_rule_validated":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
