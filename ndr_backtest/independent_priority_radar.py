@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.54"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-OBSERVED-UNIVERSE-CERTIFICATION-A"
+VERSION = "1.7.55"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -12726,6 +12726,72 @@ def backward_oos_2018_observed_universe_result():
     report=radar.redis.get_json(_boos18oc_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/observed-universe/status","h1_computed":False,"backward_oos_opened":False,"fresh_forward_oos_opened":False}),202
     return jsonify(report)
+
+
+# -----------------------------------------------------------------------------
+# v1.7.55 — 2018 Candidate-Sampling Methodology Parity Pre-Freeze
+# Outcome-blind/read-only.  This stage does NOT scan 2018 candidates and does
+# NOT open H1.  It freezes the exact historical sampling semantics first.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_SAMPLING_PARITY_SPEC = {
+    "prefreeze_id":"IPR-2018-CANDIDATE-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-2026-09-14-A",
+    "status":"FROZEN_PROTOCOL_ONLY",
+    "purpose":"Freeze exact candidate, Phase0B, control-construction and support semantics inherited from the original 2019-2026 pipeline before any 2018 candidate census or H1 read.",
+    "source_of_truth":{
+        "historical_census_spec_sha256_runtime":HISTORICAL_CENSUS_SHA256,
+        "phase0b_full_spec_sha256_runtime":PHASE0B_FULL_SHA256,
+        "feature_discovery_protocol_sha256_runtime":FEATURE_DISCOVERY_PROTOCOL_SHA256,
+        "feature_discovery_execution_sha256_runtime":FEATURE_DISCOVERY_EXEC_SHA256,
+        "observed_universe_certification_result_sha256":"1f6d11ec1b3de059a4b9cae2891f135a811c6f68478f0a09438e57fceb4b798a",
+    },
+    "candidate_census_exact_parity":{
+        "universe":"2018 Observed Historical SIP Universe certified by v1.7.54; year-presence gate unchanged",
+        "identity":HISTORICAL_CENSUS_SPEC["identity"],
+        "trading_cycle":HISTORICAL_CENSUS_SPEC["trading_cycle"],
+        "coarse_timeframe":HISTORICAL_CENSUS_SPEC["coarse_timeframe"],
+        "sources":HISTORICAL_CENSUS_SPEC["sources"],
+        "2018_market_structure":"SIP raw only because 2018 predates the frozen BOATS launch date; this is structural absence, not imputation",
+        "candidate_rule":HISTORICAL_CENSUS_SPEC["candidate_rule"],
+        "primary_threshold_pct":HISTORICAL_CENSUS_SPEC["primary_threshold_pct"],
+        "retained_ladders_pct":HISTORICAL_CENSUS_SPEC["retained_ladders_pct"],
+        "max_events_per_symbol_cycle":HISTORICAL_CENSUS_SPEC["max_events_per_symbol_cycle"],
+        "same_bar_policy":"coarse same-bar order remains ambiguous; Phase 0B 1-minute verification classifies a same-minute new low + threshold-reaching high as still_ambiguous, never verified",
+        "no_redefinition_for_2018":True,
+        "important_correction":"The frozen historical Census spec currently embedded in the original pipeline uses 1Hour coarse bars. 2018 must reuse that exact frozen spec; do not substitute the separate 30Min capability/split-screen path.",
+    },
+    "corporate_action_and_instrument_parity":{
+        "phase0a_split_screen":"adjacent coarse closes; flag max(close/prev, prev/close) >= 3.5",
+        "split_screen_is_complete_certificate":False,
+        "phase0b_gate":PHASE0B_FULL_SPEC["corporate_action_policy"],
+        "phase0b_ground_truth":PHASE0B_FULL_SPEC["ground_truth"],
+        "phase0b_minute_ordering":PHASE0B_FULL_SPEC["minute_ordering"],
+        "ticker_recycling":"no cross-era entity merge; recycling-risk exclusions must mirror the frozen clean-candidate pipeline",
+        "instrument_type":"Only the same frozen common-like / non-common / unresolved handling used to form the original recommended-clean Phase0B input may be reused; no 2018-specific relaxation or tightening.",
+    },
+    "control_construction_exact_parity":{
+        "eligible_pool":"Phase 0B failed clean candidates only; still_ambiguous is never a control.",
+        "hard_negative_matching":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["hard_negative_matching"],
+        "hard_negative_ratio":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["hard_negative_ratio"],
+        "random_control":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["random_control"],
+        "pseudo_cutoff":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["pseudo_cutoff"],
+        "predictive_feature_matching_forbidden":True,
+        "no_redefinition_for_2018":True,
+    },
+    "support_prefreeze":{
+        "discovery_formula_source":FEATURE_DISCOVERY_EXEC_SPEC["min_n_formula"],
+        "frozen_discovery_realized":{"eligible_positive_events":107397,"eligible_positive_symbols":3260,"min_positive_events":537,"min_positive_symbols":100,"min_years":4},
+        "2018_independent_sample_gate":{"min_positive_events":537,"min_positive_symbols":100,"min_years":None,"single_year_oos_note":"The Discovery min_years=4 stability rule is inapplicable to a deliberately single-year Backward OOS; it is not lowered to 1 and cannot be claimed passed. Event and symbol minima remain unchanged."},
+        "insufficient_policy":"If the final 2018 clean/verified sample has <537 positive events OR <100 positive symbols, stop as 2018_INSUFFICIENT_SAMPLE. Do not compute or interpret H1 PASS/FAIL.",
+        "no_post_result_lowering":True,
+    },
+    "next_execution_scope":"A later separately frozen 2018 Census + clean-candidate + Phase0B/control-construction execution may be built only after review of this parity pre-freeze.",
+    "firewall":{"alpaca_requests":False,"2018_candidate_census_runs":False,"2018_phase0b_runs":False,"controls_constructed":False,"h1_computed":False,"h1_execution_allowed":False,"backward_oos_opened":False,"fresh_forward_oos_opened":False,"2019_2026_results_mutated":False,"target_adverse_computed":False,"mfe_mae_computed":False},
+}
+BACKWARD_OOS_2018_SAMPLING_PARITY_SHA256 = hashlib.sha256(json.dumps(BACKWARD_OOS_2018_SAMPLING_PARITY_SPEC,sort_keys=True,separators=(",",":")).encode("utf-8")).hexdigest()
+
+@app.get("/research/2018-backward-oos/sampling-parity/protocol")
+def backward_oos_2018_sampling_parity_protocol():
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_SAMPLING_PARITY_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_SAMPLING_PARITY_SHA256,"alpaca_requests_made":0,"execution_started":False,"2018_candidate_census_runs":False,"h1_computed":False,"h1_execution_allowed":False,"backward_oos_opened":False,"fresh_forward_oos_opened":False,"note":"Read-only pre-freeze. No Start endpoint exists by design; review is required before execution code."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
