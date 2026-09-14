@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.40"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-POST-FAILURE-RANKING-DIAGNOSTIC-PREFREEZE"
+VERSION = "1.7.41"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-POST-FAILURE-RANKING-DIAGNOSTIC-EXECUTION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1174,6 +1174,30 @@ EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC = {
     "guardrails":{"alpaca_requests":False,"diagnostic_execution_started":False,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+
+EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC = {
+    "diagnostic_id":"IPR-EARLY-FEATURE-POST-FAILURE-RANKING-DIAGNOSTIC-EXECUTION-2026-09-14-A",
+    "required_prefreeze_sha256":"150707cc81ad5eadb1019d628aea202764cbd4e6899e3bf46e97f6c5990d66a2",
+    "required_ranking_evaluation_result_sha256":"71f5cf831eeb5f912197ace8bd1856f96ce9b33e18b5110811ad89536148bd1c",
+    "required_ranking_evaluation_decision":"DISCOVERY_RANKING_NO_GO",
+    "diagnostic_period":{"start":"2019-01-01","end":"2024-12-31"},
+    "windows_minutes":[30,60],
+    "components":["discovery_range_pct","log_discovery_volume","return_5m_pct"],
+    "computations":{
+        "score_distribution":"Within class/window, every symbol has total weight 1 split equally across its scoreable observations. Report weighted mean, population SD, weighted median, and fixed weighted quantiles 0.01,0.05,0.10,0.25,0.50,0.75,0.90,0.95,0.99.",
+        "fixed_deciles":"Per window, boundaries are unlabelled pooled raw-score quantiles q=0.0,0.1,...,1.0. Bin membership uses those fixed boundaries. Report raw class counts and equal-symbol weighted Positive/HN composition; no cutoff is selected.",
+        "component_redundancy":"Per window across all scoreable rows with labels ignored, report pooled Pearson and Spearman correlations for every pair of the three frozen z-components.",
+        "component_auc":"Per window and component, equal-symbol weighted Positive-vs-Hard-Negative ROC AUC using the already-frozen z-component only.",
+        "leave_one_out":"For every component, compute the arithmetic mean of the other two already-frozen z-components and report equal-symbol weighted ROC AUC. All three variants are reported; none is selected.",
+        "annual_shape":"Copy/recompute descriptive full frozen rank-score equal-symbol weighted AUC for each year 2019-2024 and window.",
+        "coverage":"Eligible reconstruction counts, scoreable counts/rates, and unavailable counts by class/window."
+    },
+    "decision_rule":"NONE. DESCRIPTIVE_DIAGNOSTIC_ONLY. No GO/NO_GO/PASS/FAIL and no automatic downstream authorization.",
+    "forbidden":["changing v1.7.39 NO_GO","changing 0.55 gate","threshold search","top-k optimization","best-window selection","dropping a window","feature deletion/addition/reselection","weight search/reweighting","selecting a leave-one-out variant","outcome-informed restandardization","2025 ranking performance read","2026 ranking performance read","Fresh OOS read","trading optimization","profitability claims","automatic successor-model selection"],
+    "guardrails":{"alpaca_requests":False,"no_2025_read":True,"no_2026_read":True,"no_fresh_oos":True,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False,"strategy_pass":False,"bot_authorized":False,"stop_and_review_required":True}
+}
+EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -2580,6 +2604,8 @@ class IndependentPriorityRadar:
         self.early_feature_ranking_construction_state={"status":"IDLE","phase":"NOT_STARTED","message":"Ranking Construction not started","execution_id":EARLY_FEATURE_RANKING_CONSTRUCTION_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
         self.early_feature_ranking_evaluation_lock=threading.RLock(); self.early_feature_ranking_evaluation_thread=None
         self.early_feature_ranking_evaluation_state={"status":"IDLE","phase":"NOT_STARTED","message":"Ranking Evaluation not started","execution_id":EARLY_FEATURE_RANKING_EVALUATION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
+        self.early_feature_post_failure_ranking_diagnostic_lock=threading.RLock(); self.early_feature_post_failure_ranking_diagnostic_thread=None
+        self.early_feature_post_failure_ranking_diagnostic_state={"status":"IDLE","phase":"NOT_STARTED","message":"Post-Failure Ranking Diagnostic not started","diagnostic_id":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["diagnostic_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -9148,6 +9174,146 @@ class IndependentPriorityRadar:
         return True,"started"
 
 
+    def early_feature_post_failure_ranking_diagnostic_key(self,suffix: str)->str:
+        return self.key(f"early_feature_post_failure_ranking_diagnostic:v1:{suffix}")
+
+    def _set_early_feature_post_failure_ranking_diagnostic_state(self,**updates: Any)->None:
+        with self.early_feature_post_failure_ranking_diagnostic_lock:
+            self.early_feature_post_failure_ranking_diagnostic_state.update(updates); self.early_feature_post_failure_ranking_diagnostic_state["updated_at"]=iso(); snap=dict(self.early_feature_post_failure_ranking_diagnostic_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_post_failure_ranking_diagnostic_key("status"),snap)
+
+    def _early_feature_post_failure_ranking_diagnostic_gate(self):
+        if EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SHA256 != EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["required_prefreeze_sha256"]:return False,"Pre-freeze SHA mismatch"
+        if not self.redis.configured:return False,"Redis required"
+        er=self.redis.get_json(self.early_feature_ranking_evaluation_key("report"),{}) or {}
+        if er.get("status")!="COMPLETED":return False,"v1.7.39 ranking evaluation not completed"
+        if er.get("result_sha256")!=EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["required_ranking_evaluation_result_sha256"]:return False,"v1.7.39 result SHA mismatch"
+        if er.get("decision")!=EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["required_ranking_evaluation_decision"]:return False,"v1.7.39 decision mismatch"
+        if er.get("fresh_oos_opened") or er.get("ranking_validation_2025_opened") or er.get("ranking_review_2026_opened"):return False,"Forbidden downstream data already opened"
+        if er.get("ranking_threshold_defined") is not False or er.get("top_k_optimized") is not False:return False,"Forbidden ranking optimization already opened"
+        rr=self.redis.get_json(self.early_feature_ranking_construction_key("report"),{}) or {}
+        if rr.get("result_sha256")!=EARLY_FEATURE_RANKING_EVALUATION_EXEC_SPEC["required_ranking_construction_result_sha256"]:return False,"Ranking construction provenance mismatch"
+        return True,"allowed"
+
+    @staticmethod
+    def _diag_symbol_weights(rows):
+        # rows: dicts with class/symbol. Equal total symbol weight within each class.
+        counts={"positive":{},"hard_negative":{}}
+        for r in rows:
+            c=r["class"]; sym=r["symbol"]
+            if c in counts:counts[c][sym]=counts[c].get(sym,0)+1
+        return [1.0/counts[r["class"]][r["symbol"]] for r in rows]
+
+    @staticmethod
+    def _diag_weighted_quantile(values,weights,q):
+        if not values:return None
+        pairs=sorted(zip(values,weights),key=lambda x:x[0]); total=sum(w for _,w in pairs)
+        if total<=0:return None
+        target=float(q)*total; acc=0.0
+        for v,w in pairs:
+            acc+=w
+            if acc>=target:return float(v)
+        return float(pairs[-1][0])
+
+    @staticmethod
+    def _diag_rankdata(values):
+        n=len(values); order=sorted(range(n),key=lambda i:values[i]); ranks=[0.0]*n; i=0
+        while i<n:
+            j=i+1
+            while j<n and values[order[j]]==values[order[i]]:j+=1
+            avg=(i+j-1)/2.0+1.0
+            for k in range(i,j):ranks[order[k]]=avg
+            i=j
+        return ranks
+
+    @staticmethod
+    def _diag_corr(a,b):
+        if len(a)<2 or len(b)!=len(a):return None
+        aa=np.asarray(a,dtype=float);bb=np.asarray(b,dtype=float)
+        if not np.isfinite(aa).all() or not np.isfinite(bb).all() or float(np.std(aa))==0.0 or float(np.std(bb))==0.0:return None
+        return float(np.corrcoef(aa,bb)[0,1])
+
+    def early_feature_post_failure_ranking_diagnostic_loop(self):
+        try:
+            ok,why=self._early_feature_post_failure_ranking_diagnostic_gate()
+            if not ok:raise RuntimeError(why)
+            sessions=sorted(self.redis.get_json(self.early_feature_reconstruction_key("completed_sessions"),[]) or [])
+            sessions=[str(x) for x in sessions if "2019-01-01"<=str(x)<="2024-12-31"]
+            wins=list(EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["windows_minutes"]); feats=list(EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["components"]); years=[2019,2020,2021,2022,2023,2024]
+            self._set_early_feature_post_failure_ranking_diagnostic_state(status="RUNNING",phase="POST_FAILURE_RANKING_DIAGNOSTIC",message=f"Diagnostic 0/{len(sessions)} sessions",sessions_completed=0,total_sessions=len(sessions),alpaca_requests_made=0,fresh_oos_opened=False)
+            pooled={w:[] for w in wins}; annual={(w,y):[] for w in wins for y in years}; eligible={(w,c):0 for w in wins for c in ["positive","hard_negative"]}
+            for idx,sess in enumerate(sessions,1):
+                source=self.redis.get_json(self.early_feature_reconstruction_key(f"records:{sess}"),[]) or []
+                labels={r.get("record_id"):(str(r.get("class","")),str(r.get("symbol","")).upper(),int(r.get("checkpoint_minutes",-1))) for r in source}
+                for r in source:
+                    c=str(r.get("class",""));w=int(r.get("checkpoint_minutes",-1))
+                    if w in wins and c in ("positive","hard_negative"):eligible[(w,c)]+=1
+                scores=self.redis.get_json(self.early_feature_ranking_construction_key(f"scores:{sess}"),[]) or []
+                for q in scores:
+                    lab=labels.get(q.get("record_id")); z=q.get("z_features"); sc=q.get("rank_score")
+                    if not lab or not isinstance(z,dict) or not isinstance(sc,(int,float)) or not math.isfinite(float(sc)):continue
+                    c,sym,w=lab
+                    if w not in wins or c not in ("positive","hard_negative"):continue
+                    if not all(isinstance(z.get(f),(int,float)) and math.isfinite(float(z[f])) for f in feats):continue
+                    row={"score":float(sc),"class":c,"symbol":sym,"year":int(sess[:4]),"z":{f:float(z[f]) for f in feats}}
+                    pooled[w].append(row);annual[(w,int(sess[:4]))].append((float(sc),c,sym))
+                if idx%100==0:self._set_early_feature_post_failure_ranking_diagnostic_state(status="RUNNING",phase="POST_FAILURE_RANKING_DIAGNOSTIC",message=f"Diagnostic {idx}/{len(sessions)} sessions",sessions_completed=idx,total_sessions=len(sessions),alpaca_requests_made=0,fresh_oos_opened=False)
+            out=[]; qs=[0.01,0.05,0.10,0.25,0.50,0.75,0.90,0.95,0.99]
+            for w in wins:
+                rows=pooled[w]; score_rows=[(r["score"],r["class"],r["symbol"]) for r in rows]
+                distributions={}
+                for c in ["positive","hard_negative"]:
+                    sub=[r for r in rows if r["class"]==c]; vals=[r["score"] for r in sub]; weights=self._diag_symbol_weights(sub) if sub else []
+                    tw=sum(weights); mu=sum(v*wt for v,wt in zip(vals,weights))/tw if tw else None
+                    sd=math.sqrt(sum(wt*(v-mu)**2 for v,wt in zip(vals,weights))/tw) if tw and mu is not None else None
+                    distributions[c]={"events":len(sub),"symbols":len({r["symbol"] for r in sub}),"equal_symbol_weighted_mean":mu,"equal_symbol_weighted_population_sd":sd,"equal_symbol_weighted_median":self._diag_weighted_quantile(vals,weights,0.5),"equal_symbol_weighted_quantiles":{str(q):self._diag_weighted_quantile(vals,weights,q) for q in qs}}
+                raw_scores=[r["score"] for r in rows]; bounds=[float(x) for x in np.quantile(np.asarray(raw_scores,dtype=float),np.linspace(0,1,11))] if raw_scores else []
+                global_weights=self._diag_symbol_weights(rows) if rows else []; dec=[]
+                if bounds:
+                    for b in range(10):
+                        ids=[]
+                        for i,r in enumerate(rows):
+                            x=r["score"]
+                            inside=(x>=bounds[b] and (x<bounds[b+1] if b<9 else x<=bounds[b+1]))
+                            if inside:ids.append(i)
+                        pc=sum(1 for i in ids if rows[i]["class"]=="positive");hc=sum(1 for i in ids if rows[i]["class"]=="hard_negative")
+                        pw=sum(global_weights[i] for i in ids if rows[i]["class"]=="positive");hw=sum(global_weights[i] for i in ids if rows[i]["class"]=="hard_negative");den=pw+hw
+                        dec.append({"decile":b+1,"lower":bounds[b],"upper":bounds[b+1],"positive_count":pc,"hard_negative_count":hc,"equal_symbol_positive_weight":pw,"equal_symbol_hard_negative_weight":hw,"equal_symbol_positive_composition":pw/den if den else None})
+                redundancy=[]
+                for i in range(len(feats)):
+                    for j in range(i+1,len(feats)):
+                        a=[r["z"][feats[i]] for r in rows];b=[r["z"][feats[j]] for r in rows]
+                        redundancy.append({"feature_a":feats[i],"feature_b":feats[j],"pearson":self._diag_corr(a,b),"spearman":self._diag_corr(self._diag_rankdata(a),self._diag_rankdata(b)),"n":len(a)})
+                component_auc=[]
+                for f in feats:
+                    ar=[(r["z"][f],r["class"],r["symbol"]) for r in rows];component_auc.append({"feature":f,"auc":self._equal_symbol_weighted_auc(ar)})
+                loo=[]
+                for omitted in feats:
+                    keep=[f for f in feats if f!=omitted]; ar=[((r["z"][keep[0]]+r["z"][keep[1]])/2.0,r["class"],r["symbol"]) for r in rows];loo.append({"omitted_feature":omitted,"included_features":keep,"auc":self._equal_symbol_weighted_auc(ar),"descriptive_only":True})
+                yearly=[{"year":y,"auc":self._equal_symbol_weighted_auc(annual[(w,y)])} for y in years]
+                coverage={}
+                for c in ["positive","hard_negative"]:
+                    scoreable=sum(1 for r in rows if r["class"]==c); el=eligible[(w,c)];coverage[c]={"eligible":el,"scoreable":scoreable,"unavailable":el-scoreable,"rate":scoreable/el if el else None}
+                out.append({"window_minutes":w,"frozen_full_ranking_auc":self._equal_symbol_weighted_auc(score_rows),"score_distribution":distributions,"fixed_deciles":dec,"component_redundancy":redundancy,"component_descriptive_auc":component_auc,"leave_one_component_out_sensitivity":loo,"annual_full_ranking_auc":yearly,"coverage":coverage})
+            report={"version":VERSION,"build":BUILD,"diagnostic_id":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["diagnostic_id"],"execution_spec_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["required_prefreeze_sha256"],"required_ranking_evaluation_result_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["required_ranking_evaluation_result_sha256"],"status":"COMPLETED","phase":"POST_FAILURE_RANKING_DIAGNOSTIC_STOP_REVIEW","decision":None,"diagnostic_only":True,"results":out,"sessions":len(sessions),"alpaca_requests_made":0,"v1_7_39_decision_immutable":"DISCOVERY_RANKING_NO_GO","ranking_threshold_defined":False,"top_k_optimized":False,"feature_or_weight_change_authorized":False,"leave_one_out_selection_authorized":False,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False,"stop_and_review_required":True,"completed_at":iso()}
+            canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_post_failure_ranking_diagnostic_key("report"),report)
+            self._set_early_feature_post_failure_ranking_diagnostic_state(status="COMPLETED",phase="POST_FAILURE_RANKING_DIAGNOSTIC_STOP_REVIEW",message="Descriptive diagnostic completed; STOP REVIEW",sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=0,fresh_oos_opened=False,stop_and_review_required=True)
+        except Exception as e:
+            logging.exception("Post-Failure Ranking Diagnostic failed");self._set_early_feature_post_failure_ranking_diagnostic_state(status="ERROR",phase="POST_FAILURE_RANKING_DIAGNOSTIC_BLOCKED",message=f"{type(e).__name__}: {e}",alpaca_requests_made=0,fresh_oos_opened=False)
+        finally:
+            with self.early_feature_post_failure_ranking_diagnostic_lock:self.early_feature_post_failure_ranking_diagnostic_thread=None
+
+    def start_early_feature_post_failure_ranking_diagnostic(self):
+        ok,why=self._early_feature_post_failure_ranking_diagnostic_gate()
+        if not ok:return False,why
+        with self.early_feature_post_failure_ranking_diagnostic_lock:
+            if self.early_feature_post_failure_ranking_diagnostic_thread and self.early_feature_post_failure_ranking_diagnostic_thread.is_alive():return False,"already_running"
+            existing=self.redis.get_json(self.early_feature_post_failure_ranking_diagnostic_key("report"),None) if self.redis.configured else None
+            if existing and existing.get("status")=="COMPLETED":return False,"already_completed"
+            self.early_feature_post_failure_ranking_diagnostic_thread=threading.Thread(target=self.early_feature_post_failure_ranking_diagnostic_loop,name="post-failure-ranking-diagnostic",daemon=True);self.early_feature_post_failure_ranking_diagnostic_thread.start()
+        return True,"started"
+
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 app = Flask(__name__)
 radar = IndependentPriorityRadar()
@@ -10144,6 +10310,26 @@ def research_post_failure_ranking_diagnostic_prefreeze_protocol():
     )
     reason="allowed" if allowed else "v1.7.39 result provenance/guardrail mismatch"
     return jsonify({"version":VERSION,"build":BUILD,"protocol":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC,"protocol_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SHA256,"required_ranking_evaluation_result_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC["required_ranking_evaluation_result_sha256"],"actual_ranking_evaluation_result_sha256":actual,"required_ranking_evaluation_decision":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SPEC["required_ranking_evaluation_decision"],"actual_ranking_evaluation_decision":report.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"artifact_frozen":True,"diagnostic_execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
+
+@app.get("/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic/protocol")
+def research_feature_post_failure_ranking_diagnostic_protocol():
+    allowed,reason=radar._early_feature_post_failure_ranking_diagnostic_gate(); er=radar.redis.get_json(radar.early_feature_ranking_evaluation_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC,"execution_spec_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC_SHA256,"required_prefreeze_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_PREFREEZE_SHA256,"required_ranking_evaluation_result_sha256":EARLY_FEATURE_POST_FAILURE_RANKING_DIAGNOSTIC_EXEC_SPEC["required_ranking_evaluation_result_sha256"],"actual_ranking_evaluation_result_sha256":er.get("result_sha256"),"actual_ranking_evaluation_decision":er.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"diagnostic_results_read_by_protocol":False,"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_validation_2025_opened":False,"ranking_review_2026_opened":False,"fresh_oos_opened":False,"ranking_threshold_defined":False,"top_k_optimized":False,"automatic_downstream_authorization":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic/start",methods=["GET","POST"])
+def research_feature_post_failure_ranking_diagnostic_start():
+    ok,why=radar.start_early_feature_post_failure_ranking_diagnostic();return jsonify({"ok":ok,"status":"started" if ok else why,"status_url":"/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic/status","result_url":"/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic/status")
+def research_feature_post_failure_ranking_diagnostic_status():
+    x=radar.redis.get_json(radar.early_feature_post_failure_ranking_diagnostic_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_post_failure_ranking_diagnostic_lock:out=dict(x or radar.early_feature_post_failure_ranking_diagnostic_state);out["worker_alive"]=bool(radar.early_feature_post_failure_ranking_diagnostic_thread and radar.early_feature_post_failure_ranking_diagnostic_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic/result")
+def research_feature_post_failure_ranking_diagnostic_result():
+    x=radar.redis.get_json(radar.early_feature_post_failure_ranking_diagnostic_key("report"),None) if radar.redis.configured else None
+    return jsonify(x) if x else (jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/post-failure-ranking-diagnostic/status"}),202)
 
 @app.get("/research/early-causal-entry/feature-level-discovery/ranking-evaluation-prefreeze/protocol")
 def research_feature_ranking_evaluation_prefreeze_protocol():
