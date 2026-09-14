@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.33"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-FEATURE-LEVEL-DISCOVERY-STATISTICAL-EXECUTION"
+VERSION = "1.7.34"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-FEATURE-LEVEL-2025-LOCKED-VALIDATION"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -995,6 +995,28 @@ EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC = {
     "guardrails":{"alpaca_requests":0,"redis_reconstruction_only":True,"no_2025_read":True,"no_2026_read":True,"no_fresh_oos":True,"no_reserve_features":True,"no_invalid_features":True,"no_threshold_search":True,"no_interaction_search":True,"no_model_or_bot_change":True,"strategy_pass":False,"bot_authorized":False}
 }
 EARLY_FEATURE_DISCOVERY_STAT_EXEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+
+
+EARLY_FEATURE_2025_VALIDATION_SPEC = {
+    "execution_id":"IPR-EARLY-FEATURE-2025-LOCKED-VALIDATION-2026-09-14-A",
+    "required_prefreeze_sha256":"f532df7beed1f7e07bb98ee9b5a41a133969456e216d9d70e18eb3f670db0448",
+    "required_discovery_execution_spec_sha256":"694dde69ec00954d79f3dfa39c9323748ef7292c58f9dd528e163dd2c3eed76f",
+    "required_discovery_result_sha256":"1d961c83921ce451dc6100e40cb5780596cc173f44d0d0eab7f457ada49f57b0",
+    "required_feature_definition_sha256":"f615c7181c78da91e89c6ac7fa8608958043a4e029c52c76954d39ceaaee6b71",
+    "validation_year":2025,
+    "windows_minutes":[30,60],
+    "promoted_features":[
+        {"feature":"discovery_range_pct","direction":"positive_gt_hard_negative"},
+        {"feature":"log_discovery_volume","direction":"positive_gt_hard_negative"},
+        {"feature":"return_5m_pct","direction":"positive_gt_hard_negative"}
+    ],
+    "reconstruction":{"source":"Alpaca historical raw 1Min SIP plus BOATS overnight when historically available","causal_cutoff":"Only bars at or before checkpoint eval_ts; last feature bar must equal checkpoint eval_ts","no_imputation":True,"logical_request_budget":1000,"batch_size":200},
+    "statistics":{"primary_effect":"Equal-symbol weighted standardized mean difference of per-symbol feature means, Positive minus Hard-Negative, separately per promoted Feature x Window.","required_direction":"Frozen from 2019-2024 Discovery; no direction flipping.","minimum_absolute_standardized_effect":0.10,"minimum_positive_events":500,"minimum_hard_negative_events":500,"minimum_positive_symbols":100,"minimum_hard_negative_symbols":100,"rounding_for_decisions":False,"p_values_or_fdr_required":False},
+    "decision_rule":"VALIDATION_PASS iff EVERY one of the three promoted features passes at BOTH 30m and 60m: same frozen Discovery direction, absolute standardized effect >=0.10, and all frozen support minima. Any failed Feature x Window makes VALIDATION_FAIL. No reselection or rescue.",
+    "coverage_audit":{"required":True,"report_by_feature_window_class":True,"report_unavailability_reasons":True,"no_imputation":True,"does_not_change_frozen_validation_rule":True},
+    "guardrails":{"open_2025_only":True,"no_2026_read":True,"no_fresh_oos":True,"no_reserve_features":True,"no_invalid_features":True,"no_reselection":True,"no_threshold_search":True,"no_interaction_search":True,"no_model_or_bot_change":True,"strategy_pass":False,"bot_authorized":False}
+}
+EARLY_FEATURE_2025_VALIDATION_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_2025_VALIDATION_SPEC,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -2393,6 +2415,8 @@ class IndependentPriorityRadar:
         self.early_feature_reconstruction_state={"status":"IDLE","phase":"NOT_STARTED","message":"Early Feature Reconstruction not started","execution_id":EARLY_FEATURE_RECONSTRUCTION_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"fresh_oos_opened":False,"updated_at":iso()}
         self.early_feature_discovery_stat_lock=threading.RLock(); self.early_feature_discovery_stat_thread=None
         self.early_feature_discovery_stat_state={"status":"IDLE","phase":"NOT_STARTED","message":"Feature-Level Discovery Statistical Execution not started","execution_id":EARLY_FEATURE_DISCOVERY_STAT_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
+        self.early_feature_2025_validation_lock=threading.RLock(); self.early_feature_2025_validation_thread=None
+        self.early_feature_2025_validation_state={"status":"IDLE","phase":"NOT_STARTED","message":"2025 Locked Validation not started","execution_id":EARLY_FEATURE_2025_VALIDATION_SPEC["execution_id"],"alpaca_requests_made":0,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False,"updated_at":iso()}
         self.phase0a_lock = threading.RLock()
         self.phase0a_thread: threading.Thread | None = None
         self.phase0a_stop_event = threading.Event()
@@ -5007,6 +5031,82 @@ class IndependentPriorityRadar:
             logging.exception("Early Feature Reconstruction failed");self._set_early_feature_reconstruction_state(status="ERROR",phase="FEATURE_RECONSTRUCTION_BLOCKED",message=f"{type(e).__name__}: {e}",fresh_oos_opened=False,validation_2025_opened=False,year_2026_opened=False)
         finally:
             with self.early_feature_reconstruction_lock:self.early_feature_reconstruction_thread=None
+
+    def early_feature_2025_validation_key(self, suffix: str) -> str:
+        return self.key(f"early_feature_2025_validation:v1:{suffix}")
+
+    def _set_early_feature_2025_validation_state(self, **updates: Any) -> None:
+        with self.early_feature_2025_validation_lock:
+            self.early_feature_2025_validation_state.update(updates); self.early_feature_2025_validation_state["updated_at"]=iso(); snap=dict(self.early_feature_2025_validation_state)
+        if self.redis.configured:self.redis.set_json(self.early_feature_2025_validation_key("status"),snap)
+
+    def _early_feature_2025_validation_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        spec=EARLY_FEATURE_2025_VALIDATION_SPEC
+        if EARLY_FEATURE_LEVEL_DISCOVERY_PREFREEZE_SHA256!=spec["required_prefreeze_sha256"]:return False,"Feature-Level Discovery prefreeze SHA mismatch"
+        if EARLY_FEATURE_DISCOVERY_STAT_EXEC_SHA256!=spec["required_discovery_execution_spec_sha256"]:return False,"Discovery execution spec SHA mismatch"
+        if EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256!=spec["required_feature_definition_sha256"]:return False,"Feature definition SHA mismatch"
+        dr=self.redis.get_json(self.early_feature_discovery_stat_key("report"),None) or {}
+        if dr.get("status")!="COMPLETED" or dr.get("decision")!="GO":return False,"Completed Discovery GO required"
+        if dr.get("result_sha256")!=spec["required_discovery_result_sha256"]:return False,"Discovery result SHA mismatch"
+        expected=spec["promoted_features"]
+        if dr.get("promoted_features")!=expected:return False,"Promoted feature set/direction mismatch"
+        if dr.get("validation_2025_opened") or dr.get("year_2026_opened") or dr.get("fresh_oos_opened"):return False,"Locked data was previously opened by Discovery"
+        return True,"allowed"
+
+    def early_feature_2025_validation_loop(self):
+        try:
+            ok,why=self._early_feature_2025_validation_gate()
+            if not ok:raise RuntimeError(why)
+            spec=EARLY_FEATURE_2025_VALIDATION_SPEC;year=str(spec["validation_year"]);wins=set(spec["windows_minutes"]);features=[x["feature"] for x in spec["promoted_features"]];directions={x["feature"]:x["direction"] for x in spec["promoted_features"]};budget=int(spec["reconstruction"]["logical_request_budget"])
+            sessions=sorted(str(x) for x in (self.redis.get_json(self.early_causal_entry_exec_key("completed_sessions"),[]) or []) if str(x)[:4]==year)
+            done=set(self.redis.get_json(self.early_feature_2025_validation_key("completed_sessions"),[]) or []);calls=int(self.redis.get_json(self.early_feature_2025_validation_key("alpaca_logical_requests"),0) or 0);self._set_early_feature_2025_validation_state(status="RUNNING",phase="VALIDATION_2025_RECONSTRUCTION",message=f"2025 locked validation {len(done)}/{len(sessions)} sessions",sessions_completed=len(done),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,validation_2025_opened=True,year_2026_opened=False,fresh_oos_opened=False)
+            for sess in sessions:
+                if sess in done:continue
+                src=[x for x in (self.redis.get_json(self.early_causal_entry_exec_key(f"observations:{sess}"),[]) or []) if int(x.get("checkpoint_minutes") or -1) in wins and x.get("class") in {"positive","hard_negative"} and x.get("symbol") and x.get("eval_ts")]
+                ev=[]
+                for x in src:
+                    try:ev.append((x,datetime.fromisoformat(str(x["eval_ts"]).replace("Z","+00:00"))))
+                    except Exception:pass
+                if not ev:self.redis.set_json(self.early_feature_2025_validation_key(f"records:{sess}"),[]);done.add(sess);self.redis.set_json(self.early_feature_2025_validation_key("completed_sessions"),sorted(done));continue
+                syms=sorted({str(x[0]["symbol"]).upper() for x in ev});rows,used=self._efr_fetch_1m(syms,date.fromisoformat(sess),min(dt for _,dt in ev)-timedelta(minutes=20),max(dt for _,dt in ev)+timedelta(minutes=1),budget-calls);calls+=used;self.redis.set_json(self.early_feature_2025_validation_key("alpaca_logical_requests"),calls);records=[]
+                for x,dt in ev:
+                    sym=str(x["symbol"]).upper();allfeat,diag=self._efr_features_from_1m(rows.get(sym,[]),dt);feat={f:allfeat[f] for f in features} if allfeat is not None and all(f in allfeat for f in features) else None;records.append({"session":sess,"year":2025,"symbol":sym,"class":x["class"],"checkpoint_minutes":int(x["checkpoint_minutes"]),"eval_ts":x["eval_ts"],"features":feat,"feature_available":feat is not None,"diagnostic":diag,"feature_definition_sha256":EARLY_FEATURE_RECONSTRUCTION_DEFINITION_SHA256})
+                self.redis.set_json(self.early_feature_2025_validation_key(f"records:{sess}"),records);done.add(sess);self.redis.set_json(self.early_feature_2025_validation_key("completed_sessions"),sorted(done))
+                if len(done)%10==0 or len(done)==len(sessions):self._set_early_feature_2025_validation_state(status="RUNNING",phase="VALIDATION_2025_RECONSTRUCTION",message=f"2025 locked validation reconstruction {len(done)}/{len(sessions)}",current_session=sess,sessions_completed=len(done),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,validation_2025_opened=True,year_2026_opened=False,fresh_oos_opened=False)
+            self._set_early_feature_2025_validation_state(status="RUNNING",phase="VALIDATION_2025_STATISTICS",message="Computing frozen 2025 validation statistics",sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=calls,validation_2025_opened=True,year_2026_opened=False,fresh_oos_opened=False)
+            symvals={};support={};coverage={};reasons={}
+            for sess in sessions:
+                for r in self.redis.get_json(self.early_feature_2025_validation_key(f"records:{sess}"),[]) or []:
+                    w=int(r.get("checkpoint_minutes") or -1);cl=str(r.get("class") or "");sym=str(r.get("symbol") or "").upper();feats=r.get("features") if r.get("feature_available") else None;reason=str((r.get("diagnostic") or {}).get("reason") or "unknown")
+                    if w not in wins or cl not in {"positive","hard_negative"} or not sym:continue
+                    for f in features:
+                        ck=(w,cl,f);cv=coverage.setdefault(ck,{"eligible":0,"available":0});cv["eligible"]+=1
+                        if feats is not None and f in feats and math.isfinite(float(feats[f])):
+                            cv["available"]+=1;support.setdefault((w,cl,f),{"events":0,"symbols":set()});support[(w,cl,f)]["events"]+=1;support[(w,cl,f)]["symbols"].add(sym);symvals.setdefault((w,cl,f),{}).setdefault(sym,[]).append(float(feats[f]))
+                        else:reasons[(w,cl,f,reason)]=reasons.get((w,cl,f,reason),0)+1
+            def means_for(key):return [mean(v) for v in symvals.get(key,{}).values() if v]
+            st=spec["statistics"];results=[]
+            for f in features:
+                for w in sorted(wins):
+                    a=means_for((w,"positive",f));b=means_for((w,"hard_negative",f));eff=self._efd_effect(a,b);direction="positive_gt_hard_negative" if (eff or 0)>0 else ("positive_lt_hard_negative" if (eff or 0)<0 else "tie");ps=support.get((w,"positive",f),{"events":0,"symbols":set()});hs=support.get((w,"hard_negative",f),{"events":0,"symbols":set()});su={"positive_events":ps["events"],"hard_negative_events":hs["events"],"positive_symbols":len(ps["symbols"]),"hard_negative_symbols":len(hs["symbols"])};passed=bool(direction==directions[f] and eff is not None and abs(eff)>=st["minimum_absolute_standardized_effect"] and su["positive_events"]>=st["minimum_positive_events"] and su["hard_negative_events"]>=st["minimum_hard_negative_events"] and su["positive_symbols"]>=st["minimum_positive_symbols"] and su["hard_negative_symbols"]>=st["minimum_hard_negative_symbols"]);results.append({"feature":f,"window_minutes":w,"frozen_direction":directions[f],"observed_direction":direction,"effect":eff,"support":su,"passes_2025":passed})
+            decision="VALIDATION_PASS" if len(results)==len(features)*len(wins) and all(r["passes_2025"] for r in results) else "VALIDATION_FAIL"
+            covout=[{"window_minutes":w,"class":cl,"feature":f,"eligible":v["eligible"],"available":v["available"],"unavailable":v["eligible"]-v["available"],"availability_rate":v["available"]/v["eligible"] if v["eligible"] else None} for (w,cl,f),v in sorted(coverage.items())];reasonout=[{"window_minutes":w,"class":cl,"feature":f,"reason":reason,"count":n} for (w,cl,f,reason),n in sorted(reasons.items())]
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":EARLY_FEATURE_2025_VALIDATION_SPEC_SHA256,"required_discovery_result_sha256":spec["required_discovery_result_sha256"],"status":"COMPLETED","phase":"FEATURE_LEVEL_2025_VALIDATION_STOP_REVIEW","validation_year":2025,"sessions":len(sessions),"alpaca_requests_made":calls,"alpaca_request_budget":budget,"promoted_features_frozen":spec["promoted_features"],"coverage_audit":{"cells":covout,"unavailability_reasons":reasonout,"note":"Descriptive only; no imputation and no change to frozen validation rule."},"validation_results":results,"decision":decision,"validation_2025_opened":True,"year_2026_opened":False,"fresh_oos_opened":False,"strategy_pass":False,"bot_authorized":False,"completed_at":iso()};canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();self.redis.set_json(self.early_feature_2025_validation_key("report"),report);self._set_early_feature_2025_validation_state(status="COMPLETED",phase="FEATURE_LEVEL_2025_VALIDATION_STOP_REVIEW",message=f"2025 {decision}; STOP REVIEW",decision=decision,sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=calls,alpaca_request_budget=budget,stop_and_review_required=True,validation_2025_opened=True,year_2026_opened=False,fresh_oos_opened=False)
+        except Exception as e:
+            logging.exception("2025 Locked Validation failed");self._set_early_feature_2025_validation_state(status="ERROR",phase="FEATURE_LEVEL_2025_VALIDATION_BLOCKED",message=f"{type(e).__name__}: {e}",validation_2025_opened=True,year_2026_opened=False,fresh_oos_opened=False)
+        finally:
+            with self.early_feature_2025_validation_lock:self.early_feature_2025_validation_thread=None
+
+    def start_early_feature_2025_validation(self):
+        ok,why=self._early_feature_2025_validation_gate()
+        if not ok:return False,why
+        old=self.redis.get_json(self.early_feature_2025_validation_key("report"),None)
+        if old and old.get("status")=="COMPLETED":return False,"already_completed"
+        with self.early_feature_2025_validation_lock:
+            if self.early_feature_2025_validation_thread and self.early_feature_2025_validation_thread.is_alive():return False,"already_running"
+            self.early_feature_2025_validation_thread=threading.Thread(target=self.early_feature_2025_validation_loop,name="early-feature-2025-validation",daemon=True);self.early_feature_2025_validation_thread.start()
+        return True,"started"
 
     def early_feature_discovery_stat_key(self, suffix: str) -> str:
         return self.key(f"early_feature_discovery_stat:v1:{suffix}")
@@ -9569,6 +9669,28 @@ def research_feature_discovery_stat_status():
 def research_feature_discovery_stat_result():
     x=radar.redis.get_json(radar.early_feature_discovery_stat_key("report"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/statistical-execution/status"}),202
+    return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/validation-2025/protocol")
+def research_feature_2025_validation_protocol():
+    allowed,reason=radar._early_feature_2025_validation_gate();dr=radar.redis.get_json(radar.early_feature_discovery_stat_key("report"),{}) if radar.redis.configured else {};calls=int(radar.redis.get_json(radar.early_feature_2025_validation_key("alpaca_logical_requests"),0) or 0) if radar.redis.configured else 0
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":EARLY_FEATURE_2025_VALIDATION_SPEC,"execution_spec_sha256":EARLY_FEATURE_2025_VALIDATION_SPEC_SHA256,"required_discovery_result_sha256":EARLY_FEATURE_2025_VALIDATION_SPEC["required_discovery_result_sha256"],"actual_discovery_result_sha256":dr.get("result_sha256"),"actual_promoted_features":dr.get("promoted_features"),"gate_allowed":allowed,"gate_reason":reason,"alpaca_authorized":bool(allowed),"alpaca_requests_made":calls,"alpaca_request_budget":EARLY_FEATURE_2025_VALIDATION_SPEC["reconstruction"]["logical_request_budget"],"validation_results_read_by_protocol":False,"validation_2025_opened":False,"year_2026_opened":False,"fresh_oos_opened":False})
+
+@app.route("/research/early-causal-entry/feature-level-discovery/validation-2025/start",methods=["GET","POST"])
+def research_feature_2025_validation_start():
+    ok,why=radar.start_early_feature_2025_validation()
+    return jsonify({"ok":ok,"status":"started" if ok else why,"status_url":"/research/early-causal-entry/feature-level-discovery/validation-2025/status","result_url":"/research/early-causal-entry/feature-level-discovery/validation-2025/result"}),(202 if ok else 409)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/validation-2025/status")
+def research_feature_2025_validation_status():
+    x=radar.redis.get_json(radar.early_feature_2025_validation_key("status"),None) if radar.redis.configured else None
+    with radar.early_feature_2025_validation_lock:out=dict(x or radar.early_feature_2025_validation_state);out["worker_alive"]=bool(radar.early_feature_2025_validation_thread and radar.early_feature_2025_validation_thread.is_alive())
+    return jsonify(out)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/validation-2025/result")
+def research_feature_2025_validation_result():
+    x=radar.redis.get_json(radar.early_feature_2025_validation_key("report"),None) if radar.redis.configured else None
+    if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/validation-2025/status"}),202
     return jsonify(x)
 
 @app.get("/research/early-causal-entry/feature-level-discovery/reconstruction/execution/protocol")
