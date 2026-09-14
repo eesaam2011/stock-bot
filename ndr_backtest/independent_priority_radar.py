@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.50"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-RESEARCH-PREFREEZE"
+VERSION = "1.7.50-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-ENTRY-CONFIRMATION-RESEARCH-PREFREEZE-R1-RUNTIME-ROUTE-BINDING-HOTFIX"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -11690,10 +11690,6 @@ def early_feature_top1_top3_entry_research_execution_result():
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/top1-top3-entry-research/execution/status"}),202
     return jsonify(x)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
-
-
 @app.get("/research/early-causal-entry/feature-level-discovery/entry-confirmation-research/prefreeze/protocol")
 def early_feature_entry_confirmation_research_prefreeze_protocol():
     spec=EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SPEC
@@ -11709,3 +11705,7 @@ def early_feature_entry_confirmation_research_prefreeze_protocol():
     ]
     allowed=all(ok for ok,_ in checks); reason="allowed" if allowed else next(msg for ok,msg in checks if not ok)
     return jsonify({"version":VERSION,"build":BUILD,"protocol":spec,"protocol_sha256":EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SHA256,"artifact_frozen":True,"actual_top1_top3_entry_research_result_sha256":prior.get("result_sha256"),"actual_top1_top3_entry_research_decision":prior.get("decision"),"gate_allowed":allowed,"gate_reason":reason,"confirmation_results_read_by_protocol":False,"execution_started":False,"alpaca_authorized":False,"alpaca_requests_made":0,"fresh_oos_opened":False,"post_2026_08_31_read":False,"ranking_baseline_frozen":True,"selection_rule_validated":False,"entry_rule_selected":False,"entry_rule_validated":False,"profitability_computed":False,"strategy_pass":False,"bot_authorized":False,"automatic_downstream_authorization":False})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
