@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.35"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-FEATURE-LEVEL-2026-REGIME-DATA-SHIFT-REVIEW"
+VERSION = "1.7.36"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-EQUAL-WEIGHT-RANKING-PROTOCOL-PREFREEZE"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -1039,6 +1039,42 @@ EARLY_FEATURE_2026_REGIME_REVIEW_SPEC = {
     "guardrails":{"open_2026_jan_aug_only":True,"no_session_after_2026_08_31":True,"no_fresh_oos":True,"no_post_2026_08_31_read":True,"no_reserve_features":True,"no_invalid_features":True,"no_reselection":True,"no_threshold_search":True,"no_interaction_search":True,"no_model_or_bot_change":True,"strategy_pass":False,"bot_authorized":False,"stop_and_review_required":True}
 }
 EARLY_FEATURE_2026_REGIME_REVIEW_SPEC_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_2026_REGIME_REVIEW_SPEC,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+
+
+EARLY_FEATURE_RANKING_PREFREEZE_SPEC = {
+    "protocol_id":"IPR-EARLY-FEATURE-EQUAL-WEIGHT-RANKING-PREFREEZE-2026-09-14-A",
+    "purpose":"Freeze one simple outcome-independent ranking construction before any ranking performance, threshold, trading, or Fresh OOS evaluation.",
+    "required_discovery_result_sha256":"1d961c83921ce451dc6100e40cb5780596cc173f44d0d0eab7f457ada49f57b0",
+    "required_2025_validation_result_sha256":"8d314542cedff0a0897a6e45c10bbf3b2524d6efd1f8322434c360a66b4af2f3",
+    "required_2026_regime_review_result_sha256":"cdd986fd7d54d0005c1562d2ae21d2f46e2363f1a8c47a65a409420e80bda17b",
+    "required_feature_definition_sha256":"f615c7181c78da91e89c6ac7fa8608958043a4e029c52c76954d39ceaaee6b71",
+    "features":[
+        {"feature":"discovery_range_pct","direction":"positive_gt_hard_negative","weight":1.0/3.0},
+        {"feature":"log_discovery_volume","direction":"positive_gt_hard_negative","weight":1.0/3.0},
+        {"feature":"return_5m_pct","direction":"positive_gt_hard_negative","weight":1.0/3.0}
+    ],
+    "windows_minutes":[30,60],
+    "window_policy":"30m and 60m are two separate ranking clocks. Neither window receives a larger weight and no best-window selection is permitted. No combined 30m/60m score is authorized by this freeze.",
+    "standardization":{
+        "reference_period":"2019-01-01 through 2024-12-31 Discovery only",
+        "labels_used_to_fit_reference":False,
+        "method":"For each Feature x Window, compute one mean and one population standard deviation from all causally available 2019-2024 reconstruction observations using equal-symbol weighting: each symbol contributes total weight 1 within that Feature x Window, divided equally across its available observations. Then z=(x-mean)/sd.",
+        "zero_or_nonfinite_sd":"Protocol error; do not score or substitute another scale.",
+        "no_2025_or_2026_reference_fitting":True,
+        "no_imputation":True
+    },
+    "ranking_formula":"For a window, rank_score = (z(discovery_range_pct) + z(log_discovery_volume) + z(return_5m_pct)) / 3. All frozen directions are positive_gt_hard_negative, so no sign inversion is required.",
+    "scoreability":"A ranking score exists only when all three frozen features are causally available at that window. No partial-score renormalization and no imputation.",
+    "ties":"Equal numeric scores remain ties; no outcome-informed tie breaker.",
+    "authorization":"This pre-freeze authorizes only a separate later ranking-construction execution that computes the frozen 2019-2024 standardization constants and score fields. It does not authorize reading ranking performance or selecting cutoffs.",
+    "forbidden":[
+        "performance-derived feature weights","inverse-variance or effect-size weights selected after observed outcomes","dropping discovery_range_pct@30m because of its 2026 effect","choosing 60m because it looked stronger","feature reselection","reserve features","interactions","threshold search","top-k optimization","entry/exit/stop/target optimization","profitability claims","Fresh OOS read"
+    ],
+    "guardrails":{
+        "alpaca_requests":False,"ranking_results_read":False,"ranking_threshold_defined":False,"strategy_pass":False,"bot_authorized":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"stop_and_review_after_freeze":True
+    }
+}
+EARLY_FEATURE_RANKING_PREFREEZE_SHA256=hashlib.sha256(json.dumps(EARLY_FEATURE_RANKING_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 # Objective source audit of the 20 names frozen in v1.7.29. No outcome/result data are read here.
 _EF_BAR_RECONSTRUCTABLE = {
@@ -5218,6 +5254,20 @@ class IndependentPriorityRadar:
             if self.early_feature_2026_regime_review_thread and self.early_feature_2026_regime_review_thread.is_alive():return False,"already_running"
             self.early_feature_2026_regime_review_thread=threading.Thread(target=self.early_feature_2026_regime_review_loop,name="early-feature-2026-regime-review",daemon=True);self.early_feature_2026_regime_review_thread.start()
         return True,"started"
+
+    def _early_feature_ranking_prefreeze_gate(self):
+        if not self.redis.configured:return False,"Redis required"
+        dr=self.redis.get_json(self.early_feature_discovery_stat_key("report"),{}) or {}
+        vr=self.redis.get_json(self.early_feature_2025_validation_key("report"),{}) or {}
+        rr=self.redis.get_json(self.early_feature_2026_regime_review_key("report"),{}) or {}
+        if dr.get("result_sha256")!=EARLY_FEATURE_RANKING_PREFREEZE_SPEC["required_discovery_result_sha256"]:return False,"Discovery result SHA mismatch"
+        if vr.get("status")!="COMPLETED" or vr.get("decision")!="VALIDATION_PASS" or vr.get("result_sha256")!=EARLY_FEATURE_RANKING_PREFREEZE_SPEC["required_2025_validation_result_sha256"]:return False,"2025 locked validation provenance mismatch"
+        if rr.get("status")!="COMPLETED" or rr.get("decision")!="DESCRIPTIVE_REVIEW_ONLY" or rr.get("result_sha256")!=EARLY_FEATURE_RANKING_PREFREEZE_SPEC["required_2026_regime_review_result_sha256"]:return False,"2026 regime review provenance mismatch"
+        if rr.get("post_2026_08_31_read") is not False or rr.get("fresh_oos_opened") is not False:return False,"Fresh OOS/post-Aug-31 lock failed"
+        expected=[{"direction":x["direction"],"feature":x["feature"]} for x in EARLY_FEATURE_RANKING_PREFREEZE_SPEC["features"]]
+        actual=[{"direction":x.get("direction"),"feature":x.get("feature")} for x in (rr.get("promoted_features_frozen") or [])]
+        if actual!=expected:return False,"Frozen promoted-feature provenance mismatch"
+        return True,"allowed"
 
     def early_feature_discovery_stat_key(self, suffix: str) -> str:
         return self.key(f"early_feature_discovery_stat:v1:{suffix}")
@@ -9803,6 +9853,14 @@ def research_feature_2025_validation_result():
     x=radar.redis.get_json(radar.early_feature_2025_validation_key("report"),None) if radar.redis.configured else None
     if not x:return jsonify({"result_ready":False,"status_url":"/research/early-causal-entry/feature-level-discovery/validation-2025/status"}),202
     return jsonify(x)
+
+@app.get("/research/early-causal-entry/feature-level-discovery/ranking-prefreeze/protocol")
+def research_feature_ranking_prefreeze_protocol():
+    allowed,reason=radar._early_feature_ranking_prefreeze_gate()
+    rr=radar.redis.get_json(radar.early_feature_2026_regime_review_key("report"),{}) if radar.redis.configured else {}
+    vr=radar.redis.get_json(radar.early_feature_2025_validation_key("report"),{}) if radar.redis.configured else {}
+    dr=radar.redis.get_json(radar.early_feature_discovery_stat_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"protocol":EARLY_FEATURE_RANKING_PREFREEZE_SPEC,"protocol_sha256":EARLY_FEATURE_RANKING_PREFREEZE_SHA256,"gate_allowed":allowed,"gate_reason":reason,"actual_discovery_result_sha256":dr.get("result_sha256"),"actual_2025_validation_result_sha256":vr.get("result_sha256"),"actual_2026_regime_review_result_sha256":rr.get("result_sha256"),"alpaca_authorized":False,"alpaca_requests_made":0,"ranking_results_read":False,"ranking_threshold_defined":False,"fresh_oos_opened":False,"post_2026_08_31_read":False,"automatic_downstream_authorization":False})
 
 @app.get("/research/early-causal-entry/feature-level-discovery/regime-review-2026/protocol")
 def research_feature_2026_regime_review_protocol():
