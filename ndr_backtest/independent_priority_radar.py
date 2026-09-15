@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.61"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-RANK-STRUCTURE-PREFREEZE-A"
+VERSION = "1.7.62"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-RANK-STRUCTURE-EXECUTION-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13519,6 +13519,136 @@ def backward_oos_2018_h1_rank_structure_prefreeze_protocol():
     ok,why=_boos18h1_rank_prefreeze_gate()
     u=radar.redis.get_json(_boos18h1u_key("report"),{}) if radar.redis.configured else {}
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_uncertainty_result_sha256":u.get("result_sha256"),"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","execution_started":False,"rank_outcomes_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Protocol-only rank-structure pre-freeze. No Start endpoint exists in v1.7.61 by design."})
+
+
+# -----------------------------------------------------------------------------
+# v1.7.62 — 2018 H1 Post-Failure Diagnostic: Rank Structure Execution
+# Executes only the v1.7.61 pre-frozen rank contrast. Redis-only; STOP_REVIEW.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SPEC = {
+    "execution_id":"IPR-2018-H1-POST-FAILURE-RANK-STRUCTURE-EXECUTION-2026-09-15-A",
+    "required_prefreeze_sha256":"762bff8c5ee26cebc3e0029178099724dfe0bf38c371e3d6bc72e535aba17cae",
+    "required_uncertainty_result_sha256":"7853bd2cbf66a907d72118923646715925322f1dbc8062f44538b102c3be1d4e",
+    "required_h1_result_sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL",
+    "formal_decision_is_immutable":True,
+    "scope":{"period":["2018-01-01","2018-12-31"],"window_minutes":30,"selection":"top_3","expected_sessions":251,"expected_records_top3":746,"expected_baseline_evaluable":613,"expected_h1_count":203},
+    "primary_contrast":{"left":"rank_1","right":"pooled_rank_2_3","estimand":"H1 primary-improvement(rank_1) minus H1 primary-improvement(pooled rank_2_3)"},
+    "primary_definition":"Within each rank group, primary improvement = H1 primary minus Baseline primary, where primary = TARGET_FIRST rate - ADVERSE_FIRST rate.",
+    "descriptive_groups":["rank_1","rank_2","rank_3"],
+    "method":{"unit_of_resampling":"trading_session","bootstrap":"nonparametric cluster bootstrap; resample whole sessions with replacement and keep all eligible rank records from each sampled session together","replicates":50000,"seed":17612018,"confidence_level":0.95,"interval":"two-sided percentile interval (2.5th, 97.5th percentiles)","empty_arm_policy":"discard a replicate for the primary contrast if any denominator required by that contrast is zero"},
+    "decision_rule":{"structural_rank_separation":"point estimate is positive AND 95% session-cluster bootstrap interval excludes zero","no_established_rank_separation":"interval includes zero OR point estimate is non-positive"},
+    "stop_rule":"STOP_REVIEW immediately after the pre-frozen rank report. No alternative rank cuts, TARGET/ADVERSE decomposition, temporal-stability analysis, thresholds, timings, features, H2, profitability, or bot decision are computed.",
+    "firewall":{"alpaca_requests":False,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"top1_promoted":False,"alternative_rank_contrasts":False,"target_adverse_diagnostic":False,"temporal_stability_diagnostic":False,"new_features":False,"successor_hypothesis_created":False,"profitability_claim":False,"bot_authorized":False},
+}
+BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2018_H1_RANK_STRUCTURE_LOCK=threading.RLock();BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD=None
+BACKWARD_OOS_2018_H1_RANK_STRUCTURE_STATE={"status":"IDLE","phase":"NOT_STARTED","message":"Rank-structure execution has not started","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"updated_at":iso()}
+def _boos18h1r_key(suffix:str)->str:return radar.key(f"backward_oos_2018_h1_rank_structure:v1:{suffix}")
+def _boos18h1r_set(**u:Any)->None:
+    global BACKWARD_OOS_2018_H1_RANK_STRUCTURE_STATE
+    with BACKWARD_OOS_2018_H1_RANK_STRUCTURE_LOCK:
+        BACKWARD_OOS_2018_H1_RANK_STRUCTURE_STATE={**BACKWARD_OOS_2018_H1_RANK_STRUCTURE_STATE,**u,"updated_at":iso(),"alpaca_requests_made":0,"fresh_forward_oos_opened":False}
+        snap=dict(BACKWARD_OOS_2018_H1_RANK_STRUCTURE_STATE)
+    if radar.redis.configured:radar.redis.set_json(_boos18h1r_key("status"),snap)
+def _boos18h1r_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    s=BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SPEC
+    if BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SHA256!=s["required_prefreeze_sha256"]:return False,"v1.7.61 prefreeze SHA mismatch"
+    ok,why=_boos18h1_rank_prefreeze_gate()
+    if not ok:return False,f"v1.7.61 prefreeze gate failed: {why}"
+    u=radar.redis.get_json(_boos18h1u_key("report"),{}) or {}
+    if u.get("result_sha256")!=s["required_uncertainty_result_sha256"]:return False,"v1.7.60 result SHA mismatch"
+    if u.get("required_h1_result_sha256")!=s["required_h1_result_sha256"]:return False,"v1.7.58 H1 provenance mismatch"
+    sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+    if len(sessions)!=251 or len(set(sessions))!=251 or any(not str(x).startswith("2018-") for x in sessions):return False,"exact frozen 251-session list required"
+    return True,"allowed"
+def _boos18h1r_session_matrix(sessions:list[str])->tuple[np.ndarray,dict[str,Any]]:
+    # Per group (rank1, rank2, rank3): baseline_n,target,adverse,h1_n,target,adverse.
+    a=np.zeros((len(sessions),18),dtype=np.int64);rank_counts={"rank_1":0,"rank_2":0,"rank_3":0};tot={"records_top3":0,"baseline_evaluable":0,"h1_count":0}
+    for i,sess in enumerate(sessions):
+        rows=radar.redis.get_json(_boos18h1x_key(f"records:{sess}"),[]) or []
+        rs=[r for r in rows if int(r.get("window_minutes") or -1)==30 and 1<=int(r.get("within_session_rank") or 99)<=3]
+        tot["records_top3"]+=len(rs)
+        for rank in (1,2,3):
+            rr=[r for r in rs if int(r.get("within_session_rank") or 99)==rank];rank_counts[f"rank_{rank}"]+=len(rr)
+            ev=[r for r in rr if (r.get("measurement") or {}).get("evaluable")]
+            h1=[r for r in ev if (r.get("measurement") or {}).get("h1_accept") is True]
+            def c(x,order):return sum(1 for r in x if (r.get("measurement") or {}).get("primary_path_ordering")==order)
+            j=(rank-1)*6;a[i,j:j+6]=[len(ev),c(ev,"TARGET_FIRST"),c(ev,"ADVERSE_FIRST"),len(h1),c(h1,"TARGET_FIRST"),c(h1,"ADVERSE_FIRST")]
+            tot["baseline_evaluable"]+=len(ev);tot["h1_count"]+=len(h1)
+    tot["records_by_rank"]=rank_counts
+    return a,tot
+def _boos18h1r_group_stats(v:np.ndarray,ranks:tuple[int,...])->dict[str,float|int]:
+    z=np.zeros(6,dtype=np.int64)
+    for rank in ranks:z+=v[:,(rank-1)*6:rank*6].sum(axis=0)
+    bn,bt,ba,hn,ht,ha=(int(x) for x in z)
+    if bn<=0 or hn<=0:return {"baseline_n":bn,"h1_n":hn,"valid":False}
+    bp=(bt-ba)/bn;hp=(ht-ha)/hn
+    return {"baseline_n":bn,"baseline_target_first":bt,"baseline_adverse_first":ba,"baseline_primary":bp,"h1_n":hn,"h1_target_first":ht,"h1_adverse_first":ha,"h1_primary":hp,"primary_improvement":hp-bp,"valid":True}
+def _boos18h1r_contrast(v:np.ndarray)->float:
+    l=_boos18h1r_group_stats(v,(1,));r=_boos18h1r_group_stats(v,(2,3))
+    if not l.get("valid") or not r.get("valid"):return float("nan")
+    return float(l["primary_improvement"])-float(r["primary_improvement"])
+def _boos18h1r_worker()->None:
+    global BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD
+    try:
+        ok,why=_boos18h1r_gate()
+        if not ok:raise RuntimeError(why)
+        spec=BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SPEC;scope=spec["scope"];method=spec["method"]
+        sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+        _boos18h1r_set(status="RUNNING",phase="RANK_STRUCTURE_CLUSTER_BOOTSTRAP",message="Reading frozen 2018 Redis records; no market-data requests")
+        a,tot=_boos18h1r_session_matrix(sessions)
+        if tot["records_top3"]!=scope["expected_records_top3"]:raise RuntimeError(f"Top3 record mismatch: {tot['records_top3']}")
+        if tot["baseline_evaluable"]!=scope["expected_baseline_evaluable"]:raise RuntimeError(f"baseline evaluable mismatch: {tot['baseline_evaluable']}")
+        if tot["h1_count"]!=scope["expected_h1_count"]:raise RuntimeError(f"H1 count mismatch: {tot['h1_count']}")
+        point=_boos18h1r_contrast(a)
+        groups={f"rank_{r}":_boos18h1r_group_stats(a,(r,)) for r in (1,2,3)};pooled=_boos18h1r_group_stats(a,(2,3))
+        reps=int(method["replicates"]);rng=np.random.default_rng(int(method["seed"]));vals=[];n=len(sessions);chunk=1000
+        for start in range(0,reps,chunk):
+            k=min(chunk,reps-start);idx=rng.integers(0,n,size=(k,n))
+            for vv in a[idx]:
+                x=_boos18h1r_contrast(vv)
+                if math.isfinite(x):vals.append(x)
+        vals=np.asarray(vals,dtype=float);discarded=reps-len(vals)
+        if len(vals)==0:raise RuntimeError("all bootstrap replicates discarded")
+        lo,hi=(float(x) for x in np.quantile(vals,[0.025,0.975]))
+        structural=bool(point>0.0 and not (lo<=0.0<=hi))
+        classification="STRUCTURAL_RANK_SEPARATION" if structural else "NO_ESTABLISHED_RANK_SEPARATION"
+        report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"required_uncertainty_result_sha256":spec["required_uncertainty_result_sha256"],"required_h1_result_sha256":spec["required_h1_result_sha256"],"status":"COMPLETED","phase":"STOP_REVIEW","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","formal_h1_decision_immutable":True,"research_status":"POST_HOC_DESCRIPTIVE_DIAGNOSTIC_ONLY","sessions":len(sessions),"session_clusters":len(sessions),"source":"frozen v1.7.58 Redis detailed records only","source_counts":tot,"descriptive_rank_groups":groups,"pooled_rank_2_3":pooled,"primary_contrast":{"estimand":spec["primary_contrast"]["estimand"],"absolute":float(point),"percentage_points":float(point*100.0),"ci_lower_absolute":lo,"ci_upper_absolute":hi,"ci_lower_percentage_points":lo*100.0,"ci_upper_percentage_points":hi*100.0,"zero_inside_interval":bool(lo<=0.0<=hi),"confidence_level":method["confidence_level"],"method":"session-cluster nonparametric bootstrap percentile CI","replicates_requested":reps,"replicates_used":int(len(vals)),"replicates_discarded":int(discarded),"seed":method["seed"]},"diagnostic_classification":classification,"interpretation":("Pre-frozen primary contrast shows structural rank separation; candidate evidence only. H1 remains FAIL and Top1 is not promoted." if structural else "Pre-frozen primary contrast does not establish structural rank separation. Close the specific Rank2/3-weaker interpretation; do not search alternative rank cuts."),"next_step":"STOP_REVIEW before any TARGET/ADVERSE, temporal-stability, or successor-hypothesis diagnostic.","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"top1_promoted":False,"alternative_rank_contrasts_computed":False,"target_adverse_diagnostic_computed":False,"temporal_stability_diagnostic_computed":False,"successor_hypothesis_created":False,"profitability_computed":False,"bot_authorized":False}
+        report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        radar.redis.set_json(_boos18h1r_key("report"),report)
+        _boos18h1r_set(status="COMPLETED",phase="STOP_REVIEW",message="Rank-structure diagnostic completed; STOP REVIEW",result_sha256=report["result_sha256"],formal_h1_decision="H1_BACKWARD_OOS_FAIL",diagnostic_classification=classification,session_clusters=len(sessions),stop_and_review_required=True)
+    except Exception as exc:
+        logging.exception("2018 H1 rank-structure diagnostic failed");_boos18h1r_set(status="ERROR",phase="BLOCKED",message="Rank-structure diagnostic failed closed",last_error=f"{type(exc).__name__}: {exc}",stop_and_review_required=True)
+    finally:
+        with BACKWARD_OOS_2018_H1_RANK_STRUCTURE_LOCK:BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD=None
+def _boos18h1r_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD
+    ok,why=_boos18h1r_gate()
+    if not ok:return False,why
+    existing=radar.redis.get_json(_boos18h1r_key("report"),None) if radar.redis.configured else None
+    if isinstance(existing,dict) and existing.get("status")=="COMPLETED":return False,"already_completed"
+    with BACKWARD_OOS_2018_H1_RANK_STRUCTURE_LOCK:
+        if BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD and BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD=threading.Thread(target=_boos18h1r_worker,name="ipr-2018-h1-rank-structure",daemon=True);BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD.start()
+    return True,"started"
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure/protocol")
+def backward_oos_2018_h1_rank_structure_protocol():
+    ok,why=_boos18h1r_gate();return jsonify({"version":VERSION,"build":BUILD,"execution_spec":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SPEC,"execution_spec_sha256":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SHA256,"required_prefreeze_sha256":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_EXECUTION_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","rank_outcomes_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Execution is limited to the exact v1.7.61 pre-frozen rank contrast."})
+@app.route("/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure/start",methods=["GET","POST"])
+def backward_oos_2018_h1_rank_structure_start():
+    ok,why=_boos18h1r_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure/status","result_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure/result","alpaca_requests_made":0,"fresh_forward_oos_opened":False}),(202 if ok else 409)
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure/status")
+def backward_oos_2018_h1_rank_structure_status():
+    p=radar.redis.get_json(_boos18h1r_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2018_H1_RANK_STRUCTURE_LOCK:o=dict(p or BACKWARD_OOS_2018_H1_RANK_STRUCTURE_STATE);o["worker_alive"]=bool(BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD and BACKWARD_OOS_2018_H1_RANK_STRUCTURE_THREAD.is_alive())
+    return jsonify(o)
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure/result")
+def backward_oos_2018_h1_rank_structure_result():
+    r=radar.redis.get_json(_boos18h1r_key("report"),None) if radar.redis.configured else None
+    if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure/status","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","fresh_forward_oos_opened":False}),202
+    return jsonify(r)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
