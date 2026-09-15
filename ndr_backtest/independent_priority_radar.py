@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.60"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-POST-FAILURE-UNCERTAINTY-DIAGNOSTIC-A"
+VERSION = "1.7.61"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-RANK-STRUCTURE-PREFREEZE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13474,6 +13474,51 @@ def backward_oos_2018_h1_uncertainty_result():
     r=radar.redis.get_json(_boos18h1u_key("report"),None) if radar.redis.configured else None
     if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/status","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","fresh_forward_oos_opened":False}),202
     return jsonify(r)
+
+
+# -----------------------------------------------------------------------------
+# v1.7.61 — 2018 H1 Post-Failure Diagnostic: Rank Structure Pre-Freeze
+# Protocol only. No rank outcome is computed in this release.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SPEC = {
+    "prefreeze_id":"IPR-2018-H1-POST-FAILURE-RANK-STRUCTURE-PREFREEZE-2026-09-15-A",
+    "required_uncertainty_result_sha256":"7853bd2cbf66a907d72118923646715925322f1dbc8062f44538b102c3be1d4e",
+    "required_uncertainty_spec_sha256":"af73186c42ad73a8b815f3117e1194029ca1ce28a472ab827cb7c943260c1bd5",
+    "required_h1_result_sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL",
+    "formal_decision_is_immutable":True,
+    "research_status":"POST_HOC_DESCRIPTIVE_DIAGNOSTIC_ONLY",
+    "question":"Does the weaker 30m/Top3 aggregate reflect a pre-specified rank structure, especially a stronger Rank1 effect than pooled Rank2/3, when within-session dependence is respected?",
+    "scope":{"period":["2018-01-01","2018-12-31"],"window_minutes":30,"selection":"top_3","expected_sessions":251,"expected_records_top3":746,"expected_baseline_evaluable":613,"expected_h1_count":203},
+    "rank_groups":{"primary_contrast":{"left":"rank_1","right":"pooled_rank_2_3","estimand":"H1 primary-improvement(rank_1) minus H1 primary-improvement(pooled rank_2_3)"},"descriptive_groups":["rank_1","rank_2","rank_3"],"no_posthoc_alternative_contrasts":True},
+    "primary_definition":"Within each rank group, primary improvement = H1 primary minus Baseline primary, where primary = TARGET_FIRST rate - ADVERSE_FIRST rate.",
+    "method":{"unit_of_resampling":"trading_session","bootstrap":"nonparametric cluster bootstrap; resample whole sessions with replacement and keep all eligible rank records from each sampled session together","replicates":50000,"seed":17612018,"confidence_level":0.95,"interval":"two-sided percentile interval (2.5th, 97.5th percentiles)","empty_arm_policy":"discard a replicate for a contrast if any denominator required by that contrast is zero","raw_rates_alone_are_not_sufficient":True},
+    "predeclared_interpretation":{"structural_rank_separation":"Primary Rank1-minus-pooled-Rank2/3 contrast is positive and its 95% session-cluster bootstrap interval excludes zero.","no_established_rank_separation":"The primary contrast interval includes zero or the point estimate is non-positive.","important_limit":"Even structural rank separation is only candidate evidence for a successor hypothesis; it does not validate H1, authorize Top1-only selection, or create H2 automatically.","if_structural_rank_separation":"STOP_REVIEW; retain as candidate evidence only, then separately pre-freeze the remaining TARGET/ADVERSE and temporal-stability diagnostics before deciding whether any successor H2 is justified.","if_no_established_rank_separation":"STOP_REVIEW; close the specific interpretation that Rank2/3 are established as structurally weaker in this diagnostic. Do not search alternative rank cuts to rescue it; only then consider the next separately pre-frozen diagnostic question."},
+    "stop_rule":"This release is protocol/pre-freeze only. No rank metrics, bootstrap outcomes, TARGET/ADVERSE decomposition, temporal-stability analysis, threshold search, timing search, feature search, H2, or bot decision is computed.",
+    "firewall":{"alpaca_requests":False,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"top1_promoted":False,"rank_outcomes_computed":False,"target_adverse_diagnostic":False,"temporal_stability_diagnostic":False,"new_features":False,"successor_hypothesis_created":False,"profitability_claim":False,"bot_authorized":False},
+    "protocol_only":True,
+}
+BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+def _boos18h1_rank_prefreeze_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    u=radar.redis.get_json(_boos18h1u_key("report"),{}) or {}
+    s=BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SPEC
+    if u.get("status")!="COMPLETED" or u.get("phase")!="STOP_REVIEW":return False,"completed v1.7.60 STOP_REVIEW result required"
+    if u.get("result_sha256")!=s["required_uncertainty_result_sha256"]:return False,"v1.7.60 result SHA mismatch"
+    if u.get("diagnostic_spec_sha256")!=s["required_uncertainty_spec_sha256"]:return False,"v1.7.60 diagnostic-spec SHA mismatch"
+    if u.get("required_h1_result_sha256")!=s["required_h1_result_sha256"]:return False,"v1.7.58 H1 provenance mismatch"
+    if u.get("formal_h1_decision")!="H1_BACKWARD_OOS_FAIL" or u.get("formal_h1_decision_immutable") is not True:return False,"immutable H1 FAIL required"
+    if u.get("session_clusters")!=251 or u.get("sessions")!=251:return False,"exact 251 session clusters required"
+    c=u.get("source_counts") or {}
+    if c.get("records_top3")!=746 or c.get("baseline_evaluable")!=613 or c.get("h1_count")!=203:return False,"v1.7.60 frozen source counts mismatch"
+    if u.get("alpaca_requests_made")!=0 or u.get("fresh_forward_oos_opened") is not False or u.get("post_2018_market_data_read") is not False:return False,"data firewall provenance failed"
+    if u.get("rank_diagnostic_computed") is not False or u.get("target_adverse_diagnostic_computed") is not False or u.get("temporal_stability_diagnostic_computed") is not False:return False,"v1.7.60 STOP boundary provenance failed"
+    return True,"allowed"
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure-prefreeze/protocol")
+def backward_oos_2018_h1_rank_structure_prefreeze_protocol():
+    ok,why=_boos18h1_rank_prefreeze_gate()
+    u=radar.redis.get_json(_boos18h1u_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_H1_RANK_STRUCTURE_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_uncertainty_result_sha256":u.get("result_sha256"),"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","execution_started":False,"rank_outcomes_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Protocol-only rank-structure pre-freeze. No Start endpoint exists in v1.7.61 by design."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
