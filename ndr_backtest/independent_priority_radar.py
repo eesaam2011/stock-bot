@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.66"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-TEMPORAL-STABILITY-EXECUTION-A"
+VERSION = "1.7.67"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-EVIDENCE-CONSOLIDATION-FREEZE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -14058,6 +14058,95 @@ def backward_oos_2018_h1_temporal_stability_result():
     r=radar.redis.get_json(_boos18h1ts_key("report"),None) if radar.redis.configured else None
     if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability/status","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","fresh_forward_oos_opened":False}),202
     return jsonify(r)
+
+
+# =============================================================================
+# v1.7.67 — H1 Evidence Consolidation / Post-Diagnostic Freeze
+# Ledger-only: no recomputation, no meta-analysis, no new hypothesis.
+# =============================================================================
+BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SPEC = {
+    "freeze_id":"IPR-2018-H1-POST-DIAGNOSTIC-EVIDENCE-CONSOLIDATION-FREEZE-2026-09-15-A",
+    "research_status":"POST_HOC_DESCRIPTIVE_EVIDENCE_LEDGER_ONLY",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL",
+    "formal_decision_is_immutable":True,
+    "purpose":"Freeze the original H1 result and all four authorized post-failure diagnostics as separate evidence items without combining them into a new statistical result.",
+    "required_results":{
+        "h1_backward_oos":{"sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa","decision":"H1_BACKWARD_OOS_FAIL"},
+        "uncertainty_first":{"sha256":"7853bd2cbf66a907d72118923646715925322f1dbc8062f44538b102c3be1d4e","classification":"STOP_REVIEW"},
+        "rank_structure":{"sha256":"2b5f80bffb42d7cc0061a5d2627672e659874d519a2b87d622375c70d727ce45","classification":"NO_ESTABLISHED_RANK_SEPARATION"},
+        "target_adverse":{"sha256":"5d414991d494204f3c17a4b2b52d8c1dc52002d907bbea0e730c73f9b68b5b4f","classification":"NEITHER_COMPONENT_ESTABLISHED"},
+        "temporal_stability":{"sha256":"7cec8eb9225d7d219ccf4613e4edcdc366e6c85656da3ce8175dafabc75c50e0","classification":"TEMPORAL_BREADTH_UNRESOLVED"}
+    },
+    "frozen_facts":{
+        "h1_backward_oos":{
+            "views":4,"primary_improvement_positive_views":4,"all_mandatory_gates_passed_views":3,
+            "sole_formal_failure":{"view":"30m/Top3","primary_improvement_percentage_points":4.6159162320494385,"required_percentage_points":5.0,"shortfall_percentage_points":0.3840837679505615},
+            "other_primary_improvements_percentage_points":{"30m/Top1":12.9298,"60m/Top1":8.314,"60m/Top3":5.705}
+        },
+        "uncertainty_first":{
+            "view":"30m/Top3","point_percentage_points":4.6159162320494385,"ci95_percentage_points":[-3.0498,12.0653],"zero_inside":True,"frozen_5pp_gate_inside":True,
+            "meaning":"The near-miss magnitude is uncertain; this diagnostic does not establish a positive effect in the failed view."
+        },
+        "rank_structure":{
+            "primary_contrast":"Rank1 minus pooled Rank2/3 H1 primary-improvement","point_percentage_points":13.10425,"ci95_percentage_points":[-4.05965,30.49481],"zero_inside":True,
+            "descriptive_rank_improvements_percentage_points":{"rank1":12.9298,"rank2":6.1356,"rank3":-5.3669,"pooled_rank2_3":-0.1744},
+            "meaning":"The descriptive rank gradient is not statistically established under the pre-frozen contrast."
+        },
+        "target_adverse":{
+            "delta_target_percentage_points":1.808114819309059,"delta_target_ci95_percentage_points":[-3.2129806763719335,6.948518582671405],
+            "delta_adverse_reduction_percentage_points":2.8078014127403765,"delta_adverse_ci95_percentage_points":[-1.891836249449892,7.47676230679128],
+            "identity_sum_percentage_points":4.615916232049436,"classification":"NEITHER_COMPONENT_ESTABLISHED",
+            "meaning":"Both point estimates move in the improvement direction, but neither component is established separately."
+        },
+        "temporal_stability":{
+            "partition":"CALENDAR_QUARTERS","quarter_primary_improvements_percentage_points":[1.2611464968152881,7.547169811320756,8.076422058184974,1.7735849056603803],
+            "M_minimum_percentage_points":1.2611464968152881,"M_ci95_percentage_points":[-15.131637996191808,5.8064993495876775],"zero_inside":True,
+            "classification":"TEMPORAL_BREADTH_UNRESOLVED","meaning":"All four quarter point estimates are positive, but temporal breadth is unresolved; this is uncertainty, not established stability or instability."
+        }
+    },
+    "frozen_uncertainties":[
+        "The 30m/Top3 failed-view primary effect is not established because its session-cluster interval includes zero.",
+        "Rank1 versus pooled Rank2/3 structural separation is not established.",
+        "Neither TARGET_FIRST increase nor ADVERSE_FIRST reduction is established as an individual component.",
+        "Temporal breadth is unresolved; positive quarter point estimates do not establish temporal stability."
+    ],
+    "prohibited_aggregation":{
+        "meta_analysis":False,"vote_or_score":False,"combined_p_value":False,"combined_confidence_interval":False,"new_bootstrap":False,"new_effect_size":False,"overall_evidence_grade":False,
+        "note":"No 3/4, 4/4, weighted score, pooled effect, or synthetic significance claim may be created from these dependent diagnostics."
+    },
+    "firewall":{
+        "alpaca_requests":False,"market_data_requests":False,"fresh_forward_oos_opened":False,"h1_reclassified":False,"h1_recomputed":False,"diagnostics_recomputed":False,"thresholds_tuned":False,"ranking_changed":False,"new_features":False,"successor_hypothesis_created":False,"next_research_path_selected":False,"profitability_claim":False,"bot_authorized":False
+    },
+    "next_research_path":"UNDECIDED — this freeze authorizes no additional historical year, no 2018 redesign, no H2, and no Fresh Forward OOS. Any next path requires a separate explicit decision and its own pre-freeze/capability checks where applicable.",
+    "stop_rule":"BRANCH_CLOSED_FOR_REVIEW after this evidence freeze. No automatic continuation is authorized."
+}
+BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SHA256 = hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+def _boos18h1ec_gate()->tuple[bool,str,dict[str,Any]]:
+    audit={}
+    if not radar.redis.configured:return False,"redis_not_configured",audit
+    checks=[
+        ("h1_backward_oos",_boos18h1x_key("report"),"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa","result_sha256"),
+        ("uncertainty_first",_boos18h1u_key("report"),"7853bd2cbf66a907d72118923646715925322f1dbc8062f44538b102c3be1d4e","result_sha256"),
+        ("rank_structure",_boos18h1r_key("report"),"2b5f80bffb42d7cc0061a5d2627672e659874d519a2b87d622375c70d727ce45","result_sha256"),
+        ("target_adverse",_boos18h1ta_key("report"),"5d414991d494204f3c17a4b2b52d8c1dc52002d907bbea0e730c73f9b68b5b4f","result_sha256"),
+        ("temporal_stability",_boos18h1ts_key("report"),"7cec8eb9225d7d219ccf4613e4edcdc366e6c85656da3ce8175dafabc75c50e0","result_sha256")]
+    for name,key,expected,field in checks:
+        r=radar.redis.get_json(key,None);actual=(r or {}).get(field);audit[name]={"expected_sha256":expected,"actual_sha256":actual,"matched":actual==expected}
+        if actual!=expected:return False,f"{name}_result_sha_mismatch",audit
+    # Semantic decision/classification guards, without recomputation.
+    h=radar.redis.get_json(_boos18h1x_key("report"),{}) or {};u=radar.redis.get_json(_boos18h1u_key("report"),{}) or {};rr=radar.redis.get_json(_boos18h1r_key("report"),{}) or {};ta=radar.redis.get_json(_boos18h1ta_key("report"),{}) or {};ts=radar.redis.get_json(_boos18h1ts_key("report"),{}) or {}
+    if h.get("decision")!="H1_BACKWARD_OOS_FAIL":return False,"h1_formal_decision_mismatch",audit
+    if rr.get("diagnostic_classification")!="NO_ESTABLISHED_RANK_SEPARATION":return False,"rank_classification_mismatch",audit
+    if ta.get("diagnostic_classification")!="NEITHER_COMPONENT_ESTABLISHED":return False,"target_adverse_classification_mismatch",audit
+    if ts.get("diagnostic_classification")!="TEMPORAL_BREADTH_UNRESOLVED":return False,"temporal_classification_mismatch",audit
+    if u.get("status")!="COMPLETED" or u.get("phase")!="STOP_REVIEW":return False,"uncertainty_status_mismatch",audit
+    return True,"allowed",audit
+
+@app.get("/research/2018-backward-oos/h1-post-diagnostic-evidence-freeze/protocol")
+def backward_oos_2018_h1_post_diagnostic_evidence_freeze_protocol():
+    ok,why,audit=_boos18h1ec_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"freeze_spec":BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SPEC,"freeze_spec_sha256":BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"source_sha_audit":audit,"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","formal_h1_decision_immutable":True,"evidence_items":5,"post_failure_diagnostics":4,"new_statistics_computed":False,"meta_analysis_computed":False,"next_research_path_selected":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"protocol_only":True,"execution_started":False,"note":"Evidence ledger / freeze only. No Start endpoint exists in v1.7.67."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
