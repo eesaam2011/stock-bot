@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.72"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-CENSUS-PHASE0B-CONTROLS-A"
+VERSION = "1.7.73"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-H1-HISTORICAL-REPLICATION-PREFREEZE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -14879,6 +14879,122 @@ def historical_replication_2017_execution_result():
     if not r:return jsonify({"result_ready":False,"status_url":"/research/2017-historical-replication/execution/status","h1_computed":False,"h1_execution_allowed":False,"fresh_forward_oos_opened":False}),202
     return jsonify(r)
 
+
+
+# -----------------------------------------------------------------------------
+# v1.7.73 — 2017 H1 Historical Replication Pre-Freeze (PROTOCOL ONLY)
+# Freezes the exact H1 and gates before any 2017 H1 feature/outcome read.
+# No H1 Start endpoint exists by design.
+# -----------------------------------------------------------------------------
+H1_2017_HISTORICAL_REPLICATION_PREFREEZE_SPEC = {
+    "prefreeze_id":"IPR-2017-H1-HISTORICAL-REPLICATION-PREFREEZE-2026-09-15-A",
+    "status":"FROZEN_PROTOCOL_ONLY",
+    "required_2017_sample_controls_result_sha256":"623cb0867c6f16a9eb1e23263a2580ad94f6cded222984005e9353805ed16cd8",
+    "required_2017_sample_controls_decision":"2017_SAMPLE_AND_CONTROLS_READY_H1_STILL_LOCKED",
+    "required_2017_execution_spec_sha256":"df14e99d8b58fe50f99a306f1771393f86f8b33330c3e791ad5ddd14f8e86c34",
+    "required_2017_sampling_parity_sha256":"5175e89a25256c65e813a8df3855831bf08f04ec2b90cbddad3b497da451cca2",
+    "required_sample_support":{"passed":True,"min_positive_events":537,"min_positive_symbols":100},
+    "independence_scope":{
+        "validation_period":["2017-01-01","2017-12-31"],
+        "label":"Independent Historical Replication — Observed Historical SIP Universe",
+        "2017_is_only_additional_historical_h1_year":True,
+        "no_automatic_2016_or_earlier":True,
+        "pooled_2017_2018_replication_test_authorized":False,
+        "regime_dependence_claim_authorized":False,
+        "fresh_forward_oos_remains_locked":True,
+    },
+    "frozen_h1":{
+        "feature":"close_location_in_post_t0_range",
+        "feature_definition":"(confirmation close - post-t0 min low)/(post-t0 max high - post-t0 min low), clipped [0,1]",
+        "direction":"<=",
+        "threshold":0.3333333333333333,
+        "confirmation_time":"close of the first completed 1-minute candle after t0 (t0 + 1 minute)",
+        "missing_policy":"Exact t0 and exact t0+1m confirmation bars are required. Missing is excluded from both H1 and Baseline evaluable denominators and reported; no imputation.",
+        "no_mutation":True,
+        "parity_source":"Exact H1 semantics frozen before 2018 in v1.7.57; no 2017 threshold, timing, feature, endpoint, or gate refit.",
+    },
+    "t0_and_population_parity":{
+        "ranking_name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A",
+        "formula":"(z_discovery_range_pct + z_return_5m_pct) / 2",
+        "components":["discovery_range_pct","return_5m_pct"],
+        "weights":[0.5,0.5],
+        "standardization":"exact frozen v1.7.37-R1 2019-2024 Discovery constants; no 2017 refit",
+        "mandatory_windows_minutes":[30,60],
+        "mandatory_selections":["top_1","top_3"],
+        "t0_definition":"same causal checkpoint/eval_ts semantics used by frozen v1.7.49 Entry Research; t0 bar close is available at t0",
+        "reconstruction_rule":"Reconstruct the same four mandatory Window x Selection views on 2017. No best-window or best-Top-N selection is permitted.",
+        "validation_aggregation":"H1 overall PASS requires every one of the four mandatory 30m/60m x Top1/Top3 views to pass all mandatory gates independently. This all-four rule is immutable.",
+    },
+    "primary_endpoint":{
+        "horizon_minutes":30,
+        "target_pct":5.0,
+        "adverse_pct":-5.0,
+        "metric":"TARGET_FIRST(+5%) - ADVERSE_FIRST(-5%)",
+        "anchor":"strictly after the t0+1m confirmation timestamp, using confirmation-bar close as entry-reference price",
+        "same_bar_policy":"SAME_BAR_AMBIGUOUS; never TARGET_FIRST or ADVERSE_FIRST",
+    },
+    "mandatory_gates_per_view":{
+        "primary_improvement":"H1 primary endpoint minus Baseline primary endpoint >= +0.05 absolute (+5 percentage points)",
+        "safety":"ADVERSE_FIRST_H1(-5%) <= ADVERSE_FIRST_Baseline(-5%); any increase fails",
+        "retention":"H1 evaluable candidate_count / Baseline evaluable candidate_count >= 0.25",
+        "pass_rule":"A view PASS requires all three gates. Overall H1 PASS requires all four mandatory views PASS. Any mandatory failure => H1_2017_HISTORICAL_REPLICATION_FAIL.",
+    },
+    "baseline":"Same reconstructed already-qualified 2017 t0 candidates in the same Window x Selection view, with no H1 filter; both arms require evaluable t0+1m confirmation and 30m post-confirmation path under the same missingness rules.",
+    "secondary_diagnostics_only":{
+        "horizons_minutes":[5,10,15,60,120],
+        "mfe_mae":True,
+        "other_thresholds":"May be reported only as diagnostics and can never rescue a mandatory-gate failure.",
+    },
+    "anti_posthoc_firewall":[
+        "No changing 1/3 threshold.","No changing t0+1m confirmation time.","No changing +5/-5 or 30m primary endpoint.",
+        "No lowering +5pp primary improvement gate.","No lowering 25% retention gate.","No adding confirmation features.",
+        "No choosing a best Top1/Top3 or 30m/60m view after results.","No 2017 refit of ranking standardization.",
+        "No pooling 2017+2018 as rescue.","No automatic 2016 or earlier replication after 2017.","No automatic regime-dependent claim from a 2017 failure.",
+        "No Fresh Forward OOS read.","No profitability or bot-authorization claim from this historical replication alone."
+    ],
+    "cross_year_stop_rule":{
+        "2017_is_final_authorized_additional_historical_h1_year":True,
+        "cross_year_historical_replication_ends_after_2017_h1_execution_regardless_of_result":True,
+        "no_automatic_2016_or_earlier":True,
+        "no_pooled_2017_2018_rescue":True,
+    },
+    "protocol_only":True,
+    "execution_started":False,
+    "alpaca_requests_authorized":False,
+    "h1_computed":False,
+    "historical_replication_h1_opened":False,
+    "fresh_forward_oos_opened":False,
+}
+H1_2017_HISTORICAL_REPLICATION_PREFREEZE_SHA256 = hashlib.sha256(json.dumps(H1_2017_HISTORICAL_REPLICATION_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+def _h117_prefreeze_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    prior=radar.redis.get_json(_boos17x_key("report"),None)
+    if not isinstance(prior,dict):return False,"v1.7.72 completed result is required"
+    s=H1_2017_HISTORICAL_REPLICATION_PREFREEZE_SPEC
+    checks=[
+        (prior.get("status")=="COMPLETED","v1.7.72 result is not COMPLETED"),
+        (prior.get("decision")==s["required_2017_sample_controls_decision"],"v1.7.72 decision mismatch"),
+        (prior.get("result_sha256")==s["required_2017_sample_controls_result_sha256"],"v1.7.72 result SHA mismatch"),
+        (prior.get("execution_spec_sha256")==s["required_2017_execution_spec_sha256"],"v1.7.72 execution-spec SHA mismatch"),
+        (prior.get("required_sampling_parity_sha256")==s["required_2017_sampling_parity_sha256"],"v1.7.71 sampling-parity SHA mismatch"),
+        ((prior.get("sample_support") or {}).get("passed") is True,"2017 sample-support gate did not pass"),
+        (int((prior.get("sample_support") or {}).get("positive_events") or 0)>=537,"2017 positive-event support below frozen minimum"),
+        (int((prior.get("sample_support") or {}).get("positive_symbols") or 0)>=100,"2017 positive-symbol support below frozen minimum"),
+        (prior.get("h1_computed") is False,"H1 was unexpectedly computed before pre-freeze"),
+        (prior.get("historical_replication_h1_opened") is False,"2017 H1 was unexpectedly opened before pre-freeze"),
+        (prior.get("fresh_forward_oos_opened") is False,"Fresh Forward OOS was unexpectedly opened"),
+        (prior.get("2019_2026_results_mutated") is False,"Historical frozen results mutation guard failed"),
+    ]
+    for ok,msg in checks:
+        if not ok:return False,msg
+    return True,"allowed"
+
+@app.get("/research/2017-historical-replication/h1-prefreeze/protocol")
+def historical_replication_2017_h1_prefreeze_protocol():
+    ok,why=_h117_prefreeze_gate()
+    prior=radar.redis.get_json(_boos17x_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":H1_2017_HISTORICAL_REPLICATION_PREFREEZE_SPEC,"prefreeze_spec_sha256":H1_2017_HISTORICAL_REPLICATION_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_2017_sample_controls_result_sha256":prior.get("result_sha256"),"execution_started":False,"alpaca_requests_made":0,"h1_computed":False,"h1_execution_allowed":False,"historical_replication_h1_opened":False,"fresh_forward_oos_opened":False,"note":"Protocol-only review gate. No H1 Start endpoint exists in v1.7.73 by design."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
