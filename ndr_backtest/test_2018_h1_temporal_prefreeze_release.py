@@ -1,0 +1,17 @@
+import unittest, pathlib, re, json, hashlib
+P=pathlib.Path(__file__).with_name('independent_priority_radar.py')
+S=P.read_text()
+class TestTemporalPrefreezeRelease(unittest.TestCase):
+    def test_version(self): self.assertIn('VERSION = "1.7.65"',S)
+    def test_build(self): self.assertIn('TEMPORAL-STABILITY-PREFREEZE-A',S)
+    def test_protocol_route(self): self.assertIn('/temporal-stability-prefreeze/protocol',S)
+    def test_no_start_route(self): self.assertNotIn('/temporal-stability-prefreeze/start',S)
+    def test_required_result_sha(self): self.assertIn('5d414991d494204f3c17a4b2b52d8c1dc52002d907bbea0e730c73f9b68b5b4f',S)
+    def test_h1_fail_immutable(self): self.assertIn('"formal_decision":"H1_BACKWARD_OOS_FAIL","formal_decision_is_immutable":True',S)
+    def test_outcome_blind_hierarchy(self): self.assertIn('"outcome_blind":True',S); self.assertIn('"CALENDAR_QUARTERS"',S); self.assertIn('"CALENDAR_HALVES"',S)
+    def test_adequacy_floor(self): self.assertIn('"adequacy_floor_per_period":{"sessions":40,"baseline_evaluable":90,"h1_count":30}',S)
+    def test_primary_estimand(self): self.assertIn('M = min_j(E_j)',S)
+    def test_uncertainty_not_instability(self): self.assertIn('This is explicitly uncertainty / insufficient precision, not evidence of instability.',S)
+    def test_bootstrap(self): self.assertIn('"replicates":50000,"seed":17652018',S)
+    def test_firewall(self): self.assertIn('"temporal_primary_outcomes_computed":False',S); self.assertIn('"fresh_forward_oos_opened":False',S)
+if __name__=='__main__': unittest.main()

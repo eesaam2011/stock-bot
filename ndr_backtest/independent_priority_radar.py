@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.64"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-TARGET-ADVERSE-DECOMPOSITION-EXECUTION-A"
+VERSION = "1.7.65"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-TEMPORAL-STABILITY-PREFREEZE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13843,6 +13843,77 @@ def backward_oos_2018_h1_target_adverse_result():
     r=radar.redis.get_json(_boos18h1ta_key("report"),None) if radar.redis.configured else None
     if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse/status","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","fresh_forward_oos_opened":False}),202
     return jsonify(r)
+
+
+# -----------------------------------------------------------------------------
+# v1.7.65 — 2018 H1 Post-Failure Diagnostic: Temporal Stability Pre-Freeze
+# Protocol/design only. No temporal H1 outcomes are computed in this release.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC = {
+    "prefreeze_id":"IPR-2018-H1-POST-FAILURE-TEMPORAL-STABILITY-PREFREEZE-2026-09-15-A",
+    "required_target_adverse_result_sha256":"5d414991d494204f3c17a4b2b52d8c1dc52002d907bbea0e730c73f9b68b5b4f",
+    "required_target_adverse_execution_spec_sha256":"e356c7d2584cb7c84f0273a1a146d405bc8971fa8af013fe3aca9f1da7ccbff1",
+    "required_h1_result_sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL","formal_decision_is_immutable":True,
+    "research_status":"POST_HOC_DESCRIPTIVE_DIAGNOSTIC_ONLY",
+    "question":"Is the frozen 2018 30m/Top3 H1 primary improvement broadly positive through time, or is temporal breadth unresolved / contradicted, while explicitly separating lack of precision from evidence of instability?",
+    "scope":{"period":["2018-01-01","2018-12-31"],"window_minutes":30,"selection":"top_3","expected_sessions":251,"expected_records_top3":746,"expected_baseline_evaluable":613,"expected_h1_count":203,"frozen_primary_improvement":0.046159162320494385},
+    "partition_selection":{
+        "outcome_blind":True,
+        "rule":"Choose the first partition in the fixed hierarchy whose every period satisfies the denominator adequacy floor, using counts only and without reading TARGET_FIRST/ADVERSE_FIRST outcomes.",
+        "hierarchy":[
+            {"id":"CALENDAR_QUARTERS","periods":[["2018-01-01","2018-03-31"],["2018-04-01","2018-06-30"],["2018-07-01","2018-09-30"],["2018-10-01","2018-12-31"]]},
+            {"id":"CALENDAR_HALVES","periods":[["2018-01-01","2018-06-30"],["2018-07-01","2018-12-31"]]}
+        ],
+        "adequacy_floor_per_period":{"sessions":40,"baseline_evaluable":90,"h1_count":30},
+        "if_no_partition_passes":"TEMPORAL_SAMPLE_INSUFFICIENT; stop without temporal outcome computation.",
+        "rationale":"The hierarchy and floors are frozen before any temporal outcome rates are read, preventing post-outcome choice of quarter/half-year granularity. The floor is a design feasibility floor, not a claim of guaranteed statistical power."
+    },
+    "primary_estimand":{
+        "period_effect":"For each selected period j: E_j = [P(TARGET_FIRST|H1,j)-P(ADVERSE_FIRST|H1,j)] - [P(TARGET_FIRST|Baseline,j)-P(ADVERSE_FIRST|Baseline,j)].",
+        "temporal_breadth":"M = min_j(E_j), the minimum period-specific frozen primary improvement across the selected outcome-blind partition.",
+        "reason":"M directly asks whether even the weakest predeclared period remains directionally positive; it avoids unstable percent-of-total contribution ratios when period effects are near zero or negative.",
+        "no_period_cherry_pick":True
+    },
+    "method":{
+        "unit_of_resampling":"trading_session","bootstrap":"nonparametric cluster bootstrap; resample whole sessions with replacement within each selected calendar period and keep all eligible Top3 records from each sampled session together","replicates":50000,"seed":17652018,"confidence_level":0.95,"interval":"two-sided percentile interval (2.5th, 97.5th percentiles) for M","empty_arm_policy":"discard a replicate if any denominator required for any selected period effect is zero","raw_period_rates_alone_are_not_sufficient":True
+    },
+    "predeclared_interpretation":{
+        "BROAD_TEMPORAL_POSITIVITY_ESTABLISHED":"point M > 0 and the 95% session-cluster bootstrap interval for M excludes zero on the positive side.",
+        "TEMPORAL_NONPOSITIVITY_ESTABLISHED":"point M < 0 and the 95% interval for M excludes zero on the negative side; descriptive evidence that at least the weakest temporal segment is non-positive.",
+        "TEMPORAL_BREADTH_UNRESOLVED":"the 95% interval for M includes zero. This is explicitly uncertainty / insufficient precision, not evidence of instability.",
+        "TEMPORAL_SAMPLE_INSUFFICIENT":"neither predeclared partition passes the outcome-blind denominator floor; no temporal outcome analysis is run.",
+        "important_limit":"All classifications are post-hoc descriptive evidence only and cannot rescue/reclassify H1, create H2, authorize Fresh OOS, profitability claims, or a bot."
+    },
+    "secondary_descriptive_only":["selected partition id and count-only adequacy table","period-specific E_j point estimates and marginal 95% cluster-bootstrap intervals after execution"],
+    "explicitly_not_tested":["which quarter/half is best or worst as a tradable rule","percent of total improvement attributed to one period","alternative calendar cuts after outcomes","rolling-window optimization","TARGET/ADVERSE component decomposition by period","rank cuts by period"],
+    "next_step_rule":"STOP_REVIEW after a separately authorized execution. Any successor hypothesis, alternate temporal partition, threshold/timing/feature change, profitability work, bot decision, or Fresh Forward OOS opening requires a later separately pre-frozen step.",
+    "stop_rule":"This release is protocol/pre-freeze only. It may inspect frozen session/arm counts solely to select the partition by the predeclared outcome-blind hierarchy; it must not read or compute temporal TARGET_FIRST/ADVERSE_FIRST outcomes or E_j/M.",
+    "firewall":{"alpaca_requests":False,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"alternative_rank_contrasts":False,"target_adverse_by_period_computed":False,"temporal_primary_outcomes_computed":False,"alternative_temporal_partitions_after_outcomes":False,"new_features":False,"successor_hypothesis_created":False,"profitability_claim":False,"bot_authorized":False},
+    "protocol_only":True
+}
+BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+def _boos18h1_temporal_prefreeze_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    s=BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC
+    r=radar.redis.get_json(_boos18h1ta_key("report"),{}) or {}
+    if r.get("status")!="COMPLETED" or r.get("phase")!="STOP_REVIEW":return False,"completed v1.7.64 STOP_REVIEW result required"
+    if r.get("result_sha256")!=s["required_target_adverse_result_sha256"]:return False,"v1.7.64 result SHA mismatch"
+    if r.get("execution_spec_sha256")!=s["required_target_adverse_execution_spec_sha256"]:return False,"v1.7.64 execution-spec SHA mismatch"
+    if r.get("required_h1_result_sha256")!=s["required_h1_result_sha256"]:return False,"v1.7.58 H1 provenance mismatch"
+    if r.get("formal_h1_decision")!="H1_BACKWARD_OOS_FAIL" or r.get("formal_h1_decision_immutable") is not True:return False,"immutable H1 FAIL required"
+    if r.get("diagnostic_classification")!="NEITHER_COMPONENT_ESTABLISHED":return False,"expected frozen v1.7.64 diagnostic classification missing"
+    if r.get("session_clusters")!=251 or r.get("sessions")!=251:return False,"exact 251 sessions required"
+    c=r.get("source_counts") or {}
+    if c.get("records_top3")!=746 or c.get("baseline_evaluable")!=613 or c.get("h1_count")!=203:return False,"frozen source counts mismatch"
+    if r.get("alpaca_requests_made")!=0 or r.get("fresh_forward_oos_opened") is not False or r.get("post_2018_market_data_read") is not False:return False,"data firewall provenance failed"
+    if r.get("temporal_stability_diagnostic_computed") is not False or r.get("successor_hypothesis_created") is not False:return False,"v1.7.64 STOP boundary provenance failed"
+    return True,"allowed"
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability-prefreeze/protocol")
+def backward_oos_2018_h1_temporal_stability_prefreeze_protocol():
+    ok,why=_boos18h1_temporal_prefreeze_gate()
+    r=radar.redis.get_json(_boos18h1ta_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_target_adverse_result_sha256":r.get("result_sha256"),"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","execution_started":False,"temporal_primary_outcomes_computed":False,"target_adverse_by_period_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Protocol-only temporal-stability pre-freeze. No Start endpoint exists in v1.7.65 by design; temporal outcome rates are not computed."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
