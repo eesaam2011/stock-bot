@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.69"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-OBSERVED-UNIVERSE-RECONSTRUCTION-A"
+VERSION = "1.7.70"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-OBSERVED-UNIVERSE-CERTIFICATION-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -14480,6 +14480,94 @@ def backward_oos_2017_universe_status():
 def backward_oos_2017_universe_result():
     report=radar.redis.get_json(_boos17u_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/2017-historical-replication/universe/status","h1_computed":False,"fresh_forward_oos_opened":False}),202
+    return jsonify(report)
+
+
+# ---------------------------------------------------------------------------
+# v1.7.70 — 2017 Observed Historical SIP Universe Certification
+# Methodology-alignment analogue of frozen v1.7.54; zero market-data requests.
+# ---------------------------------------------------------------------------
+BACKWARD_OOS_2017_OBSERVED_CERT_SPEC = {
+    "certification_id":"IPR-2017-OBSERVED-HISTORICAL-SIP-UNIVERSE-CERTIFICATION-2026-09-15-A",
+    "required_2017_reconstruction_result_sha256":"628601d5f71cc38e309530604e608ba145a7be494fcb72da8d6e7c5172cab141",
+    "required_2017_reconstruction_spec_sha256":"7b6069a33cfa9ccca53c358932e51ea0a644c20731501a5de9a1f950e3af94a3",
+    "required_2018_observed_cert_result_sha256":"1f6d11ec1b3de059a4b9cae2891f135a811c6f68478f0a09438e57fceb4b798a",
+    "required_2019_2026_reconstruction_sha256":"c2a8bd08d7023b093de7a98fd6713131b909f0512f3fa769ac84f203f2e6a6f5",
+    "2017_expected":{"source_union_symbols":31973,"symbols_observed_in_sip":6393,"symbols_with_dec2016_warmup_presence":5854},
+    "2018_frozen_reference":{"source_union_symbols":31959,"symbols_observed_in_sip":6960},
+    "2019_2026_frozen_reference":{"union_symbols":31909,"symbols_with_sip_presence":14677,"year_presence_counts":{"2019":7251,"2020":7651,"2021":8381,"2022":8465,"2023":8756,"2024":9652,"2025":11330,"2026":12742}},
+    "terminology":{"2017":"Observed Historical SIP Universe","2018":"Observed Historical SIP Universe","2019_2026":"Observed Historical SIP Universe","explicit_limitation":"No period is claimed to be a complete/certified US-market point-in-time Security Master universe.","historical_artifacts_mutated":False},
+    "methodology_alignment_checks":["source-union reconstruction with retained provenance","Alpaca SIP raw 1Month presence establishes observed symbol-year presence","ticker text is not permanent entity identity","no cross-era entity merge","no stricter independent Security Master standard is imposed on 2017","candidate-stage split-suspect screen must reuse the frozen adjacent coarse-close >=3.5x logic unchanged","split suspects remain ineligible for downstream candidate verification","Phase 0B strict corporate-action exclusion remains required"],
+    "split_warmup_finding":{"finding":"NO_LONG_HISTORY_DEPENDENCY","reason":"The frozen _phase0a_split_suspect screen uses only adjacent closes inside the fetched trading cycle; it does not estimate a long-history baseline.","dec2016_warmup_required_for_this_screen":False,"screen_is_complete_corporate_action_certificate":False,"phase0b_strict_exclusion_still_required":True},
+    "diagnostic_policy":{"compare_2017_to_2018":True,"compare_2017_to_2019":True,"compare_2017_to_2019_2026_annual_mean":True,"diagnostics_are_coverage_proof":False,"diagnostics_are_pass_fail_gates":False,"warning":"Annual presence differences mix market evolution, listings/delistings, source observability and edge effects; they do not identify true-market completeness."},
+    "certification_gate":{"requires_exact_2017_reconstruction_provenance":True,"requires_exact_frozen_2018_certification_provenance":True,"requires_exact_2019_2026_reconstruction_provenance":True,"requires_recomputed_2017_record_counts_match":True,"requires_methodology_alignment_checks":True,"independent_security_master_required":False,"coverage_pct_threshold":None},
+    "historical_replication_stop_rule":{"only_authorized_candidate_year":2017,"maximum_additional_h1_historical_years":1,"no_automatic_2016_or_earlier_after_2017_result":True,"pooled_2017_2018_replication_test_authorized":False,"regime_dependence_claim_authorized":False},
+    "firewall":{"alpaca_requests":False,"h1_computed":False,"mfe_mae_computed":False,"target_adverse_computed":False,"ranking_computed":False,"candidate_selection_computed":False,"fresh_forward_oos_opened":False,"pooled_2017_2018_computed":False,"2018_results_mutated":False,"2019_2026_discovery_mutated":False},
+    "decision_policy":"OBSERVED_UNIVERSE_CERTIFIED iff exact frozen provenance is present, persisted 2017 records recompute to frozen counts, and v1.7.54-parity methodology-alignment checks pass. This certifies methodological comparability of the observed universe only; it does not certify complete-market coverage, all corporate actions, H1, or trading validity. STOP_REVIEW before any sampling-parity/candidate execution stage."
+}
+BACKWARD_OOS_2017_OBSERVED_CERT_SPEC_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2017_OBSERVED_CERT_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2017_OBSERVED_CERT_LOCK=threading.RLock(); BACKWARD_OOS_2017_OBSERVED_CERT_THREAD=None
+BACKWARD_OOS_2017_OBSERVED_CERT_STATE={"status":"IDLE","phase":"NOT_STARTED","message":"2017 observed-universe certification has not started","certification_id":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["certification_id"],"updated_at":iso(),"h1_computed":False,"fresh_forward_oos_opened":False}
+def _boos17oc_key(suffix:str)->str:return radar.key(f"backward_oos_2017_observed_cert:v1:{suffix}")
+def _boos17oc_set_state(**updates:Any)->None:
+    global BACKWARD_OOS_2017_OBSERVED_CERT_STATE
+    with BACKWARD_OOS_2017_OBSERVED_CERT_LOCK:
+        BACKWARD_OOS_2017_OBSERVED_CERT_STATE={**BACKWARD_OOS_2017_OBSERVED_CERT_STATE,**updates,"updated_at":iso(),"h1_computed":False,"fresh_forward_oos_opened":False,"h1_execution_allowed":False}
+        snap=dict(BACKWARD_OOS_2017_OBSERVED_CERT_STATE)
+    if radar.redis.configured:radar.redis.set_json(_boos17oc_key("status"),snap)
+def _boos17oc_gate()->tuple[bool,str,dict[str,Any]]:
+    audit={"required_2017_reconstruction_result_sha256":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["required_2017_reconstruction_result_sha256"],"required_2017_reconstruction_spec_sha256":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["required_2017_reconstruction_spec_sha256"],"required_2018_observed_cert_result_sha256":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["required_2018_observed_cert_result_sha256"],"required_2019_2026_reconstruction_sha256":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["required_2019_2026_reconstruction_sha256"]}
+    if not radar.redis.configured:return False,"Redis is required",audit
+    r17=radar.redis.get_json(_boos17u_key("report"),None); r18=radar.redis.get_json(_boos18oc_key("report"),None); rh=radar.redis.get_json(radar.universe_reconstruction_key("report"),None)
+    checks={"2017_reconstruction_completed":bool(r17 and r17.get("status")=="COMPLETED"),"2017_decision_expected":bool(r17 and r17.get("decision")=="RECONSTRUCTION_COMPLETE_COVERAGE_UNCERTIFIED"),"2017_result_sha_match":bool(r17 and r17.get("result_sha256")==audit["required_2017_reconstruction_result_sha256"]),"2017_spec_sha_match":bool(r17 and r17.get("universe_spec_sha256")==audit["required_2017_reconstruction_spec_sha256"]),"2018_cert_result_sha_match":bool(r18 and r18.get("result_sha256")==audit["required_2018_observed_cert_result_sha256"]),"2018_certified":bool(r18 and r18.get("decision")=="OBSERVED_UNIVERSE_CERTIFIED"),"2019_2026_reconstruction_sha_match":bool(rh and rh.get("reconstruction_sha256")==audit["required_2019_2026_reconstruction_sha256"]),"h1_locked":bool(r17 and not r17.get("h1_computed") and not r17.get("fresh_forward_oos_opened"))}
+    audit["checks"]=checks
+    return (all(checks.values()),"allowed" if all(checks.values()) else "blocked: frozen provenance/certification prerequisite mismatch",audit)
+def _boos17oc_worker()->None:
+    global BACKWARD_OOS_2017_OBSERVED_CERT_THREAD
+    try:
+        ok,why,audit=_boos17oc_gate()
+        if not ok:raise RuntimeError(why)
+        _boos17oc_set_state(status="RUNNING",phase="PROVENANCE_AND_RECOUNT",message="Verifying frozen 2017/2018/2019-2026 provenance and recounting persisted 2017 universe records; zero market-data requests",alpaca_requests_made=0)
+        r17=radar.redis.get_json(_boos17u_key("report"),None); rh=radar.redis.get_json(radar.universe_reconstruction_key("report"),None)
+        records=radar.redis.get_json(_boos17u_key("records"),None)
+        if not isinstance(records,dict):raise RuntimeError("Persisted v1.7.69 2017 universe records are required")
+        source_union=len(records); observed=sum(1 for v in records.values() if isinstance(v,dict) and v.get("observed_in_2017")); warm=sum(1 for v in records.values() if isinstance(v,dict) and v.get("dec2016_warmup_presence"))
+        exp=BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["2017_expected"]
+        if source_union!=exp["source_union_symbols"] or observed!=exp["symbols_observed_in_sip"] or warm!=exp["symbols_with_dec2016_warmup_presence"]:raise RuntimeError(f"2017 persisted record recount mismatch: union={source_union}, observed={observed}, warmup={warm}")
+        frozen=BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["2019_2026_frozen_reference"]; years={str(k):int(v) for k,v in (rh.get("year_presence_counts") or {}).items()}
+        if int(rh.get("symbols_with_sip_presence_2019_2026") or -1)!=frozen["symbols_with_sip_presence"] or int((rh.get("source_counts") or {}).get("union_symbols") or -1)!=frozen["union_symbols"] or years!=frozen["year_presence_counts"]:raise RuntimeError("2019-2026 frozen observed-universe reference mismatch")
+        mean=sum(years.values())/len(years); r18=BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["2018_frozen_reference"]
+        diagnostics={"symbols_observed_2017":observed,"symbols_observed_2018":r18["symbols_observed_in_sip"],"symbols_observed_2019":years["2019"],"2019_2026_annual_mean":mean,"2017_vs_2018_pct":(observed/r18["symbols_observed_in_sip"]-1)*100.0,"2017_vs_2019_pct":(observed/years["2019"]-1)*100.0,"2017_vs_2019_2026_mean_pct":(observed/mean-1)*100.0,"coverage_proof":False,"pass_fail_gate":False,"interpretation":"Context only; none of these comparisons estimates true-market coverage."}
+        report={"version":VERSION,"build":BUILD,"certification_id":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["certification_id"],"cert_spec_sha256":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC_SHA256,"status":"COMPLETED","phase":"STOP_REVIEW","decision":"OBSERVED_UNIVERSE_CERTIFIED","required_2017_reconstruction_result_sha256":r17.get("result_sha256"),"required_2018_observed_cert_result_sha256":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["required_2018_observed_cert_result_sha256"],"required_2019_2026_reconstruction_sha256":rh.get("reconstruction_sha256"),"gate_audit":audit,"terminology":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["terminology"],"recomputed_2017":{"source_union_symbols":source_union,"symbols_observed_in_sip":observed,"symbols_with_dec2016_warmup_presence":warm},"diagnostics":diagnostics,"split_warmup_finding":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["split_warmup_finding"],"certification_scope":{"observed_universe_methodology_comparable":True,"complete_us_market_coverage_certified":False,"all_2017_corporate_actions_certified":False,"h1_validated":False,"note":"Frozen split-suspect logic must be reused unchanged at candidate stage; Phase 0B strict exclusion remains required."},"scope_guard":{"alpaca_requests_made":0,"h1_computed":False,"mfe_mae_computed":False,"target_adverse_computed":False,"ranking_computed":False,"candidate_selection_computed":False,"fresh_forward_oos_opened":False,"pooled_2017_2018_computed":False,"2018_results_mutated":False,"2019_2026_discovery_mutated":False,"h1_execution_allowed":False},"next_step":"STOP_REVIEW. Only a separately frozen 2017 sampling/methodology-parity pre-freeze may be considered; H1 remains locked.","stop_and_review_required":True,"completed_at":iso()}
+        report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();radar.redis.set_json(_boos17oc_key("report"),report)
+        _boos17oc_set_state(status="COMPLETED",phase="STOP_REVIEW",message="2017 Observed Historical SIP Universe methodology certified; H1 remains locked",decision=report["decision"],result_sha256=report["result_sha256"],alpaca_requests_made=0,stop_and_review_required=True)
+    except Exception as exc:
+        logging.exception("2017 observed-universe certification failed");_boos17oc_set_state(status="ERROR",phase="BLOCKED",message="2017 observed-universe certification failed closed",last_error=f"{type(exc).__name__}: {exc}",alpaca_requests_made=0)
+    finally:
+        with BACKWARD_OOS_2017_OBSERVED_CERT_LOCK:BACKWARD_OOS_2017_OBSERVED_CERT_THREAD=None
+def _boos17oc_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2017_OBSERVED_CERT_THREAD
+    ok,why,_=_boos17oc_gate()
+    if not ok:return False,why
+    with BACKWARD_OOS_2017_OBSERVED_CERT_LOCK:
+        if BACKWARD_OOS_2017_OBSERVED_CERT_THREAD and BACKWARD_OOS_2017_OBSERVED_CERT_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2017_OBSERVED_CERT_THREAD=threading.Thread(target=_boos17oc_worker,name="ipr-2017-observed-universe-cert",daemon=True);BACKWARD_OOS_2017_OBSERVED_CERT_THREAD.start()
+    return True,"started"
+@app.get("/research/2017-historical-replication/observed-universe/protocol")
+def backward_oos_2017_observed_universe_protocol():
+    ok,why,audit=_boos17oc_gate();return jsonify({"version":VERSION,"build":BUILD,"cert_spec":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC,"cert_spec_sha256":BACKWARD_OOS_2017_OBSERVED_CERT_SPEC_SHA256,"gate_allowed":ok,"gate_reason":why,"gate_audit":audit,"execution_started":False,"alpaca_requests_made":0,"h1_computed":False,"fresh_forward_oos_opened":False,"note":"Protocol is outcome-blind and performs zero market-data requests."})
+@app.route("/research/2017-historical-replication/observed-universe/start",methods=["GET","POST"])
+def backward_oos_2017_observed_universe_start():
+    ok,why=_boos17oc_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/2017-historical-replication/observed-universe/status","result_url":"/research/2017-historical-replication/observed-universe/result","h1_execution_allowed":False,"fresh_forward_oos_opened":False}),(202 if ok else 409)
+@app.get("/research/2017-historical-replication/observed-universe/status")
+def backward_oos_2017_observed_universe_status():
+    persisted=radar.redis.get_json(_boos17oc_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2017_OBSERVED_CERT_LOCK:out=dict(persisted or BACKWARD_OOS_2017_OBSERVED_CERT_STATE);out["worker_alive"]=bool(BACKWARD_OOS_2017_OBSERVED_CERT_THREAD and BACKWARD_OOS_2017_OBSERVED_CERT_THREAD.is_alive())
+    return jsonify(out)
+@app.get("/research/2017-historical-replication/observed-universe/result")
+def backward_oos_2017_observed_universe_result():
+    report=radar.redis.get_json(_boos17oc_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/2017-historical-replication/observed-universe/status","h1_computed":False,"fresh_forward_oos_opened":False}),202
     return jsonify(report)
 
 if __name__ == "__main__":
