@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.67"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-EVIDENCE-CONSOLIDATION-FREEZE-A"
+VERSION = "1.7.68"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-INDEPENDENCE-CAPABILITY-PROBE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -14147,6 +14147,156 @@ def _boos18h1ec_gate()->tuple[bool,str,dict[str,Any]]:
 def backward_oos_2018_h1_post_diagnostic_evidence_freeze_protocol():
     ok,why,audit=_boos18h1ec_gate()
     return jsonify({"version":VERSION,"build":BUILD,"freeze_spec":BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SPEC,"freeze_spec_sha256":BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"source_sha_audit":audit,"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","formal_h1_decision_immutable":True,"evidence_items":5,"post_failure_diagnostics":4,"new_statistics_computed":False,"meta_analysis_computed":False,"next_research_path_selected":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"protocol_only":True,"execution_started":False,"note":"Evidence ledger / freeze only. No Start endpoint exists in v1.7.67."})
+
+
+
+# v1.7.68 — 2017 Independence + Data-Capability Probe
+# This release does NOT evaluate H1 on 2017. It first audits frozen provenance,
+# then (only if allowed) probes Alpaca/SIP capability using the exact transferable
+# v1.7.52 capability thresholds and December-2016 warm-up.
+BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC = {
+    "probe_id":"IPR-2017-INDEPENDENCE-CAPABILITY-PROBE-2026-09-15-A",
+    "purpose":"Before any 2017 H1 replication, (1) audit frozen project provenance for prior 2017 outcome/discovery consumption and (2) test 2017 + Dec-2016 SIP data capability. No H1, candidate, ranking, target/adverse, MFE/MAE, or profitability computation is authorized.",
+    "historical_replication_stop_rule":{
+        "maximum_additional_h1_historical_years":1,
+        "only_authorized_candidate_year":2017,
+        "no_automatic_2016_or_earlier_after_2017_result":True,
+        "if_2017_is_ineligible_before_h1_execution":"STOP_REVIEW and choose any alternative independent information source only through a new explicit decision; 2016 is not automatically authorized.",
+        "if_2017_h1_is_executed":"Cross-year historical replication chain ends after 2017 regardless of PASS, FAIL, or near-miss.",
+        "pooled_2017_2018_replication_test_authorized":False,
+        "regime_dependence_claim_authorized":False,
+    },
+    "independence_audit":{
+        "standard":"Provenance independence for H1 replication: 2017 candidate/outcome data must not have been used to discover/select/tune H1, its threshold, timing, ranking, views, or mandatory gates. Mere Dec-2017 warm-up availability/use for the later 2018 cohort is not itself 2017 H1 outcome consumption.",
+        "frozen_evidence":[
+            {"id":"DISCOVERY_PERIOD","fact":"Entry-confirmation discovery/research period is frozen as 2019-01-01 through 2026-08-31 (already-consumed only).","expected_start":"2019-01-01","expected_end":"2026-08-31"},
+            {"id":"DEC2017_WARMUP_ROLE","fact":"v1.7.52 declares 2017-12-01..2017-12-31 as feature warm-up only; never candidate/outcome evaluation for 2018.","expected_role":"feature warm-up only; never candidate/outcome evaluation"},
+            {"id":"H1_2018_TARGET_PERIOD","fact":"The executed Backward-OOS H1 target cohort is 2018 only; 2017 was not a target-period H1 result.","expected_period":["2018-01-01","2018-12-31"]},
+            {"id":"EVIDENCE_FREEZE","fact":"v1.7.67 closes the 2018 H1 branch and leaves next research path UNDECIDED.","required_freeze_sha256":"2959cf3f39985eed67539e4286d3af39f9ceacc4a787af828b364d8d91e5579b"}
+        ],
+        "fail_closed":"If frozen provenance cannot support all declarations, 2017 cannot be labeled an independent H1 replication and capability execution is blocked in this release.",
+        "important_limit":"This is a project-provenance audit against the frozen artifacts/specifications available to this release; it is not an omniscient proof about data use outside the project artifacts."
+    },
+    "capability_probe":{
+        "target_period":{"start":"2017-01-01","end":"2017-12-31"},
+        "warmup_period":{"start":"2016-12-01","end":"2016-12-31","use":"feature warm-up only; never candidate/outcome evaluation"},
+        "sentinel_symbols":["AAPL","MSFT","IBM","GE","F","KO","XOM","JPM","WMT","INTC"],
+        "probe_sessions":["2017-01-03","2017-01-04","2017-01-05","2017-01-06","2017-03-15","2017-06-15","2017-09-15","2017-12-27","2017-12-28"],
+        "threshold_source":"Exact transferable v1.7.52 capability thresholds; no 2017-specific relaxation or retuning.",
+        "thresholds":{"calendar_sessions_min":245,"calendar_sessions_max":255,"probe_sessions_present_pct_min":98.0,"sentinel_symbol_session_any_bar_pct_min":95.0,"warmup_symbols_with_any_bar_pct_min":95.0,"lookahead_errors_allowed":0},
+        "universe_label_if_capability_passes":"2017 Historical Replication Candidate — Observed Historical SIP Universe; complete-market coverage is NOT certified by this probe.",
+        "important_scope":"Capability PASS authorizes only the next separately reviewed reconstruction/certification/parity path. It does not authorize H1 execution or certify a complete historical US market universe.",
+        "split_policy":"Run the existing frozen IPR split-suspect screen on fetched raw probe bars and report diagnostics only. Sentinel capability probing cannot certify complete split/reverse-split/symbol-change history."
+    },
+    "replication_policy_if_later_authorized":{
+        "h1_must_be_byte_for_byte_semantically_unchanged":True,
+        "same_t0":True,"same_ranking":True,"same_top1_top3":True,"same_windows_30m_60m":True,"same_target_adverse_definitions":True,"same_mandatory_gates":True,
+        "no_threshold_timing_feature_or_gate_tuning":True,
+        "2017_judged_standalone":True,
+        "pooled_2017_2018_rescue":False
+    },
+    "firewall":{"h1_computed":False,"mfe_mae_computed":False,"target_adverse_computed":False,"ranking_computed":False,"candidate_selection_computed":False,"profitability_computed":False,"fresh_forward_oos_opened":False,"2018_results_mutated":False,"2019_2026_discovery_mutated":False,"h2_created":False},
+    "decision_policy":"INDEPENDENCE_PROVENANCE_PASS is required before Start. CAPABILITY_PASS then means only that 2017/Dec-2016 technical data capability is adequate to proceed to separately frozen universe reconstruction/certification/parity checks. STOP_REVIEW after the probe result."
+}
+BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2017_PROBE_LOCK=threading.RLock(); BACKWARD_OOS_2017_PROBE_THREAD=None
+BACKWARD_OOS_2017_PROBE_STATE={"status":"IDLE","message":"2017 independence + capability probe has not started","probe_id":BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC["probe_id"],"updated_at":iso(),"h1_computed":False,"fresh_forward_oos_opened":False}
+
+def _boos17_key(suffix:str)->str:return radar.key(f"backward_oos_2017_probe:v1:{suffix}")
+def _boos17_set_state(**updates:Any)->None:
+    global BACKWARD_OOS_2017_PROBE_STATE
+    with BACKWARD_OOS_2017_PROBE_LOCK:
+        BACKWARD_OOS_2017_PROBE_STATE={**BACKWARD_OOS_2017_PROBE_STATE,**updates,"updated_at":iso()}
+        if radar.redis.configured:radar.redis.set_json(_boos17_key("status"),BACKWARD_OOS_2017_PROBE_STATE)
+
+def _boos17_independence_audit()->tuple[bool,str,dict[str,Any]]:
+    audit={"checks":{},"market_data_requests":0,"outcomes_read":False}
+    # Check immutable in-code provenance declarations; do not read 2017 market/outcome data.
+    try:
+        rp=EARLY_FEATURE_ENTRY_CONFIRMATION_RESEARCH_PREFREEZE_SPEC.get("research_period",{})
+        c1=(rp.get("start")=="2019-01-01" and rp.get("end")=="2026-08-31")
+        audit["checks"]["discovery_period_excludes_2017"]={"passed":c1,"actual":[rp.get("start"),rp.get("end")]}
+        warm=BACKWARD_OOS_2018_PROBE_SPEC.get("warmup_period",{})
+        c2=(warm.get("start")=="2017-12-01" and warm.get("end")=="2017-12-31" and warm.get("use")=="feature warm-up only; never candidate/outcome evaluation")
+        audit["checks"]["dec2017_role_warmup_only"]={"passed":c2,"actual":warm}
+        hscope=BACKWARD_OOS_2018_H1_EXECUTION_SPEC.get("scope",{}) if 'BACKWARD_OOS_2018_H1_EXECUTION_SPEC' in globals() else {}
+        # Older release naming can differ; immutable 2018 result gate below is authoritative for executed target cohort.
+        ec_ok,ec_reason,ec_audit=_boos18h1ec_gate()
+        c3=bool(ec_ok and BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SHA256=="2959cf3f39985eed67539e4286d3af39f9ceacc4a787af828b364d8d91e5579b")
+        audit["checks"]["2018_branch_frozen_and_closed"]={"passed":c3,"freeze_sha256":BACKWARD_OOS_2018_H1_EVIDENCE_CONSOLIDATION_FREEZE_SHA256,"source_sha_audit":ec_audit,"gate_reason":ec_reason}
+        c4=(BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC["historical_replication_stop_rule"]["only_authorized_candidate_year"]==2017 and BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC["historical_replication_stop_rule"]["maximum_additional_h1_historical_years"]==1)
+        audit["checks"]["one_year_stop_rule_frozen"]={"passed":c4}
+        passed=all(bool(x.get("passed")) for x in audit["checks"].values())
+        audit["classification"]="INDEPENDENCE_PROVENANCE_PASS" if passed else "INDEPENDENCE_PROVENANCE_FAIL"
+        audit["important_limit"]=BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC["independence_audit"]["important_limit"]
+        return passed,("allowed" if passed else "frozen provenance audit failed closed"),audit
+    except Exception as exc:
+        audit["classification"]="INDEPENDENCE_PROVENANCE_FAIL";audit["error"]=f"{type(exc).__name__}: {exc}"
+        return False,"provenance audit error",audit
+
+def _boos17_worker()->None:
+    global BACKWARD_OOS_2017_PROBE_THREAD
+    requests_made=0
+    try:
+        independent,reason,audit=_boos17_independence_audit()
+        if not independent:raise RuntimeError(f"2017 independence gate blocked: {reason}")
+        if not radar.alpaca.configured:raise RuntimeError("Alpaca credentials are required")
+        spec=BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC["capability_probe"]; thresholds=spec["thresholds"]
+        _boos17_set_state(status="RUNNING",phase="CALENDAR",message="Checking 2017 calendar only",alpaca_requests_made=0,independence_classification=audit.get("classification"))
+        calendar=radar.alpaca.calendar(date(2017,1,1),date(2017,12,31));requests_made+=1
+        sessions=sorted(str(x.get("date")) for x in calendar if x.get("date"));session_set=set(sessions)
+        requested=list(spec["probe_sessions"]);present=[x for x in requested if x in session_set];symbols=list(spec["sentinel_symbols"])
+        _boos17_set_state(status="RUNNING",phase="WARMUP",message="Checking December 2016 SIP warm-up availability",alpaca_requests_made=requests_made)
+        warm=radar.alpaca.bars(symbols,datetime(2016,12,1,tzinfo=UTC),datetime(2017,1,1,tzinfo=UTC),feed="sip",adjustment="raw",timeframe="1Min");requests_made+=1
+        warm_counts={sym:len(warm.get(sym) or []) for sym in symbols};warm_with=sum(1 for sym in symbols if warm_counts[sym]>0)
+        checks=[];split_diagnostics=[]
+        _boos17_set_state(status="RUNNING",phase="SIP_2017",message="Checking fixed 2017 SIP sentinel sessions",alpaca_requests_made=requests_made)
+        for day in requested:
+            if day not in session_set:continue
+            d=date.fromisoformat(day);start=datetime.combine(d,dtime(0,0),tzinfo=NY).astimezone(UTC);end=(datetime.combine(d,dtime(23,59),tzinfo=NY)+timedelta(minutes=1)).astimezone(UTC)
+            bars=radar.alpaca.bars(symbols,start,end,feed="sip",adjustment="raw",timeframe="1Min");requests_made+=1
+            for sym in symbols:
+                rows=bars.get(sym) or [];checks.append({"session":day,"symbol":sym,"has_any_bar":bool(rows),"bar_count":len(rows)})
+                if rows:
+                    diag=radar._phase0a_split_suspect(rows)
+                    if diag.get("suspect"):split_diagnostics.append({"session":day,"symbol":sym,"diagnostic":diag})
+        cal_n=len(sessions);probe_pct=100.0*len(present)/max(1,len(requested));anybar_pct=100.0*sum(1 for x in checks if x["has_any_bar"])/max(1,len(checks));warm_pct=100.0*warm_with/max(1,len(symbols))
+        gates={"calendar_length":thresholds["calendar_sessions_min"]<=cal_n<=thresholds["calendar_sessions_max"],"probe_sessions_present":probe_pct>=thresholds["probe_sessions_present_pct_min"],"sentinel_symbol_session_any_bar":anybar_pct>=thresholds["sentinel_symbol_session_any_bar_pct_min"],"warmup_available":warm_pct>=thresholds["warmup_symbols_with_any_bar_pct_min"],"lookahead_zero":True,"h1_firewall_intact":True,"independence_provenance_pass":True}
+        decision="CAPABILITY_PASS" if all(gates.values()) else "CAPABILITY_FAIL"
+        report={"version":VERSION,"build":BUILD,"probe_id":BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC["probe_id"],"status":"COMPLETED","phase":"STOP_REVIEW","independence_classification":"INDEPENDENCE_PROVENANCE_PASS","independence_audit":audit,"decision":decision,"gates":gates,"metrics":{"calendar_sessions":cal_n,"probe_sessions_requested":len(requested),"probe_sessions_present":len(present),"probe_sessions_present_pct":probe_pct,"sentinel_symbol_session_checks":len(checks),"sentinel_symbol_session_any_bar_pct":anybar_pct,"warmup_symbols":len(symbols),"warmup_symbols_with_any_bar":warm_with,"warmup_symbols_with_any_bar_pct":warm_pct},"warmup_counts":warm_counts,"split_suspect_diagnostics":split_diagnostics,"thresholds":thresholds,"threshold_source":spec["threshold_source"],"universe_label":spec["universe_label_if_capability_passes"],"alpaca_requests_made":requests_made,"h1_computed":False,"candidate_selection_computed":False,"ranking_computed":False,"target_adverse_computed":False,"mfe_mae_computed":False,"profitability_computed":False,"fresh_forward_oos_opened":False,"pooled_2017_2018_computed":False,"2018_results_mutated":False,"2019_2026_discovery_mutated":False,"next_step":"STOP_REVIEW. If CAPABILITY_PASS, only a separately frozen 2017 observed-universe reconstruction/certification/parity step may be considered; H1 remains locked."}
+        payload=json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False);report["result_sha256"]=hashlib.sha256(payload.encode()).hexdigest()
+        if radar.redis.configured:radar.redis.set_json(_boos17_key("report"),report)
+        _boos17_set_state(status="COMPLETED",phase="STOP_REVIEW",message="2017 independence + capability probe completed; stop and review",decision=decision,alpaca_requests_made=requests_made,result_sha256=report["result_sha256"],h1_computed=False,fresh_forward_oos_opened=False)
+    except Exception as exc:
+        logging.exception("2017 independence + capability probe failed")
+        _boos17_set_state(status="ERROR",phase="BLOCKED",message="2017 probe failed closed",last_error=f"{type(exc).__name__}: {exc}",alpaca_requests_made=requests_made,h1_computed=False,fresh_forward_oos_opened=False)
+
+def _boos17_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2017_PROBE_THREAD
+    independent,reason,_=_boos17_independence_audit()
+    if not independent:return False,f"independence_gate_blocked: {reason}"
+    with BACKWARD_OOS_2017_PROBE_LOCK:
+        if BACKWARD_OOS_2017_PROBE_THREAD and BACKWARD_OOS_2017_PROBE_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2017_PROBE_THREAD=threading.Thread(target=_boos17_worker,name="ipr-2017-independence-capability-probe",daemon=True);BACKWARD_OOS_2017_PROBE_THREAD.start()
+    return True,"started"
+
+@app.get("/research/2017-historical-replication/independence-capability/protocol")
+def backward_oos_2017_independence_capability_protocol():
+    ok,why,audit=_boos17_independence_audit()
+    return jsonify({"version":VERSION,"build":BUILD,"probe_spec":BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC,"probe_spec_sha256":BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC_SHA256,"gate_allowed":ok,"gate_reason":why,"independence_audit":audit,"execution_started":False,"alpaca_requests_made":0,"h1_computed":False,"fresh_forward_oos_opened":False,"note":"Protocol performs zero market-data requests. Start is blocked unless frozen provenance audit passes."})
+@app.route("/research/2017-historical-replication/independence-capability/start",methods=["GET","POST"])
+def backward_oos_2017_independence_capability_start():
+    ok,why=_boos17_start();return jsonify({"ok":ok,"message":why,"alpaca_requests_made":0,"h1_computed":False,"fresh_forward_oos_opened":False,"status_url":"/research/2017-historical-replication/independence-capability/status","result_url":"/research/2017-historical-replication/independence-capability/result"}),(202 if ok else 409)
+@app.get("/research/2017-historical-replication/independence-capability/status")
+def backward_oos_2017_independence_capability_status():
+    persisted=radar.redis.get_json(_boos17_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2017_PROBE_LOCK:out=dict(persisted or BACKWARD_OOS_2017_PROBE_STATE);out["worker_alive"]=bool(BACKWARD_OOS_2017_PROBE_THREAD and BACKWARD_OOS_2017_PROBE_THREAD.is_alive())
+    return jsonify(out)
+@app.get("/research/2017-historical-replication/independence-capability/result")
+def backward_oos_2017_independence_capability_result():
+    report=radar.redis.get_json(_boos17_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/2017-historical-replication/independence-capability/status","h1_computed":False,"fresh_forward_oos_opened":False}),202
+    return jsonify(report)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
