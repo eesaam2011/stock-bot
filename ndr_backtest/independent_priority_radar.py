@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.68"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-INDEPENDENCE-CAPABILITY-PROBE-A"
+VERSION = "1.7.69"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-OBSERVED-UNIVERSE-RECONSTRUCTION-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -14296,6 +14296,190 @@ def backward_oos_2017_independence_capability_status():
 def backward_oos_2017_independence_capability_result():
     report=radar.redis.get_json(_boos17_key("report"),None) if radar.redis.configured else None
     if not report:return jsonify({"result_ready":False,"status_url":"/research/2017-historical-replication/independence-capability/status","h1_computed":False,"fresh_forward_oos_opened":False}),202
+    return jsonify(report)
+
+# ---------------------------------------------------------------------------
+# v1.7.69 — 2017 Observed Historical SIP Universe Reconstruction
+# Exact methodological analogue of v1.7.53, shifted one year backward.
+# Outcome-blind: no H1/candidate/ranking/outcome computation is authorized.
+# ---------------------------------------------------------------------------
+
+BACKWARD_OOS_2017_UNIVERSE_SPEC = {
+    "reconstruction_id": "IPR-2017-OBSERVED-HISTORICAL-SIP-UNIVERSE-RECONSTRUCTION-2026-09-15-A",
+    "required_capability_probe_result_sha256": "9ec2d5010a7d3bb9cf950c604f720009cffa9202362d484f786724f84dd23aab",
+    "required_capability_probe_spec_sha256": "3a5995464d3dca0db635f75ac1315f8f25624f2a9303e0d20604370b8526991d",
+    "required_capability_decision": "CAPABILITY_PASS",
+    "required_independence_classification": "INDEPENDENCE_PROVENANCE_PASS",
+    "target_period": {"start": "2017-01-01", "end": "2017-12-31"},
+    "warmup_period": {"start": "2016-12-01", "end": "2016-12-31", "use": "presence/warm-up diagnostics only; never candidate/outcome evaluation"},
+    "sources": [
+        "Alpaca all US-equity assets (active + inactive where returned)",
+        "existing frozen 2019-2026 historical-universe source provenance/records",
+        "legacy NDR manifest",
+        "legacy NDR explosion catalog",
+        "frozen historical reference symbols",
+    ],
+    "methodology_parity": {
+        "reference": "v1.7.53 2018 point-in-time universe reconstruction",
+        "same_source_union_method": True,
+        "same_sip_presence_method": True,
+        "same_timeframe": "1Month",
+        "same_feed": "sip",
+        "same_adjustment": "raw",
+        "same_batch_size": 200,
+        "no_stricter_security_master_standard": True,
+        "universe_label": "2017 Historical Replication Candidate — Observed Historical SIP Universe",
+        "complete_market_claim": False,
+    },
+    "identity_policy": "Ticker text is a request key, not permanent economic-entity identity. No cross-era entity merge.",
+    "presence_rule": "A source-union symbol is marked observed_in_2017 only if Alpaca SIP raw 1Month bars contain at least one 2017 bar.",
+    "batch_size": 200,
+    "coverage_gate_pct_min": 95.0,
+    "coverage_gate_definition": "As in v1.7.53, source-union SIP presence is reconstruction evidence and is not relabeled as complete historical-market coverage. No independent Security Master is newly imposed on 2017.",
+    "fail_closed_without_independent_denominator": True,
+    "split_policy": "Universe presence reconstruction does not certify all 2017 splits/reverse-splits/symbol changes. Strict corporate-action handling remains mandatory before any later candidate/outcome evaluation.",
+    "historical_replication_stop_rule": {
+        "only_authorized_candidate_year": 2017,
+        "maximum_additional_h1_historical_years": 1,
+        "no_automatic_2016_or_earlier_after_2017_result": True,
+        "pooled_2017_2018_replication_test_authorized": False,
+        "regime_dependence_claim_authorized": False,
+    },
+    "firewall": {
+        "h1_computed": False, "mfe_mae_computed": False, "target_adverse_computed": False,
+        "ranking_computed": False, "candidate_selection_computed": False,
+        "fresh_forward_oos_opened": False, "pooled_2017_2018_computed": False,
+        "2018_results_mutated": False, "2019_2026_discovery_mutated": False,
+        "h2_created": False, "profitability_computed": False,
+    },
+    "decision_policy": "RECONSTRUCTION_COMPLETE means the comparable source-union/SIP-presence index was built. Without an independent point-in-time denominator, report RECONSTRUCTION_COMPLETE_COVERAGE_UNCERTIFIED exactly as the analogous 2018 stage did. This is not a failure of observed-universe methodology and does not authorize H1. STOP_REVIEW for separate observed-universe certification.",
+}
+BACKWARD_OOS_2017_UNIVERSE_SPEC_SHA256 = hashlib.sha256(json.dumps(BACKWARD_OOS_2017_UNIVERSE_SPEC, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2017_UNIVERSE_LOCK = threading.RLock()
+BACKWARD_OOS_2017_UNIVERSE_THREAD = None
+BACKWARD_OOS_2017_UNIVERSE_STOP = threading.Event()
+BACKWARD_OOS_2017_UNIVERSE_STATE = {"status":"IDLE","phase":"NOT_STARTED","message":"2017 observed-universe reconstruction has not started","reconstruction_id":BACKWARD_OOS_2017_UNIVERSE_SPEC["reconstruction_id"],"updated_at":iso(),"h1_computed":False,"fresh_forward_oos_opened":False}
+
+def _boos17u_key(suffix:str)->str:return radar.key(f"backward_oos_2017_universe:v1:{suffix}")
+def _boos17u_set_state(**updates:Any)->None:
+    global BACKWARD_OOS_2017_UNIVERSE_STATE
+    with BACKWARD_OOS_2017_UNIVERSE_LOCK:
+        BACKWARD_OOS_2017_UNIVERSE_STATE={**BACKWARD_OOS_2017_UNIVERSE_STATE,**updates,"updated_at":iso(),"h1_computed":False,"fresh_forward_oos_opened":False}
+        snap=dict(BACKWARD_OOS_2017_UNIVERSE_STATE)
+    if radar.redis.configured:radar.redis.set_json(_boos17u_key("status"),snap)
+
+def _boos17u_gate()->tuple[bool,str,dict[str,Any]]:
+    audit={"required_probe_result_sha256":BACKWARD_OOS_2017_UNIVERSE_SPEC["required_capability_probe_result_sha256"],"required_probe_spec_sha256":BACKWARD_OOS_2017_UNIVERSE_SPEC["required_capability_probe_spec_sha256"]}
+    if not radar.redis.configured:return False,"Redis is required",audit
+    r=radar.redis.get_json(_boos17_key("report"),None)
+    if not r:return False,"completed v1.7.68 report is required",audit
+    audit.update({"actual_probe_result_sha256":r.get("result_sha256"),"actual_probe_spec_sha256":BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC_SHA256,"decision":r.get("decision"),"independence_classification":r.get("independence_classification")})
+    checks={
+        "result_sha_match":r.get("result_sha256")==BACKWARD_OOS_2017_UNIVERSE_SPEC["required_capability_probe_result_sha256"],
+        "spec_sha_match":BACKWARD_OOS_2017_INDEPENDENCE_CAPABILITY_SPEC_SHA256==BACKWARD_OOS_2017_UNIVERSE_SPEC["required_capability_probe_spec_sha256"],
+        "capability_pass":r.get("decision")=="CAPABILITY_PASS",
+        "independence_pass":r.get("independence_classification")=="INDEPENDENCE_PROVENANCE_PASS",
+        "h1_not_computed":r.get("h1_computed") is False,
+        "fresh_oos_locked":r.get("fresh_forward_oos_opened") is False,
+    }
+    audit["checks"]=checks
+    ok=all(checks.values())
+    return ok,("allowed" if ok else "v1.7.68 provenance/capability gate failed closed"),audit
+
+def _boos17u_source_union()->tuple[dict[str,list[str]],dict[str,int]]:
+    all_assets=radar.alpaca.assets_by_status(None);all_syms=radar._asset_symbol_set(all_assets)
+    manifest=radar.redis.get_json(f"{radar.source_prefix}:manifest",{}) if radar.redis.configured else {}
+    manifest_syms={str(x).upper() for x in (manifest.get("symbols") or []) if SYMBOL_RE.fullmatch(str(x).upper())}
+    catalog=radar.redis.get_json(f"{radar.source_prefix}:explosions:catalog",{}) if radar.redis.configured else {}
+    catalog_syms={str(x.get("symbol") or "").upper() for x in (catalog.get("cases") or []) if SYMBOL_RE.fullmatch(str(x.get("symbol") or "").upper())}
+    old_records=radar.redis.get_json(radar.universe_reconstruction_key("records"),{}) if radar.redis.configured else {}
+    old_syms={str(x).upper() for x in (old_records or {}).keys() if SYMBOL_RE.fullmatch(str(x).upper())}
+    refs={"CELG","TWTR","SIVB","ATVI","BBBY","META"}
+    union=sorted(all_syms|manifest_syms|catalog_syms|old_syms|refs);provenance={}
+    for sym in union:
+        p=[]
+        if sym in all_syms:p.append("alpaca_all_assets")
+        if sym in old_syms:p.append("frozen_2019_2026_reconstruction")
+        if sym in manifest_syms:p.append("legacy_manifest")
+        if sym in catalog_syms:p.append("legacy_ndr_catalog")
+        if sym in refs:p.append("frozen_probe_reference")
+        provenance[sym]=p
+    return provenance,{"alpaca_all_assets":len(all_syms),"frozen_2019_2026_reconstruction":len(old_syms),"legacy_manifest":len(manifest_syms),"legacy_ndr_catalog":len(catalog_syms),"frozen_probe_reference":len(refs),"source_union":len(union)}
+
+def _boos17u_worker()->None:
+    global BACKWARD_OOS_2017_UNIVERSE_THREAD
+    requests_made=0
+    try:
+        ok,why,audit=_boos17u_gate()
+        if not ok:raise RuntimeError(why)
+        if not radar.alpaca.configured:raise RuntimeError("Alpaca credentials are required")
+        if not radar.redis.configured:raise RuntimeError("Redis is required for resumable 2017 universe reconstruction")
+        _boos17u_set_state(status="RUNNING",phase="SOURCE_UNION",message="Building 2017 source union with v1.7.53-parity provenance; no outcomes",alpaca_requests_made=0)
+        provenance,source_counts=_boos17u_source_union();requests_made+=1
+        symbols=sorted(provenance);radar.redis.set_json(_boos17u_key("source_provenance"),provenance)
+        bs=int(BACKWARD_OOS_2017_UNIVERSE_SPEC["batch_size"]);total_batches=math.ceil(len(symbols)/bs) if symbols else 0
+        completed=set(radar.redis.get_json(_boos17u_key("completed_batches"),[]) or []);BACKWARD_OOS_2017_UNIVERSE_STOP.clear()
+        start=datetime(2016,12,1,tzinfo=UTC);end=datetime(2018,1,1,tzinfo=UTC)
+        _boos17u_set_state(status="RUNNING",phase="SIP_PRESENCE_INDEX",message="Indexing Dec-2016 warm-up and 2017 SIP monthly presence only",symbol_count=len(symbols),total_batches=total_batches,completed_batches=len(completed),alpaca_requests_made=requests_made)
+        for bi in range(total_batches):
+            if BACKWARD_OOS_2017_UNIVERSE_STOP.is_set():
+                _boos17u_set_state(status="PAUSED",phase="SIP_PRESENCE_INDEX",message="Paused safely between batches",completed_batches=len(completed),total_batches=total_batches,alpaca_requests_made=requests_made);return
+            if bi in completed:continue
+            batch=symbols[bi*bs:(bi+1)*bs]
+            bars=radar.alpaca.bars(batch,start,end,feed="sip",adjustment="raw",timeframe="1Month");requests_made+=1;chunk={}
+            for sym in batch:
+                rows=bars.get(sym) or [];months=sorted({str(r.get("t") or "")[:7] for r in rows if str(r.get("t") or "")[:7]})
+                months17=[m for m in months if m.startswith("2017-")]
+                chunk[sym]={"symbol":sym,"sources":provenance.get(sym,[]),"observed_in_2017":bool(months17),"months_with_sip_2017":len(set(months17)),"first_sip_month_2017":min(months17) if months17 else None,"last_sip_month_2017":max(months17) if months17 else None,"warmup_dec_2016_present":any(m=="2016-12" for m in months)}
+            radar.redis.set_json(_boos17u_key(f"batch:{bi}"),chunk);completed.add(bi);radar.redis.set_json(_boos17u_key("completed_batches"),sorted(completed))
+            _boos17u_set_state(status="RUNNING",phase="SIP_PRESENCE_INDEX",message=f"Completed 2017 presence batch {bi+1}/{total_batches}",symbol_count=len(symbols),completed_batches=len(completed),total_batches=total_batches,alpaca_requests_made=requests_made)
+        records={};observed=0;warmup_present=0;source_observed={k:0 for k in source_counts if k!="source_union"}
+        for bi in range(total_batches):
+            chunk=radar.redis.get_json(_boos17u_key(f"batch:{bi}"),{}) or {}
+            for sym,rec in chunk.items():
+                records[sym]=rec
+                if rec.get("observed_in_2017"):
+                    observed+=1
+                    for source in rec.get("sources") or []:
+                        if source in source_observed:source_observed[source]+=1
+                if rec.get("warmup_dec_2016_present"):warmup_present+=1
+        decision="RECONSTRUCTION_COMPLETE_COVERAGE_UNCERTIFIED"
+        report={"version":VERSION,"build":BUILD,"reconstruction_id":BACKWARD_OOS_2017_UNIVERSE_SPEC["reconstruction_id"],"universe_spec_sha256":BACKWARD_OOS_2017_UNIVERSE_SPEC_SHA256,"required_capability_probe_result_sha256":BACKWARD_OOS_2017_UNIVERSE_SPEC["required_capability_probe_result_sha256"],"required_capability_probe_spec_sha256":BACKWARD_OOS_2017_UNIVERSE_SPEC["required_capability_probe_spec_sha256"],"gate_audit":audit,"status":"COMPLETED","phase":"STOP_REVIEW","decision":decision,"methodology_reference":"v1.7.53 2018 point-in-time universe reconstruction","source_counts":source_counts,"source_union_symbols":len(symbols),"symbols_observed_in_2017_sip":observed,"symbols_with_dec2016_warmup_presence":warmup_present,"observed_2017_by_source":source_observed,"records_key":_boos17u_key("records"),"coverage_certification":{"required_pct_min":95.0,"independent_point_in_time_denominator_available":False,"certified_coverage_pct":None,"gate_pass":False,"reason":"No independent point-in-time 2017 Security Master denominator is imposed or inferred here. As in v1.7.53, source-union SIP presence reconstructs the Observed Historical SIP Universe but does not certify complete-market coverage."},"split_certification":{"all_2017_splits_certified":False,"reason":"Universe presence reconstruction does not enumerate/validate all 2017 corporate actions."},"scope_guard":{"universe_reconstruction_complete":True,"complete_market_coverage_certified":False,"h1_computed":False,"candidate_selection_computed":False,"ranking_computed":False,"target_adverse_computed":False,"mfe_mae_computed":False,"profitability_computed":False,"fresh_forward_oos_opened":False,"pooled_2017_2018_computed":False,"2018_results_mutated":False,"2019_2026_discovery_mutated":False,"h1_execution_allowed":False},"universe_label":"2017 Historical Replication Candidate — Observed Historical SIP Universe","alpaca_requests_made":requests_made,"next_step":"STOP_REVIEW. Only a separately reviewed 2017 Observed Historical SIP Universe certification/methodology-alignment stage may follow; H1 remains locked.","completed_at":iso()}
+        report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        radar.redis.set_json(_boos17u_key("records"),records);radar.redis.set_json(_boos17u_key("report"),report)
+        _boos17u_set_state(status="COMPLETED",phase="STOP_REVIEW",message="2017 Observed Historical SIP Universe reconstructed; stop and review before certification",decision=decision,source_union_symbols=len(symbols),symbols_observed_in_2017_sip=observed,alpaca_requests_made=requests_made,result_sha256=report["result_sha256"],h1_execution_allowed=False)
+    except Exception as exc:
+        logging.exception("2017 observed-universe reconstruction failed")
+        _boos17u_set_state(status="ERROR",phase="BLOCKED",message="2017 observed-universe reconstruction failed closed",last_error=f"{type(exc).__name__}: {exc}",alpaca_requests_made=requests_made,h1_execution_allowed=False)
+    finally:
+        with BACKWARD_OOS_2017_UNIVERSE_LOCK:BACKWARD_OOS_2017_UNIVERSE_THREAD=None
+
+def _boos17u_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2017_UNIVERSE_THREAD
+    ok,why,_=_boos17u_gate()
+    if not ok:return False,why
+    if not radar.alpaca.configured:return False,"Alpaca credentials are required"
+    with BACKWARD_OOS_2017_UNIVERSE_LOCK:
+        if BACKWARD_OOS_2017_UNIVERSE_THREAD and BACKWARD_OOS_2017_UNIVERSE_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2017_UNIVERSE_THREAD=threading.Thread(target=_boos17u_worker,name="ipr-2017-observed-universe-reconstruction",daemon=True);BACKWARD_OOS_2017_UNIVERSE_THREAD.start()
+    return True,"started"
+
+@app.get("/research/2017-historical-replication/universe/protocol")
+def backward_oos_2017_universe_protocol():
+    ok,why,audit=_boos17u_gate()
+    return jsonify({"version":VERSION,"build":BUILD,"universe_spec":BACKWARD_OOS_2017_UNIVERSE_SPEC,"universe_spec_sha256":BACKWARD_OOS_2017_UNIVERSE_SPEC_SHA256,"gate_allowed":ok,"gate_reason":why,"gate_audit":audit,"execution_started":False,"alpaca_requests_made":0,"h1_computed":False,"fresh_forward_oos_opened":False,"note":"Protocol-only view performs zero market-data requests. Reconstruction is the v1.7.53-parity 2017 Observed Historical SIP Universe stage; no H1 outcomes are exposed."})
+@app.route("/research/2017-historical-replication/universe/start",methods=["GET","POST"])
+def backward_oos_2017_universe_start():
+    ok,why=_boos17u_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/2017-historical-replication/universe/status","result_url":"/research/2017-historical-replication/universe/result","h1_execution_allowed":False,"fresh_forward_oos_opened":False}),(202 if ok else 409)
+@app.get("/research/2017-historical-replication/universe/status")
+def backward_oos_2017_universe_status():
+    persisted=radar.redis.get_json(_boos17u_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2017_UNIVERSE_LOCK:out=dict(persisted or BACKWARD_OOS_2017_UNIVERSE_STATE);out["worker_alive"]=bool(BACKWARD_OOS_2017_UNIVERSE_THREAD and BACKWARD_OOS_2017_UNIVERSE_THREAD.is_alive())
+    return jsonify(out)
+@app.get("/research/2017-historical-replication/universe/result")
+def backward_oos_2017_universe_result():
+    report=radar.redis.get_json(_boos17u_key("report"),None) if radar.redis.configured else None
+    if not report:return jsonify({"result_ready":False,"status_url":"/research/2017-historical-replication/universe/status","h1_computed":False,"fresh_forward_oos_opened":False}),202
     return jsonify(report)
 
 if __name__ == "__main__":
