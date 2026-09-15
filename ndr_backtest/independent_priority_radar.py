@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.57"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-BACKWARD-OOS-PREFREEZE-A"
+VERSION = "1.7.58"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-BACKWARD-OOS-EXECUTION-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13116,6 +13116,183 @@ def backward_oos_2018_h1_prefreeze_protocol():
     ok,why=_boos18h1_prefreeze_gate()
     prior=radar.redis.get_json(_boos18x_key("report"),{}) if radar.redis.configured else {}
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_H1_PREFREEZE_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_H1_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_2018_sample_controls_result_sha256":prior.get("result_sha256"),"execution_started":False,"alpaca_requests_made":0,"h1_computed":False,"h1_execution_allowed":False,"backward_oos_h1_opened":False,"fresh_forward_oos_opened":False,"note":"Protocol-only review gate. No H1 Start endpoint exists in v1.7.57 by design."})
+
+
+# -----------------------------------------------------------------------------
+# v1.7.58 — H1 2018 Independent Backward-OOS Execution
+# First authorized read of the frozen H1 on 2018. Fresh Forward OOS remains locked.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_EXEC_SPEC = {
+    "execution_id":"IPR-2018-H1-BACKWARD-OOS-EXECUTION-2026-09-15-A",
+    "required_prefreeze_sha256":"ff0eae7b6d091313f3ccbf44047af42c8dcbf644ec891229a3eb41b7b711fe27",
+    "required_2018_sample_controls_result_sha256":"fa0b4341e8df45528986535cc3670233dc49b968a32b1995f85a789b6a0dd7c2",
+    "required_2018_execution_spec_sha256":"fecebaff1d2c3b32c60a0eea67b60d9a28a47ec1ac8d50c35484e7b9321aa6d6",
+    "period":["2018-01-01","2018-12-31"],
+    "population":{"classes":["positive","hard_negative"],"source":"frozen v1.7.56-R1 2018 control manifests","random_control_used_for_ranking":False},
+    "causal_reconstruction":{"signal":"exact frozen _ctr_first_signal with frozen model/calibration","checkpoints_minutes":[30,60],"features":["discovery_range_pct","return_5m_pct"],"ranking":"(z_discovery_range_pct + z_return_5m_pct)/2","standardization":"exact frozen v1.7.37-R1 Discovery constants; no 2018 refit","selections":["top_1","top_3"]},
+    "h1":{"feature":"close_location_in_post_t0_range","threshold":1.0/3.0,"direction":"<=","confirmation_offset_minutes":1,"feature_definition":"(confirmation close - post-t0 min low)/(post-t0 max high - post-t0 min low), clipped [0,1]"},
+    "primary":{"horizon_minutes":30,"target_pct":5.0,"adverse_pct":-5.0,"metric":"TARGET_FIRST - ADVERSE_FIRST","same_bar":"SAME_BAR_AMBIGUOUS"},
+    "mandatory_views":[{"window_minutes":30,"selection":"top_1"},{"window_minutes":30,"selection":"top_3"},{"window_minutes":60,"selection":"top_1"},{"window_minutes":60,"selection":"top_3"}],
+    "gates":{"primary_improvement_min_absolute":0.05,"adverse_first_no_increase":True,"retention_min":0.25,"overall":"all four mandatory views must pass all gates"},
+    "missing_policy":"Exact t0 and exact t0+1m bars required; missing excluded from both arms. A 30m primary path requires at least one post-confirmation bar; no imputation.",
+    "historical_bar_access":{"authorized":True,"feeds":"SIP raw only in 2018","logical_request_budget":5000,"hard_stop_on_budget":True},
+    "firewall":{"fresh_forward_oos_opened":False,"post_2018_read":False,"2019_2026_results_mutated":False,"threshold_tuning":False,"profitability_claim":False,"bot_authorized":False},
+}
+BACKWARD_OOS_2018_H1_EXEC_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2018_H1_EXEC_LOCK=threading.RLock();BACKWARD_OOS_2018_H1_EXEC_THREAD=None
+BACKWARD_OOS_2018_H1_EXEC_STATE={"status":"IDLE","phase":"NOT_STARTED","message":"2018 H1 execution has not started","execution_id":BACKWARD_OOS_2018_H1_EXEC_SPEC["execution_id"],"alpaca_requests_made":0,"h1_computed":False,"backward_oos_h1_opened":False,"fresh_forward_oos_opened":False,"updated_at":iso()}
+
+def _boos18h1x_key(suffix:str)->str:return radar.key(f"backward_oos_2018_h1_execution:v1:{suffix}")
+def _boos18h1x_set(**u:Any)->None:
+    global BACKWARD_OOS_2018_H1_EXEC_STATE
+    with BACKWARD_OOS_2018_H1_EXEC_LOCK:
+        BACKWARD_OOS_2018_H1_EXEC_STATE={**BACKWARD_OOS_2018_H1_EXEC_STATE,**u,"updated_at":iso(),"fresh_forward_oos_opened":False}
+        snap=dict(BACKWARD_OOS_2018_H1_EXEC_STATE)
+    if radar.redis.configured:radar.redis.set_json(_boos18h1x_key("status"),snap)
+
+def _boos18h1x_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    if not radar.alpaca.configured:return False,"Alpaca is required for frozen causal reconstruction"
+    if BACKWARD_OOS_2018_H1_PREFREEZE_SHA256!=BACKWARD_OOS_2018_H1_EXEC_SPEC["required_prefreeze_sha256"]:return False,"v1.7.57 prefreeze SHA mismatch"
+    prior=radar.redis.get_json(_boos18x_key("report"),{}) or {}
+    if prior.get("status")!="COMPLETED" or prior.get("decision")!="2018_SAMPLE_AND_CONTROLS_READY_H1_STILL_LOCKED":return False,"v1.7.56-R1 completed locked sample is required"
+    if prior.get("result_sha256")!=BACKWARD_OOS_2018_H1_EXEC_SPEC["required_2018_sample_controls_result_sha256"]:return False,"v1.7.56-R1 result SHA mismatch"
+    if prior.get("execution_spec_sha256")!=BACKWARD_OOS_2018_H1_EXEC_SPEC["required_2018_execution_spec_sha256"]:return False,"v1.7.56-R1 execution-spec SHA mismatch"
+    if prior.get("h1_computed") is not False or prior.get("backward_oos_h1_opened") is not False:return False,"H1 seal provenance failed"
+    if prior.get("fresh_forward_oos_opened") is not False:return False,"Fresh Forward OOS provenance failed"
+    rr=radar.redis.get_json(radar.early_feature_ranking_construction_key("report"),{}) or {}
+    constants=rr.get("standardization_constants") or radar.redis.get_json(radar.early_feature_ranking_construction_key("constants"),{}) or {}
+    for w in (30,60):
+        for f in ("discovery_range_pct","return_5m_pct"):
+            c=constants.get(f"{f}@{w}") or {}
+            if not isinstance(c.get("mean"),(int,float)) or not isinstance(c.get("population_sd"),(int,float)) or float(c.get("population_sd") or 0)<=0:return False,f"Frozen ranking constant missing: {f}@{w}"
+    model=radar.redis.get_json(radar.feature_scoring_freeze_key("report"),{}) or {};roles=model.get("roles") or {};cal=model.get("calibration") or {}
+    if not (roles.get("early_core") and roles.get("confirmation") and (cal.get("early_core") or {}).get("frozen_threshold") is not None and (cal.get("confirmation") or {}).get("frozen_threshold") is not None):return False,"Frozen causal signal model/calibration is required"
+    sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+    if len(sessions)!=251:return False,"Frozen 2018 session list must contain 251 sessions"
+    return True,"allowed"
+
+def _boos18h1_parse_bar_map(rows):
+    out={}
+    for r in rows or []:
+        try:
+            ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"));ts=ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+            o,h,l,c=(float(r[k]) for k in ("o","h","l","c"))
+            if min(o,h,l,c)>0:out[ts]=r
+        except Exception:pass
+    return out
+
+def _boos18h1_measure(t0s:str,rows:list[dict[str,Any]])->dict[str,Any]:
+    try:t0=datetime.fromisoformat(str(t0s).replace("Z","+00:00"));t0=t0 if t0.tzinfo else t0.replace(tzinfo=UTC)
+    except Exception:return {"evaluable":False,"reason":"invalid_t0"}
+    bm=_boos18h1_parse_bar_map(rows);t0bar=bm.get(t0);ct=t0+timedelta(minutes=1);cb=bm.get(ct)
+    if not t0bar:return {"evaluable":False,"reason":"exact_t0_bar_missing"}
+    if not cb:return {"evaluable":False,"reason":"exact_confirmation_bar_missing"}
+    post=[r for ts,r in sorted(bm.items()) if t0<ts<=ct]
+    if not post:return {"evaluable":False,"reason":"post_t0_confirmation_path_missing"}
+    lo=min(float(r["l"]) for r in post);hi=max(float(r["h"]) for r in post);cp=float(cb["c"]);rng=hi-lo;cl=max(0.0,min(1.0,(cp-lo)/rng if rng>1e-12 else .5));h1=cl<=1.0/3.0
+    end=ct+timedelta(minutes=30);fut=[(ts,r) for ts,r in sorted(bm.items()) if ct<ts<=end]
+    if not fut:return {"evaluable":False,"reason":"primary_path_missing","close_location_in_post_t0_range":cl,"h1_accept":h1}
+    tgt=cp*1.05;adv=cp*.95;th=ah=None
+    for ts,r in fut:
+        if th is None and float(r["h"])>=tgt:th=ts
+        if ah is None and float(r["l"])<=adv:ah=ts
+    if th is not None and ah is not None and th==ah:order="SAME_BAR_AMBIGUOUS"
+    elif th is not None and (ah is None or th<ah):order="TARGET_FIRST"
+    elif ah is not None and (th is None or ah<th):order="ADVERSE_FIRST"
+    else:order="NEITHER"
+    return {"evaluable":True,"confirmation_ts":ct.isoformat().replace("+00:00","Z"),"entry_reference_price":cp,"close_location_in_post_t0_range":cl,"h1_accept":h1,"primary_path_ordering":order,"bars_30m":len(fut)}
+
+def _boos18h1x_worker()->None:
+    global BACKWARD_OOS_2018_H1_EXEC_THREAD
+    calls=int(radar.redis.get_json(_boos18h1x_key("alpaca_logical_requests"),0) or 0);budget=int(BACKWARD_OOS_2018_H1_EXEC_SPEC["historical_bar_access"]["logical_request_budget"])
+    try:
+        ok,why=_boos18h1x_gate()
+        if not ok:raise RuntimeError(why)
+        rr=radar.redis.get_json(radar.early_feature_ranking_construction_key("report"),{}) or {};constants=rr.get("standardization_constants") or radar.redis.get_json(radar.early_feature_ranking_construction_key("constants"),{}) or {}
+        model=radar.redis.get_json(radar.feature_scoring_freeze_key("report"),{}) or {};roles=model.get("roles") or {};cal=model.get("calibration") or {};early=roles["early_core"];conf=roles["confirmation"];eth=float(cal["early_core"]["frozen_threshold"]);cth=float(cal["confirmation"]["frozen_threshold"])
+        sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or [];done=set(radar.redis.get_json(_boos18h1x_key("completed_sessions"),[]) or [])
+        _boos18h1x_set(status="RUNNING",phase="2018_H1_CAUSAL_RECONSTRUCTION",message=f"2018 H1 reconstruction {len(done)}/{len(sessions)}",total_sessions=len(sessions),sessions_completed=len(done),alpaca_requests_made=calls,h1_computed=False,backward_oos_h1_opened=True)
+        for sess in sessions:
+            if sess in done:continue
+            manifest=radar.redis.get_json(_boos18x_key(f"controls:{sess}"),[]) or []
+            cohort=[];seen=set()
+            for x in manifest:
+                if x.get("class") not in {"positive","hard_negative"}:continue
+                k=(x.get("class"),str(x.get("symbol") or "").upper(),x.get("match_id"),x.get("cutoff"))
+                if k in seen:continue
+                seen.add(k);cohort.append(x)
+            syms=sorted({str(x.get("symbol") or "").upper() for x in cohort if x.get("symbol")});target=date.fromisoformat(sess);start,end=radar._probe_cycle_bounds(target)
+            batches=math.ceil(len(syms)/200) if syms else 0;need=batches*2
+            if calls+need>budget:raise RuntimeError("ALPACA_LOGICAL_REQUEST_BUDGET_EXHAUSTED_BEFORE_REQUEST")
+            rows5=radar._fd_fetch_session_rows(syms,target,start,end) if syms else {};calls+=batches;rows1=radar._ctr_fetch_1m(syms,target,start,end) if syms else {};calls+=batches;radar.redis.set_json(_boos18h1x_key("alpaca_logical_requests"),calls)
+            candidates=[]
+            for x in cohort:
+                sym=str(x.get("symbol") or "").upper();first,cf,esc,csc=radar._ctr_first_signal(rows5.get(sym,[]),early,eth,conf,cth)
+                if not first:continue
+                signal_ts=first[0]
+                for w in (30,60):
+                    ev=signal_ts-timedelta(minutes=w);feat,diag=radar._efr_features_from_1m(rows1.get(sym,[]),ev)
+                    if not feat:continue
+                    zs=[]
+                    for f in ("discovery_range_pct","return_5m_pct"):
+                        c=constants[f"{f}@{w}"];zs.append((float(feat[f])-float(c["mean"]))/float(c["population_sd"]))
+                    candidates.append({"session":sess,"class":x.get("class"),"symbol":sym,"match_id":x.get("match_id"),"window_minutes":w,"signal_ts":signal_ts.isoformat().replace("+00:00","Z"),"t0":ev.isoformat().replace("+00:00","Z"),"score":sum(zs)/2.0})
+            selected=[]
+            for w in (30,60):
+                ordered=sorted([x for x in candidates if x["window_minutes"]==w],key=lambda x:(-x["score"],x["symbol"],x["class"],str(x.get("match_id") or "")))
+                for rank,c in enumerate(ordered[:3],1):
+                    m=_boos18h1_measure(c["t0"],rows1.get(c["symbol"],[]));selected.append({**c,"within_session_rank":rank,"measurement":m})
+            radar.redis.set_json(_boos18h1x_key(f"records:{sess}"),selected);done.add(sess);radar.redis.set_json(_boos18h1x_key("completed_sessions"),sorted(done))
+            if len(done)%10==0 or len(done)==len(sessions):_boos18h1x_set(status="RUNNING",phase="2018_H1_CAUSAL_RECONSTRUCTION",message=f"2018 H1 reconstruction {len(done)}/{len(sessions)}",total_sessions=len(sessions),sessions_completed=len(done),current_session=sess,alpaca_requests_made=calls,h1_computed=False,backward_oos_h1_opened=True)
+        views=[];overall=True
+        for w in (30,60):
+            for n in (1,3):
+                rs=[]
+                for sess in sessions:rs.extend([r for r in (radar.redis.get_json(_boos18h1x_key(f"records:{sess}"),[]) or []) if int(r.get("window_minutes") or -1)==w and int(r.get("within_session_rank") or 99)<=n])
+                ev=[r for r in rs if (r.get("measurement") or {}).get("evaluable")];h1=[r for r in ev if r["measurement"].get("h1_accept")]
+                def rates(a):
+                    k=len(a);tf=sum(1 for r in a if r["measurement"].get("primary_path_ordering")=="TARGET_FIRST");af=sum(1 for r in a if r["measurement"].get("primary_path_ordering")=="ADVERSE_FIRST");amb=sum(1 for r in a if r["measurement"].get("primary_path_ordering")=="SAME_BAR_AMBIGUOUS")
+                    return {"n":k,"target_first_rate":tf/k if k else None,"adverse_first_rate":af/k if k else None,"same_bar_ambiguous_rate":amb/k if k else None,"primary":(tf-af)/k if k else None}
+                b=rates(ev);q=rates(h1);ret=len(h1)/len(ev) if ev else None;imp=(q["primary"]-b["primary"]) if q["primary"] is not None and b["primary"] is not None else None
+                gates={"primary_improvement":bool(imp is not None and imp>=.05),"safety":bool(q["adverse_first_rate"] is not None and b["adverse_first_rate"] is not None and q["adverse_first_rate"]<=b["adverse_first_rate"]),"retention":bool(ret is not None and ret>=.25)};passed=all(gates.values());overall=overall and passed
+                views.append({"window_minutes":w,"selection":f"top_{n}","candidate_count":len(rs),"baseline_evaluable_count":len(ev),"missing_count":len(rs)-len(ev),"h1_count":len(h1),"retention":ret,"baseline":b,"h1":q,"primary_improvement_absolute":imp,"gates":gates,"pass":passed})
+        decision="H1_BACKWARD_OOS_PASS" if overall else "H1_BACKWARD_OOS_FAIL"
+        report={"version":VERSION,"build":BUILD,"execution_id":BACKWARD_OOS_2018_H1_EXEC_SPEC["execution_id"],"execution_spec_sha256":BACKWARD_OOS_2018_H1_EXEC_SHA256,"required_prefreeze_sha256":BACKWARD_OOS_2018_H1_EXEC_SPEC["required_prefreeze_sha256"],"source_2018_result_sha256":BACKWARD_OOS_2018_H1_EXEC_SPEC["required_2018_sample_controls_result_sha256"],"status":"COMPLETED","decision":decision,"sessions":len(sessions),"alpaca_requests_made":calls,"views":views,"all_four_mandatory_views_pass":overall,"h1_computed":True,"backward_oos_h1_opened":True,"fresh_forward_oos_opened":False,"2019_2026_results_mutated":False,"thresholds_tuned_after_result":False,"profitability_computed":False,"bot_authorized":False,"stop_and_review_required":True,"completed_at":iso()}
+        canon=dict(report);canon.pop("completed_at");report["result_sha256"]=hashlib.sha256(json.dumps(canon,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();radar.redis.set_json(_boos18h1x_key("report"),report);_boos18h1x_set(status="COMPLETED",phase="H1_BACKWARD_OOS_STOP_REVIEW",message="2018 H1 Backward-OOS evaluation completed; STOP REVIEW",decision=decision,sessions_completed=len(sessions),total_sessions=len(sessions),alpaca_requests_made=calls,h1_computed=True,backward_oos_h1_opened=True,result_sha256=report["result_sha256"],stop_and_review_required=True)
+    except Exception as exc:
+        logging.exception("2018 H1 Backward-OOS execution failed");_boos18h1x_set(status="ERROR",phase="H1_BACKWARD_OOS_BLOCKED",message="2018 H1 execution failed closed",last_error=f"{type(exc).__name__}: {exc}",alpaca_requests_made=calls,h1_computed=False,backward_oos_h1_opened=True)
+    finally:
+        with BACKWARD_OOS_2018_H1_EXEC_LOCK:BACKWARD_OOS_2018_H1_EXEC_THREAD=None
+
+def _boos18h1x_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2018_H1_EXEC_THREAD
+    ok,why=_boos18h1x_gate()
+    if not ok:return False,why
+    existing=radar.redis.get_json(_boos18h1x_key("report"),None) if radar.redis.configured else None
+    if isinstance(existing,dict) and existing.get("status")=="COMPLETED":return False,"already_completed"
+    with BACKWARD_OOS_2018_H1_EXEC_LOCK:
+        if BACKWARD_OOS_2018_H1_EXEC_THREAD and BACKWARD_OOS_2018_H1_EXEC_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2018_H1_EXEC_THREAD=threading.Thread(target=_boos18h1x_worker,name="ipr-2018-h1-backward-oos",daemon=True);BACKWARD_OOS_2018_H1_EXEC_THREAD.start()
+    return True,"started"
+
+@app.get("/research/2018-backward-oos/h1-execution/protocol")
+def backward_oos_2018_h1_execution_protocol():
+    ok,why=_boos18h1x_gate();prior=radar.redis.get_json(_boos18x_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"execution_spec":BACKWARD_OOS_2018_H1_EXEC_SPEC,"execution_spec_sha256":BACKWARD_OOS_2018_H1_EXEC_SHA256,"required_prefreeze_sha256":BACKWARD_OOS_2018_H1_EXEC_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":BACKWARD_OOS_2018_H1_PREFREEZE_SHA256,"source_2018_result_sha256":prior.get("result_sha256"),"gate_allowed":ok,"gate_reason":why,"execution_started":False,"h1_computed":False,"backward_oos_h1_opened":False,"fresh_forward_oos_opened":False})
+@app.route("/research/2018-backward-oos/h1-execution/start",methods=["GET","POST"])
+def backward_oos_2018_h1_execution_start():
+    ok,why=_boos18h1x_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/2018-backward-oos/h1-execution/status","result_url":"/research/2018-backward-oos/h1-execution/result","fresh_forward_oos_opened":False}),(202 if ok else 409)
+@app.get("/research/2018-backward-oos/h1-execution/status")
+def backward_oos_2018_h1_execution_status():
+    p=radar.redis.get_json(_boos18h1x_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2018_H1_EXEC_LOCK:o=dict(p or BACKWARD_OOS_2018_H1_EXEC_STATE);o["worker_alive"]=bool(BACKWARD_OOS_2018_H1_EXEC_THREAD and BACKWARD_OOS_2018_H1_EXEC_THREAD.is_alive())
+    return jsonify(o)
+@app.get("/research/2018-backward-oos/h1-execution/result")
+def backward_oos_2018_h1_execution_result():
+    r=radar.redis.get_json(_boos18h1x_key("report"),None) if radar.redis.configured else None
+    if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-execution/status","fresh_forward_oos_opened":False}),202
+    return jsonify(r)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
