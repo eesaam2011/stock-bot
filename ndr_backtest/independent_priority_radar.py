@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.63"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-TARGET-ADVERSE-DECOMPOSITION-PREFREEZE-A"
+VERSION = "1.7.64"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-TARGET-ADVERSE-DECOMPOSITION-EXECUTION-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13709,6 +13709,140 @@ def backward_oos_2018_h1_target_adverse_prefreeze_protocol():
     ok,why=_boos18h1_target_adverse_prefreeze_gate()
     r=radar.redis.get_json(_boos18h1r_key("report"),{}) if radar.redis.configured else {}
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_rank_result_sha256":r.get("result_sha256"),"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","execution_started":False,"target_adverse_outcomes_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Protocol-only TARGET/ADVERSE decomposition pre-freeze. No Start endpoint exists in v1.7.63 by design."})
+
+
+# -----------------------------------------------------------------------------
+# v1.7.64 — 2018 H1 Post-Failure Diagnostic: TARGET/ADVERSE Decomposition Execution
+# Executes only the exact v1.7.63 pre-frozen decomposition. Redis-only; STOP_REVIEW.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SPEC = {
+    "execution_id":"IPR-2018-H1-POST-FAILURE-TARGET-ADVERSE-EXECUTION-2026-09-15-A",
+    "required_prefreeze_sha256":"40991e6616f6fa308b56878a937afd1d5644dec472335bc47e73b3f044420923",
+    "required_rank_result_sha256":"2b5f80bffb42d7cc0061a5d2627672e659874d519a2b87d622375c70d727ce45",
+    "required_h1_result_sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL","formal_decision_is_immutable":True,
+    "scope":{"period":["2018-01-01","2018-12-31"],"window_minutes":30,"selection":"top_3","expected_sessions":251,"expected_records_top3":746,"expected_baseline_evaluable":613,"expected_h1_count":203,"frozen_primary_improvement":0.046159162320494385},
+    "estimands":{
+        "delta_target":"P(TARGET_FIRST | H1) - P(TARGET_FIRST | Baseline)",
+        "delta_adverse_reduction":"P(ADVERSE_FIRST | Baseline) - P(ADVERSE_FIRST | H1)",
+        "identity_required_value":0.046159162320494385,"identity_tolerance":1e-12,
+        "not_tested":"TARGET_FIRST versus ADVERSE_FIRST within H1; delta_target minus delta_adverse_reduction"
+    },
+    "method":{"unit_of_resampling":"trading_session","bootstrap":"nonparametric cluster bootstrap; resample whole sessions with replacement and keep all eligible Top3 records from each sampled session together","replicates":50000,"seed":17632018,"confidence_level":0.95,"interval":"two-sided percentile interval (2.5th, 97.5th percentiles)","empty_arm_policy":"discard a replicate for a component if any denominator required by that component is zero","component_intervals":"two separately predeclared marginal 95% intervals; no joint 95% familywise-confidence claim"},
+    "decision_rule":{"established":"component point estimate > 0 AND its 95% session-cluster bootstrap interval excludes zero","not_established":"component interval includes zero","opposite_direction":"component point estimate < 0 AND its 95% interval excludes zero"},
+    "four_way_classification":["BOTH_COMPONENTS_ESTABLISHED","TARGET_ONLY_ESTABLISHED","ADVERSE_REDUCTION_ONLY_ESTABLISHED","NEITHER_COMPONENT_ESTABLISHED"],
+    "stop_rule":"STOP_REVIEW immediately after the pre-frozen decomposition report. No component competition, temporal-stability analysis, thresholds, timings, features, H2, profitability, or bot decision are computed.",
+    "firewall":{"alpaca_requests":False,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"alternative_rank_contrasts":False,"within_h1_target_vs_adverse_test":False,"component_competition_test":False,"temporal_stability_diagnostic":False,"new_features":False,"successor_hypothesis_created":False,"profitability_claim":False,"bot_authorized":False},
+}
+BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2018_H1_TARGET_ADVERSE_LOCK=threading.RLock();BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD=None
+BACKWARD_OOS_2018_H1_TARGET_ADVERSE_STATE={"status":"IDLE","phase":"NOT_STARTED","message":"TARGET/ADVERSE decomposition execution has not started","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"updated_at":iso()}
+def _boos18h1ta_key(suffix:str)->str:return radar.key(f"backward_oos_2018_h1_target_adverse:v1:{suffix}")
+def _boos18h1ta_set(**u:Any)->None:
+    global BACKWARD_OOS_2018_H1_TARGET_ADVERSE_STATE
+    with BACKWARD_OOS_2018_H1_TARGET_ADVERSE_LOCK:
+        BACKWARD_OOS_2018_H1_TARGET_ADVERSE_STATE={**BACKWARD_OOS_2018_H1_TARGET_ADVERSE_STATE,**u,"updated_at":iso(),"alpaca_requests_made":0,"fresh_forward_oos_opened":False}
+        snap=dict(BACKWARD_OOS_2018_H1_TARGET_ADVERSE_STATE)
+    if radar.redis.configured:radar.redis.set_json(_boos18h1ta_key("status"),snap)
+def _boos18h1ta_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    s=BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SPEC
+    if BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SHA256!=s["required_prefreeze_sha256"]:return False,"v1.7.63 prefreeze SHA mismatch"
+    ok,why=_boos18h1_target_adverse_prefreeze_gate()
+    if not ok:return False,f"v1.7.63 prefreeze gate failed: {why}"
+    r=radar.redis.get_json(_boos18h1r_key("report"),{}) or {}
+    if r.get("result_sha256")!=s["required_rank_result_sha256"]:return False,"v1.7.62 result SHA mismatch"
+    if r.get("required_h1_result_sha256")!=s["required_h1_result_sha256"]:return False,"v1.7.58 H1 provenance mismatch"
+    sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+    if len(sessions)!=251 or len(set(sessions))!=251 or any(not str(x).startswith("2018-") for x in sessions):return False,"exact frozen 251-session list required"
+    return True,"allowed"
+def _boos18h1ta_session_matrix(sessions:list[str])->tuple[np.ndarray,dict[str,int]]:
+    # Columns: baseline_n,target,adverse,h1_n,target,adverse for 30m Top3.
+    a=np.zeros((len(sessions),6),dtype=np.int64);tot={"records_top3":0,"baseline_evaluable":0,"h1_count":0}
+    for i,sess in enumerate(sessions):
+        rows=radar.redis.get_json(_boos18h1x_key(f"records:{sess}"),[]) or []
+        rs=[r for r in rows if int(r.get("window_minutes") or -1)==30 and 1<=int(r.get("within_session_rank") or 99)<=3]
+        ev=[r for r in rs if (r.get("measurement") or {}).get("evaluable")]
+        h1=[r for r in ev if (r.get("measurement") or {}).get("h1_accept") is True]
+        def c(x,order):return sum(1 for r in x if (r.get("measurement") or {}).get("primary_path_ordering")==order)
+        a[i,:]=[len(ev),c(ev,"TARGET_FIRST"),c(ev,"ADVERSE_FIRST"),len(h1),c(h1,"TARGET_FIRST"),c(h1,"ADVERSE_FIRST")]
+        tot["records_top3"]+=len(rs);tot["baseline_evaluable"]+=len(ev);tot["h1_count"]+=len(h1)
+    return a,tot
+def _boos18h1ta_stats(v:np.ndarray)->dict[str,Any]:
+    z=v.sum(axis=0);bn,bt,ba,hn,ht,ha=(int(x) for x in z)
+    if bn<=0 or hn<=0:return {"valid":False,"baseline_n":bn,"h1_n":hn}
+    btr=bt/bn;bar=ba/bn;htr=ht/hn;har=ha/hn;dt=htr-btr;da=bar-har
+    return {"valid":True,"baseline_n":bn,"baseline_target_first":bt,"baseline_adverse_first":ba,"baseline_target_rate":btr,"baseline_adverse_rate":bar,"h1_n":hn,"h1_target_first":ht,"h1_adverse_first":ha,"h1_target_rate":htr,"h1_adverse_rate":har,"delta_target":dt,"delta_adverse_reduction":da,"identity_sum":dt+da}
+def _boos18h1ta_worker()->None:
+    global BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD
+    try:
+        ok,why=_boos18h1ta_gate()
+        if not ok:raise RuntimeError(why)
+        spec=BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SPEC;scope=spec["scope"];method=spec["method"]
+        sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+        _boos18h1ta_set(status="RUNNING",phase="TARGET_ADVERSE_CLUSTER_BOOTSTRAP",message="Reading frozen 2018 Redis records; no market-data requests")
+        a,tot=_boos18h1ta_session_matrix(sessions)
+        if tot["records_top3"]!=scope["expected_records_top3"]:raise RuntimeError(f"Top3 record mismatch: {tot['records_top3']}")
+        if tot["baseline_evaluable"]!=scope["expected_baseline_evaluable"]:raise RuntimeError(f"baseline evaluable mismatch: {tot['baseline_evaluable']}")
+        if tot["h1_count"]!=scope["expected_h1_count"]:raise RuntimeError(f"H1 count mismatch: {tot['h1_count']}")
+        point=_boos18h1ta_stats(a)
+        if not point.get("valid"):raise RuntimeError("invalid pooled denominators")
+        required=float(spec["estimands"]["identity_required_value"]);tol=float(spec["estimands"]["identity_tolerance"])
+        identity_error=float(point["identity_sum"])-required
+        if abs(identity_error)>tol:raise RuntimeError(f"frozen primary identity mismatch: {point['identity_sum']} vs {required}")
+        reps=int(method["replicates"]);rng=np.random.default_rng(int(method["seed"]));n=len(sessions);dtvals=[];davals=[];discarded=0;chunk=1000
+        for start in range(0,reps,chunk):
+            k=min(chunk,reps-start);idx=rng.integers(0,n,size=(k,n))
+            for vv in a[idx]:
+                x=_boos18h1ta_stats(vv)
+                if not x.get("valid"):discarded+=1;continue
+                dtvals.append(float(x["delta_target"]));davals.append(float(x["delta_adverse_reduction"]))
+        if not dtvals or not davals:raise RuntimeError("all bootstrap replicates discarded")
+        dtv=np.asarray(dtvals,dtype=float);dav=np.asarray(davals,dtype=float)
+        dtlo,dthi=(float(x) for x in np.quantile(dtv,[0.025,0.975]));dalo,dahi=(float(x) for x in np.quantile(dav,[0.025,0.975]))
+        dt=float(point["delta_target"]);da=float(point["delta_adverse_reduction"])
+        te=bool(dt>0.0 and not (dtlo<=0.0<=dthi));ae=bool(da>0.0 and not (dalo<=0.0<=dahi))
+        if te and ae:classification="BOTH_COMPONENTS_ESTABLISHED"
+        elif te:classification="TARGET_ONLY_ESTABLISHED"
+        elif ae:classification="ADVERSE_REDUCTION_ONLY_ESTABLISHED"
+        else:classification="NEITHER_COMPONENT_ESTABLISHED"
+        def comp(name,formula,pointv,lo,hi,established):
+            opposite=bool(pointv<0.0 and not (lo<=0.0<=hi))
+            return {"estimand":formula,"absolute":pointv,"percentage_points":pointv*100.0,"ci_lower_absolute":lo,"ci_upper_absolute":hi,"ci_lower_percentage_points":lo*100.0,"ci_upper_percentage_points":hi*100.0,"zero_inside_interval":bool(lo<=0.0<=hi),"established":established,"opposite_direction_established":opposite,"confidence_level":method["confidence_level"],"method":"session-cluster nonparametric bootstrap percentile CI","replicates_requested":reps,"replicates_used":len(dtvals),"replicates_discarded":discarded,"seed":method["seed"]}
+        report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"required_rank_result_sha256":spec["required_rank_result_sha256"],"required_h1_result_sha256":spec["required_h1_result_sha256"],"status":"COMPLETED","phase":"STOP_REVIEW","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","formal_h1_decision_immutable":True,"research_status":"POST_HOC_DESCRIPTIVE_DIAGNOSTIC_ONLY","sessions":len(sessions),"session_clusters":len(sessions),"source":"frozen v1.7.58 Redis detailed records only","source_counts":tot,"pooled_rates":point,"identity_check":{"required_value":required,"observed_sum":float(point["identity_sum"]),"absolute_error":abs(identity_error),"tolerance":tol,"passed":True},"components":{"delta_target":comp("delta_target",spec["estimands"]["delta_target"],dt,dtlo,dthi,te),"delta_adverse_reduction":comp("delta_adverse_reduction",spec["estimands"]["delta_adverse_reduction"],da,dalo,dahi,ae)},"diagnostic_classification":classification,"interpretation":"Pre-frozen TARGET/ADVERSE decomposition only; component establishment is descriptive post-hoc evidence and cannot rescue H1.","next_step":"STOP_REVIEW before any temporal-stability or successor-hypothesis diagnostic.","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"alternative_rank_contrasts_computed":False,"within_h1_target_vs_adverse_test_computed":False,"component_competition_test_computed":False,"temporal_stability_diagnostic_computed":False,"successor_hypothesis_created":False,"profitability_computed":False,"bot_authorized":False}
+        report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+        radar.redis.set_json(_boos18h1ta_key("report"),report)
+        _boos18h1ta_set(status="COMPLETED",phase="STOP_REVIEW",message="TARGET/ADVERSE decomposition completed; STOP REVIEW",result_sha256=report["result_sha256"],formal_h1_decision="H1_BACKWARD_OOS_FAIL",diagnostic_classification=classification,session_clusters=len(sessions),stop_and_review_required=True)
+    except Exception as exc:
+        logging.exception("2018 H1 TARGET/ADVERSE decomposition failed");_boos18h1ta_set(status="ERROR",phase="BLOCKED",message="TARGET/ADVERSE decomposition failed closed",last_error=f"{type(exc).__name__}: {exc}",stop_and_review_required=True)
+    finally:
+        with BACKWARD_OOS_2018_H1_TARGET_ADVERSE_LOCK:BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD=None
+def _boos18h1ta_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD
+    ok,why=_boos18h1ta_gate()
+    if not ok:return False,why
+    existing=radar.redis.get_json(_boos18h1ta_key("report"),None) if radar.redis.configured else None
+    if isinstance(existing,dict) and existing.get("status")=="COMPLETED":return False,"already_completed"
+    with BACKWARD_OOS_2018_H1_TARGET_ADVERSE_LOCK:
+        if BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD and BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD=threading.Thread(target=_boos18h1ta_worker,name="ipr-2018-h1-target-adverse",daemon=True);BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD.start()
+    return True,"started"
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse/protocol")
+def backward_oos_2018_h1_target_adverse_protocol():
+    ok,why=_boos18h1ta_gate();return jsonify({"version":VERSION,"build":BUILD,"execution_spec":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SPEC,"execution_spec_sha256":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SHA256,"required_prefreeze_sha256":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_EXECUTION_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","target_adverse_outcomes_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Execution is limited to the exact v1.7.63 pre-frozen TARGET/ADVERSE decomposition."})
+@app.route("/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse/start",methods=["GET","POST"])
+def backward_oos_2018_h1_target_adverse_start():
+    ok,why=_boos18h1ta_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse/status","result_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse/result","alpaca_requests_made":0,"fresh_forward_oos_opened":False}),(202 if ok else 409)
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse/status")
+def backward_oos_2018_h1_target_adverse_status():
+    p=radar.redis.get_json(_boos18h1ta_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2018_H1_TARGET_ADVERSE_LOCK:o=dict(p or BACKWARD_OOS_2018_H1_TARGET_ADVERSE_STATE);o["worker_alive"]=bool(BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD and BACKWARD_OOS_2018_H1_TARGET_ADVERSE_THREAD.is_alive())
+    return jsonify(o)
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse/result")
+def backward_oos_2018_h1_target_adverse_result():
+    r=radar.redis.get_json(_boos18h1ta_key("report"),None) if radar.redis.configured else None
+    if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse/status","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","fresh_forward_oos_opened":False}),202
+    return jsonify(r)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
