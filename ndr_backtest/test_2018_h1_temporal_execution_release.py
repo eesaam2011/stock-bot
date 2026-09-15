@@ -1,0 +1,16 @@
+import unittest, pathlib
+P=pathlib.Path(__file__).with_name('independent_priority_radar.py'); S=P.read_text()
+class TestTemporalExecutionRelease(unittest.TestCase):
+    def test_version(self): self.assertIn('VERSION = "1.7.66"',S)
+    def test_build(self): self.assertIn('TEMPORAL-STABILITY-EXECUTION-A',S)
+    def test_prefreeze_sha(self): self.assertIn('ed8ec815f3ce97ebb90ef21036612ba88702fde629f1554e5e4403e6096a6764',S)
+    def test_protocol(self): self.assertIn('/temporal-stability/protocol',S)
+    def test_start(self): self.assertIn('/temporal-stability/start',S)
+    def test_status(self): self.assertIn('/temporal-stability/status',S)
+    def test_result(self): self.assertIn('/temporal-stability/result',S)
+    def test_bootstrap(self): self.assertIn('"replicates":50000',S); self.assertIn('"seed":17652018',S)
+    def test_outcome_blind(self): self.assertIn('OUTCOME_BLIND_PARTITION_SELECTION',S); self.assertIn('partition_selection_was_outcome_blind',S)
+    def test_estimand(self): self.assertIn('M=min_j(E_j)',S)
+    def test_stop_review(self): self.assertIn('STOP_REVIEW before any successor hypothesis',S)
+    def test_firewall(self): self.assertIn('"fresh_forward_oos_opened":False',S); self.assertIn('"alpaca_requests":False',S)
+if __name__=='__main__': unittest.main()

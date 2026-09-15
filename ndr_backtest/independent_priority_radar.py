@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.65"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-TEMPORAL-STABILITY-PREFREEZE-A"
+VERSION = "1.7.66"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-TEMPORAL-STABILITY-EXECUTION-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13914,6 +13914,150 @@ def backward_oos_2018_h1_temporal_stability_prefreeze_protocol():
     ok,why=_boos18h1_temporal_prefreeze_gate()
     r=radar.redis.get_json(_boos18h1ta_key("report"),{}) if radar.redis.configured else {}
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_target_adverse_result_sha256":r.get("result_sha256"),"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","execution_started":False,"temporal_primary_outcomes_computed":False,"target_adverse_by_period_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Protocol-only temporal-stability pre-freeze. No Start endpoint exists in v1.7.65 by design; temporal outcome rates are not computed."})
+
+
+# -----------------------------------------------------------------------------
+# v1.7.66 — 2018 H1 Post-Failure Diagnostic: Temporal Stability Execution
+# Exact execution of accepted v1.7.65 pre-freeze; frozen Redis records only.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SPEC = {
+    "execution_id":"IPR-2018-H1-POST-FAILURE-TEMPORAL-STABILITY-EXECUTION-2026-09-15-A",
+    "required_prefreeze_sha256":"ed8ec815f3ce97ebb90ef21036612ba88702fde629f1554e5e4403e6096a6764",
+    "required_target_adverse_result_sha256":"5d414991d494204f3c17a4b2b52d8c1dc52002d907bbea0e730c73f9b68b5b4f",
+    "required_h1_result_sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL","formal_decision_is_immutable":True,
+    "scope":{"period":["2018-01-01","2018-12-31"],"window_minutes":30,"selection":"top_3","expected_sessions":251,"expected_records_top3":746,"expected_baseline_evaluable":613,"expected_h1_count":203,"frozen_primary_improvement":0.046159162320494385},
+    "partition_selection":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC["partition_selection"],
+    "primary_estimand":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC["primary_estimand"],
+    "method":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC["method"],
+    "classification":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SPEC["predeclared_interpretation"],
+    "stop_rule":"STOP_REVIEW immediately after the pre-frozen temporal-stability report. No alternate partition, successor hypothesis, tuning, profitability work, bot decision, or Fresh Forward OOS opening.",
+    "firewall":{"alpaca_requests":False,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"alternative_temporal_partitions_after_outcomes":False,"target_adverse_by_period_only_for_frozen_temporal_estimand":True,"new_features":False,"successor_hypothesis_created":False,"profitability_claim":False,"bot_authorized":False}
+}
+BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2018_H1_TEMPORAL_LOCK=threading.RLock();BACKWARD_OOS_2018_H1_TEMPORAL_THREAD=None
+BACKWARD_OOS_2018_H1_TEMPORAL_STATE={"status":"IDLE","phase":"NOT_STARTED","message":"Temporal stability execution has not started","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"updated_at":iso()}
+def _boos18h1ts_key(suffix:str)->str:return radar.key(f"backward_oos_2018_h1_temporal_stability:v1:{suffix}")
+def _boos18h1ts_set(**u:Any)->None:
+    global BACKWARD_OOS_2018_H1_TEMPORAL_STATE
+    with BACKWARD_OOS_2018_H1_TEMPORAL_LOCK:
+        BACKWARD_OOS_2018_H1_TEMPORAL_STATE={**BACKWARD_OOS_2018_H1_TEMPORAL_STATE,**u,"updated_at":iso(),"alpaca_requests_made":0,"fresh_forward_oos_opened":False}
+        snap=dict(BACKWARD_OOS_2018_H1_TEMPORAL_STATE)
+    if radar.redis.configured:radar.redis.set_json(_boos18h1ts_key("status"),snap)
+def _boos18h1ts_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    s=BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SPEC
+    if BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SHA256!=s["required_prefreeze_sha256"]:return False,"v1.7.65 prefreeze SHA mismatch"
+    ok,why=_boos18h1_temporal_prefreeze_gate()
+    if not ok:return False,f"v1.7.65 prefreeze gate failed: {why}"
+    r=radar.redis.get_json(_boos18h1ta_key("report"),{}) or {}
+    if r.get("result_sha256")!=s["required_target_adverse_result_sha256"]:return False,"v1.7.64 result SHA mismatch"
+    if r.get("required_h1_result_sha256")!=s["required_h1_result_sha256"]:return False,"v1.7.58 H1 provenance mismatch"
+    sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+    if len(sessions)!=251 or len(set(sessions))!=251:return False,"exact frozen 251-session list required"
+    return True,"allowed"
+def _boos18h1ts_count_matrix(sessions:list[str])->tuple[np.ndarray,dict[str,int]]:
+    # Counts only for outcome-blind partition selection: baseline_n, h1_n.
+    a=np.zeros((len(sessions),2),dtype=np.int64);tot={"records_top3":0,"baseline_evaluable":0,"h1_count":0}
+    for i,sess in enumerate(sessions):
+        rows=radar.redis.get_json(_boos18h1x_key(f"records:{sess}"),[]) or []
+        rs=[r for r in rows if int(r.get("window_minutes") or -1)==30 and 1<=int(r.get("within_session_rank") or 99)<=3]
+        ev=[r for r in rs if (r.get("measurement") or {}).get("evaluable")]
+        h1=[r for r in ev if (r.get("measurement") or {}).get("h1_accept") is True]
+        a[i,:]=[len(ev),len(h1)];tot["records_top3"]+=len(rs);tot["baseline_evaluable"]+=len(ev);tot["h1_count"]+=len(h1)
+    return a,tot
+def _boos18h1ts_choose_partition(sessions:list[str],counts:np.ndarray)->tuple[dict[str,Any]|None,list[dict[str,Any]]]:
+    floor=BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SPEC["partition_selection"]["adequacy_floor_per_period"]
+    audit=[]
+    for part in BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SPEC["partition_selection"]["hierarchy"]:
+        rows=[];all_ok=True
+        for j,(lo,hi) in enumerate(part["periods"]):
+            idx=[i for i,x in enumerate(sessions) if lo<=str(x)<=hi];z=counts[idx].sum(axis=0) if idx else np.array([0,0])
+            row={"period_index":j+1,"start":lo,"end":hi,"sessions":len(idx),"baseline_evaluable":int(z[0]),"h1_count":int(z[1])}
+            row["adequate"]=bool(row["sessions"]>=floor["sessions"] and row["baseline_evaluable"]>=floor["baseline_evaluable"] and row["h1_count"]>=floor["h1_count"]);all_ok=all_ok and row["adequate"];rows.append(row)
+        audit.append({"partition_id":part["id"],"periods":rows,"passes":bool(all_ok)})
+        if all_ok:return part,audit
+    return None,audit
+def _boos18h1ts_outcome_matrix(sessions:list[str])->np.ndarray:
+    # Columns baseline_n,target,adverse,h1_n,target,adverse; read only after partition frozen by counts.
+    a,_=_boos18h1ta_session_matrix(sessions);return a
+def _boos18h1ts_effect(v:np.ndarray)->float|None:
+    z=v.sum(axis=0);bn,bt,ba,hn,ht,ha=(int(x) for x in z)
+    if bn<=0 or hn<=0:return None
+    return (ht/hn-ha/hn)-(bt/bn-ba/bn)
+def _boos18h1ts_worker()->None:
+    global BACKWARD_OOS_2018_H1_TEMPORAL_THREAD
+    try:
+        ok,why=_boos18h1ts_gate()
+        if not ok:raise RuntimeError(why)
+        spec=BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SPEC;scope=spec["scope"];method=spec["method"]
+        sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+        _boos18h1ts_set(status="RUNNING",phase="OUTCOME_BLIND_PARTITION_SELECTION",message="Selecting frozen temporal partition from counts only")
+        counts,tot=_boos18h1ts_count_matrix(sessions)
+        if tot!={"records_top3":scope["expected_records_top3"],"baseline_evaluable":scope["expected_baseline_evaluable"],"h1_count":scope["expected_h1_count"]}:raise RuntimeError(f"frozen source count mismatch: {tot}")
+        selected,audit=_boos18h1ts_choose_partition(sessions,counts)
+        if selected is None:
+            report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"required_target_adverse_result_sha256":spec["required_target_adverse_result_sha256"],"required_h1_result_sha256":spec["required_h1_result_sha256"],"status":"COMPLETED","phase":"STOP_REVIEW","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","formal_h1_decision_immutable":True,"research_status":"POST_HOC_DESCRIPTIVE_DIAGNOSTIC_ONLY","diagnostic_classification":"TEMPORAL_SAMPLE_INSUFFICIENT","partition_selected":None,"count_only_adequacy_audit":audit,"temporal_outcomes_computed":False,"source_counts":tot,"sessions":len(sessions),"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"alternative_temporal_partitions_after_outcomes":False,"successor_hypothesis_created":False,"profitability_computed":False,"bot_authorized":False,"next_step":"STOP_REVIEW"}
+            report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();radar.redis.set_json(_boos18h1ts_key("report"),report);_boos18h1ts_set(status="COMPLETED",phase="STOP_REVIEW",message="Temporal sample insufficient; no outcomes computed",diagnostic_classification=report["diagnostic_classification"],result_sha256=report["result_sha256"],stop_and_review_required=True);return
+        selected_id=selected["id"]
+        _boos18h1ts_set(status="RUNNING",phase="TEMPORAL_CLUSTER_BOOTSTRAP",message=f"Partition frozen outcome-blind as {selected_id}; now computing pre-frozen temporal estimand")
+        a=_boos18h1ts_outcome_matrix(sessions)
+        period_idx=[];period_points=[]
+        for j,(lo,hi) in enumerate(selected["periods"]):
+            idx=np.asarray([i for i,x in enumerate(sessions) if lo<=str(x)<=hi],dtype=int);period_idx.append(idx);e=_boos18h1ts_effect(a[idx])
+            if e is None:raise RuntimeError("selected period has invalid denominator after adequacy gate")
+            period_points.append(float(e))
+        M=float(min(period_points));reps=int(method["replicates"]);rng=np.random.default_rng(int(method["seed"]));mvals=[];evals=[[] for _ in period_idx];discarded=0
+        for _ in range(reps):
+            es=[];valid=True
+            for j,idx in enumerate(period_idx):
+                sampled=idx[rng.integers(0,len(idx),size=len(idx))];e=_boos18h1ts_effect(a[sampled])
+                if e is None:valid=False;break
+                es.append(float(e))
+            if not valid:discarded+=1;continue
+            mvals.append(min(es))
+            for j,e in enumerate(es):evals[j].append(e)
+        if not mvals:raise RuntimeError("all temporal bootstrap replicates discarded")
+        mv=np.asarray(mvals,dtype=float);mlo,mhi=(float(x) for x in np.quantile(mv,[0.025,0.975]))
+        if M>0 and mlo>0:classification="BROAD_TEMPORAL_POSITIVITY_ESTABLISHED"
+        elif M<0 and mhi<0:classification="TEMPORAL_NONPOSITIVITY_ESTABLISHED"
+        else:classification="TEMPORAL_BREADTH_UNRESOLVED"
+        periods=[]
+        for j,((lo,hi),idx,e,vals) in enumerate(zip(selected["periods"],period_idx,period_points,evals)):
+            ev=np.asarray(vals,dtype=float);elo,ehi=(float(x) for x in np.quantile(ev,[0.025,0.975]));z=a[idx].sum(axis=0)
+            periods.append({"period_index":j+1,"start":lo,"end":hi,"sessions":len(idx),"baseline_n":int(z[0]),"h1_n":int(z[3]),"primary_improvement_absolute":e,"primary_improvement_percentage_points":e*100.0,"marginal_ci_lower_absolute":elo,"marginal_ci_upper_absolute":ehi,"marginal_ci_lower_percentage_points":elo*100.0,"marginal_ci_upper_percentage_points":ehi*100.0,"zero_inside_marginal_interval":bool(elo<=0<=ehi)})
+        report={"version":VERSION,"build":BUILD,"execution_id":spec["execution_id"],"execution_spec_sha256":BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SHA256,"required_prefreeze_sha256":spec["required_prefreeze_sha256"],"required_target_adverse_result_sha256":spec["required_target_adverse_result_sha256"],"required_h1_result_sha256":spec["required_h1_result_sha256"],"status":"COMPLETED","phase":"STOP_REVIEW","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","formal_h1_decision_immutable":True,"research_status":"POST_HOC_DESCRIPTIVE_DIAGNOSTIC_ONLY","diagnostic_classification":classification,"partition_selected":selected_id,"partition_selection_was_outcome_blind":True,"count_only_adequacy_audit":audit,"source_counts":tot,"sessions":len(sessions),"periods":periods,"primary_estimand":{"name":"M=min_j(E_j)","absolute":M,"percentage_points":M*100.0,"ci_lower_absolute":mlo,"ci_upper_absolute":mhi,"ci_lower_percentage_points":mlo*100.0,"ci_upper_percentage_points":mhi*100.0,"zero_inside_interval":bool(mlo<=0<=mhi),"replicates_requested":reps,"replicates_used":len(mvals),"replicates_discarded":discarded,"seed":method["seed"],"confidence_level":method["confidence_level"],"method":"within-period trading-session cluster bootstrap; percentile CI for minimum period effect"},"temporal_outcomes_computed":True,"interpretation":"Pre-frozen post-hoc temporal-breadth diagnostic only; cannot rescue/reclassify H1 or authorize H2/Fresh OOS/bot.","next_step":"STOP_REVIEW before any successor hypothesis or alternate temporal diagnostic.","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"alternative_temporal_partitions_after_outcomes":False,"target_adverse_component_decomposition_by_period_computed":False,"successor_hypothesis_created":False,"profitability_computed":False,"bot_authorized":False}
+        report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();radar.redis.set_json(_boos18h1ts_key("report"),report);_boos18h1ts_set(status="COMPLETED",phase="STOP_REVIEW",message="Temporal stability diagnostic completed; STOP REVIEW",diagnostic_classification=classification,partition_selected=selected_id,result_sha256=report["result_sha256"],stop_and_review_required=True)
+    except Exception as exc:
+        logging.exception("2018 H1 temporal stability execution failed");_boos18h1ts_set(status="ERROR",phase="BLOCKED",message="Temporal stability execution failed closed",last_error=f"{type(exc).__name__}: {exc}",stop_and_review_required=True)
+    finally:
+        with BACKWARD_OOS_2018_H1_TEMPORAL_LOCK:BACKWARD_OOS_2018_H1_TEMPORAL_THREAD=None
+def _boos18h1ts_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2018_H1_TEMPORAL_THREAD
+    ok,why=_boos18h1ts_gate()
+    if not ok:return False,why
+    existing=radar.redis.get_json(_boos18h1ts_key("report"),None) if radar.redis.configured else None
+    if isinstance(existing,dict) and existing.get("status")=="COMPLETED":return False,"already_completed"
+    with BACKWARD_OOS_2018_H1_TEMPORAL_LOCK:
+        if BACKWARD_OOS_2018_H1_TEMPORAL_THREAD and BACKWARD_OOS_2018_H1_TEMPORAL_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2018_H1_TEMPORAL_THREAD=threading.Thread(target=_boos18h1ts_worker,name="ipr-2018-h1-temporal-stability",daemon=True);BACKWARD_OOS_2018_H1_TEMPORAL_THREAD.start()
+    return True,"started"
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability/protocol")
+def backward_oos_2018_h1_temporal_stability_protocol():
+    ok,why=_boos18h1ts_gate();return jsonify({"version":VERSION,"build":BUILD,"execution_spec":BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SPEC,"execution_spec_sha256":BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SHA256,"required_prefreeze_sha256":BACKWARD_OOS_2018_H1_TEMPORAL_EXECUTION_SPEC["required_prefreeze_sha256"],"actual_prefreeze_sha256":BACKWARD_OOS_2018_H1_TEMPORAL_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","temporal_primary_outcomes_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Execution is limited to the exact accepted v1.7.65 temporal-stability pre-freeze; partition selection is counts-only before temporal outcomes."})
+@app.route("/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability/start",methods=["GET","POST"])
+def backward_oos_2018_h1_temporal_stability_start():
+    ok,why=_boos18h1ts_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability/status","result_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability/result","alpaca_requests_made":0,"fresh_forward_oos_opened":False}),(202 if ok else 409)
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability/status")
+def backward_oos_2018_h1_temporal_stability_status():
+    p=radar.redis.get_json(_boos18h1ts_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2018_H1_TEMPORAL_LOCK:o=dict(p or BACKWARD_OOS_2018_H1_TEMPORAL_STATE);o["worker_alive"]=bool(BACKWARD_OOS_2018_H1_TEMPORAL_THREAD and BACKWARD_OOS_2018_H1_TEMPORAL_THREAD.is_alive())
+    return jsonify(o)
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability/result")
+def backward_oos_2018_h1_temporal_stability_result():
+    r=radar.redis.get_json(_boos18h1ts_key("report"),None) if radar.redis.configured else None
+    if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/temporal-stability/status","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","fresh_forward_oos_opened":False}),202
+    return jsonify(r)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
