@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.71"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-SAMPLING-METHODOLOGY-PARITY-PREFREEZE-A"
+VERSION = "1.7.72"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-CENSUS-PHASE0B-CONTROLS-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -14658,6 +14658,227 @@ def _boos17sp_gate():
 def backward_oos_2017_sampling_parity_protocol():
     ok,checks=_boos17sp_gate()
     return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2017_SAMPLING_PARITY_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2017_SAMPLING_PARITY_SHA256,"gate_allowed":ok,"gate_reason":"allowed" if ok else "blocked: exact v1.7.70-R1 certification provenance required","gate_audit":{"checks":checks,"required_2017_cert_result_sha256":BACKWARD_OOS_2017_SAMPLING_PARITY_SPEC["source_of_truth"]["2017_observed_universe_certification_result_sha256"],"required_2017_cert_spec_sha256":BACKWARD_OOS_2017_SAMPLING_PARITY_SPEC["source_of_truth"]["2017_observed_universe_certification_spec_sha256"]},"alpaca_requests_made":0,"execution_started":False,"2017_candidate_census_runs":False,"2017_phase0b_runs":False,"controls_constructed":False,"h1_computed":False,"h1_execution_allowed":False,"fresh_forward_oos_opened":False,"note":"Read-only pre-freeze. No Start endpoint exists by design; review is required before execution code."})
+
+
+# -----------------------------------------------------------------------------
+# v1.7.72 — 2017 Candidate Census + Clean Candidate + Phase 0B + Controls
+# H1 remains sealed. This execution reproduces the frozen historical sampling
+# lineage on the independently unseen 2017 Observed Historical SIP Universe.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2017_EXEC_SPEC = {
+    "execution_id":"IPR-2017-CANDIDATE-CENSUS-PHASE0B-CONTROLS-2026-09-15-A",
+    "required_sampling_parity_sha256":"5175e89a25256c65e813a8df3855831bf08f04ec2b90cbddad3b497da451cca2",
+    "required_observed_universe_result_sha256":"56d3663d7c8ff9a5ef8ced98e1206709ea9a26163628c9cf2eaf45d90e930afb",
+    "period":["2017-01-01","2017-12-31"],
+    "universe":"v1.7.70-R1 certified 2017 Observed Historical SIP Universe; observed_in_2017=true only",
+    "candidate_census":{
+        "frozen_historical_census_sha256":HISTORICAL_CENSUS_SHA256,
+        "coarse_timeframe":HISTORICAL_CENSUS_SPEC["coarse_timeframe"],
+        "threshold_pct":HISTORICAL_CENSUS_SPEC["primary_threshold_pct"],
+        "trading_cycle":HISTORICAL_CENSUS_SPEC["trading_cycle"],
+        "sources":"Alpaca SIP raw only; 2017 predates frozen BOATS launch",
+        "same_bar_policy":HISTORICAL_CENSUS_SPEC["candidate_rule"],
+    },
+    "clean_candidate_gate":{
+        "classification_source":"reuse frozen pre-Phase0B resolved_symbol_classification for overlapping symbols; for 2017-only candidate symbols apply the exact original _instrument_name_classification + _resolve_ambiguous_asset_name policy using one asset metadata snapshot",
+        "required_bucket":"metadata_common_like",
+        "split_screen":"original _phase0a_split_suspect unchanged",
+        "ticker_recycling":"exclude frozen reconstruction ticker_recycling_risk exactly as original clean pipeline",
+    },
+    "phase0b":{
+        "frozen_phase0b_sha256":PHASE0B_FULL_SHA256,
+        "timeframe":"1Min","ground_truth":PHASE0B_FULL_SPEC["ground_truth"],
+        "minute_ordering":PHASE0B_FULL_SPEC["minute_ordering"],
+        "2017_source":"SIP raw only; no BOATS by market structure",
+    },
+    "controls":{
+        "frozen_feature_discovery_execution_sha256":FEATURE_DISCOVERY_EXEC_SHA256,
+        "eligible_pool":"Phase 0B failed clean candidates from the 2017 Historical Replication cohort only; still_ambiguous is never a control.",
+        "historical_control_methodology_source":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["eligible_pool"],
+        "scope_clarification":"The historical source text is preserved unchanged; only the cohort year is substituted mechanically from Discovery 2019-2024 to independent Historical Replication 2017.",
+        "hard_negative_matching":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["hard_negative_matching"],
+        "hard_negative_ratio":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["hard_negative_ratio"],
+        "random_control":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["random_control"],
+        "pseudo_cutoff":FEATURE_DISCOVERY_EXEC_SPEC["controls"]["pseudo_cutoff"],
+        "note":"Construct match manifests only. No 5-minute predictive features or H1 values are fetched/computed in this release.",
+    },
+    "sample_gate":{"min_positive_events":537,"min_positive_symbols":100,"decision_if_below":"2017_INSUFFICIENT_SAMPLE"},
+    "stop_after":"sample sufficiency + control-manifest construction; H1 remains prohibited",
+    "firewall":{"h1_computed":False,"h1_execution_allowed":False,"target_adverse_computed":False,"mfe_mae_computed":False,"fresh_forward_oos_opened":False,"2019_2026_results_mutated":False,"2018_results_mutated":False,"pooled_2017_2018_computed":False},
+}
+BACKWARD_OOS_2017_EXEC_SHA256 = hashlib.sha256(json.dumps(BACKWARD_OOS_2017_EXEC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2017_EXEC_LOCK=threading.RLock(); BACKWARD_OOS_2017_EXEC_THREAD=None; BACKWARD_OOS_2017_EXEC_STOP=threading.Event()
+BACKWARD_OOS_2017_EXEC_STATE={"status":"IDLE","phase":"NOT_STARTED","message":"2017 execution has not started","execution_id":BACKWARD_OOS_2017_EXEC_SPEC["execution_id"],"updated_at":iso(),"h1_computed":False,"h1_execution_allowed":False,"fresh_forward_oos_opened":False}
+
+def _boos17x_key(suffix:str)->str:return radar.key(f"historical_replication_2017_execution:v1:{suffix}")
+def _boos17x_set(**u:Any)->None:
+    global BACKWARD_OOS_2017_EXEC_STATE
+    with BACKWARD_OOS_2017_EXEC_LOCK:
+        BACKWARD_OOS_2017_EXEC_STATE={**BACKWARD_OOS_2017_EXEC_STATE,**u,"updated_at":iso(),"h1_computed":False,"h1_execution_allowed":False,"fresh_forward_oos_opened":False}
+        snap=dict(BACKWARD_OOS_2017_EXEC_STATE)
+    if radar.redis.configured:radar.redis.set_json(_boos17x_key("status"),snap)
+
+def _boos17x_gate()->tuple[bool,str]:
+    if not radar.alpaca.configured:return False,"Alpaca credentials are required"
+    if not radar.redis.configured:return False,"Redis is required"
+    oc=radar.redis.get_json(_boos17oc_key("report"),None)
+    if not oc or oc.get("decision")!="OBSERVED_UNIVERSE_CERTIFIED":return False,"v1.7.70-R1 OBSERVED_UNIVERSE_CERTIFIED report is required"
+    if oc.get("result_sha256")!=BACKWARD_OOS_2017_EXEC_SPEC["required_observed_universe_result_sha256"]:return False,"v1.7.70-R1 result SHA mismatch"
+    if BACKWARD_OOS_2017_SAMPLING_PARITY_SHA256!=BACKWARD_OOS_2017_EXEC_SPEC["required_sampling_parity_sha256"]:return False,"v1.7.71 sampling-parity SHA mismatch"
+    recs=radar.redis.get_json(_boos17u_key("records"),None)
+    if not isinstance(recs,dict) or not recs:return False,"2017 observed-universe records are required"
+    resolved=radar.redis.get_json(radar.pre0b_audit_key("resolved_symbol_classification"),None)
+    if not isinstance(resolved,dict) or not resolved:return False,"Frozen pre-Phase0B resolved symbol classification is required"
+    return True,"allowed"
+
+def _boos17x_controls_for_session(sess:str, p0:list[dict[str,Any]], coarse_rows:list[dict[str,Any]])->list[dict[str,Any]]:
+    target=date.fromisoformat(sess); coarse={str(c.get("symbol") or "").upper():c for c in coarse_rows}
+    positives=[r for r in p0 if r.get("classification")=="verified"]; failed=[r for r in p0 if r.get("classification")=="failed"]
+    fctx=[]
+    for r in failed:
+        sym=str(r.get("symbol") or "").upper(); c=coarse.get(sym,{}) ; cut=radar._fd_coarse_cutoff(c)
+        if cut:fctx.append((r,sym,cut,radar._fd_phase(cut,target),radar._fd_price_band(r.get("t1_low"))))
+    out=[]
+    for pi,p in enumerate(positives):
+        psym=str(p.get("symbol") or "").upper(); phase=radar._fd_phase(str(p.get("t2") or ""),target); pb=radar._fd_price_band(p.get("t1_low")); exact=[x for x in fctx if x[3]==phase and x[4]==pb]; pool=exact or [x for x in fctx if x[3]==phase] or fctx
+        hard=[]; rnd=None
+        if pool:
+            base=int(hashlib.sha256(f"{sess}|{psym}|{p.get('t2')}".encode()).hexdigest()[:12],16)
+            for j in range(min(3,len(pool))):hard.append(pool[(base+j*7919)%len(pool)])
+            rnd=pool[(base+104729)%len(pool)]
+        match=hashlib.sha256(f"{sess}|{psym}|{p.get('t2')}|{pi}".encode()).hexdigest()[:20]
+        out.append({"class":"positive","match_id":match,"symbol":psym,"cutoff":str(p.get("t2") or ""),"target_session":sess})
+        for x in hard:out.append({"class":"hard_negative","match_id":match,"symbol":x[1],"cutoff":x[2],"target_session":sess})
+        if rnd:out.append({"class":"random_control","match_id":match,"symbol":rnd[1],"cutoff":rnd[2],"target_session":sess})
+    return out
+
+def _boos17x_worker()->None:
+    global BACKWARD_OOS_2017_EXEC_THREAD
+    calls=int(radar.redis.get_json(_boos17x_key("alpaca_logical_requests"),0) or 0) if radar.redis.configured else 0
+    try:
+        ok,why=_boos17x_gate()
+        if not ok:raise RuntimeError(why)
+        records=radar.redis.get_json(_boos17u_key("records"),{}) or {}; symbols=sorted(sym for sym,r in records.items() if (r or {}).get("observed_in_2017"))
+        resolved=radar.redis.get_json(radar.pre0b_audit_key("resolved_symbol_classification"),{}) or {}
+        old_records=radar.redis.get_json(radar.universe_reconstruction_key("records"),{}) or {}
+        # Calendar is the only non-bar request; session list is persisted for restart determinism.
+        sessions=radar.redis.get_json(_boos17x_key("sessions"),None)
+        if not sessions:
+            cal=radar.alpaca.calendar(date(2016,12,15),date(2017,12,31));calls+=1;radar.redis.set_json(_boos17x_key("alpaca_logical_requests"),calls)
+            sessions=sorted(str(x.get("date")) for x in cal if x.get("date") and date(2017,1,1)<=date.fromisoformat(str(x.get("date")))<=date(2017,12,31));radar.redis.set_json(_boos17x_key("sessions"),sessions)
+        if not (245<=len(sessions)<=255):raise RuntimeError(f"2017 calendar session count out of frozen capability range: {len(sessions)}")
+        completed=set(radar.redis.get_json(_boos17x_key("census_completed_sessions"),[]) or []); total_candidates=int(radar.redis.get_json(_boos17x_key("coarse_candidate_count"),0) or 0)
+        BACKWARD_OOS_2017_EXEC_STOP.clear(); _boos17x_set(status="RUNNING",phase="CENSUS",message="2017 frozen-parity 1Hour candidate census",session_count=len(sessions),completed_sessions=len(completed),coarse_candidates=total_candidates,alpaca_requests_made=calls)
+        for sess in sessions:
+            if sess in completed:continue
+            if BACKWARD_OOS_2017_EXEC_STOP.is_set():_boos17x_set(status="PAUSED",phase="CENSUS",message="Paused at census session boundary",completed_sessions=len(completed),alpaca_requests_made=calls);return
+            target=date.fromisoformat(sess); bars=radar._historical_fetch_cycle(symbols,target); calls+=math.ceil(len(symbols)/int(HISTORICAL_CENSUS_SPEC["request_batch_size"]));radar.redis.set_json(_boos17x_key("alpaca_logical_requests"),calls)
+            cand=[];q={"symbols_expected":len(symbols),"symbols_with_bars":0,"symbols_without_bars":0,"split_suspects":0,"same_bar_ambiguous":0,"ticker_recycling_risk":0}
+            for sym in symbols:
+                rows=bars.get(sym,[])
+                if not rows:q["symbols_without_bars"]+=1;continue
+                q["symbols_with_bars"]+=1; ladder=radar._coarse_ladder(rows,list(HISTORICAL_CENSUS_SPEC["retained_ladders_pct"]))
+                if not ladder["ladder_hits"].get("20"):continue
+                split=radar._phase0a_split_suspect(rows); recycle=bool((records.get(sym) or {}).get("ticker_recycling_risk"))
+                # 2017 records do not independently redefine recycling; preserve any frozen historical flag when available.
+                oldrec=old_records.get(sym) or {}
+                recycle=bool(oldrec.get("ticker_recycling_risk",recycle))
+                if split.get("suspect"):q["split_suspects"]+=1
+                if recycle:q["ticker_recycling_risk"]+=1
+                if ladder.get("same_bar_order_ambiguous_ge20"):q["same_bar_ambiguous"]+=1
+                cand.append({"symbol":sym,"target_session":sess,**ladder,"corporate_action_screen":split,"ticker_recycling_risk":recycle,"eligible_for_phase0b":not split.get("suspect"),"verified_ge20":False})
+            radar.redis.set_json(_boos17x_key(f"candidates:{sess}"),cand);radar.redis.set_json(_boos17x_key(f"quality:{sess}"),q);completed.add(sess);total_candidates+=len(cand);radar.redis.set_json(_boos17x_key("census_completed_sessions"),sorted(completed));radar.redis.set_json(_boos17x_key("coarse_candidate_count"),total_candidates)
+            _boos17x_set(status="RUNNING",phase="CENSUS",message=f"Census completed {sess}",completed_sessions=len(completed),total_sessions=len(sessions),coarse_candidates=total_candidates,last_session_candidates=len(cand),alpaca_requests_made=calls)
+        # Clean candidates exactly mirror original pre-Phase0B gate. Reuse the frozen
+        # historical classification wherever it exists; classify only genuinely 2017-only
+        # candidate symbols with the exact original metadata functions.
+        candidate_symbols=set()
+        for sess in sessions:
+            candidate_symbols.update(str(c.get("symbol") or "").upper() for c in (radar.redis.get_json(_boos17x_key(f"candidates:{sess}"),[]) or []) if c.get("symbol"))
+        missing=sorted(s for s in candidate_symbols if s not in resolved)
+        if missing:
+            assets=radar.alpaca.assets_by_status(None);calls+=1;radar.redis.set_json(_boos17x_key("alpaca_logical_requests"),calls); amap={str(a.get("symbol") or "").upper():a for a in assets if str(a.get("symbol") or "").upper() in set(missing)}
+            for sym in missing:
+                rec=old_records.get(sym) or {}; base=radar._instrument_name_classification(amap.get(sym)); recycling=bool(rec.get("ticker_recycling_risk"))
+                if recycling:base={**base,"pre_recycling_bucket":base["bucket"],"bucket":"unresolved_ticker_recycling","evidence":"ticker_recycling_risk_blocks_cross_era_metadata_classification"}
+                elif base.get("bucket")=="unresolved_metadata_ambiguous":
+                    rr=radar._resolve_ambiguous_asset_name((amap.get(sym) or {}).get("name") or base.get("name"))
+                    if rr:base.update(rr);base["resolution_changed"]=True
+                    else:base["resolution_changed"]=False
+                base.update({"symbol":sym,"ticker_recycling_risk":recycling,"suffix_diagnostics":radar._suffix_diagnostics(sym),"metadata_present":sym in amap});resolved[sym]=base
+            radar.redis.set_json(_boos17x_key("resolved_symbol_classification_2017"),{s:resolved[s] for s in sorted(candidate_symbols)})
+        clean_total=0; clean_sessions=[]
+        for sess in sessions:
+            clean=[]
+            for c in radar.redis.get_json(_boos17x_key(f"candidates:{sess}"),[]) or []:
+                sym=str(c.get("symbol") or "").upper(); cls=resolved.get(sym) or {}; split=bool((c.get("corporate_action_screen") or {}).get("suspect"))
+                if cls.get("bucket")!="metadata_common_like" or split or cls.get("ticker_recycling_risk") or c.get("ticker_recycling_risk"):continue
+                clean.append(c)
+            radar.redis.set_json(_boos17x_key(f"clean_candidates:{sess}"),clean);clean_total+=len(clean)
+            if clean:clean_sessions.append(sess)
+        radar.redis.set_json(_boos17x_key("clean_candidate_count"),clean_total)
+        # Full-cycle Phase0B, resumable by session.
+        pcompleted=set(radar.redis.get_json(_boos17x_key("phase0b_completed_sessions"),[]) or []); totals=radar.redis.get_json(_boos17x_key("phase0b_totals"),{}) or {"processed":0,"verified":0,"still_ambiguous":0,"failed":0,"sessions":0}
+        _boos17x_set(status="RUNNING",phase="PHASE0B",message="2017 full-cycle 1-minute verification",clean_candidates=clean_total,phase0b_completed_sessions=len(pcompleted),alpaca_requests_made=calls)
+        for sess in sessions:
+            if sess in pcompleted:continue
+            if BACKWARD_OOS_2017_EXEC_STOP.is_set():_boos17x_set(status="PAUSED",phase="PHASE0B",message="Paused at Phase0B session boundary",phase0b_completed_sessions=len(pcompleted),alpaca_requests_made=calls);return
+            clean=radar.redis.get_json(_boos17x_key(f"clean_candidates:{sess}"),[]) or []; target=date.fromisoformat(sess); start,end=radar._probe_cycle_bounds(target); syms=[str(c.get("symbol") or "").upper() for c in clean]
+            rows_by=radar._phase0b_fetch_session_rows(syms,target,start,end) if syms else {}; calls+=math.ceil(len(syms)/int(PHASE0B_FULL_SPEC["batch_size"])) if syms else 0;radar.redis.set_json(_boos17x_key("alpaca_logical_requests"),calls)
+            results=[]
+            for c in clean:
+                sym=str(c.get("symbol") or "").upper();vr=radar._minute_verify_full(rows_by.get(sym,[]));r={"symbol":sym,"target_session":sess,"coarse_ambiguous":bool(c.get("same_bar_order_ambiguous_ge20")),"classification":vr["classification"],"t1":vr.get("t1"),"t2":vr.get("t2"),"t1_low":vr.get("t1_low"),"t2_high":vr.get("t2_high"),"gain_pct":vr.get("gain_pct"),"max_gain_pct":vr.get("max_gain_pct"),"ladder_first_ts":vr.get("ladder_first_ts"),"full_cycle_1m_bars":len(rows_by.get(sym,[]))};results.append(r);totals["processed"]+=1;totals[vr["classification"]]+=1
+            radar.redis.set_json(_boos17x_key(f"phase0b_results:{sess}"),results);pcompleted.add(sess);totals["sessions"]=len(pcompleted);radar.redis.set_json(_boos17x_key("phase0b_completed_sessions"),sorted(pcompleted));radar.redis.set_json(_boos17x_key("phase0b_totals"),totals)
+            _boos17x_set(status="RUNNING",phase="PHASE0B",message=f"Phase0B completed {sess}",phase0b_completed_sessions=len(pcompleted),total_sessions=len(sessions),phase0b_totals=totals,alpaca_requests_made=calls)
+        # Freeze support before constructing controls; H1 remains sealed.
+        pos_syms=set(); pos_events=0
+        for sess in sessions:
+            for r in radar.redis.get_json(_boos17x_key(f"phase0b_results:{sess}"),[]) or []:
+                if r.get("classification")=="verified":pos_events+=1;pos_syms.add(str(r.get("symbol") or "").upper())
+        support={"positive_events":pos_events,"positive_symbols":len(pos_syms),"required_positive_events":537,"required_positive_symbols":100,"passed":pos_events>=537 and len(pos_syms)>=100}
+        radar.redis.set_json(_boos17x_key("sample_support"),support)
+        if not support["passed"]:
+            decision="2017_INSUFFICIENT_SAMPLE";report={"version":VERSION,"build":BUILD,"execution_id":BACKWARD_OOS_2017_EXEC_SPEC["execution_id"],"execution_spec_sha256":BACKWARD_OOS_2017_EXEC_SHA256,"status":"COMPLETED","decision":decision,"sessions":len(sessions),"coarse_candidates":total_candidates,"clean_candidates":clean_total,"phase0b_totals":totals,"sample_support":support,"controls_constructed":False,"alpaca_requests_made":calls,"h1_computed":False,"h1_execution_allowed":False,"historical_replication_h1_opened":False,"fresh_forward_oos_opened":False,"stop_and_review_required":True,"completed_at":iso()};report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();radar.redis.set_json(_boos17x_key("report"),report);_boos17x_set(status="COMPLETED",phase="STOP_INSUFFICIENT",message="2017 sample insufficient under pre-frozen gate; H1 remains sealed",decision=decision,sample_support=support,result_sha256=report["result_sha256"],alpaca_requests_made=calls,stop_and_review_required=True);return
+        # Construct deterministic historical-parity control manifests; no feature bars are fetched.
+        class_counts=defaultdict(int); match_count=0
+        for sess in sessions:
+            manifest=_boos17x_controls_for_session(sess,radar.redis.get_json(_boos17x_key(f"phase0b_results:{sess}"),[]) or [],radar.redis.get_json(_boos17x_key(f"candidates:{sess}"),[]) or []);radar.redis.set_json(_boos17x_key(f"controls:{sess}"),manifest)
+            for x in manifest:class_counts[x["class"]]+=1
+            match_count+=sum(1 for x in manifest if x["class"]=="positive")
+        decision="2017_SAMPLE_AND_CONTROLS_READY_H1_STILL_LOCKED";report={"version":VERSION,"build":BUILD,"execution_id":BACKWARD_OOS_2017_EXEC_SPEC["execution_id"],"execution_spec_sha256":BACKWARD_OOS_2017_EXEC_SHA256,"required_sampling_parity_sha256":BACKWARD_OOS_2017_EXEC_SPEC["required_sampling_parity_sha256"],"status":"COMPLETED","decision":decision,"sessions":len(sessions),"observed_universe_symbols":len(symbols),"coarse_candidates":total_candidates,"clean_candidates":clean_total,"phase0b_totals":totals,"sample_support":support,"controls":{"constructed":True,"match_count":match_count,"class_counts":dict(class_counts),"predictive_features_computed":False},"alpaca_requests_made":calls,"h1_computed":False,"h1_execution_allowed":False,"historical_replication_h1_opened":False,"fresh_forward_oos_opened":False,"2019_2026_results_mutated":False,"stop_and_review_required":True,"next_step":"STOP_REVIEW before any separately frozen 2017 H1 Historical Replication execution","completed_at":iso()};report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();radar.redis.set_json(_boos17x_key("report"),report);_boos17x_set(status="COMPLETED",phase="STOP_REVIEW",message="2017 sample/control construction complete; H1 remains sealed",decision=decision,sample_support=support,result_sha256=report["result_sha256"],alpaca_requests_made=calls,stop_and_review_required=True)
+    except Exception as exc:
+        logging.exception("2017 census/Phase0B/control execution failed");_boos17x_set(status="ERROR",phase="BLOCKED",message="2017 execution failed closed",last_error=f"{type(exc).__name__}: {exc}",alpaca_requests_made=calls)
+    finally:
+        with BACKWARD_OOS_2017_EXEC_LOCK:BACKWARD_OOS_2017_EXEC_THREAD=None
+
+def _boos17x_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2017_EXEC_THREAD
+    ok,why=_boos17x_gate()
+    if not ok:return False,why
+    with BACKWARD_OOS_2017_EXEC_LOCK:
+        if BACKWARD_OOS_2017_EXEC_THREAD and BACKWARD_OOS_2017_EXEC_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2017_EXEC_STOP.clear();BACKWARD_OOS_2017_EXEC_THREAD=threading.Thread(target=_boos17x_worker,name="ipr-2017-census-phase0b-controls",daemon=True);BACKWARD_OOS_2017_EXEC_THREAD.start()
+    return True,"started"
+
+@app.get("/research/2017-historical-replication/execution/protocol")
+def historical_replication_2017_execution_protocol():
+    ok,why=_boos17x_gate();return jsonify({"version":VERSION,"build":BUILD,"execution_spec":BACKWARD_OOS_2017_EXEC_SPEC,"execution_spec_sha256":BACKWARD_OOS_2017_EXEC_SHA256,"gate_allowed":ok,"gate_reason":why,"h1_computed":False,"h1_execution_allowed":False,"fresh_forward_oos_opened":False})
+@app.route("/research/2017-historical-replication/execution/start",methods=["GET","POST"])
+def historical_replication_2017_execution_start():
+    ok,why=_boos17x_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/2017-historical-replication/execution/status","result_url":"/research/2017-historical-replication/execution/result","h1_execution_allowed":False}),(202 if ok else 409)
+@app.route("/research/2017-historical-replication/execution/pause",methods=["GET","POST"])
+def historical_replication_2017_execution_pause():BACKWARD_OOS_2017_EXEC_STOP.set();return jsonify({"ok":True,"message":"pause_requested_at_next_session_boundary","h1_execution_allowed":False})
+@app.get("/research/2017-historical-replication/execution/status")
+def historical_replication_2017_execution_status():
+    p=radar.redis.get_json(_boos17x_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2017_EXEC_LOCK:o=dict(p or BACKWARD_OOS_2017_EXEC_STATE);o["worker_alive"]=bool(BACKWARD_OOS_2017_EXEC_THREAD and BACKWARD_OOS_2017_EXEC_THREAD.is_alive())
+    return jsonify(o)
+@app.get("/research/2017-historical-replication/execution/result")
+def historical_replication_2017_execution_result():
+    r=radar.redis.get_json(_boos17x_key("report"),None) if radar.redis.configured else None
+    if not r:return jsonify({"result_ready":False,"status_url":"/research/2017-historical-replication/execution/status","h1_computed":False,"h1_execution_allowed":False,"fresh_forward_oos_opened":False}),202
+    return jsonify(r)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
