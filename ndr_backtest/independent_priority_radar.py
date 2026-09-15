@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.58"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-BACKWARD-OOS-EXECUTION-A"
+VERSION = "1.7.59"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-POST-OOS-EVIDENCE-FREEZE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13293,6 +13293,64 @@ def backward_oos_2018_h1_execution_result():
     r=radar.redis.get_json(_boos18h1x_key("report"),None) if radar.redis.configured else None
     if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-execution/status","fresh_forward_oos_opened":False}),202
     return jsonify(r)
+
+
+# -----------------------------------------------------------------------------
+# v1.7.59 — 2018 H1 Post-OOS Evidence Freeze
+# Read-only provenance freeze. It does not rerun, tune, rescue, or reinterpret H1.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SPEC = {
+    "freeze_id":"IPR-2018-H1-POST-OOS-EVIDENCE-FREEZE-2026-09-15-A",
+    "required_h1_result_sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa",
+    "required_h1_execution_spec_sha256":"e76d87eeb1be4b567261545e07aaa25e5fd05f25d840bc41677b8e256f0e18fc",
+    "required_h1_prefreeze_sha256":"ff0eae7b6d091313f3ccbf44047af42c8dcbf644ec891229a3eb41b7b711fe27",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL",
+    "formal_decision_is_immutable":True,
+    "evidence_classification":"FORMAL_FAIL_WITH_DIRECTIONAL_REPLICATION_NEAR_MISS",
+    "evidence_summary":{
+        "mandatory_views":4,
+        "views_passing_all_frozen_gates":3,
+        "views_with_positive_primary_improvement":4,
+        "views_passing_safety":4,
+        "views_passing_retention":4,
+        "sole_failed_view":{"window_minutes":30,"selection":"top_3","primary_improvement_absolute":0.046159162320494385,"required":0.05,"shortfall_absolute":0.003840837679505618},
+    },
+    "frozen_view_results":[
+        {"window_minutes":30,"selection":"top_1","primary_improvement_absolute":0.12929831239690395,"retention":0.3474178403755869,"primary_gate":True,"safety_gate":True,"retention_gate":True,"pass":True},
+        {"window_minutes":30,"selection":"top_3","primary_improvement_absolute":0.046159162320494385,"retention":0.33115823817292006,"primary_gate":False,"safety_gate":True,"retention_gate":True,"pass":False},
+        {"window_minutes":60,"selection":"top_1","primary_improvement_absolute":0.08314307458143075,"retention":0.3287671232876712,"primary_gate":True,"safety_gate":True,"retention_gate":True,"pass":True},
+        {"window_minutes":60,"selection":"top_3","primary_improvement_absolute":0.05705177288255389,"retention":0.31852986217457885,"primary_gate":True,"safety_gate":True,"retention_gate":True,"pass":True},
+    ],
+    "interpretation_limits":[
+        "The frozen formal decision remains FAIL; near-miss evidence cannot convert it to PASS.",
+        "No lowering or rounding of the +5 percentage-point gate is permitted.",
+        "No threshold, timing, endpoint, retention, selection, ranking, or feature tuning is permitted as part of this freeze.",
+        "No single successful view may be promoted as the validated H1 by post-hoc selection.",
+        "This Backward OOS alone does not authorize a bot or profitability claim.",
+    ],
+    "future_research_boundary":"Any post-failure diagnostic or successor hypothesis must be explicitly labeled new research and cannot mutate, rescue, or overwrite this H1 result.",
+    "firewall":{"alpaca_requests":False,"h1_recomputed":False,"thresholds_tuned":False,"2018_result_mutated":False,"2019_2026_results_mutated":False,"fresh_forward_oos_opened":False,"bot_authorized":False,"profitability_claim":False},
+    "protocol_only":True,
+}
+BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+def _boos18h1_post_oos_freeze_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    r=radar.redis.get_json(_boos18h1x_key("report"),{}) or {}
+    if r.get("status")!="COMPLETED":return False,"completed v1.7.58 H1 result required"
+    if r.get("result_sha256")!=BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SPEC["required_h1_result_sha256"]:return False,"v1.7.58 result SHA mismatch"
+    if r.get("execution_spec_sha256")!=BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SPEC["required_h1_execution_spec_sha256"]:return False,"v1.7.58 execution-spec SHA mismatch"
+    if r.get("required_prefreeze_sha256")!=BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SPEC["required_h1_prefreeze_sha256"]:return False,"v1.7.57 prefreeze SHA mismatch"
+    if r.get("decision")!="H1_BACKWARD_OOS_FAIL":return False,"frozen formal FAIL decision required"
+    if r.get("fresh_forward_oos_opened") is not False:return False,"Fresh Forward OOS provenance failed"
+    if r.get("thresholds_tuned_after_result") is not False:return False,"post-result tuning provenance failed"
+    return True,"allowed"
+
+@app.get("/research/2018-backward-oos/h1-post-oos-freeze/protocol")
+def backward_oos_2018_h1_post_oos_freeze_protocol():
+    ok,why=_boos18h1_post_oos_freeze_gate()
+    r=radar.redis.get_json(_boos18h1x_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"freeze_spec":BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SPEC,"freeze_spec_sha256":BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_h1_result_sha256":r.get("result_sha256"),"formal_decision":r.get("decision"),"execution_started":False,"alpaca_requests_made":0,"h1_recomputed":False,"thresholds_tuned":False,"fresh_forward_oos_opened":False,"note":"Read-only evidence freeze. No Start endpoint exists by design."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
