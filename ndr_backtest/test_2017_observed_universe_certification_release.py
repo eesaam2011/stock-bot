@@ -3,7 +3,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parent; SRC=ROOT/'independent_priority_radar.py'; TEXT=SRC.read_text(encoding='utf-8')
 class TestObservedUniverseCertificationRelease(unittest.TestCase):
     def test_version_build(self):
-        self.assertIn('VERSION = "1.7.70"',TEXT);self.assertIn('2017-OBSERVED-UNIVERSE-CERTIFICATION-A',TEXT)
+        self.assertIn('VERSION = "1.7.70-R1"',TEXT);self.assertIn('2017-OBSERVED-UNIVERSE-CERTIFICATION-A-R1',TEXT)
     def test_routes_before_main(self):
         main=TEXT.index('if __name__ == "__main__":')
         for route in ['/research/2017-historical-replication/observed-universe/protocol','/research/2017-historical-replication/observed-universe/start','/research/2017-historical-replication/observed-universe/status','/research/2017-historical-replication/observed-universe/result']:self.assertLess(TEXT.index(route),main)
@@ -26,6 +26,10 @@ class TestObservedUniverseCertificationRelease(unittest.TestCase):
         self.assertIn('zero market-data requests',TEXT);self.assertIn('"alpaca_requests":False',TEXT)
     def test_stop_review(self):
         self.assertIn('Only a separately frozen 2017 sampling/methodology-parity pre-freeze may be considered; H1 remains locked.',TEXT)
+    def test_v1769_writer_v1770_reader_warmup_key_symmetry(self):
+        self.assertIn('"warmup_dec_2016_present":any(m=="2016-12" for m in months)',TEXT)
+        self.assertIn('v.get("warmup_dec_2016_present")',TEXT)
+        self.assertNotIn('v.get("dec2016_warmup_presence")',TEXT)
     def test_unittest_style(self):
         tree=ast.parse(Path(__file__).read_text());classes=[n for n in tree.body if isinstance(n,ast.ClassDef)];self.assertTrue(any(any(isinstance(b,ast.Attribute) and b.attr=='TestCase' for b in c.bases) for c in classes))
 if __name__=='__main__':unittest.main()

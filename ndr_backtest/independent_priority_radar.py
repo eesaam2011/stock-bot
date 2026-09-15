@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.70"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-OBSERVED-UNIVERSE-CERTIFICATION-A"
+VERSION = "1.7.70-R1"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2017-OBSERVED-UNIVERSE-CERTIFICATION-A-R1"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -14531,7 +14531,7 @@ def _boos17oc_worker()->None:
         r17=radar.redis.get_json(_boos17u_key("report"),None); rh=radar.redis.get_json(radar.universe_reconstruction_key("report"),None)
         records=radar.redis.get_json(_boos17u_key("records"),None)
         if not isinstance(records,dict):raise RuntimeError("Persisted v1.7.69 2017 universe records are required")
-        source_union=len(records); observed=sum(1 for v in records.values() if isinstance(v,dict) and v.get("observed_in_2017")); warm=sum(1 for v in records.values() if isinstance(v,dict) and v.get("dec2016_warmup_presence"))
+        source_union=len(records); observed=sum(1 for v in records.values() if isinstance(v,dict) and v.get("observed_in_2017")); warm=sum(1 for v in records.values() if isinstance(v,dict) and v.get("warmup_dec_2016_present"))
         exp=BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["2017_expected"]
         if source_union!=exp["source_union_symbols"] or observed!=exp["symbols_observed_in_sip"] or warm!=exp["symbols_with_dec2016_warmup_presence"]:raise RuntimeError(f"2017 persisted record recount mismatch: union={source_union}, observed={observed}, warmup={warm}")
         frozen=BACKWARD_OOS_2017_OBSERVED_CERT_SPEC["2019_2026_frozen_reference"]; years={str(k):int(v) for k,v in (rh.get("year_presence_counts") or {}).items()}
