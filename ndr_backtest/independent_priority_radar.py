@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.62"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-RANK-STRUCTURE-EXECUTION-A"
+VERSION = "1.7.63"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-TARGET-ADVERSE-DECOMPOSITION-PREFREEZE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13649,6 +13649,66 @@ def backward_oos_2018_h1_rank_structure_result():
     r=radar.redis.get_json(_boos18h1r_key("report"),None) if radar.redis.configured else None
     if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/rank-structure/status","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","fresh_forward_oos_opened":False}),202
     return jsonify(r)
+
+
+# -----------------------------------------------------------------------------
+# v1.7.63 — 2018 H1 Post-Failure Diagnostic: TARGET/ADVERSE Decomposition Pre-Freeze
+# Protocol only. No decomposition outcome is computed in this release.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SPEC = {
+    "prefreeze_id":"IPR-2018-H1-POST-FAILURE-TARGET-ADVERSE-PREFREEZE-2026-09-15-A",
+    "required_rank_result_sha256":"2b5f80bffb42d7cc0061a5d2627672e659874d519a2b87d622375c70d727ce45",
+    "required_rank_execution_spec_sha256":"6006ad44cacf120e9181109436ee5800f9813a2f8fd786344439a95dcd2bab86",
+    "required_h1_result_sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL",
+    "formal_decision_is_immutable":True,
+    "research_status":"POST_HOC_DESCRIPTIVE_DIAGNOSTIC_ONLY",
+    "question":"For the frozen 2018 30m/Top3 result, is the H1-versus-Baseline primary improvement descriptively attributable to increased TARGET_FIRST, reduced ADVERSE_FIRST, both, or neither when within-session dependence is respected?",
+    "scope":{"period":["2018-01-01","2018-12-31"],"window_minutes":30,"selection":"top_3","expected_sessions":251,"expected_records_top3":746,"expected_baseline_evaluable":613,"expected_h1_count":203,"frozen_primary_improvement":0.046159162320494385},
+    "estimands":{
+        "delta_target":{"formula":"P(TARGET_FIRST | H1) - P(TARGET_FIRST | Baseline)","positive_direction":"H1 increases TARGET_FIRST versus Baseline"},
+        "delta_adverse_reduction":{"formula":"P(ADVERSE_FIRST | Baseline) - P(ADVERSE_FIRST | H1)","positive_direction":"H1 reduces ADVERSE_FIRST versus Baseline"},
+        "identity_check":{"formula":"delta_target + delta_adverse_reduction = frozen primary improvement","required_value":0.046159162320494385,"tolerance":1e-12,"fail_closed":True},
+        "explicitly_not_estimand":"TARGET_FIRST versus ADVERSE_FIRST within H1 alone is not the research question; delta_target minus delta_adverse_reduction is not tested."
+    },
+    "method":{"unit_of_resampling":"trading_session","bootstrap":"nonparametric cluster bootstrap; resample whole sessions with replacement and keep all eligible Top3 records from each sampled session together","replicates":50000,"seed":17632018,"confidence_level":0.95,"interval":"two-sided percentile interval (2.5th, 97.5th percentiles)","empty_arm_policy":"discard a replicate for a component if any denominator required by that component is zero","component_intervals":"two separately predeclared marginal 95% intervals; no joint 95% familywise-confidence claim is made","raw_rates_alone_are_not_sufficient":True},
+    "predeclared_interpretation":{
+        "target_contribution_established":"delta_target > 0 and its 95% session-cluster bootstrap interval excludes zero.",
+        "adverse_reduction_contribution_established":"delta_adverse_reduction > 0 and its 95% session-cluster bootstrap interval excludes zero.",
+        "opposite_direction":"For either component, a negative point estimate whose 95% interval excludes zero is descriptive evidence that component moved opposite to the improvement direction.",
+        "not_established":"For either component, if its 95% interval includes zero, that component is not established.",
+        "four_way_classification":["BOTH_COMPONENTS_ESTABLISHED","TARGET_ONLY_ESTABLISHED","ADVERSE_REDUCTION_ONLY_ESTABLISHED","NEITHER_COMPONENT_ESTABLISHED"],
+        "important_limit":"Component establishment is post-hoc descriptive evidence only. It cannot rescue H1, change the frozen gate, create H2, or authorize a bot.",
+        "no_component_competition":"No delta_target-minus-delta_adverse_reduction contrast and no post-hoc choice of the numerically larger component are permitted."
+    },
+    "next_step_rule":"STOP_REVIEW after the separately executed pre-frozen decomposition. Temporal-stability research, any successor hypothesis, thresholds, timings, features, profitability, or bot decisions require a later separately pre-frozen step.",
+    "stop_rule":"This release is protocol/pre-freeze only. No TARGET/ADVERSE decomposition rates, bootstrap outcomes, temporal-stability analysis, new rank cuts, thresholds, timings, features, H2, profitability, or bot decision is computed.",
+    "firewall":{"alpaca_requests":False,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"ranking_changed":False,"alternative_rank_contrasts":False,"target_adverse_outcomes_computed":False,"within_h1_target_vs_adverse_test":False,"component_competition_test":False,"temporal_stability_diagnostic":False,"new_features":False,"successor_hypothesis_created":False,"profitability_claim":False,"bot_authorized":False},
+    "protocol_only":True,
+}
+BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+def _boos18h1_target_adverse_prefreeze_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    r=radar.redis.get_json(_boos18h1r_key("report"),{}) or {}
+    s=BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SPEC
+    if r.get("status")!="COMPLETED" or r.get("phase")!="STOP_REVIEW":return False,"completed v1.7.62 STOP_REVIEW result required"
+    if r.get("result_sha256")!=s["required_rank_result_sha256"]:return False,"v1.7.62 result SHA mismatch"
+    if r.get("execution_spec_sha256")!=s["required_rank_execution_spec_sha256"]:return False,"v1.7.62 execution-spec SHA mismatch"
+    if r.get("required_h1_result_sha256")!=s["required_h1_result_sha256"]:return False,"v1.7.58 H1 provenance mismatch"
+    if r.get("formal_h1_decision")!="H1_BACKWARD_OOS_FAIL" or r.get("formal_h1_decision_immutable") is not True:return False,"immutable H1 FAIL required"
+    if r.get("diagnostic_classification")!="NO_ESTABLISHED_RANK_SEPARATION":return False,"expected frozen rank diagnostic classification missing"
+    if r.get("session_clusters")!=251 or r.get("sessions")!=251:return False,"exact 251 session clusters required"
+    c=r.get("source_counts") or {}
+    if c.get("records_top3")!=746 or c.get("baseline_evaluable")!=613 or c.get("h1_count")!=203:return False,"v1.7.62 frozen source counts mismatch"
+    if r.get("alpaca_requests_made")!=0 or r.get("fresh_forward_oos_opened") is not False or r.get("post_2018_market_data_read") is not False:return False,"data firewall provenance failed"
+    if r.get("target_adverse_diagnostic_computed") is not False or r.get("temporal_stability_diagnostic_computed") is not False:return False,"v1.7.62 STOP boundary provenance failed"
+    if r.get("alternative_rank_contrasts_computed") is not False or r.get("successor_hypothesis_created") is not False:return False,"v1.7.62 no-rescue provenance failed"
+    return True,"allowed"
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/target-adverse-prefreeze/protocol")
+def backward_oos_2018_h1_target_adverse_prefreeze_protocol():
+    ok,why=_boos18h1_target_adverse_prefreeze_gate()
+    r=radar.redis.get_json(_boos18h1r_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_H1_TARGET_ADVERSE_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_rank_result_sha256":r.get("result_sha256"),"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","execution_started":False,"target_adverse_outcomes_computed":False,"alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Protocol-only TARGET/ADVERSE decomposition pre-freeze. No Start endpoint exists in v1.7.63 by design."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
