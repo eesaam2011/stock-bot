@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.59"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-POST-OOS-EVIDENCE-FREEZE-A"
+VERSION = "1.7.60"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-POST-FAILURE-UNCERTAINTY-DIAGNOSTIC-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13351,6 +13351,129 @@ def backward_oos_2018_h1_post_oos_freeze_protocol():
     ok,why=_boos18h1_post_oos_freeze_gate()
     r=radar.redis.get_json(_boos18h1x_key("report"),{}) if radar.redis.configured else {}
     return jsonify({"version":VERSION,"build":BUILD,"freeze_spec":BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SPEC,"freeze_spec_sha256":BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_h1_result_sha256":r.get("result_sha256"),"formal_decision":r.get("decision"),"execution_started":False,"alpaca_requests_made":0,"h1_recomputed":False,"thresholds_tuned":False,"fresh_forward_oos_opened":False,"note":"Read-only evidence freeze. No Start endpoint exists by design."})
+
+
+# -----------------------------------------------------------------------------
+# v1.7.60 — 2018 H1 Post-Failure Diagnostic: Uncertainty First
+# Descriptive post-hoc diagnostic only. Redis-only; H1 remains immutable FAIL.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SPEC = {
+    "diagnostic_id":"IPR-2018-H1-POST-FAILURE-UNCERTAINTY-FIRST-2026-09-15-A",
+    "required_post_oos_freeze_sha256":"ed9e501246a445052988f61d3ca8063e2e0d413ec7a6e4a7e61061b6b066d482",
+    "required_h1_result_sha256":"edf7d9402b10ddf24ee1c6e9ce36e2867379de9059bc80422c73d66b88ebd9fa",
+    "formal_decision":"H1_BACKWARD_OOS_FAIL",
+    "formal_decision_is_immutable":True,
+    "question":"How uncertain is the frozen 30m/Top3 primary-improvement estimate when dependence within trading sessions is respected?",
+    "scope":{"period":["2018-01-01","2018-12-31"],"window_minutes":30,"selection":"top_3","expected_sessions":251,"expected_baseline_evaluable":613,"expected_h1_count":203,"frozen_primary_improvement":0.046159162320494385,"frozen_gate":0.05},
+    "method":{
+        "unit_of_resampling":"trading_session",
+        "bootstrap":"nonparametric cluster bootstrap; resample whole sessions with replacement",
+        "replicates":50000,
+        "seed":17602018,
+        "confidence_level":0.95,
+        "interval":"two-sided percentile interval (2.5th, 97.5th percentiles)",
+        "estimand":"H1 primary minus Baseline primary, where primary = TARGET_FIRST rate - ADVERSE_FIRST rate; pooled candidate denominators are recomputed inside every session bootstrap replicate",
+        "empty_arm_policy":"discard replicate if either pooled Baseline or H1 denominator is zero",
+        "interpretation":"descriptive post-hoc uncertainty only; the interval is not a new H1 pass/fail test and cannot rescue the frozen H1 decision",
+    },
+    "stop_rule":"STOP_REVIEW immediately after uncertainty report. Rank decomposition, TARGET/ADVERSE decomposition, temporal stability, new thresholds, timings, features, or successor hypotheses are not computed in this release.",
+    "firewall":{"alpaca_requests":False,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"rank_diagnostic":False,"target_adverse_diagnostic":False,"temporal_stability_diagnostic":False,"new_features":False,"profitability_claim":False,"bot_authorized":False},
+}
+BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SHA256=hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+BACKWARD_OOS_2018_H1_UNCERTAINTY_LOCK=threading.RLock();BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD=None
+BACKWARD_OOS_2018_H1_UNCERTAINTY_STATE={"status":"IDLE","phase":"NOT_STARTED","message":"Uncertainty-first diagnostic has not started","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"updated_at":iso()}
+def _boos18h1u_key(suffix:str)->str:return radar.key(f"backward_oos_2018_h1_uncertainty:v1:{suffix}")
+def _boos18h1u_set(**u:Any)->None:
+    global BACKWARD_OOS_2018_H1_UNCERTAINTY_STATE
+    with BACKWARD_OOS_2018_H1_UNCERTAINTY_LOCK:
+        BACKWARD_OOS_2018_H1_UNCERTAINTY_STATE={**BACKWARD_OOS_2018_H1_UNCERTAINTY_STATE,**u,"updated_at":iso(),"alpaca_requests_made":0,"fresh_forward_oos_opened":False}
+        snap=dict(BACKWARD_OOS_2018_H1_UNCERTAINTY_STATE)
+    if radar.redis.configured:radar.redis.set_json(_boos18h1u_key("status"),snap)
+def _boos18h1u_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    if BACKWARD_OOS_2018_H1_POST_OOS_FREEZE_SHA256!=BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SPEC["required_post_oos_freeze_sha256"]:return False,"v1.7.59 freeze SHA mismatch"
+    r=radar.redis.get_json(_boos18h1x_key("report"),{}) or {}
+    if r.get("status")!="COMPLETED" or r.get("decision")!="H1_BACKWARD_OOS_FAIL":return False,"completed immutable v1.7.58 FAIL result required"
+    if r.get("result_sha256")!=BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SPEC["required_h1_result_sha256"]:return False,"v1.7.58 result SHA mismatch"
+    if r.get("fresh_forward_oos_opened") is not False or r.get("thresholds_tuned_after_result") is not False:return False,"H1/Fresh-OOS provenance failed"
+    sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+    if len(sessions)!=251 or len(set(sessions))!=251:return False,"exact frozen 251-session list required"
+    if any(not str(x).startswith("2018-") for x in sessions):return False,"non-2018 session detected"
+    done=radar.redis.get_json(_boos18h1x_key("completed_sessions"),[]) or []
+    if set(done)!=set(sessions):return False,"v1.7.58 detailed records must be complete for all frozen sessions"
+    return True,"allowed"
+def _boos18h1u_session_counts(sessions:list[str])->tuple[np.ndarray,dict[str,int]]:
+    # columns: baseline_n, baseline_target, baseline_adverse, h1_n, h1_target, h1_adverse
+    a=np.zeros((len(sessions),6),dtype=np.int64)
+    totals={"records_top3":0,"baseline_evaluable":0,"h1_count":0}
+    for i,sess in enumerate(sessions):
+        rows=radar.redis.get_json(_boos18h1x_key(f"records:{sess}"),[]) or []
+        rs=[r for r in rows if int(r.get("window_minutes") or -1)==30 and int(r.get("within_session_rank") or 99)<=3]
+        totals["records_top3"]+=len(rs)
+        ev=[r for r in rs if (r.get("measurement") or {}).get("evaluable")]
+        h1=[r for r in ev if (r.get("measurement") or {}).get("h1_accept") is True]
+        def c(x,order):return sum(1 for r in x if (r.get("measurement") or {}).get("primary_path_ordering")==order)
+        a[i]=[len(ev),c(ev,"TARGET_FIRST"),c(ev,"ADVERSE_FIRST"),len(h1),c(h1,"TARGET_FIRST"),c(h1,"ADVERSE_FIRST")]
+        totals["baseline_evaluable"]+=len(ev);totals["h1_count"]+=len(h1)
+    return a,totals
+def _boos18h1u_estimate(v:np.ndarray)->float:
+    bn,bt,ba,hn,ht,ha=(int(x) for x in v.sum(axis=0))
+    if bn<=0 or hn<=0:return float("nan")
+    return ((ht-ha)/hn)-((bt-ba)/bn)
+def _boos18h1u_worker()->None:
+    global BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD
+    try:
+        ok,why=_boos18h1u_gate()
+        if not ok:raise RuntimeError(why)
+        spec=BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SPEC;scope=spec["scope"];method=spec["method"]
+        sessions=radar.redis.get_json(_boos18x_key("sessions"),[]) or []
+        _boos18h1u_set(status="RUNNING",phase="SESSION_CLUSTER_UNCERTAINTY",message="Reading frozen 2018 Redis records; no market-data requests")
+        a,totals=_boos18h1u_session_counts(sessions)
+        if totals["baseline_evaluable"]!=scope["expected_baseline_evaluable"]:raise RuntimeError(f"baseline evaluable mismatch: {totals['baseline_evaluable']}")
+        if totals["h1_count"]!=scope["expected_h1_count"]:raise RuntimeError(f"H1 count mismatch: {totals['h1_count']}")
+        point=_boos18h1u_estimate(a)
+        if not math.isclose(point,float(scope["frozen_primary_improvement"]),rel_tol=0.0,abs_tol=1e-15):raise RuntimeError(f"frozen estimate mismatch: {point!r}")
+        reps=int(method["replicates"]);rng=np.random.default_rng(int(method["seed"]));vals=[];chunk=1000;n=len(sessions)
+        for start in range(0,reps,chunk):
+            k=min(chunk,reps-start);idx=rng.integers(0,n,size=(k,n));sums=a[idx].sum(axis=1);bn=sums[:,0];hn=sums[:,3];good=(bn>0)&(hn>0);z=sums[good]
+            vv=((z[:,4]-z[:,5])/z[:,3])-((z[:,1]-z[:,2])/z[:,0]);vals.extend(vv.tolist())
+        vals=np.asarray(vals,dtype=float)
+        if len(vals)<reps:discarded=reps-len(vals)
+        else:discarded=0
+        lo,hi=np.quantile(vals,[0.025,0.975])
+        gate=float(scope["frozen_gate"])
+        report={"version":VERSION,"build":BUILD,"diagnostic_id":spec["diagnostic_id"],"diagnostic_spec_sha256":BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SHA256,"required_h1_result_sha256":spec["required_h1_result_sha256"],"status":"COMPLETED","phase":"STOP_REVIEW","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","formal_h1_decision_immutable":True,"sessions":len(sessions),"session_clusters":len(sessions),"source":"frozen v1.7.58 Redis detailed records only","source_counts":totals,"point_estimate":{"primary_improvement_absolute":point,"percentage_points":point*100.0,"frozen_gate_absolute":gate,"frozen_gate_percentage_points":gate*100.0,"shortfall_to_frozen_gate_absolute":gate-point,"shortfall_percentage_points":(gate-point)*100.0},"uncertainty":{"method":"session-cluster nonparametric bootstrap percentile CI","confidence_level":method["confidence_level"],"replicates_requested":reps,"replicates_used":int(len(vals)),"replicates_discarded":int(discarded),"seed":method["seed"],"ci_lower_absolute":float(lo),"ci_upper_absolute":float(hi),"ci_lower_percentage_points":float(lo*100.0),"ci_upper_percentage_points":float(hi*100.0),"frozen_5pp_gate_inside_interval":bool(lo<=gate<=hi),"zero_inside_interval":bool(lo<=0.0<=hi)},"interpretation":"Post-hoc descriptive uncertainty only. Regardless of this interval, H1 remains the immutable formal Backward-OOS FAIL from v1.7.58.","next_step":"STOP_REVIEW before any Rank, TARGET/ADVERSE, temporal-stability, or successor-hypothesis diagnostic.","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"post_2018_market_data_read":False,"h1_recomputed":False,"h1_reclassified":False,"thresholds_tuned":False,"rank_diagnostic_computed":False,"target_adverse_diagnostic_computed":False,"temporal_stability_diagnostic_computed":False,"profitability_computed":False,"bot_authorized":False}
+        report["result_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest();radar.redis.set_json(_boos18h1u_key("report"),report);_boos18h1u_set(status="COMPLETED",phase="STOP_REVIEW",message="Uncertainty-first diagnostic completed; STOP REVIEW",result_sha256=report["result_sha256"],formal_h1_decision="H1_BACKWARD_OOS_FAIL",session_clusters=len(sessions),stop_and_review_required=True)
+    except Exception as exc:
+        logging.exception("2018 H1 uncertainty diagnostic failed");_boos18h1u_set(status="ERROR",phase="BLOCKED",message="Uncertainty diagnostic failed closed",last_error=f"{type(exc).__name__}: {exc}",stop_and_review_required=True)
+    finally:
+        with BACKWARD_OOS_2018_H1_UNCERTAINTY_LOCK:BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD=None
+def _boos18h1u_start()->tuple[bool,str]:
+    global BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD
+    ok,why=_boos18h1u_gate()
+    if not ok:return False,why
+    existing=radar.redis.get_json(_boos18h1u_key("report"),None) if radar.redis.configured else None
+    if isinstance(existing,dict) and existing.get("status")=="COMPLETED":return False,"already_completed"
+    with BACKWARD_OOS_2018_H1_UNCERTAINTY_LOCK:
+        if BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD and BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD.is_alive():return False,"already_running"
+        BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD=threading.Thread(target=_boos18h1u_worker,name="ipr-2018-h1-uncertainty",daemon=True);BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD.start()
+    return True,"started"
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/protocol")
+def backward_oos_2018_h1_uncertainty_protocol():
+    ok,why=_boos18h1u_gate();return jsonify({"version":VERSION,"build":BUILD,"diagnostic_spec":BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SPEC,"diagnostic_spec_sha256":BACKWARD_OOS_2018_H1_UNCERTAINTY_DIAGNOSTIC_SHA256,"gate_allowed":ok,"gate_reason":why,"formal_h1_decision":"H1_BACKWARD_OOS_FAIL","alpaca_requests_made":0,"fresh_forward_oos_opened":False,"note":"Uncertainty-first only. Start reads frozen Redis records; it makes zero Alpaca requests."})
+@app.route("/research/2018-backward-oos/h1-post-failure-diagnostic/start",methods=["GET","POST"])
+def backward_oos_2018_h1_uncertainty_start():
+    ok,why=_boos18h1u_start();return jsonify({"ok":ok,"message":why,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/status","result_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/result","alpaca_requests_made":0,"fresh_forward_oos_opened":False}),(202 if ok else 409)
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/status")
+def backward_oos_2018_h1_uncertainty_status():
+    p=radar.redis.get_json(_boos18h1u_key("status"),None) if radar.redis.configured else None
+    with BACKWARD_OOS_2018_H1_UNCERTAINTY_LOCK:o=dict(p or BACKWARD_OOS_2018_H1_UNCERTAINTY_STATE);o["worker_alive"]=bool(BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD and BACKWARD_OOS_2018_H1_UNCERTAINTY_THREAD.is_alive())
+    return jsonify(o)
+@app.get("/research/2018-backward-oos/h1-post-failure-diagnostic/result")
+def backward_oos_2018_h1_uncertainty_result():
+    r=radar.redis.get_json(_boos18h1u_key("report"),None) if radar.redis.configured else None
+    if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/h1-post-failure-diagnostic/status","formal_h1_decision":"H1_BACKWARD_OOS_FAIL","fresh_forward_oos_opened":False}),202
+    return jsonify(r)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
