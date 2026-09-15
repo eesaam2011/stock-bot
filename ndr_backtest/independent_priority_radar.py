@@ -38,8 +38,8 @@ FEATURE_NAMES = (
     "minutes_since_regular_open",
 )
 
-VERSION = "1.7.56-R1"
-BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-14-2018-CENSUS-PHASE0B-CONTROLS-B"
+VERSION = "1.7.57"
+BUILD = "INDEPENDENT-PRIORITY-RADAR-2026-09-15-2018-H1-BACKWARD-OOS-PREFREEZE-A"
 PROTOCOL_ID = "IPR-PHASE2-SHADOW-2026-09-03-A"
 PROTOCOL = {
     "protocol_id": PROTOCOL_ID,
@@ -13013,6 +13013,109 @@ def backward_oos_2018_execution_result():
     r=radar.redis.get_json(_boos18x_key("report"),None) if radar.redis.configured else None
     if not r:return jsonify({"result_ready":False,"status_url":"/research/2018-backward-oos/execution/status","h1_computed":False,"h1_execution_allowed":False,"fresh_forward_oos_opened":False}),202
     return jsonify(r)
+
+
+# -----------------------------------------------------------------------------
+# v1.7.57 — H1 2018 Backward-OOS Evaluation Pre-Freeze (PROTOCOL ONLY)
+# This stage freezes the independent validation rule before any H1 feature or
+# outcome is computed on 2018. No Start endpoint exists by design.
+# -----------------------------------------------------------------------------
+BACKWARD_OOS_2018_H1_PREFREEZE_SPEC = {
+    "prefreeze_id":"IPR-2018-H1-BACKWARD-OOS-EVALUATION-PREFREEZE-2026-09-15-A",
+    "status":"FROZEN_PROTOCOL_ONLY",
+    "required_2018_sample_controls_result_sha256":"fa0b4341e8df45528986535cc3670233dc49b968a32b1995f85a789b6a0dd7c2",
+    "required_2018_sample_controls_decision":"2018_SAMPLE_AND_CONTROLS_READY_H1_STILL_LOCKED",
+    "required_2018_execution_spec_sha256":"fecebaff1d2c3b32c60a0eea67b60d9a28a47ec1ac8d50c35484e7b9321aa6d6",
+    "required_sample_support":{"passed":True,"min_positive_events":537,"min_positive_symbols":100},
+    "independence_scope":{
+        "validation_period":["2018-01-01","2018-12-31"],
+        "label":"Independent Backward OOS — Observed Historical SIP Universe",
+        "not_complete_us_market_claim":True,
+        "2019_2026_discovery_exposed":True,
+        "fresh_forward_oos_remains_locked":True,
+    },
+    "frozen_h1":{
+        "feature":"close_location_in_post_t0_range",
+        "feature_definition":"(confirmation close - post-t0 min low)/(post-t0 max high - post-t0 min low), clipped [0,1]",
+        "direction":"<=",
+        "threshold":0.3333333333333333,
+        "confirmation_time":"close of the first completed 1-minute candle after t0 (t0 + 1 minute)",
+        "missing_policy":"Exact t0 and exact t0+1m confirmation bars are required. Missing is excluded from both H1 and Baseline evaluable denominators and reported; no imputation.",
+        "no_mutation":True,
+    },
+    "t0_and_population_parity":{
+        "ranking_name":"TWO_COMPONENT_COMPLEMENTARY_RANKING_A",
+        "formula":"(z_discovery_range_pct + z_return_5m_pct) / 2",
+        "components":["discovery_range_pct","return_5m_pct"],
+        "weights":[0.5,0.5],
+        "standardization":"exact frozen v1.7.37-R1 2019-2024 Discovery constants; no 2018 refit",
+        "mandatory_windows_minutes":[30,60],
+        "mandatory_selections":["top_1","top_3"],
+        "t0_definition":"same causal checkpoint/eval_ts semantics used by frozen v1.7.49 Entry Research; t0 bar close is available at t0",
+        "reconstruction_rule":"Reconstruct the same four mandatory Window x Selection views on 2018. No best-window or best-Top-N selection is permitted.",
+        "validation_aggregation":"H1 overall PASS requires every one of the four mandatory 30m/60m x Top1/Top3 views to pass all mandatory gates independently. This all-four rule is frozen now before any 2018 H1 read and prevents post-hoc view selection.",
+    },
+    "primary_endpoint":{
+        "horizon_minutes":30,
+        "target_pct":5.0,
+        "adverse_pct":-5.0,
+        "metric":"TARGET_FIRST(+5%) - ADVERSE_FIRST(-5%)",
+        "anchor":"strictly after the t0+1m confirmation timestamp, using confirmation-bar close as entry-reference price",
+        "same_bar_policy":"SAME_BAR_AMBIGUOUS; never TARGET_FIRST or ADVERSE_FIRST",
+    },
+    "mandatory_gates_per_view":{
+        "primary_improvement":"H1 primary endpoint minus Baseline primary endpoint >= +0.05 absolute (+5 percentage points)",
+        "safety":"ADVERSE_FIRST_H1(-5%) <= ADVERSE_FIRST_Baseline(-5%); any increase fails",
+        "retention":"H1 evaluable candidate_count / Baseline evaluable candidate_count >= 0.25",
+        "pass_rule":"A view PASS requires all three gates. Overall H1 PASS requires all four mandatory views PASS. Any mandatory failure => H1_BACKWARD_OOS_FAIL.",
+    },
+    "baseline":"Same reconstructed already-qualified 2018 t0 candidates in the same Window x Selection view, with no H1 filter; both arms require evaluable t0+1m confirmation and 30m post-confirmation path under the same missingness rules.",
+    "secondary_diagnostics_only":{
+        "horizons_minutes":[5,10,15,60,120],
+        "mfe_mae":True,
+        "other_thresholds":"May be reported only as diagnostics and can never rescue a mandatory-gate failure.",
+    },
+    "anti_posthoc_firewall":[
+        "No changing 1/3 threshold.","No changing t0+1m confirmation time.","No changing +5/-5 or 30m primary endpoint.",
+        "No lowering +5pp primary improvement gate.","No lowering 25% retention gate.","No adding confirmation features.",
+        "No choosing a best Top1/Top3 or 30m/60m view after results.","No 2018 refit of ranking standardization.",
+        "No Fresh Forward OOS read.","No profitability or bot-authorization claim from this Backward OOS alone."
+    ],
+    "protocol_only":True,
+    "execution_started":False,
+    "alpaca_requests_authorized":False,
+    "h1_computed":False,
+    "backward_oos_h1_opened":False,
+    "fresh_forward_oos_opened":False,
+}
+BACKWARD_OOS_2018_H1_PREFREEZE_SHA256 = hashlib.sha256(json.dumps(BACKWARD_OOS_2018_H1_PREFREEZE_SPEC,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+
+def _boos18h1_prefreeze_gate()->tuple[bool,str]:
+    if not radar.redis.configured:return False,"Redis is required"
+    prior=radar.redis.get_json(_boos18x_key("report"),None)
+    if not isinstance(prior,dict):return False,"v1.7.56-R1 completed result is required"
+    checks=[
+        (prior.get("status")=="COMPLETED","v1.7.56-R1 result is not COMPLETED"),
+        (prior.get("decision")==BACKWARD_OOS_2018_H1_PREFREEZE_SPEC["required_2018_sample_controls_decision"],"v1.7.56-R1 decision mismatch"),
+        (prior.get("result_sha256")==BACKWARD_OOS_2018_H1_PREFREEZE_SPEC["required_2018_sample_controls_result_sha256"],"v1.7.56-R1 result SHA mismatch"),
+        (prior.get("execution_spec_sha256")==BACKWARD_OOS_2018_H1_PREFREEZE_SPEC["required_2018_execution_spec_sha256"],"v1.7.56-R1 execution-spec SHA mismatch"),
+        ((prior.get("sample_support") or {}).get("passed") is True,"2018 sample-support gate did not pass"),
+        (int((prior.get("sample_support") or {}).get("positive_events") or 0)>=537,"2018 positive-event support below frozen minimum"),
+        (int((prior.get("sample_support") or {}).get("positive_symbols") or 0)>=100,"2018 positive-symbol support below frozen minimum"),
+        (prior.get("h1_computed") is False,"H1 was unexpectedly computed before pre-freeze"),
+        (prior.get("backward_oos_h1_opened") is False,"Backward-OOS H1 was unexpectedly opened before pre-freeze"),
+        (prior.get("fresh_forward_oos_opened") is False,"Fresh Forward OOS was unexpectedly opened"),
+        (prior.get("2019_2026_results_mutated") is False,"Historical frozen results mutation guard failed"),
+    ]
+    for ok,msg in checks:
+        if not ok:return False,msg
+    return True,"allowed"
+
+@app.get("/research/2018-backward-oos/h1-prefreeze/protocol")
+def backward_oos_2018_h1_prefreeze_protocol():
+    ok,why=_boos18h1_prefreeze_gate()
+    prior=radar.redis.get_json(_boos18x_key("report"),{}) if radar.redis.configured else {}
+    return jsonify({"version":VERSION,"build":BUILD,"prefreeze_spec":BACKWARD_OOS_2018_H1_PREFREEZE_SPEC,"prefreeze_spec_sha256":BACKWARD_OOS_2018_H1_PREFREEZE_SHA256,"gate_allowed":ok,"gate_reason":why,"actual_2018_sample_controls_result_sha256":prior.get("result_sha256"),"execution_started":False,"alpaca_requests_made":0,"h1_computed":False,"h1_execution_allowed":False,"backward_oos_h1_opened":False,"fresh_forward_oos_opened":False,"note":"Protocol-only review gate. No H1 Start endpoint exists in v1.7.57 by design."})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
