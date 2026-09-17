@@ -61,8 +61,17 @@ class ProductionDecisionPipeline:
   out=self.br.on_completed_native_1m(symbol,bar,received_at)
   if out.get("base_ready") and not self._get(key_base_ready(self.session,symbol)):
    bs=dt(bar["t"]);be=bs+timedelta(minutes=1)
-   try:self.bw.persist_first_b(self.session,symbol,bs,be,received_at,max(be,received_at),out["features"],out["diagnostics"])
+   try:_b_key,b_record=self.bw.persist_first_b(self.session,symbol,bs,be,received_at,max(be,received_at),out["features"],out["diagnostics"])
    except Exception:pass
+   else:
+    print({"stage":"SHADOW_FIRST_B","symbol":symbol,
+           "bar_end_ts":b_record.get("bar_end_ts"),
+           "decision_available_ts":b_record.get("decision_available_ts"),
+           "opportunity":b_record.get("features",{}).get("opportunity"),
+           "failure_pressure":b_record.get("features",{}).get("failure_pressure"),
+           "demand_efficiency":b_record.get("features",{}).get("demand_efficiency"),
+           "price_acceptance":b_record.get("features",{}).get("price_acceptance"),
+           "volume_acceleration":b_record.get("features",{}).get("volume_acceleration")},flush=True)
    self._confluence(symbol,received_at)
   self._monitor_bar(symbol,bar,received_at)
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
@@ -95,9 +104,14 @@ class ProductionDecisionPipeline:
     if rows:stats["symbols_with_rows"]+=1
     crossing=self.ec.evaluate(symbol,rows,now)
     if crossing:
-     try:self.ew.persist_first_e(crossing)
+     try:_e_key,e_record=self.ew.persist_first_e(crossing)
      except Exception:pass
-     else:stats["crossings"]+=1
+     else:
+      stats["crossings"]+=1
+      print({"stage":"SHADOW_FIRST_E","symbol":symbol,
+             "score":e_record.get("score"),
+             "bar_end_ts":e_record.get("bar_end_ts"),
+             "decision_available_ts":e_record.get("decision_available_ts")},flush=True)
      self._confluence(symbol,now)
    del rows_by_symbol
   return stats
@@ -106,7 +120,13 @@ class ProductionDecisionPipeline:
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
   try:_decision,record=self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
   except Exception:return
-  if record and record.get("state")=="CONFLUENCE_VALID":self._entry_opportunities[symbol]=record
+  if record and record.get("state")=="CONFLUENCE_VALID":
+   self._entry_opportunities[symbol]=record
+   print({"stage":"SHADOW_CONFLUENCE","symbol":symbol,
+          "e_decision_available_ts":e.get("decision_available_ts") if e else None,
+          "b_decision_available_ts":b.get("decision_available_ts") if b else None,
+          "delta_seconds":record.get("delta_seconds"),
+          "entry_trigger_ts":record.get("entry_trigger_ts")},flush=True)
  def on_trade(self,symbol,msg,received_at,allow_decision):
   self.raw_trade_messages_received = getattr(self,"raw_trade_messages_received",0) + 1
   price=msg.get("p");ts=msg.get("t")
