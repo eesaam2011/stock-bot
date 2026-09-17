@@ -29,6 +29,8 @@ class ShadowRuntimeSupervisor:
         self.key=key; self.secret=secret; self.stream_url=stream_url
         self.drain=drain or GracefulDrain()
         self.stop_event=asyncio.Event()
+        self.native5_cycles=0
+        self.native5_last_stats={}
 
     async def outbox_loop(self):
         while not self.stop_event.is_set():
@@ -41,8 +43,49 @@ class ShadowRuntimeSupervisor:
         while not self.stop_event.is_set():
             if hasattr(self,"decision_pipeline"):
                 from datetime import datetime,timezone
-                self.decision_pipeline.poll_native5(datetime.now(timezone.utc),self.orchestrator.new_decisions_allowed())
+                # REST is synchronous: keep it off the asyncio event loop so SIP/leadership/telemetry remain responsive.
+                self.native5_last_stats = await asyncio.to_thread(
+                    self.decision_pipeline.poll_native5,
+                    datetime.now(timezone.utc),
+                    self.orchestrator.new_decisions_allowed(),
+                    500, 4
+                )
+                self.native5_cycles += 1
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=5.0)
+            except asyncio.TimeoutError: pass
+
+
+    def _redis_count(self, pattern):
+        total=0; cursor=0
+        while True:
+            cursor,keys=self.orchestrator.redis.r.scan(cursor=cursor,match=pattern,count=200)
+            total += len(keys)
+            if int(cursor)==0:return total
+
+    async def telemetry_loop(self):
+        while not self.stop_event.is_set():
+            p=getattr(self,"decision_pipeline",None)
+            if p is not None:
+                bars=sum(len(v) for v in p.bars.values())
+                trades=sum(len(v) for v in p.trades.values())
+                try:
+                    e=self._redis_count("operational_priority_radar:v1:early_core:*")
+                    b=self._redis_count("operational_priority_radar:v1:base_ready:*")
+                    opp=self._redis_count("operational_priority_radar:v1:opportunity:*")
+                except Exception as exc:
+                    e=b=opp=None
+                    redis_error=type(exc).__name__
+                else:
+                    redis_error=None
+                print({"stage":"LIVE_DATA_FLOW_HEARTBEAT",
+                       "trust_state":getattr(self.orchestrator.trust.state,"value",str(self.orchestrator.trust.state)),
+                       "buffered_1m_bars":bars,"buffered_trades":trades,
+                       "native5_cycles":self.native5_cycles,
+                       "native5_batch_size":500,
+                       "native5_last":self.native5_last_stats,
+                       "early_core_events":e,"base_ready_events":b,
+                       "opportunities":opp,"redis_error":redis_error},flush=True)
+            try: await asyncio.wait_for(self.stop_event.wait(), timeout=60.0)
             except asyncio.TimeoutError: pass
 
     async def leadership_loop(self):
@@ -106,6 +149,7 @@ class ShadowRuntimeSupervisor:
             asyncio.create_task(self.outbox_loop()),
             asyncio.create_task(self.native5_loop()),
             asyncio.create_task(self.leadership_loop()),
+            asyncio.create_task(self.telemetry_loop()),
         ]
         await self.stop_event.wait()
         self.drain.begin()

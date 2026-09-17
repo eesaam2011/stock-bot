@@ -33,17 +33,25 @@ class ProductionDecisionPipeline:
    except Exception:pass
    self._confluence(symbol,received_at)
   self._monitor_bar(symbol,bar,received_at)
- def poll_native5(self,now,allow_decision):
-  if not allow_decision:return
-  for symbol in self.symbols:
-   if self._get(key_early_core(self.session,symbol)):continue
-   start=now-timedelta(minutes=60)
-   rows=self.rest.native_5m(symbol,start,now)
+ def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
+  # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
+  stats={"eligible_symbols":0,"symbols_with_rows":0,"crossings":0,"batch_size":int(batch_size)}
+  if not allow_decision:return stats
+  pending=[s for s in self.symbols if not self._get(key_early_core(self.session,s))]
+  stats["eligible_symbols"]=len(pending)
+  if not pending:return stats
+  start=now-timedelta(minutes=60)
+  rows_by_symbol=self.rest.bars_multi(pending,start,now,"5Min",batch_size=batch_size,max_workers=max_workers)
+  for symbol in pending:
+   rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
+   if rows:stats["symbols_with_rows"]+=1
    crossing=self.ec.evaluate(symbol,rows,now)
    if crossing:
     try:self.ew.persist_first_e(crossing)
     except Exception:pass
+    else:stats["crossings"]+=1
     self._confluence(symbol,now)
+  return stats
  def _confluence(self,symbol,now):
   if self._get(key_opportunity(self.session,symbol)):return
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
