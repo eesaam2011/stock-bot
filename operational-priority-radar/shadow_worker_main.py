@@ -2,7 +2,7 @@ import asyncio, os, signal
 from operational_priority_radar import WorkerConfig
 from shutdown import GracefulDrain
 
-REQUIRED=("REDIS_URL","ALPACA_API_KEY","ALPACA_SECRET_KEY")
+REQUIRED=("REDIS_URL","APCA_API_KEY_ID","APCA_API_SECRET_KEY")
 
 class StartupBlocked(RuntimeError): pass
 
