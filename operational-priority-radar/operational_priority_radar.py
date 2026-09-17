@@ -19,8 +19,8 @@ class WorkerConfig:
   return cls(
    shadow_mode=os.getenv("OPR_SHADOW_MODE","true").lower()=="true",
    redis_url=os.getenv("REDIS_URL"),
-   alpaca_key=os.getenv("ALPACA_API_KEY"),
-   alpaca_secret=os.getenv("ALPACA_SECRET_KEY"),
+   alpaca_key=os.getenv("APCA_API_KEY_ID"),
+   alpaca_secret=os.getenv("APCA_API_SECRET_KEY"),
    telegram_token=os.getenv("TELEGRAM_BOT_TOKEN"),
    telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"))
 
