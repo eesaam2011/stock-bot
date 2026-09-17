@@ -86,7 +86,7 @@ class ShadowRuntimeSupervisor:
                     redis_error=None
                 print({"stage":"LIVE_DATA_FLOW_HEARTBEAT",
                        "trust_state":getattr(self.orchestrator.trust.state,"value",str(self.orchestrator.trust.state)),
-                       "buffered_1m_bars":bars,"buffered_trades":trades,
+                       "buffered_1m_bars":bars,"raw_trade_messages_received":getattr(p,"raw_trade_messages_received",0),"buffered_trades":trades,
                        "native5_cycles":self.native5_cycles,
                        "native5_batch_size":500,
                        "native5_last":self.native5_last_stats,

@@ -20,6 +20,7 @@ class ProductionDecisionPipeline:
   self.ew=EarlyCoreStateWriter(self.store,leadership);self.bw=BaseReadyStateWriter(self.store,leadership);self.cw=ConfluenceStateWriter(self.store,leadership)
   self.trades={};self.bars={};self.halted=set();self.last_native5={}
   self.max_bar_buffer=20;self.entry_trade_buffer_seconds=15
+  self.raw_trade_messages_received=0
   # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
   # These caches mirror canonical Redis state and are refreshed after startup recovery.
   self._active_by_symbol={};self._entry_opportunities={}
@@ -107,6 +108,7 @@ class ProductionDecisionPipeline:
   except Exception:return
   if record and record.get("state")=="CONFLUENCE_VALID":self._entry_opportunities[symbol]=record
  def on_trade(self,symbol,msg,received_at,allow_decision):
+  self.raw_trade_messages_received = getattr(self,"raw_trade_messages_received",0) + 1
   price=msg.get("p");ts=msg.get("t")
   if price is None or ts is None:return
   tr=SIPTrade(float(price),dt(ts),received_at,int(msg.get("_seq",0)),True)
