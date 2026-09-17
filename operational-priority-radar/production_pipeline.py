@@ -37,7 +37,19 @@ class ProductionDecisionPipeline:
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
   stats={"eligible_symbols":0,"symbols_with_rows":0,"crossings":0,"batch_size":int(batch_size)}
   if not allow_decision:return stats
-  pending=[s for s in self.symbols if not self._get(key_early_core(self.session,s))]
+  # One Redis round-trip per chunk instead of one GET per symbol. This is transport/runtime
+  # optimization only; it does not change Early Core eligibility or event semantics.
+  pending=[]
+  chunk_size=1000
+  if hasattr(getattr(self,"r",None),"mget"):
+   for i in range(0,len(self.symbols),chunk_size):
+    chunk=self.symbols[i:i+chunk_size]
+    keys=[key_early_core(self.session,s) for s in chunk]
+    vals=self.r.mget(keys)
+    pending.extend(s for s,v in zip(chunk,vals) if not v)
+  else:
+   # Deterministic injected/test seam; production Redis uses the batched MGET path above.
+   pending=[s for s in self.symbols if not self._get(key_early_core(self.session,s))]
   stats["eligible_symbols"]=len(pending)
   if not pending:return stats
   start=now-timedelta(minutes=60)

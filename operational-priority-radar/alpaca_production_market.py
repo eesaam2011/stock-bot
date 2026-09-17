@@ -73,6 +73,6 @@ class AlpacaSIPProtocol:
  def auth(k,s):return {"action":"auth","key":k,"secret":s}
  @staticmethod
  def subscribe(symbols):
-  x=list(symbols);return {"action":"subscribe","trades":x,"quotes":x,"bars":x,"statuses":["*"]}
+  x=list(symbols);return {"action":"subscribe","trades":x,"bars":x,"statuses":["*"]}
  @staticmethod
  def classify(m):return {"t":"TRADE","q":"QUOTE","b":"BAR","s":"STATUS"}.get(m.get("T"),"OTHER")

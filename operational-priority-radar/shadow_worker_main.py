@@ -44,13 +44,18 @@ class ShadowRuntimeSupervisor:
             if hasattr(self,"decision_pipeline"):
                 from datetime import datetime,timezone
                 # REST is synchronous: keep it off the asyncio event loop so SIP/leadership/telemetry remain responsive.
-                self.native5_last_stats = await asyncio.to_thread(
-                    self.decision_pipeline.poll_native5,
-                    datetime.now(timezone.utc),
-                    self.orchestrator.new_decisions_allowed(),
-                    500, 4
-                )
-                self.native5_cycles += 1
+                try:
+                    self.native5_last_stats = await asyncio.to_thread(
+                        self.decision_pipeline.poll_native5,
+                        datetime.now(timezone.utc),
+                        self.orchestrator.new_decisions_allowed(),
+                        500, 4
+                    )
+                except Exception as exc:
+                    self.native5_last_stats={"error":f"{type(exc).__name__}:{exc}"}
+                    print({"stage":"NATIVE5_CYCLE_ERROR","error":self.native5_last_stats["error"]},flush=True)
+                else:
+                    self.native5_cycles += 1
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=5.0)
             except asyncio.TimeoutError: pass
 
@@ -83,6 +88,8 @@ class ShadowRuntimeSupervisor:
                        "native5_cycles":self.native5_cycles,
                        "native5_batch_size":500,
                        "native5_last":self.native5_last_stats,
+                       "sip_subscription":getattr(self.websocket_runtime,"subscription_stats",{}),
+                       "sip_last_error":getattr(self.websocket_runtime,"last_error",None),
                        "early_core_events":e,"base_ready_events":b,
                        "opportunities":opp,"redis_error":redis_error},flush=True)
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=60.0)
@@ -131,6 +138,8 @@ class ShadowRuntimeSupervisor:
             await asyncio.gather(ws_task, return_exceptions=True)
             raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT")
 
+        print({"stage":"SIP_SUBSCRIPTION_VERIFIED",
+               "subscription":getattr(self.websocket_runtime,"subscription_stats",{})}, flush=True)
         print({"stage":"SIP_CONNECTED_NOT_YET_TRUSTED"}, flush=True)
         self.orchestrator.mark_stream_connected()
         recovery=self.orchestrator.c.recovery
