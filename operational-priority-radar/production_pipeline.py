@@ -19,6 +19,7 @@ class ProductionDecisionPipeline:
   self.store=CanonicalStateStore(__import__("production_runtime_state").RedisCanonicalBackend(r))
   self.ew=EarlyCoreStateWriter(self.store,leadership);self.bw=BaseReadyStateWriter(self.store,leadership);self.cw=ConfluenceStateWriter(self.store,leadership)
   self.trades={};self.bars={};self.halted=set();self.last_native5={}
+  self.max_bar_buffer=20;self.entry_trade_buffer_seconds=15
   # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
   # These caches mirror canonical Redis state and are refreshed after startup recovery.
   self._active_by_symbol={};self._entry_opportunities={}
@@ -54,7 +55,7 @@ class ProductionDecisionPipeline:
   self._active_by_symbol=active;self._entry_opportunities=opps
   return {"active_trades":len(active),"entry_opportunities":len(opps)}
  def on_bar(self,symbol,bar,received_at,allow_decision):
-  h=self.bars.setdefault(symbol,[]);h.append((bar,received_at));self.bars[symbol]=h[-60:]
+  h=self.bars.setdefault(symbol,[]);h.append((bar,received_at));self.bars[symbol]=h[-self.max_bar_buffer:]
   if not allow_decision:return
   out=self.br.on_completed_native_1m(symbol,bar,received_at)
   if out.get("base_ready") and not self._get(key_base_ready(self.session,symbol)):
@@ -83,16 +84,21 @@ class ProductionDecisionPipeline:
   stats["eligible_symbols"]=len(pending)
   if not pending:return stats
   start=now-timedelta(minutes=60)
-  rows_by_symbol=self.rest.bars_multi(pending,start,now,"5Min",batch_size=batch_size,max_workers=max_workers)
-  for symbol in pending:
-   rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
-   if rows:stats["symbols_with_rows"]+=1
-   crossing=self.ec.evaluate(symbol,rows,now)
-   if crossing:
-    try:self.ew.persist_first_e(crossing)
-    except Exception:pass
-    else:stats["crossings"]+=1
-    self._confluence(symbol,now)
+  # Memory-safe streaming: never materialize native 5m rows for the full universe at once.
+  # Each REST request remains native Alpaca 5Min and uses the frozen engineering batch size.
+  for i in range(0,len(pending),batch_size):
+   chunk=pending[i:i+batch_size]
+   rows_by_symbol=self.rest.bars_multi(chunk,start,now,"5Min",batch_size=batch_size,max_workers=max_workers)
+   for symbol in chunk:
+    rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
+    if rows:stats["symbols_with_rows"]+=1
+    crossing=self.ec.evaluate(symbol,rows,now)
+    if crossing:
+     try:self.ew.persist_first_e(crossing)
+     except Exception:pass
+     else:stats["crossings"]+=1
+     self._confluence(symbol,now)
+   del rows_by_symbol
   return stats
  def _confluence(self,symbol,now):
   if symbol in self._entry_opportunities or self._get(key_opportunity(self.session,symbol)):return
@@ -104,8 +110,14 @@ class ProductionDecisionPipeline:
   price=msg.get("p");ts=msg.get("t")
   if price is None or ts is None:return
   tr=SIPTrade(float(price),dt(ts),received_at,int(msg.get("_seq",0)),True)
-  xs=self.trades.setdefault(symbol,[]);xs.append(tr);self.trades[symbol]=xs[-500:]
-  if allow_decision:self._try_entry(symbol,received_at)
+  if allow_decision and symbol in self._entry_opportunities:
+   cutoff=received_at-timedelta(seconds=self.entry_trade_buffer_seconds)
+   xs=self.trades.setdefault(symbol,[])
+   xs.append(tr)
+   self.trades[symbol]=[x for x in xs if x.received_at>=cutoff]
+   self._try_entry(symbol,received_at)
+  else:
+   self.trades.pop(symbol,None)
   self._monitor_trade(symbol,tr)
  def on_status(self,msg):
   symbol=msg.get("S");code=str(msg.get("sc",""))
@@ -128,7 +140,7 @@ class ProductionDecisionPipeline:
   new,trade,out=EntryCommitBuilder(self.leadership).build(opp,risk,ed.entry_alert_price,now)
   new,trade,out=stamp(new),stamp(trade),stamp(out)
   self.lua.atomic_entry(self.worker_id,key_opportunity(self.session,symbol),canonical_json(opp),canonical_json(new),key_trade(trade["trade_id"]),canonical_json(trade),f"operational_priority_radar:v1:outbox:{out['event_id']}",canonical_json(out))
-  self._entry_opportunities.pop(symbol,None);self._active_by_symbol[symbol]=trade
+  self._entry_opportunities.pop(symbol,None);self.trades.pop(symbol,None);self._active_by_symbol[symbol]=trade
  def _active(self,symbol):
   # Hot path: canonical active state is mirrored in memory after recovery/atomic commits.
   return self._active_by_symbol.get(symbol)
