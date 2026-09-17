@@ -74,9 +74,11 @@ class ShadowRuntimeSupervisor:
                 bars=sum(len(v) for v in p.bars.values())
                 trades=sum(len(v) for v in p.trades.values())
                 try:
-                    e=self._redis_count("operational_priority_radar:v1:early_core:*")
-                    b=self._redis_count("operational_priority_radar:v1:base_ready:*")
-                    opp=self._redis_count("operational_priority_radar:v1:opportunity:*")
+                    e,b,opp=await asyncio.gather(
+                        asyncio.to_thread(self._redis_count,"operational_priority_radar:v1:early_core:*"),
+                        asyncio.to_thread(self._redis_count,"operational_priority_radar:v1:base_ready:*"),
+                        asyncio.to_thread(self._redis_count,"operational_priority_radar:v1:opportunity:*")
+                    )
                 except Exception as exc:
                     e=b=opp=None
                     redis_error=type(exc).__name__
@@ -97,7 +99,7 @@ class ShadowRuntimeSupervisor:
 
     async def leadership_loop(self):
         while not self.stop_event.is_set():
-            self.orchestrator.redis.renew(self.orchestrator.worker_id,30)
+            await asyncio.to_thread(self.orchestrator.redis.renew,self.orchestrator.worker_id,30)
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=10.0)
             except asyncio.TimeoutError: pass
 
@@ -116,6 +118,10 @@ class ShadowRuntimeSupervisor:
         print({"stage":"STARTUP_RECOVERY_RETURNED",
                "reconciled": recovery_result.get("reconciled",False)
                    if isinstance(recovery_result,dict) else None}, flush=True)
+
+        if hasattr(self,"decision_pipeline") and hasattr(self.decision_pipeline,"refresh_runtime_caches"):
+            cache_stats=await asyncio.to_thread(self.decision_pipeline.refresh_runtime_caches)
+            print({"stage":"RUNTIME_HOT_CACHE_READY",**cache_stats},flush=True)
 
         print({"stage":"SIP_WEBSOCKET_TASK_START",
                "symbols_count":len(self.symbols)}, flush=True)
@@ -153,19 +159,32 @@ class ShadowRuntimeSupervisor:
             trust_state = self.orchestrator.finish_reconciliation(continuity_ok=True)
             print({"stage":"SIP_LIVE_TRUSTED",
                    "trust_state": getattr(trust_state, "value", str(trust_state))}, flush=True)
-        tasks=[
-            ws_task,
-            asyncio.create_task(self.outbox_loop()),
-            asyncio.create_task(self.native5_loop()),
-            asyncio.create_task(self.leadership_loop()),
-            asyncio.create_task(self.telemetry_loop()),
-        ]
-        await self.stop_event.wait()
-        self.drain.begin()
-        self.websocket_runtime.stop()
-        for t in tasks:t.cancel()
-        await asyncio.gather(*tasks,return_exceptions=True)
-        self.drain.complete()
+        task_map={
+            ws_task:"websocket",
+            asyncio.create_task(self.outbox_loop()):"outbox",
+            asyncio.create_task(self.native5_loop()):"native5",
+            asyncio.create_task(self.leadership_loop()):"leadership",
+            asyncio.create_task(self.telemetry_loop()):"telemetry",
+        }
+        stop_wait=asyncio.create_task(self.stop_event.wait())
+        tasks=list(task_map)
+        try:
+            done,_=await asyncio.wait([stop_wait,*tasks],return_when=asyncio.FIRST_COMPLETED)
+            unexpected=[t for t in done if t is not stop_wait]
+            if unexpected and not self.stop_event.is_set():
+                t=unexpected[0];name=task_map[t]
+                try:exc=t.exception()
+                except asyncio.CancelledError:exc=None
+                print({"stage":"RUNTIME_TASK_TERMINATED","task":name,
+                       "error":None if exc is None else f"{type(exc).__name__}:{exc}",
+                       "new_entries_allowed":False},flush=True)
+                self.orchestrator.on_disconnect()
+                raise RuntimeError(f"CRITICAL_RUNTIME_TASK_TERMINATED:{name}") from exc
+        finally:
+            self.drain.begin();self.websocket_runtime.stop();stop_wait.cancel()
+            for t in tasks:t.cancel()
+            await asyncio.gather(stop_wait,*tasks,return_exceptions=True)
+            self.drain.complete()
 
     def request_stop(self):
         self.stop_event.set()

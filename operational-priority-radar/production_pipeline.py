@@ -19,10 +19,40 @@ class ProductionDecisionPipeline:
   self.store=CanonicalStateStore(__import__("production_runtime_state").RedisCanonicalBackend(r))
   self.ew=EarlyCoreStateWriter(self.store,leadership);self.bw=BaseReadyStateWriter(self.store,leadership);self.cw=ConfluenceStateWriter(self.store,leadership)
   self.trades={};self.bars={};self.halted=set();self.last_native5={}
+  # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
+  # These caches mirror canonical Redis state and are refreshed after startup recovery.
+  self._active_by_symbol={};self._entry_opportunities={}
  def _get(self,key,typ=None):
   raw=self.r.get(key)
   if not raw:return None
   x=__import__("json").loads(raw);validate_record(x,typ);return x
+ def _scan_records(self,pattern,typ):
+  import json
+  cur=0;keys=[]
+  while True:
+   cur,part=self.r.scan(cursor=cur,match=pattern,count=500);keys.extend(part)
+   if int(cur)==0:break
+  out=[]
+  for i in range(0,len(keys),500):
+   chunk=keys[i:i+500]
+   vals=self.r.mget(chunk) if hasattr(self.r,"mget") else [self.r.get(k) for k in chunk]
+   for raw in vals:
+    if not raw:continue
+    try:x=json.loads(raw);validate_record(x,typ)
+    except Exception:continue
+    out.append(x)
+  return out
+ def refresh_runtime_caches(self):
+  # Called after canonical startup/gap recovery and before SIP is trusted.
+  active={}
+  for x in self._scan_records("operational_priority_radar:v1:trade:*","trade"):
+   if x.get("session")==self.session and x.get("state") in {"ACTIVE_PRE_T1","ACTIVE_POST_T1","HALTED_ACTIVE"}:
+    active[x["symbol"]]=x
+  opps={}
+  for x in self._scan_records("operational_priority_radar:v1:opportunity:*","opportunity"):
+   if x.get("session")==self.session and x.get("state")=="CONFLUENCE_VALID":opps[x["symbol"]]=x
+  self._active_by_symbol=active;self._entry_opportunities=opps
+  return {"active_trades":len(active),"entry_opportunities":len(opps)}
  def on_bar(self,symbol,bar,received_at,allow_decision):
   h=self.bars.setdefault(symbol,[]);h.append((bar,received_at));self.bars[symbol]=h[-60:]
   if not allow_decision:return
@@ -65,10 +95,11 @@ class ProductionDecisionPipeline:
     self._confluence(symbol,now)
   return stats
  def _confluence(self,symbol,now):
-  if self._get(key_opportunity(self.session,symbol)):return
+  if symbol in self._entry_opportunities or self._get(key_opportunity(self.session,symbol)):return
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
-  try:self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
-  except Exception:pass
+  try:_decision,record=self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
+  except Exception:return
+  if record and record.get("state")=="CONFLUENCE_VALID":self._entry_opportunities[symbol]=record
  def on_trade(self,symbol,msg,received_at,allow_decision):
   price=msg.get("p");ts=msg.get("t")
   if price is None or ts is None:return
@@ -81,7 +112,8 @@ class ProductionDecisionPipeline:
   if code in {"2","H","P"}:self.halted.add(symbol)
   elif code in {"3","Q","T"}:self.halted.discard(symbol)
  def _try_entry(self,symbol,now):
-  opp=self._get(key_opportunity(self.session,symbol),"opportunity")
+  # Hot path: no Redis GET per SIP trade. Only symbols with a cached valid confluence are evaluated.
+  opp=self._entry_opportunities.get(symbol)
   if not opp or opp["state"]!="CONFLUENCE_VALID":return
   trigger=dt(opp["entry_trigger_ts"])
   ed=evaluate_entry_price(trigger,now,self.trades.get(symbol,[]),symbol in self.halted)
@@ -96,14 +128,10 @@ class ProductionDecisionPipeline:
   new,trade,out=EntryCommitBuilder(self.leadership).build(opp,risk,ed.entry_alert_price,now)
   new,trade,out=stamp(new),stamp(trade),stamp(out)
   self.lua.atomic_entry(self.worker_id,key_opportunity(self.session,symbol),canonical_json(opp),canonical_json(new),key_trade(trade["trade_id"]),canonical_json(trade),f"operational_priority_radar:v1:outbox:{out['event_id']}",canonical_json(out))
+  self._entry_opportunities.pop(symbol,None);self._active_by_symbol[symbol]=trade
  def _active(self,symbol):
-  cur=0
-  while True:
-   cur,keys=self.r.scan(cursor=cur,match="operational_priority_radar:v1:trade:*",count=100)
-   for k in keys:
-    x=self._get(k,"trade")
-    if x and x["symbol"]==symbol and x["state"] in {"ACTIVE_PRE_T1","ACTIVE_POST_T1"}:return x
-   if int(cur)==0:return None
+  # Hot path: canonical active state is mirrored in memory after recovery/atomic commits.
+  return self._active_by_symbol.get(symbol)
  def _commit_trade(self,t,ns,evt,ts,price=None):
   et={"T1":"T1","T2":"T2","STOP":"STOP","POST_T1_EXIT":"POST_T1_EXIT","MONITORING_EXPIRED":"FINAL"}.get(evt.value)
   if not et:return
@@ -115,6 +143,8 @@ class ProductionDecisionPipeline:
   out.update(event_id=eid,event_type=et,payload=payload,attempt_count=0,leader_generation=tok.leader_generation)
   new,out=stamp(new),stamp(out)
   self.lua.atomic_trade_event(self.worker_id,key_trade(t["trade_id"]),canonical_json(t),canonical_json(new),f"operational_priority_radar:v1:outbox:{eid}",canonical_json(out))
+  if new["state"] in {"ACTIVE_PRE_T1","ACTIVE_POST_T1","HALTED_ACTIVE"}:self._active_by_symbol[t["symbol"]]=new
+  else:self._active_by_symbol.pop(t["symbol"],None)
  def _state(self,t):return TradeState(t["state"],float(t["entry_alert_price"]),float(t["structural_stop"]),float(t["t1"]),float(t["t2"]),dt(t["monitoring_deadline"]),t.get("pre_halt_state"))
  def _monitor_trade(self,symbol,tr):
   t=self._active(symbol)
