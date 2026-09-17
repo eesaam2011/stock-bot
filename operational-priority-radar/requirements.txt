@@ -1,4 +1,0 @@
-numpy
-pytest
-redis>=5.0
-websockets>=12.0
