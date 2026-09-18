@@ -1,4 +1,5 @@
 from datetime import datetime,timedelta,timezone
+from collections import deque
 from early_core_engine import FrozenEarlyCoreEngine
 from early_core_features import ctr_score_at
 from early_core_score import ARTIFACT
@@ -50,12 +51,24 @@ class OperationalEarlyCore:
 
 class OperationalBaseReady:
  def __init__(self):self.history={}
+ @staticmethod
+ def _compact_bar(bar):
+  # Keep only fields consumed by frozen BASE_READY feature code.
+  # This is representation-only memory safety; feature values are unchanged.
+  return {k:bar.get(k) for k in ("t","o","h","l","c","v","vw","n")}
  def on_completed_native_1m(self,symbol,bar,received_at=None):
-  h=self.history.setdefault(symbol,[]);h.append(bar);self.history[symbol]=h[-60:]
+  h=self.history.get(symbol)
+  if h is None:
+   h=deque(maxlen=60);self.history[symbol]=h
+  h.append(self._compact_bar(bar))
   bar_end=datetime.fromisoformat(str(bar["t"]).replace("Z","+00:00"))+timedelta(minutes=1)
   received_at=received_at or datetime.now(UTC)
   ts=max(bar_end,received_at)
-  x=phase2_features(self.history[symbol],bar_end)
+  x=phase2_features(h,bar_end)
   if x is None:return {"accepted":False,"base_ready":False}
   features,diag=x
   return {"accepted":True,"base_ready":diag["base_ready"],"features":features,"diagnostics":diag,"decision_available_ts":ts}
+ def release_symbol(self,symbol):
+  self.history.pop(symbol,None)
+ def buffered_bars(self):
+  return sum(len(v) for v in self.history.values())

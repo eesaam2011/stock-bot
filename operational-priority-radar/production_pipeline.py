@@ -24,6 +24,15 @@ class ProductionDecisionPipeline:
   # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
   # These caches mirror canonical Redis state and are refreshed after startup recovery.
   self._active_by_symbol={};self._entry_opportunities={}
+  # Structure-bar retention is only needed after a symbol has produced E or B.
+  # Keeping 20 bars for every market symbol duplicates the broad BASE_READY history.
+  self._structure_watch_symbols=set()
+ def memory_stats(self):
+  return {"structure_symbols":len(self.bars),
+          "structure_bars":sum(len(v) for v in self.bars.values()),
+          "base_ready_symbols":len(getattr(self.br,"history",{})),
+          "base_ready_bars":self.br.buffered_bars() if hasattr(self.br,"buffered_bars") else None,
+          "structure_watch_symbols":len(self._structure_watch_symbols)}
  def _get(self,key,typ=None):
   raw=self.r.get(key)
   if not raw:return None
@@ -53,26 +62,45 @@ class ProductionDecisionPipeline:
   opps={}
   for x in self._scan_records("operational_priority_radar:v1:opportunity:*","opportunity"):
    if x.get("session")==self.session and x.get("state")=="CONFLUENCE_VALID":opps[x["symbol"]]=x
-  self._active_by_symbol=active;self._entry_opportunities=opps
-  return {"active_trades":len(active),"entry_opportunities":len(opps)}
+  watches=set(active)|set(opps)
+  for typ,pat in (("early_core","operational_priority_radar:v1:early_core:*"),
+                  ("base_ready","operational_priority_radar:v1:base_ready:*")):
+   for x in self._scan_records(pat,typ):
+    if x.get("session")==self.session:watches.add(x["symbol"])
+  self._active_by_symbol=active;self._entry_opportunities=opps;self._structure_watch_symbols=watches
+  return {"active_trades":len(active),"entry_opportunities":len(opps),"structure_watch_symbols":len(watches)}
+ def _retain_structure_bar(self,symbol,bar,received_at):
+  # Structure risk needs only timestamp + low; keep a bounded compact record.
+  h=self.bars.setdefault(symbol,[])
+  h.append((bar.get("t"),bar.get("l"),received_at))
+  self.bars[symbol]=h[-self.max_bar_buffer:]
  def on_bar(self,symbol,bar,received_at,allow_decision):
-  h=self.bars.setdefault(symbol,[]);h.append((bar,received_at));self.bars[symbol]=h[-self.max_bar_buffer:]
-  if not allow_decision:return
+  if not allow_decision:
+   self._monitor_bar(symbol,bar,received_at);return
   out=self.br.on_completed_native_1m(symbol,bar,received_at)
-  if out.get("base_ready") and not self._get(key_base_ready(self.session,symbol)):
-   bs=dt(bar["t"]);be=bs+timedelta(minutes=1)
-   try:_b_key,b_record=self.bw.persist_first_b(self.session,symbol,bs,be,received_at,max(be,received_at),out["features"],out["diagnostics"])
-   except Exception:pass
-   else:
-    print({"stage":"SHADOW_FIRST_B","symbol":symbol,
-           "bar_end_ts":b_record.get("bar_end_ts"),
-           "decision_available_ts":b_record.get("decision_available_ts"),
-           "opportunity":b_record.get("features",{}).get("opportunity"),
-           "failure_pressure":b_record.get("features",{}).get("failure_pressure"),
-           "demand_efficiency":b_record.get("features",{}).get("demand_efficiency"),
-           "price_acceptance":b_record.get("features",{}).get("price_acceptance"),
-           "volume_acceleration":b_record.get("features",{}).get("volume_acceleration")},flush=True)
+  b_now=False
+  if out.get("base_ready"):
+   existing=self._get(key_base_ready(self.session,symbol))
+   if not existing:
+    bs=dt(bar["t"]);be=bs+timedelta(minutes=1)
+    try:_b_key,b_record=self.bw.persist_first_b(self.session,symbol,bs,be,received_at,max(be,received_at),out["features"],out["diagnostics"])
+    except Exception:pass
+    else:
+     b_now=True
+     print({"stage":"SHADOW_FIRST_B","symbol":symbol,
+            "bar_end_ts":b_record.get("bar_end_ts"),
+            "decision_available_ts":b_record.get("decision_available_ts"),
+            "opportunity":b_record.get("features",{}).get("opportunity"),
+            "failure_pressure":b_record.get("features",{}).get("failure_pressure"),
+            "demand_efficiency":b_record.get("features",{}).get("demand_efficiency"),
+            "price_acceptance":b_record.get("features",{}).get("price_acceptance"),
+            "volume_acceleration":b_record.get("features",{}).get("volume_acceleration")},flush=True)
+   if existing or b_now:
+    self._structure_watch_symbols.add(symbol)
+    # BASE_READY is first-event-only for the session; release its 60-bar discovery history.
+    if hasattr(self.br,"release_symbol"):self.br.release_symbol(symbol)
    self._confluence(symbol,received_at)
+  if symbol in self._structure_watch_symbols:self._retain_structure_bar(symbol,bar,received_at)
   self._monitor_bar(symbol,bar,received_at)
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
@@ -126,6 +154,7 @@ class ProductionDecisionPipeline:
      except Exception:pass
      else:
       stats["crossings"]+=1
+      self._structure_watch_symbols.add(symbol)
       print({"stage":"SHADOW_FIRST_E","symbol":symbol,
              "score":e_record.get("score"),
              "bar_end_ts":e_record.get("bar_end_ts"),
@@ -173,14 +202,15 @@ class ProductionDecisionPipeline:
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
   first=min(dt(e["decision_available_ts"]),dt(b["decision_available_ts"]))
   bars=[]
-  for bar,recv in self.bars.get(symbol,[]):
-   bs=dt(bar["t"]);bars.append(StructureBar(bs,bs+timedelta(minutes=1),float(bar["l"]),recv))
+  for bar_ts,bar_low,recv in self.bars.get(symbol,[]):
+   bs=dt(bar_ts);bars.append(StructureBar(bs,bs+timedelta(minutes=1),float(bar_low),recv))
   risk=evaluate_structural_risk(ed.entry_alert_price,first,trigger,bars)
   if risk.status!=RiskStatus.APPROVED:return
   new,trade,out=EntryCommitBuilder(self.leadership).build(opp,risk,ed.entry_alert_price,now)
   new,trade,out=stamp(new),stamp(trade),stamp(out)
   self.lua.atomic_entry(self.worker_id,key_opportunity(self.session,symbol),canonical_json(opp),canonical_json(new),key_trade(trade["trade_id"]),canonical_json(trade),f"operational_priority_radar:v1:outbox:{out['event_id']}",canonical_json(out))
-  self._entry_opportunities.pop(symbol,None);self.trades.pop(symbol,None);self._active_by_symbol[symbol]=trade
+  self._entry_opportunities.pop(symbol,None);self.trades.pop(symbol,None);self.bars.pop(symbol,None)
+  self._structure_watch_symbols.discard(symbol);self._active_by_symbol[symbol]=trade
  def _active(self,symbol):
   # Hot path: canonical active state is mirrored in memory after recovery/atomic commits.
   return self._active_by_symbol.get(symbol)
