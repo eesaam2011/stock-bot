@@ -76,7 +76,7 @@ class ProductionDecisionPipeline:
   self._monitor_bar(symbol,bar,received_at)
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
-  stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"scoreable_symbols":0,"scoreable_bars":0,"near_threshold":0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"crossings":0,"batch_size":int(batch_size)}
+  stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"batch_size":int(batch_size)}
   if not allow_decision:return stats
   # One Redis round-trip per chunk instead of one GET per symbol. This is transport/runtime
   # optimization only; it does not change Early Core eligibility or event semantics.
@@ -93,7 +93,12 @@ class ProductionDecisionPipeline:
    pending=[s for s in self.symbols if not self._get(key_early_core(self.session,s))]
   stats["eligible_symbols"]=len(pending)
   if not pending:return stats
-  start=now-timedelta(minutes=60)
+  # STEP16X correctness fix: the frozen model has anchors out to 240m and
+  # ret_60m at that anchor requires 13 native 5m closes. A 60m fetch can never
+  # make the frozen model scoreable. Derive the exact minimum from the artifact.
+  history_minutes=int(self.ec.required_history_minutes())
+  stats["required_history_minutes"]=history_minutes
+  start=now-timedelta(minutes=history_minutes)
   # Memory-safe streaming: never materialize native 5m rows for the full universe at once.
   # Each REST request remains native Alpaca 5Min and uses the frozen engineering batch size.
   for i in range(0,len(pending),batch_size):
@@ -106,9 +111,12 @@ class ProductionDecisionPipeline:
      stats["evaluated_symbols"]+=1
      tele=self.ec.telemetry(rows)
      stats["scoreable_bars"]+=int(tele.get("scoreable_bars") or 0)
+     stats["unscoreable_bars"]+=int(tele.get("unscoreable_bars") or 0)
+     stats["max_observed_weight"]=max(float(stats["max_observed_weight"] or 0.0),float(tele.get("max_observed_weight") or 0.0))
      if tele.get("scoreable_bars"):stats["scoreable_symbols"]+=1
      if tele.get("near_threshold"):stats["near_threshold"]+=1
      stats["threshold"]=tele.get("threshold")
+     stats["required_history_minutes"]=tele.get("required_history_minutes")
      sc=tele.get("max_score")
      if sc is not None and (stats["max_score"] is None or sc>stats["max_score"]):
       stats["max_score"]=sc;stats["max_score_symbol"]=symbol;stats["gap_to_threshold"]=tele.get("gap_to_threshold")

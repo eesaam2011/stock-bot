@@ -19,21 +19,34 @@ class OperationalEarlyCore:
   class P:
    def fetch_native_5min(self,*a):return rows
   return FrozenEarlyCoreEngine(P()).first_crossing(symbol,received_at.date().isoformat(),start,end,received_at)
+ def required_history_minutes(self):
+  # Frozen Early Core contains anchors as far back as 240m. Its deepest return
+  # feature (ret_60m) needs 13 native 5m closes before that cutoff.
+  max_anchor=max(int(d["anchor_minutes"]) for d in ARTIFACT["definitions"])
+  return max_anchor + 13*5
+
  def telemetry(self,rows):
   # Observability only: never changes crossing, threshold, persistence, or alert decisions.
-  threshold=float(ARTIFACT["threshold"]);scores=[]
+  threshold=float(ARTIFACT["threshold"]);scores=[];max_den=0.0;score_attempts=0
   for r in rows or []:
    try:
     ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"))
     ev=ts+timedelta(minutes=5)
-    sc,_den=ctr_score_at(rows,ev)
+    sc,den=ctr_score_at(rows,ev)
+    score_attempts+=1
+    max_den=max(max_den,float(den or 0.0))
     if sc is not None:scores.append(float(sc))
    except Exception:continue
   max_score=max(scores) if scores else None
-  return {"scoreable_bars":len(scores),"max_score":max_score,
+  return {"score_attempts":score_attempts,
+          "scoreable_bars":len(scores),
+          "unscoreable_bars":max(0,score_attempts-len(scores)),
+          "max_observed_weight":max_den,
+          "max_score":max_score,
           "gap_to_threshold":None if max_score is None else threshold-max_score,
           "near_threshold":bool(max_score is not None and max_score>=threshold*0.90),
-          "threshold":threshold}
+          "threshold":threshold,
+          "required_history_minutes":self.required_history_minutes()}
 
 class OperationalBaseReady:
  def __init__(self):self.history={}
