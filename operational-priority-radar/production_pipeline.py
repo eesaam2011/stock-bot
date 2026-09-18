@@ -104,7 +104,7 @@ class ProductionDecisionPipeline:
   self._monitor_bar(symbol,bar,received_at)
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
-  stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"eligible_rows":0,"invalid_close_bars":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"eligible_above_threshold":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"batch_size":int(batch_size)}
+  stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"eligible_rows":0,"invalid_close_bars":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"eligible_above_threshold":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"early_core_crossings_detected":0,"early_core_persisted":0,"early_core_persist_errors":0,"early_core_first_persist_error":None,"batch_size":int(batch_size)}
   if not allow_decision:return stats
   # One Redis round-trip per chunk instead of one GET per symbol. This is transport/runtime
   # optimization only; it does not change Early Core eligibility or event semantics.
@@ -153,10 +153,20 @@ class ProductionDecisionPipeline:
       stats["max_score"]=sc;stats["max_score_symbol"]=symbol;stats["gap_to_threshold"]=tele.get("gap_to_threshold")
     crossing=self.ec.evaluate(symbol,rows,now)
     if crossing:
-     try:_e_key,e_record=self.ew.persist_first_e(crossing)
-     except Exception:pass
+     # STEP16Z observability only: distinguish detection from canonical E persistence.
+     # No Early Core threshold, crossing rule, state semantics, or alert policy changes.
+     stats["early_core_crossings_detected"]+=1
+     try:
+      _e_key,e_record=self.ew.persist_first_e(crossing)
+     except Exception as exc:
+      stats["early_core_persist_errors"]+=1
+      if stats["early_core_first_persist_error"] is None:
+       stats["early_core_first_persist_error"]={"type":type(exc).__name__,"message":str(exc)[:300],"symbol":symbol}
+      print({"stage":"SHADOW_E_PERSIST_ERROR","symbol":symbol,
+             "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
      else:
       stats["crossings"]+=1
+      stats["early_core_persisted"]+=1
       self._structure_watch_symbols.add(symbol)
       print({"stage":"SHADOW_FIRST_E","symbol":symbol,
              "score":e_record.get("score"),
