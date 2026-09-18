@@ -91,15 +91,30 @@ class ProductionStartupRecovery:
     anchor=min(anchors,default=now-timedelta(minutes=60))
    start=anchor-timedelta(seconds=self.overlap_seconds)
    if hasattr(self.rest,"native_recovery_batch"):
-    r1,r5=self.rest.native_recovery_batch(self.symbols,start,now)
-    for sym in self.symbols:
-     self.recovered_1m[sym]=self._dedup(r1.get(sym,[]))
-     self.recovered_5m[sym]=self._dedup(r5.get(sym,[]))
+    # Memory-safe startup recovery: process the broad universe in bounded chunks.
+    batch_size=200
+    total=len(self.symbols)
+    for offset in range(0,total,batch_size):
+     batch=self.symbols[offset:offset+batch_size]
+     r1,r5=self.rest.native_recovery_batch(batch,start,now,batch_size=batch_size,max_workers=2)
+     for sym in batch:
+      rows1=self._dedup(r1.get(sym,[]))
+      rows5=self._dedup(r5.get(sym,[]))
+      if rows1:self.recovered_1m[sym]=rows1[-60:]
+      if rows5:self.recovered_5m[sym]=rows5[-61:]
+     del r1,r5
+     print({"stage":"STARTUP_RECOVERY_BATCH",
+            "processed":min(offset+len(batch),total),"total":total,
+            "batch_size":len(batch),
+            "recovered_1m_symbols":len(self.recovered_1m),
+            "recovered_5m_symbols":len(self.recovered_5m)},flush=True)
    else:
     # Deterministic adapter/test compatibility; production AlpacaREST always uses batch path.
     for sym in self.symbols:
-     self.recovered_1m[sym]=self._dedup(self.rest.native_1m_gap(sym,start,now))
-     self.recovered_5m[sym]=self._dedup(self.rest.native_5m(sym,start,now))
+     rows1=self._dedup(self.rest.native_1m_gap(sym,start,now))
+     rows5=self._dedup(self.rest.native_5m(sym,start,now))
+     if rows1:self.recovered_1m[sym]=rows1[-60:]
+     if rows5:self.recovered_5m[sym]=rows5[-61:]
    self._base_reconciled=True
    result={"gap_recovered":True,"reconciled":not bool(self.pending_halted)}
    if self.pending_halted:result["pending_halt_status"]=sorted(self.pending_halted)
