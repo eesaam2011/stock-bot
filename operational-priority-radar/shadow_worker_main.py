@@ -44,18 +44,13 @@ class ShadowRuntimeSupervisor:
             if hasattr(self,"decision_pipeline"):
                 from datetime import datetime,timezone
                 # REST is synchronous: keep it off the asyncio event loop so SIP/leadership/telemetry remain responsive.
-                try:
-                    self.native5_last_stats = await asyncio.to_thread(
-                        self.decision_pipeline.poll_native5,
-                        datetime.now(timezone.utc),
-                        self.orchestrator.new_decisions_allowed(),
-                        500, 4
-                    )
-                except Exception as exc:
-                    self.native5_last_stats={"error":f"{type(exc).__name__}:{exc}"}
-                    print({"stage":"NATIVE5_CYCLE_ERROR","error":self.native5_last_stats["error"]},flush=True)
-                else:
-                    self.native5_cycles += 1
+                self.native5_last_stats = await asyncio.to_thread(
+                    self.decision_pipeline.poll_native5,
+                    datetime.now(timezone.utc),
+                    self.orchestrator.new_decisions_allowed(),
+                    500, 4
+                )
+                self.native5_cycles += 1
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=5.0)
             except asyncio.TimeoutError: pass
 
@@ -74,32 +69,40 @@ class ShadowRuntimeSupervisor:
                 bars=sum(len(v) for v in p.bars.values())
                 trades=sum(len(v) for v in p.trades.values())
                 try:
-                    e,b,opp=await asyncio.gather(
-                        asyncio.to_thread(self._redis_count,"operational_priority_radar:v1:early_core:*"),
-                        asyncio.to_thread(self._redis_count,"operational_priority_radar:v1:base_ready:*"),
-                        asyncio.to_thread(self._redis_count,"operational_priority_radar:v1:opportunity:*")
-                    )
+                    session=str(p.session)
+                    e_total=self._redis_count("operational_priority_radar:v1:early_core:*")
+                    b_total=self._redis_count("operational_priority_radar:v1:base_ready:*")
+                    opp_total=self._redis_count("operational_priority_radar:v1:opportunity:*")
+                    e_session=self._redis_count(f"operational_priority_radar:v1:early_core:{session}:*")
+                    b_session=self._redis_count(f"operational_priority_radar:v1:base_ready:{session}:*")
+                    opp_session=self._redis_count(f"operational_priority_radar:v1:opportunity:{session}:*")
                 except Exception as exc:
-                    e=b=opp=None
+                    e_total=b_total=opp_total=None
+                    e_session=b_session=opp_session=None
+                    session=getattr(p,"session",None)
                     redis_error=type(exc).__name__
                 else:
                     redis_error=None
                 print({"stage":"LIVE_DATA_FLOW_HEARTBEAT",
                        "trust_state":getattr(self.orchestrator.trust.state,"value",str(self.orchestrator.trust.state)),
-                       "buffered_1m_bars":bars,"raw_trade_messages_received":getattr(p,"raw_trade_messages_received",0),"buffered_trades":trades,
+                       "buffered_1m_bars":bars,"buffered_trades":trades,
                        "native5_cycles":self.native5_cycles,
                        "native5_batch_size":500,
                        "native5_last":self.native5_last_stats,
-                       "sip_subscription":getattr(self.websocket_runtime,"subscription_stats",{}),
-                       "sip_last_error":getattr(self.websocket_runtime,"last_error",None),
-                       "early_core_events":e,"base_ready_events":b,
-                       "opportunities":opp,"redis_error":redis_error},flush=True)
+                       "operational_session":session,
+                       "early_core_events_session":e_session,
+                       "base_ready_events_session":b_session,
+                       "opportunities_session":opp_session,
+                       "early_core_events_total":e_total,
+                       "base_ready_events_total":b_total,
+                       "opportunities_total":opp_total,
+                       "redis_error":redis_error},flush=True)
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=60.0)
             except asyncio.TimeoutError: pass
 
     async def leadership_loop(self):
         while not self.stop_event.is_set():
-            await asyncio.to_thread(self.orchestrator.redis.renew,self.orchestrator.worker_id,30)
+            self.orchestrator.redis.renew(self.orchestrator.worker_id,30)
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=10.0)
             except asyncio.TimeoutError: pass
 
@@ -118,10 +121,6 @@ class ShadowRuntimeSupervisor:
         print({"stage":"STARTUP_RECOVERY_RETURNED",
                "reconciled": recovery_result.get("reconciled",False)
                    if isinstance(recovery_result,dict) else None}, flush=True)
-
-        if hasattr(self,"decision_pipeline") and hasattr(self.decision_pipeline,"refresh_runtime_caches"):
-            cache_stats=await asyncio.to_thread(self.decision_pipeline.refresh_runtime_caches)
-            print({"stage":"RUNTIME_HOT_CACHE_READY",**cache_stats},flush=True)
 
         print({"stage":"SIP_WEBSOCKET_TASK_START",
                "symbols_count":len(self.symbols)}, flush=True)
@@ -144,8 +143,6 @@ class ShadowRuntimeSupervisor:
             await asyncio.gather(ws_task, return_exceptions=True)
             raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT")
 
-        print({"stage":"SIP_SUBSCRIPTION_VERIFIED",
-               "subscription":getattr(self.websocket_runtime,"subscription_stats",{})}, flush=True)
         print({"stage":"SIP_CONNECTED_NOT_YET_TRUSTED"}, flush=True)
         self.orchestrator.mark_stream_connected()
         recovery=self.orchestrator.c.recovery
@@ -159,32 +156,19 @@ class ShadowRuntimeSupervisor:
             trust_state = self.orchestrator.finish_reconciliation(continuity_ok=True)
             print({"stage":"SIP_LIVE_TRUSTED",
                    "trust_state": getattr(trust_state, "value", str(trust_state))}, flush=True)
-        task_map={
-            ws_task:"websocket",
-            asyncio.create_task(self.outbox_loop()):"outbox",
-            asyncio.create_task(self.native5_loop()):"native5",
-            asyncio.create_task(self.leadership_loop()):"leadership",
-            asyncio.create_task(self.telemetry_loop()):"telemetry",
-        }
-        stop_wait=asyncio.create_task(self.stop_event.wait())
-        tasks=list(task_map)
-        try:
-            done,_=await asyncio.wait([stop_wait,*tasks],return_when=asyncio.FIRST_COMPLETED)
-            unexpected=[t for t in done if t is not stop_wait]
-            if unexpected and not self.stop_event.is_set():
-                t=unexpected[0];name=task_map[t]
-                try:exc=t.exception()
-                except asyncio.CancelledError:exc=None
-                print({"stage":"RUNTIME_TASK_TERMINATED","task":name,
-                       "error":None if exc is None else f"{type(exc).__name__}:{exc}",
-                       "new_entries_allowed":False},flush=True)
-                self.orchestrator.on_disconnect()
-                raise RuntimeError(f"CRITICAL_RUNTIME_TASK_TERMINATED:{name}") from exc
-        finally:
-            self.drain.begin();self.websocket_runtime.stop();stop_wait.cancel()
-            for t in tasks:t.cancel()
-            await asyncio.gather(stop_wait,*tasks,return_exceptions=True)
-            self.drain.complete()
+        tasks=[
+            ws_task,
+            asyncio.create_task(self.outbox_loop()),
+            asyncio.create_task(self.native5_loop()),
+            asyncio.create_task(self.leadership_loop()),
+            asyncio.create_task(self.telemetry_loop()),
+        ]
+        await self.stop_event.wait()
+        self.drain.begin()
+        self.websocket_runtime.stop()
+        for t in tasks:t.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+        self.drain.complete()
 
     def request_stop(self):
         self.stop_event.set()
