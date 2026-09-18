@@ -27,21 +27,36 @@ class OperationalEarlyCore:
   return max_anchor + 13*5
 
  def telemetry(self,rows):
-  # Observability only: never changes crossing, threshold, persistence, or alert decisions.
+  # Observability only: mirror first_crossing row eligibility (parseable ts + c>0).
+  # This never changes crossing, threshold, persistence, or alert decisions.
   threshold=float(ARTIFACT["threshold"]);scores=[];max_den=0.0;score_attempts=0
+  invalid_close_bars=0;eligible_above_threshold=0
   for r in rows or []:
    try:
     ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"))
+    c=float(r.get("c"))
+   except Exception:
+    invalid_close_bars+=1
+    continue
+   if c<=0:
+    invalid_close_bars+=1
+    continue
+   try:
     ev=ts+timedelta(minutes=5)
     sc,den=ctr_score_at(rows,ev)
     score_attempts+=1
     max_den=max(max_den,float(den or 0.0))
-    if sc is not None:scores.append(float(sc))
+    if sc is not None:
+     score=float(sc);scores.append(score)
+     if score>=threshold:eligible_above_threshold+=1
    except Exception:continue
   max_score=max(scores) if scores else None
   return {"score_attempts":score_attempts,
+          "eligible_rows":score_attempts,
+          "invalid_close_bars":invalid_close_bars,
           "scoreable_bars":len(scores),
           "unscoreable_bars":max(0,score_attempts-len(scores)),
+          "eligible_above_threshold":eligible_above_threshold,
           "max_observed_weight":max_den,
           "max_score":max_score,
           "gap_to_threshold":None if max_score is None else threshold-max_score,

@@ -104,7 +104,7 @@ class ProductionDecisionPipeline:
   self._monitor_bar(symbol,bar,received_at)
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
-  stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"batch_size":int(batch_size)}
+  stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"eligible_rows":0,"invalid_close_bars":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"eligible_above_threshold":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"batch_size":int(batch_size)}
   if not allow_decision:return stats
   # One Redis round-trip per chunk instead of one GET per symbol. This is transport/runtime
   # optimization only; it does not change Early Core eligibility or event semantics.
@@ -138,8 +138,11 @@ class ProductionDecisionPipeline:
     if rows:
      stats["evaluated_symbols"]+=1
      tele=self.ec.telemetry(rows)
+     stats["eligible_rows"]+=int(tele.get("eligible_rows") or 0)
+     stats["invalid_close_bars"]+=int(tele.get("invalid_close_bars") or 0)
      stats["scoreable_bars"]+=int(tele.get("scoreable_bars") or 0)
      stats["unscoreable_bars"]+=int(tele.get("unscoreable_bars") or 0)
+     stats["eligible_above_threshold"]+=int(tele.get("eligible_above_threshold") or 0)
      stats["max_observed_weight"]=max(float(stats["max_observed_weight"] or 0.0),float(tele.get("max_observed_weight") or 0.0))
      if tele.get("scoreable_bars"):stats["scoreable_symbols"]+=1
      if tele.get("near_threshold"):stats["near_threshold"]+=1
