@@ -91,30 +91,34 @@ class ProductionStartupRecovery:
     anchor=min(anchors,default=now-timedelta(minutes=60))
    start=anchor-timedelta(seconds=self.overlap_seconds)
    if hasattr(self.rest,"native_recovery_batch"):
-    # Memory-safe startup recovery: process the broad universe in bounded chunks.
+    # Memory-safe streaming startup recovery: fetch bounded chunks, prove
+    # coverage, then discard market rows. Do not build a universe history cache.
     batch_size=200
     total=len(self.symbols)
+    recovered_1m_count=0
+    recovered_5m_count=0
     for offset in range(0,total,batch_size):
      batch=self.symbols[offset:offset+batch_size]
      r1,r5=self.rest.native_recovery_batch(batch,start,now,batch_size=batch_size,max_workers=2)
-     for sym in batch:
-      rows1=self._dedup(r1.get(sym,[]))
-      rows5=self._dedup(r5.get(sym,[]))
-      if rows1:self.recovered_1m[sym]=rows1[-60:]
-      if rows5:self.recovered_5m[sym]=rows5[-61:]
+     batch_1m_symbols=sum(1 for sym in batch if r1.get(sym))
+     batch_5m_symbols=sum(1 for sym in batch if r5.get(sym))
+     recovered_1m_count += batch_1m_symbols
+     recovered_5m_count += batch_5m_symbols
      del r1,r5
      print({"stage":"STARTUP_RECOVERY_BATCH",
             "processed":min(offset+len(batch),total),"total":total,
             "batch_size":len(batch),
-            "recovered_1m_symbols":len(self.recovered_1m),
-            "recovered_5m_symbols":len(self.recovered_5m)},flush=True)
+            "batch_1m_symbols":batch_1m_symbols,
+            "batch_5m_symbols":batch_5m_symbols,
+            "recovered_1m_symbols":recovered_1m_count,
+            "recovered_5m_symbols":recovered_5m_count,
+            "retained_recovery_bars":0},flush=True)
    else:
-    # Deterministic adapter/test compatibility; production AlpacaREST always uses batch path.
+    # Deterministic adapter/test compatibility; keep rows ephemeral here too.
     for sym in self.symbols:
      rows1=self._dedup(self.rest.native_1m_gap(sym,start,now))
      rows5=self._dedup(self.rest.native_5m(sym,start,now))
-     if rows1:self.recovered_1m[sym]=rows1[-60:]
-     if rows5:self.recovered_5m[sym]=rows5[-61:]
+     del rows1,rows5
    self._base_reconciled=True
    result={"gap_recovered":True,"reconciled":not bool(self.pending_halted)}
    if self.pending_halted:result["pending_halt_status"]=sorted(self.pending_halted)
