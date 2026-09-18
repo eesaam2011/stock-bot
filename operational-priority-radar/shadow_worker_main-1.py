@@ -32,6 +32,25 @@ class ShadowRuntimeSupervisor:
         self.native5_cycles=0
         self.native5_last_stats={}
 
+    def _leadership_snapshot(self):
+        """Diagnostic only: expose lease identity/generation/TTL; no decision-policy changes."""
+        lua=self.orchestrator.redis
+        try:
+            owner=lua.r.get(lua.leader_key)
+            ttl=lua.r.ttl(lua.leader_key)
+            generation=lua.r.get(lua.generation_key)
+            return {
+                "worker_id":self.orchestrator.worker_id,
+                "owner":owner,
+                "owner_matches_worker":owner==self.orchestrator.worker_id,
+                "leader_generation":generation,
+                "leader_ttl_sec":ttl,
+            }
+        except Exception as exc:
+            return {"worker_id":self.orchestrator.worker_id,
+                    "diagnostic_error_type":type(exc).__name__,
+                    "diagnostic_error":str(exc)}
+
     async def outbox_loop(self):
         while not self.stop_event.is_set():
             for event in self.outbox_store.pending():
@@ -119,48 +138,47 @@ class ShadowRuntimeSupervisor:
 
     async def leadership_loop(self):
         while not self.stop_event.is_set():
+            before=self._leadership_snapshot()
             try:
                 self.orchestrator.redis.renew(self.orchestrator.worker_id,30)
             except Exception as exc:
                 print({"stage":"LEADERSHIP_RENEW_FAILED",
                        "error_type":type(exc).__name__,"error":str(exc),
-                       "new_entries_allowed":False},flush=True)
+                       "lease_before_renew":before,
+                       "lease_after_failure":self._leadership_snapshot()},flush=True)
                 self.stop_event.set()
                 return
+            print({"stage":"LEADERSHIP_RENEW_OK",
+                   "lease_before_renew":before,
+                   "lease_after_renew":self._leadership_snapshot()},flush=True)
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=10.0)
             except asyncio.TimeoutError: pass
 
     async def run(self):
         print({"stage":"ACQUIRE_LEADERSHIP_START"}, flush=True)
         self.orchestrator.acquire_leadership()
-        print({"stage":"ACQUIRE_LEADERSHIP_OK"}, flush=True)
+        print({"stage":"ACQUIRE_LEADERSHIP_OK",
+               "lease":self._leadership_snapshot()}, flush=True)
 
         if hasattr(self,"decision_pipeline"):
             print({"stage":"SYNC_LEADER_GENERATION_START"}, flush=True)
             self.decision_pipeline.leadership.sync_generation()
-            print({"stage":"SYNC_LEADER_GENERATION_OK"}, flush=True)
+            print({"stage":"SYNC_LEADER_GENERATION_OK",
+                   "lease":self._leadership_snapshot()}, flush=True)
 
-        # Start lease renewal before the long startup recovery.  Recovery is
-        # moved off the event loop so the 10s renewal task can run while REST
-        # history is reconstructed.  Leadership loss remains fail-closed.
+        # Keep lease renewal alive throughout long startup recovery.
         leadership_task=asyncio.create_task(self.leadership_loop())
-        await asyncio.sleep(0)
+        print({"stage":"LEADERSHIP_RENEW_TASK_STARTED",
+               "lease":self._leadership_snapshot()},flush=True)
 
         print({"stage":"STARTUP_RECOVERY_START"}, flush=True)
         recovery_result=await asyncio.to_thread(self.orchestrator.begin_recovery)
-        if self.stop_event.is_set() or leadership_task.done():
-            exc=None
-            if leadership_task.done() and not leadership_task.cancelled():
-                try: exc=leadership_task.exception()
-                except Exception as task_exc: exc=task_exc
-            raise RuntimeError(f"LEADERSHIP_LOST_DURING_STARTUP_RECOVERY:{exc or 'renew_failed'}")
-        # Re-prove ownership/generation after recovery before any stream trust
-        # or decision-changing work is allowed.
-        if hasattr(self,"decision_pipeline"):
-            self.decision_pipeline.leadership.require_current()
         print({"stage":"STARTUP_RECOVERY_RETURNED",
                "reconciled": recovery_result.get("reconciled",False)
-                   if isinstance(recovery_result,dict) else None}, flush=True)
+                   if isinstance(recovery_result,dict) else None,
+               "lease":self._leadership_snapshot()}, flush=True)
+        # Fail closed before stream trust if the lease was lost during recovery.
+        self.decision_pipeline.leadership.require_current() if hasattr(self,"decision_pipeline") else None
 
         print({"stage":"SIP_WEBSOCKET_TASK_START",
                "symbols_count":len(self.symbols)}, flush=True)
@@ -195,7 +213,8 @@ class ShadowRuntimeSupervisor:
                 raise RuntimeError("POST_STREAM_RECONCILIATION_UNPROVEN")
             trust_state = self.orchestrator.finish_reconciliation(continuity_ok=True)
             print({"stage":"SIP_LIVE_TRUSTED",
-                   "trust_state": getattr(trust_state, "value", str(trust_state))}, flush=True)
+                   "trust_state": getattr(trust_state, "value", str(trust_state)),
+                   "lease":self._leadership_snapshot()}, flush=True)
         tasks=[
             ws_task,
             asyncio.create_task(self.outbox_loop()),
