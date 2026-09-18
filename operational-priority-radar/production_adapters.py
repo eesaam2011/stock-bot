@@ -1,5 +1,7 @@
 from datetime import datetime,timedelta,timezone
 from early_core_engine import FrozenEarlyCoreEngine
+from early_core_features import ctr_score_at
+from early_core_score import ARTIFACT
 from base_ready import phase2_features
 UTC=timezone.utc
 
@@ -17,6 +19,21 @@ class OperationalEarlyCore:
   class P:
    def fetch_native_5min(self,*a):return rows
   return FrozenEarlyCoreEngine(P()).first_crossing(symbol,received_at.date().isoformat(),start,end,received_at)
+ def telemetry(self,rows):
+  # Observability only: never changes crossing, threshold, persistence, or alert decisions.
+  threshold=float(ARTIFACT["threshold"]);scores=[]
+  for r in rows or []:
+   try:
+    ts=datetime.fromisoformat(str(r.get("t") or "").replace("Z","+00:00"))
+    ev=ts+timedelta(minutes=5)
+    sc,_den=ctr_score_at(rows,ev)
+    if sc is not None:scores.append(float(sc))
+   except Exception:continue
+  max_score=max(scores) if scores else None
+  return {"scoreable_bars":len(scores),"max_score":max_score,
+          "gap_to_threshold":None if max_score is None else threshold-max_score,
+          "near_threshold":bool(max_score is not None and max_score>=threshold*0.90),
+          "threshold":threshold}
 
 class OperationalBaseReady:
  def __init__(self):self.history={}

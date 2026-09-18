@@ -76,7 +76,7 @@ class ProductionDecisionPipeline:
   self._monitor_bar(symbol,bar,received_at)
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
-  stats={"eligible_symbols":0,"symbols_with_rows":0,"crossings":0,"batch_size":int(batch_size)}
+  stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"scoreable_symbols":0,"scoreable_bars":0,"near_threshold":0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"crossings":0,"batch_size":int(batch_size)}
   if not allow_decision:return stats
   # One Redis round-trip per chunk instead of one GET per symbol. This is transport/runtime
   # optimization only; it does not change Early Core eligibility or event semantics.
@@ -102,6 +102,16 @@ class ProductionDecisionPipeline:
    for symbol in chunk:
     rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
     if rows:stats["symbols_with_rows"]+=1
+    if rows:
+     stats["evaluated_symbols"]+=1
+     tele=self.ec.telemetry(rows)
+     stats["scoreable_bars"]+=int(tele.get("scoreable_bars") or 0)
+     if tele.get("scoreable_bars"):stats["scoreable_symbols"]+=1
+     if tele.get("near_threshold"):stats["near_threshold"]+=1
+     stats["threshold"]=tele.get("threshold")
+     sc=tele.get("max_score")
+     if sc is not None and (stats["max_score"] is None or sc>stats["max_score"]):
+      stats["max_score"]=sc;stats["max_score_symbol"]=symbol;stats["gap_to_threshold"]=tele.get("gap_to_threshold")
     crossing=self.ec.evaluate(symbol,rows,now)
     if crossing:
      try:_e_key,e_record=self.ew.persist_first_e(crossing)
