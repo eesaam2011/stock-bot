@@ -65,12 +65,17 @@ class OperationalEarlyCore:
           "required_history_minutes":self.required_history_minutes()}
 
 class OperationalBaseReady:
+ _BAR_KEYS=("t","o","h","l","c","v","vw","n")
  def __init__(self):self.history={}
- @staticmethod
- def _compact_bar(bar):
-  # Keep only fields consumed by frozen BASE_READY feature code.
-  # This is representation-only memory safety; feature values are unchanged.
-  return {k:bar.get(k) for k in ("t","o","h","l","c","v","vw","n")}
+ @classmethod
+ def _compact_bar(cls,bar):
+  # Representation-only memory optimization: store each bar as a fixed tuple.
+  # phase2_features() remains untouched and still receives the exact dict shape it expects.
+  return tuple(bar.get(k) for k in cls._BAR_KEYS)
+ @classmethod
+ def _materialize_history(cls,history):
+  # Thin compatibility boundary. Dicts exist only for the duration of feature evaluation.
+  return [dict(zip(cls._BAR_KEYS,row)) for row in history]
  def on_completed_native_1m(self,symbol,bar,received_at=None):
   h=self.history.get(symbol)
   if h is None:
@@ -79,7 +84,7 @@ class OperationalBaseReady:
   bar_end=datetime.fromisoformat(str(bar["t"]).replace("Z","+00:00"))+timedelta(minutes=1)
   received_at=received_at or datetime.now(UTC)
   ts=max(bar_end,received_at)
-  x=phase2_features(h,bar_end)
+  x=phase2_features(self._materialize_history(h),bar_end)
   if x is None:return {"accepted":False,"base_ready":False}
   features,diag=x
   return {"accepted":True,"base_ready":diag["base_ready"],"features":features,"diagnostics":diag,"decision_available_ts":ts}
