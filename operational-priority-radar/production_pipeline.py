@@ -1,5 +1,6 @@
 from runtime_provenance import stamp
 from datetime import datetime,timedelta,timezone
+import gc,os,time
 from state_store import CanonicalStateStore,key_early_core,key_base_ready,key_opportunity,key_trade,canonical_json,base_record,validate_record
 from early_core_state import EarlyCoreStateWriter
 from base_ready_state import BaseReadyStateWriter
@@ -27,12 +28,40 @@ class ProductionDecisionPipeline:
   # Structure-bar retention is only needed after a symbol has produced E or B.
   # Keeping 20 bars for every market symbol duplicates the broad BASE_READY history.
   self._structure_watch_symbols=set()
+ def _current_rss_bytes(self):
+  # Linux/Render current resident set size. Diagnostic only; never affects decisions.
+  try:
+   with open("/proc/self/status","r",encoding="utf-8") as f:
+    for line in f:
+     if line.startswith("VmRSS:"):
+      return int(line.split()[1])*1024
+  except Exception:
+   pass
+  return None
+ def _peak_rss_bytes(self):
+  # ru_maxrss is KiB on Linux. High-water mark only; diagnostic telemetry.
+  try:
+   import resource
+   return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)*1024
+  except Exception:
+   return None
+ def _memory_probe(self,stage,**extra):
+  x={"stage":"SHADOW_MEMORY_PROBE","memory_stage":stage,
+     "rss_bytes":self._current_rss_bytes(),"peak_rss_bytes":self._peak_rss_bytes(),
+     "structure_symbols":len(self.bars),
+     "structure_bars":sum(len(v) for v in self.bars.values()),
+     "base_ready_symbols":len(getattr(self.br,"history",{})),
+     "base_ready_bars":self.br.buffered_bars() if hasattr(self.br,"buffered_bars") else None,
+     "structure_watch_symbols":len(self._structure_watch_symbols)}
+  x.update(extra);print(x,flush=True);return x
  def memory_stats(self):
   return {"structure_symbols":len(self.bars),
           "structure_bars":sum(len(v) for v in self.bars.values()),
           "base_ready_symbols":len(getattr(self.br,"history",{})),
           "base_ready_bars":self.br.buffered_bars() if hasattr(self.br,"buffered_bars") else None,
-          "structure_watch_symbols":len(self._structure_watch_symbols)}
+          "structure_watch_symbols":len(self._structure_watch_symbols),
+          "rss_bytes":self._current_rss_bytes(),
+          "peak_rss_bytes":self._peak_rss_bytes()}
  def _get(self,key,typ=None):
   raw=self.r.get(key)
   if not raw:return None
@@ -127,11 +156,20 @@ class ProductionDecisionPipeline:
   history_minutes=int(self.ec.required_history_minutes())
   stats["required_history_minutes"]=history_minutes
   start=now-timedelta(minutes=history_minutes)
+  cycle_t0=time.monotonic()
+  self._memory_probe("native5_cycle_before",eligible_symbols=len(pending),batch_size=int(batch_size),max_workers=int(max_workers))
   # Memory-safe streaming: never materialize native 5m rows for the full universe at once.
   # Each REST request remains native Alpaca 5Min and uses the frozen engineering batch size.
   for i in range(0,len(pending),batch_size):
    chunk=pending[i:i+batch_size]
+   batch_no=(i//batch_size)+1
+   batch_t0=time.monotonic()
+   self._memory_probe("native5_before_bars_multi",batch_no=batch_no,chunk_symbols=len(chunk))
    rows_by_symbol=self.rest.bars_multi(chunk,start,now,"5Min",batch_size=batch_size,max_workers=max_workers)
+   fetch_seconds=round(time.monotonic()-batch_t0,3)
+   fetched_rows=sum(len(v or []) for v in rows_by_symbol.values())
+   self._memory_probe("native5_after_bars_multi",batch_no=batch_no,chunk_symbols=len(chunk),fetched_rows=fetched_rows,fetch_seconds=fetch_seconds)
+   process_t0=time.monotonic()
    for symbol in chunk:
     rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
     if rows:stats["symbols_with_rows"]+=1
@@ -173,7 +211,14 @@ class ProductionDecisionPipeline:
              "bar_end_ts":e_record.get("bar_end_ts"),
              "decision_available_ts":e_record.get("decision_available_ts")},flush=True)
      self._confluence(symbol,now)
+   process_seconds=round(time.monotonic()-process_t0,3)
+   self._memory_probe("native5_after_processing",batch_no=batch_no,chunk_symbols=len(chunk),fetched_rows=fetched_rows,process_seconds=process_seconds)
    del rows_by_symbol
+   self._memory_probe("native5_after_del",batch_no=batch_no)
+   gc.collect()
+   self._memory_probe("native5_after_gc",batch_no=batch_no)
+  stats["cycle_seconds"]=round(time.monotonic()-cycle_t0,3)
+  self._memory_probe("native5_cycle_after",cycle_seconds=stats["cycle_seconds"],eligible_symbols=len(pending))
   return stats
  def _confluence(self,symbol,now):
   if symbol in self._entry_opportunities or self._get(key_opportunity(self.session,symbol)):return
