@@ -52,7 +52,11 @@ class TestStep16A(unittest.IsolatedAsyncioTestCase):
   c=WorkerConfig(True,"redis://x","k","s")
   # If deployment dependencies are absent locally, fail explicitly rather than fabricate them.
   try:
-   x=compose_shadow_runtime(c)
+   # The real dependency path is exercised, but no test may call Alpaca
+   # with placeholder credentials or depend on a live market endpoint.
+   with patch("production_composition.build_operational_universe",return_value=["A"]):
+    x=compose_shadow_runtime(c)
+   self.assertEqual(x.symbols,["A"])
   except RuntimeError as e:
    self.assertIn("PRODUCTION_DEPENDENCY_MISSING",str(e))
 
