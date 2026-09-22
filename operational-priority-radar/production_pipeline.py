@@ -223,8 +223,13 @@ class ProductionDecisionPipeline:
  def _confluence(self,symbol,now):
   if symbol in self._entry_opportunities or self._get(key_opportunity(self.session,symbol)):return
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
-  try:_decision,record=self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
+  try:
+   _decision,opportunity_key=self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
   except Exception:return
+  # The canonical writer returns the Redis key, not the record. Read back
+  # the persisted value before caching; never call .get() on a key string.
+  if not opportunity_key:return
+  record=self._get(opportunity_key,"opportunity")
   if record and record.get("state")=="CONFLUENCE_VALID":
    self._entry_opportunities[symbol]=record
    print({"stage":"SHADOW_CONFLUENCE","symbol":symbol,
