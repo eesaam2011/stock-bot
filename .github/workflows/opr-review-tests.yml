@@ -43,6 +43,22 @@ jobs:
         run: |
           set -o pipefail
           python -m unittest -v test_step2n_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
+      - name: Verify real Redis 7 integration service
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os,redis
+          url=os.environ["OPR_REDIS_TEST_URL"]
+          assert url=="redis://127.0.0.1:6379/15", "unexpected Redis test URL"
+          client=redis.Redis.from_url(url,decode_responses=True,socket_timeout=2)
+          assert client.ping(), "Redis integration service unreachable"
+          print("REAL_REDIS_7_PING_OK")
+          PY
+          python -m unittest -v test_step2n_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "Ran 6 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "^OK$" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          printf 'real_redis_integration=passed\\n' > "$GITHUB_WORKSPACE/redis-integration-ok.txt"
       - name: Unittest (full OPR directory)
         run: python -m unittest discover -v
       - name: Pytest (full OPR directory; export exact stdout)
@@ -78,7 +94,15 @@ jobs:
             printf 'render_deployed=false\n'
             printf 'canonical_replay_completed=false\n'
             printf 'sip_continuity_proven=false\n'
+            if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
+              printf 'real_redis_integration=passed\n'
+            else
+              printf 'real_redis_integration=not_verified\n'
+            fi
           } > "$pkg/REVIEW_MANIFEST.txt"
+          if test -f "$GITHUB_WORKSPACE/redis-integration-output.txt"; then
+            cp "$GITHUB_WORKSPACE/redis-integration-output.txt" "$pkg/redis-integration-output.txt"
+          fi
           (cd "$pkg" && zip -qr "$GITHUB_WORKSPACE/opr-review-package.zip" .)
       - name: Upload review package and pytest text evidence
         if: always()
@@ -88,6 +112,7 @@ jobs:
           path: |
             opr-review-package.zip
             pytest-q-output.txt
+            redis-integration-output.txt
             redis-real-output.txt
           if-no-files-found: error
           retention-days: 30
