@@ -15,6 +15,7 @@ class SlowWS(FakeWS):
   super().__init__([])
   self.keep_open=asyncio.Event()
  async def _events(self):
+  if False:yield None  # an async iterator that stays open without new frames
   await self.keep_open.wait()
 
 class TestMixedAckFrame(unittest.IsolatedAsyncioTestCase):
