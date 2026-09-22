@@ -151,7 +151,7 @@ class TestCanonicalSessionAudit(unittest.TestCase):
     def test_duplicate_or_out_of_batch_signal_rejected(self):
         with self.assertRaisesRegex(CanonicalAuditUnsafe,
                                      "CANONICAL_AUDIT_INVALID_SIGNAL"):
-            audit(self.signals+self.signals,Reader(self.records))
+            audit(self.signals[:1]+self.signals[:1],Reader(self.records))
         with self.assertRaisesRegex(CanonicalAuditUnsafe,
                                      "CANONICAL_AUDIT_INVALID_BATCH"):
             audit(self.signals,Reader(self.records),max_symbols=0)
