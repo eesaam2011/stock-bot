@@ -16,9 +16,12 @@ def parse_ts(v):
     return datetime.fromisoformat(str(v).replace("Z","+00:00"))
 
 class ActiveTradeChronologicalReconciler:
-    def __init__(self,rest,redis_client,worker_id,now_fn=None):
+    def __init__(self,rest,redis_client,worker_id,now_fn=None,leadership=None):
         self.rest=rest;self.r=redis_client;self.worker_id=worker_id
         self.lua=ProductionRedisLua(redis_client);self.now_fn=now_fn or (lambda:datetime.now(UTC))
+        # Set after lease acquisition in production composition; absent means
+        # recovery cannot commit, not permission to read a fresh generation.
+        self.leadership=leadership
 
     def _state(self,t):
         pre=t.get("pre_halt_state")
@@ -49,7 +52,12 @@ class ActiveTradeChronologicalReconciler:
         return len(terminals)>1
 
     def _commit(self,expected,new_state,event_name,event_ts,breach_price=None):
-        generation=int(self.r.get(self.lua.generation_key) or 0)
+        if self.leadership is None:
+            raise ActiveTradeRecoveryError("RECOVERY_LEADERSHIP_UNBOUND")
+        token=self.leadership.require_current()
+        if token.worker_instance_id!=self.worker_id:
+            raise ActiveTradeRecoveryError("RECOVERY_WORKER_ID_MISMATCH")
+        generation=token.leader_generation
         new=dict(expected);new["state"]=new_state;new["updated_at"]=event_ts.isoformat();new["leader_generation"]=generation;new["worker_instance_id"]=self.worker_id
         et=EVENT_MAP[event_name];eid=trade_event_id(et,expected["trade_id"])
         out=base_record("outbox",expected["session"],expected["symbol"],"PENDING",event_ts.isoformat())
@@ -57,7 +65,7 @@ class ActiveTradeChronologicalReconciler:
         if breach_price is not None:payload["first_observed_breach_price"]=breach_price
         out.update(event_id=eid,event_type=et,payload=payload,attempt_count=0,leader_generation=generation)
         validate_record(new);validate_record(out)
-        self.lua.atomic_trade_event(self.worker_id,key_trade(expected["trade_id"]),canonical_json(expected),canonical_json(new),key_outbox(eid),canonical_json(out))
+        self.lua.atomic_trade_event(self.worker_id,key_trade(expected["trade_id"]),canonical_json(expected),canonical_json(new),key_outbox(eid),canonical_json(out),generation)
         return new
 
     def reconcile(self,trade):
