@@ -46,6 +46,12 @@ class TestStep2M(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeFailClosed,"CONTINUITY_UNPROVEN"):
             orch.finish_reconciliation(continuity_ok=True,epoch=3)
         self.assertFalse(orch.new_decisions_allowed())
+    def test_legacy_startup_cannot_bypass_epoch_gate(self):
+        rec=SimpleNamespace(continuity_verified=lambda epoch:True,ready_after_stream=lambda:True)
+        c=RuntimeComponents(None,None,None,None,None,None,SimpleNamespace(new_entries_allowed=lambda:True),rec)
+        orch=RuntimeOrchestrator(c,"W")
+        with self.assertRaisesRegex(RuntimeFailClosed,"LEGACY_STARTUP_RECOVERY_UNSAFE"):
+            orch.startup_recovery()
     def test_epoch_and_direct_handoff_required(self):
         connected=asyncio.Event();connected.set()
         capture=SimpleNamespace(DIRECT="DIRECT",phase="CAPTURING",buffer=SimpleNamespace(epoch=4))
