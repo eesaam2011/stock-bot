@@ -51,7 +51,7 @@ def _normalize(row,timeframe):
     return vals
 
 def plan_native_batch(rows1,rows5,symbols,*,window_start,window_end,
-                      recovered_at,max_events=50000):
+                      recovered_at,max_events=100000):
     """Return a bounded deterministic plan and diagnostics, never write Redis."""
     syms=tuple(symbols)
     if not syms or len(set(syms))!=len(syms) or max_events<1:
