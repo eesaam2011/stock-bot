@@ -27,6 +27,7 @@ jobs:
           --health-retries 10
     env:
       OPR_REDIS_TEST_URL: redis://127.0.0.1:6379/15
+      OPR_REQUIRE_REAL_REDIS: '1'
     defaults:
       run:
         working-directory: operational-priority-radar
@@ -37,6 +38,11 @@ jobs:
           python-version: '3.11'
       - name: Install test dependencies
         run: python -m pip install -r requirements.txt
+      - name: Mandatory real Redis 7 Lua integration tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest -v test_step2n_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
       - name: Unittest (full OPR directory)
         run: python -m unittest discover -v
       - name: Pytest (full OPR directory; export exact stdout)
@@ -52,6 +58,11 @@ jobs:
           pkg="$RUNNER_TEMP/opr-review-package"
           mkdir -p "$pkg"
           git -C "$GITHUB_WORKSPACE" archive --format=tar HEAD operational-priority-radar .github/workflows/opr-review-tests.yml | tar -x -C "$pkg"
+          if test -f "$GITHUB_WORKSPACE/redis-real-output.txt"; then
+            cp "$GITHUB_WORKSPACE/redis-real-output.txt" "$pkg/redis-real-output.txt"
+          else
+            printf 'Mandatory Redis integration step did not run; inspect CI logs.\n' > "$pkg/redis-real-output.txt"
+          fi
           if test -f "$GITHUB_WORKSPACE/pytest-q-output.txt"; then
             cp "$GITHUB_WORKSPACE/pytest-q-output.txt" "$pkg/pytest-q-output.txt"
           else
@@ -62,6 +73,8 @@ jobs:
             printf 'tested_git_sha=%s\n' "$(git rev-parse HEAD)"
             printf 'github_run=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             printf 'pytest_command=pytest -q\n'
+            printf 'real_redis_required=true\n'
+            printf 'redis_test_url=redis://127.0.0.1:6379/15\n'
             printf 'render_deployed=false\n'
             printf 'canonical_replay_completed=false\n'
             printf 'sip_continuity_proven=false\n'
@@ -71,10 +84,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step2w-review-bundle
+          name: opr-step2x-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
+            redis-real-output.txt
           if-no-files-found: error
           retention-days: 30
 
