@@ -1,4 +1,4 @@
-import json
+import json,math
 from datetime import datetime,timedelta,timezone
 from itertools import groupby
 from trade_monitor import TradeState,MarketEvent,apply_event,MonitorEvent
@@ -33,20 +33,48 @@ class ActiveTradeChronologicalReconciler:
 
     def _events(self,t,start,end):
         self._require_not_cancelled()
-        trades=self.rest.trades(t["symbol"],start,end)
+        # Both page chains must terminate before a recovered trade can be
+        # committed. A truncated trade tape could hide an earlier STOP/T2.
+        if hasattr(self.rest,"trades_audited"):
+            trades,trade_audit=self.rest.trades_audited(t["symbol"],start,end)
+            if not trade_audit.get("api_pagination_exhausted"):
+                raise ActiveTradeRecoveryError("TRADE_PAGINATION_UNPROVEN")
+        else:
+            trades=self.rest.trades(t["symbol"],start,end)
         self._require_not_cancelled()
-        bars=self.rest.native_1m_gap(t["symbol"],start,end)
+        if hasattr(self.rest,"bars_audited"):
+            bars,bar_audit=self.rest.bars_audited(t["symbol"],start,end,"1Min")
+            if not bar_audit.get("api_pagination_exhausted"):
+                raise ActiveTradeRecoveryError("BAR_PAGINATION_UNPROVEN")
+        else:
+            bars=self.rest.native_1m_gap(t["symbol"],start,end)
         self._require_not_cancelled()
         ev=[];seq=0
         for x in trades:
-            ts=x.get("t");price=x.get("p")
-            if ts is None or price is None:continue
-            ev.append(MarketEvent("TRADE",parse_ts(ts),seq,float(price),True));seq+=1
+            # Never silently drop a malformed historical trade: it could
+            # be the missing first stop breach or T2 event.
+            if not isinstance(x,dict) or x.get("t") is None or x.get("p") is None:
+                raise ActiveTradeRecoveryError("MALFORMED_RECOVERED_TRADE")
+            try:
+                ts=parse_ts(x["t"]);price=float(x["p"])
+            except (ValueError,TypeError,OverflowError) as exc:
+                raise ActiveTradeRecoveryError("MALFORMED_RECOVERED_TRADE") from exc
+            if (ts.tzinfo is None or not start<=ts<=end
+                or not math.isfinite(price) or price<=0):
+                raise ActiveTradeRecoveryError("INVALID_RECOVERED_TRADE_EVENT")
+            ev.append(MarketEvent("TRADE",ts,seq,price,True));seq+=1
         for b in bars:
-            ts=b.get("t");close=b.get("c")
-            if ts is None or close is None:continue
-            # Native 1Min timestamp is bar start; close becomes decision-available at bar end.
-            ev.append(MarketEvent("BAR_CLOSE",parse_ts(ts)+timedelta(minutes=1),seq,float(close),True));seq+=1
+            if not isinstance(b,dict) or b.get("t") is None or b.get("c") is None:
+                raise ActiveTradeRecoveryError("MALFORMED_RECOVERED_BAR")
+            try:
+                ts=parse_ts(b["t"])+timedelta(minutes=1);close=float(b["c"])
+            except (ValueError,TypeError,OverflowError) as exc:
+                raise ActiveTradeRecoveryError("MALFORMED_RECOVERED_BAR") from exc
+            # Native 1Min timestamp is bar start; close becomes available at bar end.
+            if (ts.tzinfo is None or not start<=ts<=end
+                or not math.isfinite(close) or close<=0):
+                raise ActiveTradeRecoveryError("INVALID_RECOVERED_BAR_EVENT")
+            ev.append(MarketEvent("BAR_CLOSE",ts,seq,close,True));seq+=1
         return sorted(ev,key=lambda e:(e.event_ts,e.sequence))
 
     def _group_ambiguous(self,state,group):
