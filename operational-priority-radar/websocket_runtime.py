@@ -85,6 +85,11 @@ class WebSocketRuntime:
    self.last_error=f"{type(exc).__name__}:{exc}"
    raise
   finally:
+   # Preserve the last epoch's bounded 407 diagnostic before the next ACK
+   # resets its counters. This is observed receive throughput, not upstream λ.
+   print({"stage":"SIP_EPOCH_END","epoch":self.connection_epoch,
+          "error":self.last_error,
+          "receive_processing":self.performance_snapshot()},flush=True)
    # Normal async-iterator EOF is a disconnect too. Clear trust BEFORE the
    # callback, so no message from a successor epoch can use stale trust.
    self.connected_event.clear()
