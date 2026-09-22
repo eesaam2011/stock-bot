@@ -1,4 +1,4 @@
-import os,uuid
+import os,uuid,asyncio
 from alpaca_production_market import AlpacaCredentials,AlpacaREST,AlpacaSIPProtocol,SIP_STREAM_URL
 from runtime_wiring import RuntimeComponents,RuntimeOrchestrator
 from websocket_runtime import WebSocketRuntime
@@ -80,21 +80,30 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         rec.trade_reconciler.leadership=leadership
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
     pipeline.status_tracker=getattr(rec,"status_tracker",None)
-    pipeline.decision_gate=orch.new_decisions_allowed
-    async def on_message(msg):
+    capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
+    # Capture/ACK are transport prerequisites, not continuity evidence.
+    # Closing the ACK instantly closes the gate, even before disconnect
+    # callback acquires the decision lock.
+    pipeline.decision_gate=lambda: (
+        orch.new_decisions_allowed()
+        and ws.connected_event.is_set()
+        and capture.phase==capture.DIRECT
+        and capture.epoch==ws.connection_epoch)
+    def process_message(msg):
       kind=AlpacaSIPProtocol.classify(msg)
       received_at=datetime.now(timezone.utc);symbol=msg.get("S")
-      allow=orch.new_decisions_allowed()
-      # Until chronological gap reconciliation is proven, neither new entry
-      # decisions nor active-trade transitions may consume post-gap market
-      # messages out of context. Status messages remain quarantined for
-      # authoritative halt reconciliation by the recovery coordinator.
-      if kind=="BAR" and symbol and allow:pipeline.on_bar(symbol,msg,received_at,True)
-      elif kind=="TRADE" and symbol and allow:pipeline.on_trade(symbol,msg,received_at,True)
-      elif kind=="STATUS":
-        rec.on_status(msg)
-        pipeline.on_status(msg)
-      rec.on_stream_message(kind,msg)
+      with pipeline.decision_lock:
+        allow=pipeline.decision_gate()
+        if kind=="BAR" and symbol and allow:pipeline.on_bar(symbol,msg,received_at,True)
+        elif kind=="TRADE" and symbol and allow:pipeline.on_trade(symbol,msg,received_at,True)
+        elif kind=="STATUS":
+          rec.on_status(msg)
+          pipeline.on_status(msg)
+        rec.on_stream_message(kind,msg)
+    async def on_message(msg):
+      # Redis and active-trade REST work must not block the SIP socket reader.
+      # A single bounded queue consumer preserves message arrival order.
+      await asyncio.to_thread(process_message,msg)
     async def on_disconnect():
       # Synchronize with the threaded native5 E persistence critical section.
       # The websocket has already cleared its ACK before this callback.
@@ -103,11 +112,10 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         pipeline.halted.clear()
         pipeline._entry_opportunities.clear()
         pipeline.trades.clear()
-    # Bounded capture is intentionally not sufficient to establish trust.
-    # Overflow invalidates the epoch and forces fail-closed reconnect.
-    capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
+    # Capture overflow and dispatch backlog overflow are fatal disconnects.
+    # No drop-oldest behavior is permitted for trades, bars or halt statuses.
     ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect,
-                        epoch_capture=capture)
+                        epoch_capture=capture,dispatch_queue_max=1024)
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
     supervisor.decision_pipeline=pipeline
