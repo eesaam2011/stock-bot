@@ -20,6 +20,7 @@ class ProductionDecisionPipeline:
   self.store=CanonicalStateStore(__import__("production_runtime_state").RedisCanonicalBackend(r))
   self.ew=EarlyCoreStateWriter(self.store,leadership);self.bw=BaseReadyStateWriter(self.store,leadership);self.cw=ConfluenceStateWriter(self.store,leadership)
   self.trades={};self.bars={};self.halted=set();self.last_native5={}
+  self.status_tracker=None  # Bound by production composition; UNKNOWN blocks entries.
   self.max_bar_buffer=20;self.entry_trade_buffer_seconds=15
   self.raw_trade_messages_received=0
   # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
@@ -259,6 +260,8 @@ class ProductionDecisionPipeline:
   # Hot path: no Redis GET per SIP trade. Only symbols with a cached valid confluence are evaluated.
   opp=self._entry_opportunities.get(symbol)
   if not opp or opp["state"]!="CONFLUENCE_VALID":return
+  # A previous epoch's last known trading state cannot authorize an entry.
+  if self.status_tracker is None or self.status_tracker.current(symbol)!="TRADING":return
   trigger=dt(opp["entry_trigger_ts"])
   ed=evaluate_entry_price(trigger,now,self.trades.get(symbol,[]),symbol in self.halted)
   if ed.status!=EntryStatus.PRICE_READY:return
