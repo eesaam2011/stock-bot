@@ -75,6 +75,8 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     comps=RuntimeComponents(r,None,rest,ec,br,sender,guard,rec)
     orch=RuntimeOrchestrator(comps,worker_id)
     leadership=RedisLeadershipFacade(orch.redis,worker_id)
+    if isinstance(rec,ProductionStartupRecovery) and rec.trade_reconciler is not None:
+        rec.trade_reconciler.leadership=leadership
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
     async def on_message(msg):
       kind=AlpacaSIPProtocol.classify(msg)
