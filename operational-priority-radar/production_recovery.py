@@ -67,6 +67,7 @@ class ProductionStartupRecovery:
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
   self._base_reconciled=False
+  self._fetch_audit=None
  def run(self):
   try:
    trades=self.reader.active_trades()
@@ -119,8 +120,13 @@ class ProductionStartupRecovery:
      rows1=self._dedup(self.rest.native_1m_gap(sym,start,now))
      rows5=self._dedup(self.rest.native_5m(sym,start,now))
      del rows1,rows5
-   self._base_reconciled=True
-   result={"gap_recovered":True,"reconciled":not bool(self.pending_halted)}
+   # REST rows were fetched then discarded: no canonical E/B replay or
+   # end-to-end coverage proof occurred. Never report this as recovered.
+   self._base_reconciled=False
+   self._fetch_audit={"kind":"REST_FETCH_ONLY","replay_completed":False,
+                      "continuity_proven":False}
+   result={"gap_recovered":False,"reconciled":False,
+           "reason":"CANONICAL_REPLAY_NOT_IMPLEMENTED","fetch_audit":self._fetch_audit}
    if self.pending_halted:result["pending_halt_status"]=sorted(self.pending_halted)
    return result
   except Exception as e:
@@ -133,7 +139,12 @@ class ProductionStartupRecovery:
   return [d[k] for k in sorted(d)]
  def ready_after_stream(self):
   return self._base_reconciled and not self.pending_halted
- def on_disconnect(self):pass
+ def continuity_verified(self,epoch):
+  # Fetch-only REST recovery is never a SIP continuity proof.
+  return False
+ def on_disconnect(self):
+  self._base_reconciled=False
+  self._fetch_audit=None
  def on_status(self,msg):
   if self.status_tracker is None:return
   rec=self.status_tracker.ingest(msg)
