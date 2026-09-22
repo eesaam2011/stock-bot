@@ -53,6 +53,29 @@ class TestStep16A(unittest.IsolatedAsyncioTestCase):
    if not task.done():
     task.cancel();await asyncio.gather(task,return_exceptions=True)
   self.assertEqual(o.calls,["leader","recovery","stream","trusted"]);self.assertTrue(w.stopped);self.assertEqual(d.calls,["DRAINING","STOPPED"])
+ async def test_unproven_post_stream_recovery_times_out_and_cleans_up(self):
+  o,w,d=Orch(),WS(),Drain()
+  o.c.recovery.ready_after_stream=lambda:False
+  s=ShadowRuntimeSupervisor(o,w,Sender(),OStore(),[],"k","s","u",d)
+  s.post_stream_timeout=.06
+  s.decision_pipeline=SimpleNamespace(
+      leadership=SimpleNamespace(require_current=lambda:True,sync_generation=lambda:1))
+  with self.assertRaisesRegex(RuntimeError,"POST_STREAM_RECONCILIATION_TIMEOUT"):
+   await asyncio.wait_for(s.run(),timeout=2)
+  self.assertTrue(w.stopped)
+  self.assertEqual(d.calls,["DRAINING","STOPPED"])
+  self.assertNotIn("trusted",o.calls)
+ async def test_startup_recovery_failure_cleans_up_lease_task(self):
+  o,w,d=Orch(),WS(),Drain()
+  def fail():raise RuntimeError("GAP_RECOVERY_FAILED")
+  o.begin_recovery=fail
+  s=ShadowRuntimeSupervisor(o,w,Sender(),OStore(),[],"k","s","u",d)
+  s.decision_pipeline=SimpleNamespace(
+      leadership=SimpleNamespace(require_current=lambda:True,sync_generation=lambda:1))
+  with self.assertRaisesRegex(RuntimeError,"GAP_RECOVERY_FAILED"):
+   await asyncio.wait_for(s.run(),timeout=2)
+  self.assertTrue(w.stopped)
+  self.assertEqual(d.calls,["DRAINING","STOPPED"])
  async def test_outbox_loop_remains_running(self):
   s=ShadowRuntimeSupervisor(Orch(),WS(),Sender(),OStore(),[],"k","s","u")
   t=asyncio.create_task(s.outbox_loop());await asyncio.sleep(0.01);self.assertFalse(t.done());s.request_stop();await t
