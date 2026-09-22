@@ -93,6 +93,11 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
       kind=AlpacaSIPProtocol.classify(msg)
       received_at=datetime.now(timezone.utc);symbol=msg.get("S")
       with pipeline.decision_lock:
+        tagged_epoch=msg.get("_sip_epoch")
+        if tagged_epoch is not None and (
+            not ws.connected_event.is_set()
+            or tagged_epoch!=ws.connection_epoch):
+          return  # late to_thread work from a disconnected/old SIP epoch
         allow=pipeline.decision_gate()
         if kind=="BAR" and symbol and allow:pipeline.on_bar(symbol,msg,received_at,True)
         elif kind=="TRADE" and symbol and allow:pipeline.on_trade(symbol,msg,received_at,True)
