@@ -2,6 +2,7 @@ import json,threading
 from datetime import datetime,timedelta,timezone
 from state_store import key_early_core,key_base_ready,key_opportunity,validate_record,SchemaError
 from recovery_chronology import plan_native_batch
+from recovery_signal_replay import reconstruct_window_signals
 UTC=timezone.utc
 class RecoveryFailure(RuntimeError):pass
 
@@ -63,10 +64,11 @@ class RedisCanonicalReader:
    if int(cur)==0:return out
 
 class ProductionStartupRecovery:
- def __init__(self,reader,rest,trade_reconciler,session,symbols,now_fn=None,overlap_seconds=120,status_tracker=None):
+ def __init__(self,reader,rest,trade_reconciler,session,symbols,now_fn=None,overlap_seconds=120,status_tracker=None,audit_window_signals=False):
   self.reader=reader;self.rest=rest;self.trade_reconciler=trade_reconciler
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
+  self.audit_window_signals=bool(audit_window_signals)
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
@@ -105,6 +107,7 @@ class ProductionStartupRecovery:
     anchor=min(anchors,default=now-timedelta(minutes=60))
    start=anchor-timedelta(seconds=self.overlap_seconds)
    batch_audits=[]
+   signal_audits=[]
    if hasattr(self.rest,"native_recovery_batch"):
     # Plan/audit one bounded batch at a time; never retain a universe-wide
     # history. A plan is not canonical replay or proof of SIP continuity.
@@ -120,6 +123,9 @@ class ProductionStartupRecovery:
      plan,audit=plan_native_batch(r1,r5,batch,window_start=start,
                                   window_end=now,recovered_at=self.now_fn())
      self._require_not_cancelled()
+     if self.audit_window_signals:
+      _,signals_audit=reconstruct_window_signals(plan,self.session,recovered_at=plan[0].recovered_at if plan else self.now_fn())
+      signal_audits.append(signals_audit)
      batch_audits.append(audit)
      batch_1m_symbols=sum(1 for sym in batch if r1.get(sym))
      batch_5m_symbols=sum(1 for sym in batch if r5.get(sym))
@@ -144,6 +150,9 @@ class ProductionStartupRecovery:
                                   window_start=start,window_end=now,
                                   recovered_at=self.now_fn())
      self._require_not_cancelled()
+     if self.audit_window_signals:
+      _,signals_audit=reconstruct_window_signals(plan,self.session,recovered_at=plan[0].recovered_at if plan else self.now_fn())
+      signal_audits.append(signals_audit)
      batch_audits.append(audit)
      del plan,rows1,rows5
    self._require_not_cancelled()
@@ -158,6 +167,10 @@ class ProductionStartupRecovery:
                       "observed_interbar_gaps":sum(a["observed_interbar_gaps"] for a in batch_audits),
                       "empty_symbol_timeframe_lanes":sum(a["empty_symbol_timeframe_lanes"] for a in batch_audits),
                       "batch_digests":[a["chronological_sha256"] for a in batch_audits],
+                      "signal_audit_enabled":self.audit_window_signals,
+                      "window_local_E":sum(a["window_local_E"] for a in signal_audits),
+                      "window_local_B":sum(a["window_local_B"] for a in signal_audits),
+                      "first_of_session_proven":False,
                       "replay_completed":False,"continuity_proven":False}
    result={"gap_recovered":False,"reconciled":False,
            "reason":"CANONICAL_REPLAY_NOT_IMPLEMENTED","fetch_audit":self._fetch_audit}
