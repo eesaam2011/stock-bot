@@ -23,6 +23,12 @@ def preview_recovery_batch(native_events,capture,*,session,epoch,as_of,
     prefix=audit["audited_prefix"]
     if prefix["captured_prefix_count"]!=prefix["queue_size_at_snapshot"]:
         raise SIPOverlapUnsafe("PREVIEW_TRUNCATED_CAPTURE_PREFIX")
+    # A previous ACK may have irreversibly discarded the start of this epoch.
+    # No "whole epoch" preview can be reconstructed from its surviving tail.
+    if (prefix["acked_upto_at_snapshot"]!=0
+        or (prefix["first_sequence"] is not None
+            and prefix["first_sequence"]!=1)):
+        raise SIPOverlapUnsafe("PREVIEW_CAPTURE_PREFIX_ALREADY_ACKED")
     bars=[]
     for item in overlap:
         if item.kind not in {"BAR_1M","BAR_NATIVE_5M"}:
@@ -42,7 +48,8 @@ def preview_recovery_batch(native_events,capture,*,session,epoch,as_of,
     final=capture.snapshot()
     if (final["epoch"]!=epoch or final["phase"]!=capture.DRAINING
         or final["buffered"]!=prefix["queue_size_at_snapshot"]
-        or final["last_sequence"]!=prefix["last_sequence_at_snapshot"]):
+        or final["last_sequence"]!=prefix["last_sequence_at_snapshot"]
+        or final["acked_upto"]!=prefix["acked_upto_at_snapshot"]):
         raise SIPOverlapUnsafe("CAPTURE_CHANGED_DURING_PREVIEW")
     return signals,{
         "kind":"READ_ONLY_NATIVE_REST_SIP_EB_PREVIEW",
