@@ -32,9 +32,15 @@ class RuntimeOrchestrator:
   self.trust=transition(self.trust,"GAP_RECOVERED");return r
  def mark_stream_connected(self):
   self.trust=transition(self.trust,"STREAM_CONNECTED");return self.trust.state
- def finish_reconciliation(self,continuity_ok=True):
+ def finish_reconciliation(self,continuity_ok=False,epoch=None):
+  # A boolean supplied by the caller is insufficient: verify the recovery
+  # coordinator's proof for the exact subscribed connection epoch.
   self.trust=transition(self.trust,"RECONCILED")
-  if not continuity_ok:raise RuntimeFailClosed("CONTINUITY_FAILED")
+  verify=getattr(self.c.recovery,"continuity_verified",None)
+  if (not continuity_ok or epoch is None or not callable(verify)
+      or verify(epoch) is not True or
+      not getattr(self.c.recovery,"ready_after_stream",lambda:False)()):
+   raise RuntimeFailClosed("CONTINUITY_UNPROVEN")
   self.trust=transition(self.trust,"CONTINUITY_OK");return self.trust.state
  def startup_recovery(self):
   self.trust=transition(self.trust,"START_RECOVERY");r=self.c.recovery.run()
