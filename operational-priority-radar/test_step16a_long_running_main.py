@@ -39,9 +39,17 @@ class Drain:
 class TestStep16A(unittest.IsolatedAsyncioTestCase):
  async def test_supervisor_is_long_running_until_stop(self):
   o,w,d=Orch(),WS(),Drain();s=ShadowRuntimeSupervisor(o,w,Sender(),OStore(),[], "k","s","url",d)
-  s.decision_pipeline=SimpleNamespace(leadership=SimpleNamespace(require_current=lambda:True))
-  task=asyncio.create_task(s.run());await w.started.wait();await asyncio.sleep(0)
-  self.assertFalse(task.done());s.request_stop();await task
+  s.decision_pipeline=SimpleNamespace(leadership=SimpleNamespace(
+      require_current=lambda:True,sync_generation=lambda:1))
+  task=asyncio.create_task(s.run())
+  try:
+   await asyncio.wait_for(w.started.wait(),timeout=3.0)
+   await asyncio.sleep(0.05)
+   self.assertFalse(task.done());s.request_stop();await asyncio.wait_for(task,timeout=3.0)
+  finally:
+   s.request_stop()
+   if not task.done():
+    task.cancel();await asyncio.gather(task,return_exceptions=True)
   self.assertEqual(o.calls,["leader","recovery","stream","trusted"]);self.assertTrue(w.stopped);self.assertEqual(d.calls,["DRAINING","STOPPED"])
  async def test_outbox_loop_remains_running(self):
   s=ShadowRuntimeSupervisor(Orch(),WS(),Sender(),OStore(),[],"k","s","u")
