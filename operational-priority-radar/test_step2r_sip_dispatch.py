@@ -6,6 +6,9 @@ from test_step2o_websocket_epoch import FakeWS
 from websocket_runtime import WebSocketRuntime,WebSocketProtocolError
 from alpaca_production_market import AlpacaSIPProtocol
 from sip_epoch_capture import BoundedEpochCapture
+from test_step2p_untrusted_quarantine import Redis,FakeRecovery,FakeEarly,FakeBase
+from production_composition import compose_shadow_runtime
+from operational_priority_radar import WorkerConfig
 
 def trade(n):
  return {"T":"t","S":"A","t":f"2026-09-22T15:00:{n:02d}Z","p":n}
@@ -62,6 +65,27 @@ class TestBoundedDispatch(unittest.IsolatedAsyncioTestCase):
    self.assertLessEqual(rt.performance_snapshot()["dispatch_queue"]["high_water"],4)
   finally:
    rt.stop();task.cancel();await asyncio.gather(task,return_exceptions=True)
+ async def test_old_epoch_status_cannot_repopulate_halt_cache(self):
+  rec=FakeRecovery()
+  supervisor=compose_shadow_runtime(
+      WorkerConfig(True,"redis://unused","k","s"),redis_client=Redis(),
+      websocket_connector=object(),recovery=rec,early_core=FakeEarly(),
+      base_ready=FakeBase(),symbols=["A"])
+  ws=supervisor.websocket_runtime
+  ws.connection_epoch=2
+  ws.epoch_capture.start(2)
+  ws.connected_event.set()
+  await ws.on_message({"T":"s","S":"A","sc":"3","t":"2026-09-22T15:00:00Z",
+                       "_sip_epoch":1})
+  self.assertEqual(rec.status_tracker.current("A"),"UNKNOWN")
+  await ws.on_message({"T":"s","S":"A","sc":"3","t":"2026-09-22T15:00:00Z",
+                       "_sip_epoch":2})
+  self.assertEqual(rec.status_tracker.current("A"),"TRADING")
+  ws.connected_event.clear()
+  await ws.on_disconnect()
+  await ws.on_message({"T":"s","S":"A","sc":"3","t":"2026-09-22T15:00:00Z",
+                       "_sip_epoch":2})
+  self.assertEqual(rec.status_tracker.current("A"),"UNKNOWN")
  async def test_capture_overflow_preempts_dispatch(self):
   ws=FakeWS([trade(1),trade(2)])
   capture=BoundedEpochCapture(max_messages=1,max_bytes=1024)
