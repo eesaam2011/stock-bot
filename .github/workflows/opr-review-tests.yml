@@ -55,14 +55,14 @@ jobs:
           if test -f "$GITHUB_WORKSPACE/pytest-q-output.txt"; then
             cp "$GITHUB_WORKSPACE/pytest-q-output.txt" "$pkg/pytest-q-output.txt"
           else
-            printf 'pytest -q did not run; see workflow job logs.\\n' > "$pkg/pytest-q-output.txt"
+            printf 'pytest -q did not run; see workflow job logs.\n' > "$pkg/pytest-q-output.txt"
           fi
           {
-            printf 'review_only=true\\n'
-            printf 'tested_git_sha=%s\\n' "$(git rev-parse HEAD)"
-            printf 'github_run=%s/%s/actions/runs/%s\\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-            printf 'pytest_command=pytest -q\\n'
-            printf 'render_deployed=false\\n'
+            printf 'review_only=true\n'
+            printf 'tested_git_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'github_run=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'pytest_command=pytest -q\n'
+            printf 'render_deployed=false\n'
           } > "$pkg/REVIEW_MANIFEST.txt"
           (cd "$pkg" && zip -qr "$GITHUB_WORKSPACE/opr-review-package.zip" .)
       - name: Upload review package and pytest text evidence
