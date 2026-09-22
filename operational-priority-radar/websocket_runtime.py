@@ -81,6 +81,7 @@ class WebSocketRuntime:
    self._queue_depth=q.qsize()
    self._queue_high_water=max(self._queue_high_water,self._queue_depth)
   iterator=ws.__aiter__()
+  next_frame=None
   try:
    for msg in initial_messages:enqueue(msg)
    while not self.stopping:
@@ -96,7 +97,13 @@ class WebSocketRuntime:
      raise WebSocketProtocolError("SIP_STREAM_EOF_UNTRUSTED")
     for msg in self._decode(raw):enqueue(msg)
   finally:
+   # Supervisor cancellation may arrive while waiting for the next socket
+   # frame. Cancel and join that task too; otherwise a pending __anext__
+   # can survive the ACK epoch and consume a frame after disconnect.
    self.connected_event.clear()
+   if next_frame is not None and not next_frame.done():
+    next_frame.cancel()
+    await asyncio.gather(next_frame,return_exceptions=True)
    worker.cancel()
    await asyncio.gather(worker,return_exceptions=True)
    self._queue_depth=0
