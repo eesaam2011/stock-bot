@@ -1,4 +1,5 @@
-import asyncio,json
+import asyncio,json,time
+from collections import deque
 
 class WebSocketProtocolError(RuntimeError):pass
 
@@ -6,6 +7,9 @@ class WebSocketRuntime:
  def __init__(self,connector,protocol,on_message,on_disconnect):
   self.connector=connector;self.protocol=protocol;self.on_message=on_message;self.on_disconnect=on_disconnect
   self.stopping=False;self.connected_event=asyncio.Event();self.last_error=None;self.subscription_stats={}
+  self.connection_epoch=0
+  self._rx_started=None;self._received=0;self._handled=0
+  self._processing_ns={k:deque(maxlen=2048) for k in ("BAR","TRADE","STATUS","OTHER")}
 
  @staticmethod
  def _decode(raw):
@@ -25,6 +29,20 @@ class WebSocketRuntime:
  def _has_success(msgs,text):
   return any(m.get("T")=="success" and m.get("msg")==text for m in msgs)
 
+ def performance_snapshot(self):
+  # Observed receive throughput is not upstream arrival rate. Samples are
+  # bounded and represent on_message wall-clock latency, not socket wait.
+  def percentile(xs,p):
+   if not xs:return None
+   z=sorted(xs);return round(z[min(len(z)-1,int((len(z)-1)*p))]/1e6,3)
+  elapsed=max(time.monotonic()-self._rx_started,1e-6) if self._rx_started else None
+  return {"epoch":self.connection_epoch,"received":self._received,
+          "handled":self._handled,
+          "observed_rx_per_sec":round(self._received/elapsed,2) if elapsed else None,
+          "processing_ms":{k:{"count":len(v),"p50":percentile(v,.5),
+                              "p95":percentile(v,.95),"p99":percentile(v,.99),
+                              "max":round(max(v)/1e6,3) if v else None}
+                           for k,v in self._processing_ns.items()}}
  async def run_once(self,url,key,secret,symbols):
   self.connected_event.clear();self.subscription_stats={};self.last_error=None
   try:
@@ -48,14 +66,29 @@ class WebSocketRuntime:
      raise WebSocketProtocolError(
       f"ALPACA_WS_SUBSCRIPTION_INCOMPLETE:trades_missing={len(missing_trades)},bars_missing={len(missing_bars)},statuses_star={'*' in statuses}")
     self.subscription_stats={"requested":len(req),"trades":len(got_trades),"bars":len(got_bars),"statuses_star":True}
+    self.connection_epoch+=1
+    self._rx_started=time.monotonic();self._received=0;self._handled=0
+    for samples in self._processing_ns.values():samples.clear()
     self.connected_event.set()  # Means authenticated + subscription ACK verified, not merely TCP-open.
     async for raw in ws:
      if self.stopping:break
      for msg in self._decode(raw):
       if msg.get("T")=="error":raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
-      await self.on_message(msg)
+      kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
+      self._received+=1;start_ns=time.monotonic_ns()
+      try:await self.on_message(msg)
+      finally:self._processing_ns[kind].append(time.monotonic_ns()-start_ns)
+      self._handled+=1
+    if not self.stopping:
+     raise WebSocketProtocolError("SIP_STREAM_EOF_UNTRUSTED")
   except Exception as exc:
-   self.last_error=f"{type(exc).__name__}:{exc}";self.connected_event.clear();await self.on_disconnect();raise
+   self.last_error=f"{type(exc).__name__}:{exc}"
+   raise
+  finally:
+   # Normal async-iterator EOF is a disconnect too. Clear trust BEFORE the
+   # callback, so no message from a successor epoch can use stale trust.
+   self.connected_event.clear()
+   await self.on_disconnect()
 
  async def reconnect_loop(self,*args,base_delay=1,max_delay=30):
   delay=base_delay
