@@ -5,6 +5,7 @@ from recovery_chronology import plan_native_batch
 from recovery_signal_replay import reconstruct_window_signals
 from recovery_session_replay import reconstruct_session_signals,EARLY_WARMUP_MINUTES
 from recovery_session_preview import preview_session_overlap
+from recovery_canonical_audit import audit_session_canonical
 from recovery_chronology import _utc
 UTC=timezone.utc
 class RecoveryFailure(RuntimeError):pass
@@ -69,7 +70,8 @@ class RedisCanonicalReader:
 class ProductionStartupRecovery:
  def __init__(self,reader,rest,trade_reconciler,session,symbols,now_fn=None,overlap_seconds=120,status_tracker=None,audit_window_signals=False,
               audit_session_signals=False,session_start=None,
-              audit_session_overlap=False,sip_capture=None,sip_epoch=None):
+              audit_session_overlap=False,sip_capture=None,sip_epoch=None,
+              audit_session_canonical_records=False):
   self.reader=reader;self.rest=rest;self.trade_reconciler=trade_reconciler
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
@@ -79,6 +81,7 @@ class ProductionStartupRecovery:
   self.audit_session_overlap=bool(audit_session_overlap)
   self.sip_capture=sip_capture
   self.sip_epoch=sip_epoch
+  self.audit_session_canonical_records=bool(audit_session_canonical_records)
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
@@ -125,6 +128,9 @@ class ProductionStartupRecovery:
     # Native5 pre-session warm-up is part of the request, not a claim
     # that REST observed every market event during that interval.
     start=min(start,session_start-timedelta(minutes=EARLY_WARMUP_MINUTES))
+   if self.audit_session_canonical_records and (not self.audit_session_overlap
+       or not hasattr(self.reader,"get_e") or not hasattr(self.reader,"get_b")):
+    raise RecoveryFailure("CANONICAL_AUDIT_REQUIRES_SESSION_OVERLAP_AND_READER")
    if self.audit_session_overlap:
     if (not self.audit_session_signals or self.sip_capture is None
         or not isinstance(self.sip_epoch,int) or self.sip_epoch<1
@@ -137,6 +143,7 @@ class ProductionStartupRecovery:
      raise RecoveryFailure("SESSION_OVERLAP_REQUIRES_EXTERNAL_DRAIN")
    batch_audits=[]
    overlap_audits=[]
+   canonical_audits=[]
    session_audits=[]
    signal_audits=[]
    pagination_audits=[]
@@ -169,12 +176,19 @@ class ProductionStartupRecovery:
       signal_audits.append(signals_audit)
      if self.audit_session_signals:
       if self.audit_session_overlap:
-       _,overlap_audit=preview_session_overlap(
+       overlap_signals,overlap_audit=preview_session_overlap(
            plan,self.sip_capture,session=self.session,epoch=self.sip_epoch,
            symbols=batch,session_start=session_start,session_end=now,
            requested_start=start,as_of=now)
        overlap_audits.append(overlap_audit)
        session_audit=overlap_audit["session_signals"]
+       if self.audit_session_canonical_records:
+        canonical_audit=audit_session_canonical(
+            overlap_signals,self.reader,session=self.session,
+            symbols=batch,as_of=now)
+        canonical_audits.append(canonical_audit)
+        if canonical_audit["divergent"]:
+         raise RecoveryFailure("CANONICAL_SESSION_SIGNAL_DIVERGENCE")
       else:
        _,session_audit=reconstruct_session_signals(
            plan,self.session,session_start=session_start,session_end=now,
@@ -230,6 +244,13 @@ class ProductionStartupRecovery:
                       "signal_audit_enabled":self.audit_window_signals,
                       "session_signal_audit_enabled":self.audit_session_signals,
                       "session_sip_overlap_audit_enabled":self.audit_session_overlap,
+                      "session_canonical_comparison_enabled":self.audit_session_canonical_records,
+                      "session_canonical_audited_batches":len(canonical_audits),
+                      "session_canonical_matches":sum(len(a["matched"]) for a in canonical_audits),
+                      "session_observed_without_canonical":sum(len(a["observed_without_canonical"]) for a in canonical_audits),
+                      "session_canonical_without_observed":sum(len(a["canonical_without_observed"]) for a in canonical_audits),
+                      "session_canonical_multi_key_snapshot_atomic":False,
+                      "session_canonical_backfill_authorized":False,
                       "session_sip_overlap_audited_batches":len(overlap_audits),
                       "session_sip_overlap_equal_bars":sum(a["overlap"]["overlap_equal_1m_bars"] for a in overlap_audits),
                       "session_sip_overlap_new_bars":sum(a["overlap"]["unmatched_sip_1m_bars"] for a in overlap_audits),
