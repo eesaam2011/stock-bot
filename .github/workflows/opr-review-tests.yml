@@ -15,6 +15,18 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 10
+    env:
+      OPR_REDIS_TEST_URL: redis://127.0.0.1:6379/15
     defaults:
       run:
         working-directory: operational-priority-radar
