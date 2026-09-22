@@ -83,10 +83,15 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
       kind=AlpacaSIPProtocol.classify(msg)
       received_at=datetime.now(timezone.utc);symbol=msg.get("S")
       allow=orch.new_decisions_allowed()
-      if kind=="BAR" and symbol:pipeline.on_bar(symbol,msg,received_at,allow)
-      elif kind=="TRADE" and symbol:pipeline.on_trade(symbol,msg,received_at,allow)
+      # Until chronological gap reconciliation is proven, neither new entry
+      # decisions nor active-trade transitions may consume post-gap market
+      # messages out of context. Status messages remain quarantined for
+      # authoritative halt reconciliation by the recovery coordinator.
+      if kind=="BAR" and symbol and allow:pipeline.on_bar(symbol,msg,received_at,True)
+      elif kind=="TRADE" and symbol and allow:pipeline.on_trade(symbol,msg,received_at,True)
       elif kind=="STATUS":
-        rec.on_status(msg);pipeline.on_status(msg)
+        rec.on_status(msg)
+        pipeline.on_status(msg)
       rec.on_stream_message(kind,msg)
     async def on_disconnect():
       # The websocket clears its ACK before invoking this callback.
