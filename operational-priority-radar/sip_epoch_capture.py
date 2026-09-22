@@ -21,6 +21,7 @@ class CapturedSIP:
     event_ts:str
     payload:dict
     bytes:int
+    received_at:str=""  # actual capture time; event_ts is market event time
 
 class BoundedEpochCapture:
     CAPTURING="CAPTURING"
@@ -58,20 +59,24 @@ class BoundedEpochCapture:
             return dt.astimezone(timezone.utc).isoformat()
         except (ValueError,TypeError) as exc:
             raise EpochCaptureError("SIP_EVENT_TIME_INVALID") from exc
-    def ingest(self,epoch,msg):
+    def ingest(self,epoch,msg,*,received_at=None):
         if self.phase not in {self.CAPTURING,self.DRAINING,self.DIRECT} or self.epoch!=epoch:
             raise EpochCaptureError("SIP_CAPTURE_EPOCH_INVALID")
         kind=self.TYPES.get(msg.get("T"))
         if kind is None:return None
         if self.phase==self.DIRECT:return None  # caller delivers directly after verified handoff
         ts=self._timestamp(msg)
+        captured=received_at or datetime.now(timezone.utc)
+        if not isinstance(captured,datetime) or captured.tzinfo is None:
+            raise EpochCaptureError("SIP_RECEIVED_AT_INVALID")
+        captured=captured.astimezone(timezone.utc).isoformat()
         raw=json.dumps(msg,separators=(",",":"),ensure_ascii=False)
         size=len(raw.encode("utf-8"))
         if len(self._items)>=self.max_messages or self._bytes+size>self.max_bytes:
             self.invalidate("CAPTURE_OVERFLOW")
             raise EpochCaptureOverflow("SIP_CAPTURE_OVERFLOW_FAIL_CLOSED")
         self._seq+=1
-        item=CapturedSIP(epoch,self._seq,kind,ts,dict(msg),size)
+        item=CapturedSIP(epoch,self._seq,kind,ts,dict(msg),size,captured)
         self._items.append(item);self._bytes+=size
         return item
     def begin_drain(self,epoch):
