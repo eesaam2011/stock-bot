@@ -4,9 +4,13 @@ from collections import deque
 class WebSocketProtocolError(RuntimeError):pass
 
 class WebSocketRuntime:
- def __init__(self,connector,protocol,on_message,on_disconnect,epoch_capture=None):
+ def __init__(self,connector,protocol,on_message,on_disconnect,epoch_capture=None,dispatch_queue_max=0):
   self.connector=connector;self.protocol=protocol;self.on_message=on_message;self.on_disconnect=on_disconnect
-  self.epoch_capture=epoch_capture=on_disconnect
+  self.epoch_capture=epoch_capture
+  if not isinstance(dispatch_queue_max,int) or dispatch_queue_max<0 or dispatch_queue_max>100000:
+   raise ValueError("invalid dispatch queue limit")
+  self.dispatch_queue_max=dispatch_queue_max
+  self._queue_depth=0;self._queue_high_water=0;self._queue_overflows=0
   self.stopping=False;self.connected_event=asyncio.Event();self.last_error=None;self.subscription_stats={}
   self.connection_epoch=0
   self._rx_started=None;self._received=0;self._handled=0
@@ -39,14 +43,64 @@ class WebSocketRuntime:
   elapsed=max(time.monotonic()-self._rx_started,1e-6) if self._rx_started else None
   return {"epoch":self.connection_epoch,"received":self._received,
           "capture":self.epoch_capture.snapshot() if self.epoch_capture else None,
+          "dispatch_queue":{"limit":self.dispatch_queue_max,
+                            "depth":self._queue_depth,
+                            "high_water":self._queue_high_water,
+                            "overflows":self._queue_overflows},
           "handled":self._handled,
           "observed_rx_per_sec":round(self._received/elapsed,2) if elapsed else None,
           "processing_ms":{k:{"count":len(v),"p50":percentile(v,.5),
                               "p95":percentile(v,.95),"p99":percentile(v,.99),
                               "max":round(max(v)/1e6,3) if v else None}
                            for k,v in self._processing_ns.items()}}
+ async def _receive_queued(self,ws):
+  # Exactly one ordered consumer. The receiver never waits for synchronous
+  # REST/Redis processing; full queue is a fatal disconnect, never a drop.
+  q=asyncio.Queue(maxsize=self.dispatch_queue_max)
+  async def consumer():
+   while True:
+    msg=await q.get()
+    kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
+    started=time.monotonic_ns()
+    try:await self.on_message(msg)
+    finally:
+     self._processing_ns[kind].append(time.monotonic_ns()-started)
+     q.task_done();self._queue_depth=q.qsize()
+    self._handled+=1
+  worker=asyncio.create_task(consumer())
+  iterator=ws.__aiter__()
+  try:
+   while not self.stopping:
+    next_frame=asyncio.create_task(iterator.__anext__())
+    done,_=await asyncio.wait({next_frame,worker},return_when=asyncio.FIRST_COMPLETED)
+    if worker in done:
+     next_frame.cancel()
+     await asyncio.gather(next_frame,return_exceptions=True)
+     worker.result()
+     raise WebSocketProtocolError("SIP_DISPATCH_WORKER_ENDED")
+    try:raw=next_frame.result()
+    except StopAsyncIteration:
+     raise WebSocketProtocolError("SIP_STREAM_EOF_UNTRUSTED")
+    for msg in self._decode(raw):
+     if msg.get("T")=="error":
+      raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
+     if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
+     self._received+=1
+     try:q.put_nowait(msg)
+     except asyncio.QueueFull:
+      self._queue_overflows+=1
+      self.connected_event.clear()
+      raise WebSocketProtocolError("SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED")
+     self._queue_depth=q.qsize()
+     self._queue_high_water=max(self._queue_high_water,self._queue_depth)
+  finally:
+   self.connected_event.clear()
+   worker.cancel()
+   await asyncio.gather(worker,return_exceptions=True)
+   self._queue_depth=0
  async def run_once(self,url,key,secret,symbols):
   self.connected_event.clear();self.subscription_stats={};self.last_error=None
+  self._queue_depth=0;self._queue_high_water=0;self._queue_overflows=0
   if self.epoch_capture:self.epoch_capture.invalidate("STARTING_NEW_CONNECTION")
   try:
    async with self.connector(url) as ws:
@@ -74,6 +128,9 @@ class WebSocketRuntime:
     self._rx_started=time.monotonic();self._received=0;self._handled=0
     for samples in self._processing_ns.values():samples.clear()
     self.connected_event.set()  # Means authenticated + subscription ACK verified, not merely TCP-open.
+    if self.dispatch_queue_max:
+     await self._receive_queued(ws)
+     return
     async for raw in ws:
      if self.stopping:break
      for msg in self._decode(raw):
