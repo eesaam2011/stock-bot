@@ -84,6 +84,26 @@ class TestRecoveredSignals(unittest.TestCase):
         e.bar.pop("_timeframe")
         with self.assertRaisesRegex(ChronologyUnsafe,"REPLAY_SYNTHETIC_5M_FORBIDDEN"):
             reconstruct_window_signals(tuple(p),"S",recovered_at=NOW)
+    def test_opt_in_production_recovery_audits_but_still_blocks_trust(self):
+        from production_recovery import ProductionStartupRecovery
+        class Reader:
+            def active_trades(self):return []
+            def earliest_decision_anchor(self,session):return START
+        class REST:
+            def native_recovery_batch(self,symbols,start,end,**kw):
+                p=plan()
+                return ({"A":[x.bar for x in p if x.timeframe=="1m"]},
+                        {"A":[x.bar for x in p if x.timeframe=="5m"]})
+        rec=ProductionStartupRecovery(Reader(),REST(),None,"2026-09-22",
+            ["A"],now_fn=lambda:NOW,audit_window_signals=True)
+        result=rec.run()
+        self.assertEqual(result["reason"],"CANONICAL_REPLAY_NOT_IMPLEMENTED")
+        audit=result["fetch_audit"]
+        self.assertTrue(audit["signal_audit_enabled"])
+        self.assertFalse(audit["first_of_session_proven"])
+        self.assertFalse(audit["continuity_proven"])
+        self.assertFalse(result["gap_recovered"])
+        self.assertFalse(rec.continuity_verified(1))
     def test_no_early_core_when_native5_lane_empty(self):
         p=tuple(x for x in plan() if x.timeframe=="1m")
         signals,a=reconstruct_window_signals(p,"S",recovered_at=NOW,
