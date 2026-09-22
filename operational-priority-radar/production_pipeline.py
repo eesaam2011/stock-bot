@@ -271,7 +271,11 @@ class ProductionDecisionPipeline:
   if risk.status!=RiskStatus.APPROVED:return
   new,trade,out=EntryCommitBuilder(self.leadership).build(opp,risk,ed.entry_alert_price,now)
   new,trade,out=stamp(new),stamp(trade),stamp(out)
-  self.lua.atomic_entry(self.worker_id,key_opportunity(self.session,symbol),canonical_json(opp),canonical_json(new),key_trade(trade["trade_id"]),canonical_json(trade),f"operational_priority_radar:v1:outbox:{out['event_id']}",canonical_json(out))
+  # Re-check leadership after risk evaluation and before the Lua commit.
+  token=self.leadership.require_current()
+  if any(int(r["leader_generation"])!=token.leader_generation for r in (new,trade,out)):
+   raise RuntimeError("ENTRY_GENERATION_CHANGED_DURING_EVALUATION")
+  self.lua.atomic_entry(self.worker_id,key_opportunity(self.session,symbol),canonical_json(opp),canonical_json(new),key_trade(trade["trade_id"]),canonical_json(trade),f"operational_priority_radar:v1:outbox:{out['event_id']}",canonical_json(out),token.leader_generation)
   self._entry_opportunities.pop(symbol,None);self.trades.pop(symbol,None);self.bars.pop(symbol,None)
   self._structure_watch_symbols.discard(symbol);self._active_by_symbol[symbol]=trade
  def _active(self,symbol):
@@ -287,7 +291,7 @@ class ProductionDecisionPipeline:
   if evt==MonitorEvent.STOP:payload["first_observed_breach_price"]=price
   out.update(event_id=eid,event_type=et,payload=payload,attempt_count=0,leader_generation=tok.leader_generation)
   new,out=stamp(new),stamp(out)
-  self.lua.atomic_trade_event(self.worker_id,key_trade(t["trade_id"]),canonical_json(t),canonical_json(new),f"operational_priority_radar:v1:outbox:{eid}",canonical_json(out))
+  self.lua.atomic_trade_event(self.worker_id,key_trade(t["trade_id"]),canonical_json(t),canonical_json(new),f"operational_priority_radar:v1:outbox:{eid}",canonical_json(out),tok.leader_generation)
   if new["state"] in {"ACTIVE_PRE_T1","ACTIVE_POST_T1","HALTED_ACTIVE"}:self._active_by_symbol[t["symbol"]]=new
   else:self._active_by_symbol.pop(t["symbol"],None)
  def _state(self,t):return TradeState(t["state"],float(t["entry_alert_price"]),float(t["structural_stop"]),float(t["t1"]),float(t["t2"]),dt(t["monitoring_deadline"]),t.get("pre_halt_state"))
