@@ -1,5 +1,6 @@
 """Step 2P: no active-trade or entry processing from untrusted SIP epochs."""
-import unittest
+import unittest,threading
+from datetime import datetime,timezone
 from types import SimpleNamespace
 from production_pipeline import ProductionDecisionPipeline
 from production_halt_status import ProductionStatusTracker
@@ -44,6 +45,28 @@ class TestUntrustedQuarantine(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(rec.status_tracker.current("A"),"UNKNOWN")
   self.assertEqual(p._entry_opportunities,{})
   self.assertEqual(p.trades,{})
+ def test_native5_rechecks_gate_after_rest_and_before_canonical_write(self):
+  p=ProductionDecisionPipeline.__new__(ProductionDecisionPipeline)
+  p.symbols=["A"];p.session="S"
+  p.r=SimpleNamespace(mget=lambda keys:[None])
+  p._memory_probe=lambda *args,**kw:None
+  p.decision_lock=threading.RLock()
+  trust=[True]
+  p.decision_gate=lambda:trust[0]
+  p.rest=SimpleNamespace(bars_multi=lambda *args,**kw:{"A":[{"t":"2026-09-22T15:00:00Z"}]})
+  def evaluate(*args):
+   trust[0]=False  # disconnect while native5 thread is evaluating
+   return SimpleNamespace()
+  p.ec=SimpleNamespace(required_history_minutes=lambda:60,
+                       telemetry=lambda rows:{},evaluate=evaluate)
+  writes=[]
+  p.ew=SimpleNamespace(persist_first_e=lambda crossing:writes.append(crossing))
+  p._confluence=lambda *args:self.fail("untrusted confluence")
+  stats=p.poll_native5(datetime(2026,9,22,16,tzinfo=timezone.utc),
+                       True,batch_size=1,max_workers=1)
+  self.assertEqual(writes,[])
+  self.assertTrue(stats["aborted_untrusted"])
+  self.assertEqual(stats["early_core_persisted"],0)
  def test_unknown_and_halted_status_block_entry(self):
   p=ProductionDecisionPipeline.__new__(ProductionDecisionPipeline)
   p._entry_opportunities={"A":{"state":"CONFLUENCE_VALID",
