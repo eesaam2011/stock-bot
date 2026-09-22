@@ -63,13 +63,15 @@ jobs:
             printf 'github_run=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             printf 'pytest_command=pytest -q\n'
             printf 'render_deployed=false\n'
+            printf 'canonical_replay_completed=false\n'
+            printf 'sip_continuity_proven=false\n'
           } > "$pkg/REVIEW_MANIFEST.txt"
           (cd "$pkg" && zip -qr "$GITHUB_WORKSPACE/opr-review-package.zip" .)
       - name: Upload review package and pytest text evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step2u-review-bundle
+          name: opr-step2w-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
