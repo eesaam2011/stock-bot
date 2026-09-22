@@ -147,27 +147,90 @@ class ActiveTradeChronologicalReconciler:
         self.lua.atomic_trade_event(self.worker_id,key_trade(expected["trade_id"]),canonical_json(expected),canonical_json(new),key_outbox(eid),canonical_json(out),generation)
         return new
 
+    def _commit_recovery_batch(self,expected,transitions):
+        """Commit the fully audited replay in one fenced Redis Lua EVAL.
+
+        Intermediate T1 is represented by its durable outbox, not a partially
+        committed canonical trade state. The final trade is visible atomically
+        with every event outbox or nothing is written.
+        """
+        self._require_not_cancelled()
+        if self.leadership is None:
+            raise ActiveTradeRecoveryError("RECOVERY_LEADERSHIP_UNBOUND")
+        if not 1<=len(transitions)<=4:
+            raise ActiveTradeRecoveryError("INVALID_RECOVERY_TRANSITION_COUNT")
+        token=self.leadership.require_current()
+        if token.worker_instance_id!=self.worker_id:
+            raise ActiveTradeRecoveryError("RECOVERY_WORKER_ID_MISMATCH")
+        generation=token.leader_generation
+        last_state,last_event,last_ts,_=transitions[-1]
+        new=dict(expected)
+        new.update(state=last_state,updated_at=last_ts.isoformat(),
+                   leader_generation=generation,worker_instance_id=self.worker_id)
+        validate_record(new,"trade")
+        outboxes=[];seen=set()
+        for state,event_name,event_ts,breach_price in transitions:
+            if event_name not in EVENT_MAP:
+                raise ActiveTradeRecoveryError("UNSUPPORTED_RECOVERY_EVENT")
+            et=EVENT_MAP[event_name]
+            eid=trade_event_id(et,expected["trade_id"])
+            if eid in seen:
+                raise ActiveTradeRecoveryError("DUPLICATE_RECOVERY_EVENT_ID")
+            seen.add(eid)
+            out=base_record("outbox",expected["session"],expected["symbol"],
+                            "PENDING",event_ts.isoformat())
+            payload={"trade_id":expected["trade_id"],"event":event_name,
+                     "event_ts":event_ts.isoformat(),"recovered":True}
+            if breach_price is not None:
+                payload["first_observed_breach_price"]=breach_price
+            out.update(event_id=eid,event_type=et,payload=payload,
+                       attempt_count=0,leader_generation=generation)
+            validate_record(out,"outbox")
+            outboxes.append((key_outbox(eid),canonical_json(out)))
+        self._require_not_cancelled()
+        self.lua.atomic_trade_recovery(
+            self.worker_id,key_trade(expected["trade_id"]),
+            canonical_json(expected),canonical_json(new),outboxes,generation)
+        return new
+
     def reconcile(self,trade):
         self._require_not_cancelled()
-        if trade["state"]=="HALTED_ACTIVE":return {"ambiguous":True,"reason":"HALTED_ACTIVE_REQUIRES_STATUS_RECONCILIATION"}
+        if trade["state"]=="HALTED_ACTIVE":
+            return {"ambiguous":True,"reason":"HALTED_ACTIVE_REQUIRES_STATUS_RECONCILIATION"}
         start=parse_ts(trade.get("updated_at") or trade.get("entry_alert_sent_at"))
-        now=self.now_fn();events=self._events(trade,start,now);state=self._state(trade);current=dict(trade)
+        now=self.now_fn()
+        events=self._events(trade,start,now)
+        state=self._state(trade)
         preflight=self._preflight_chronology(state,events)
-        if preflight["ambiguous"]:return preflight
-        self._require_not_cancelled()
-        for _,g in groupby(events,key=lambda e:e.event_ts):
+        if preflight["ambiguous"]:
+            return preflight
+        transitions=[]
+        terminal=False
+        for _,items in groupby(events,key=lambda e:e.event_ts):
             self._require_not_cancelled()
-            group=list(g)
-            for e in group:
+            for e in items:
                 ns,evt=apply_event(state,e)
                 if evt!=MonitorEvent.NONE:
-                    if evt in {MonitorEvent.HALT,MonitorEvent.RESUME}:return {"ambiguous":True,"reason":"STATUS_EVENT_REQUIRES_STATUS_STREAM"}
-                    current=self._commit(current,ns.state,evt.value,e.event_ts,e.price if evt==MonitorEvent.STOP else None)
-                    state=ns
-                    if state.state in TERMINAL:return {"ambiguous":False,"state":state.state,"trade":current}
-                else:state=ns
+                    if evt in {MonitorEvent.HALT,MonitorEvent.RESUME}:
+                        return {"ambiguous":True,
+                                "reason":"STATUS_EVENT_REQUIRES_STATUS_STREAM"}
+                    transitions.append((ns.state,evt.value,e.event_ts,
+                                        e.price if evt==MonitorEvent.STOP else None))
+                    if len(transitions)>4:
+                        raise ActiveTradeRecoveryError("RECOVERY_TRANSITION_LIMIT")
+                state=ns
+                if state.state in TERMINAL:
+                    terminal=True
+                    break
+            if terminal:break
         if now>state.monitoring_deadline and state.state not in TERMINAL:
             expiry_ts=state.monitoring_deadline+timedelta(microseconds=1)
             ns,evt=apply_event(state,MarketEvent("TIMEOUT",expiry_ts,10**12,None,True))
-            current=self._commit(current,ns.state,evt.value,expiry_ts);state=ns
+            if evt!=MonitorEvent.NONE:
+                transitions.append((ns.state,evt.value,expiry_ts,None))
+            state=ns
+        self._require_not_cancelled()
+        if not transitions:
+            return {"ambiguous":False,"state":state.state,"trade":dict(trade)}
+        current=self._commit_recovery_batch(trade,transitions)
         return {"ambiguous":False,"state":state.state,"trade":current}
