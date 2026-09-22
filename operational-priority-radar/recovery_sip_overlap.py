@@ -120,8 +120,21 @@ def audit_draining_capture(native_events,capture,*,epoch,as_of,max_events=100000
     A live producer may append while we inspect; this function cannot assert
     that the queue is drained or that a zero-loss DIRECT handoff occurred.
     """
-    if capture.phase!=capture.DRAINING or capture.epoch!=epoch:
-        raise SIPOverlapUnsafe("CAPTURE_NOT_DRAINING_IN_EPOCH")
-    items=capture.peek_batch(epoch,min(capture.max_messages,max_events))
-    return merge_native_and_captured(native_events,items,epoch=epoch,
-                                     as_of=as_of,max_events=max_events)
+    # The live websocket may append while this audit is running on another
+    # thread. Read one atomic deep-copied prefix rather than iterating a
+    # concurrently mutating deque. The prefix remains unacknowledged.
+    try:
+        items,prefix=capture.snapshot_prefix(epoch,min(capture.max_messages,max_events))
+    except Exception as exc:
+        from sip_epoch_capture import EpochCaptureError
+        if isinstance(exc,EpochCaptureError):
+            raise SIPOverlapUnsafe("CAPTURE_NOT_DRAINING_IN_EPOCH") from exc
+        raise
+    events,audit=merge_native_and_captured(native_events,items,epoch=epoch,
+                                           as_of=as_of,max_events=max_events)
+    if not capture.prefix_still_valid(epoch,prefix["first_sequence"],
+                                      prefix["last_sequence"]):
+        raise SIPOverlapUnsafe("CAPTURE_INVALIDATED_DURING_AUDIT")
+    audit["audited_prefix"]=prefix
+    audit["live_capture_may_have_appended"]=True
+    return events,audit
