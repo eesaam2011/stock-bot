@@ -38,7 +38,10 @@ class TestUntrustedQuarantine(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(calls,[])
   self.assertEqual(rec.messages,["TRADE","BAR"])
   await ws.on_message({"T":"s","S":"A","sc":"3","t":"2026-09-22T15:00:01Z"})
-  self.assertEqual(rec.status_tracker.current("A"),"TRADING")
+  # An ACKed but unreconciled status is captured, not authoritative.
+  # Premature TRADING cannot resume HALTED_ACTIVE or authorize entry.
+  self.assertEqual(rec.status_tracker.current("A"),"UNKNOWN")
+  self.assertEqual(rec.messages,["TRADE","BAR","STATUS"])
   p._entry_opportunities["A"]={"state":"CONFLUENCE_VALID"}
   p.trades["A"]=["stale"]
   await ws.on_disconnect()
