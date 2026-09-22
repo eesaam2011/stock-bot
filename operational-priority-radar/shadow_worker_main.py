@@ -193,6 +193,7 @@ class ShadowRuntimeSupervisor:
         leadership_task=None
         ws_task=None
         child_tasks=[]
+        recovery_cancelled=False
         try:
             if hasattr(self,"decision_pipeline"):
                 print({"stage":"SYNC_LEADER_GENERATION_START"},flush=True)
@@ -247,7 +248,9 @@ class ShadowRuntimeSupervisor:
             except BaseException:
                 rec=getattr(getattr(self.orchestrator,"c",None),"recovery",None)
                 cancel=getattr(rec,"cancel",None)
-                if callable(cancel):cancel()
+                if callable(cancel):
+                    cancel()
+                    recovery_cancelled=True
                 recovery_task.cancel()
                 await asyncio.gather(recovery_task,return_exceptions=True)
                 raise
@@ -314,7 +317,7 @@ class ShadowRuntimeSupervisor:
             self.websocket_runtime.stop()
             rec=getattr(getattr(self.orchestrator,"c",None),"recovery",None)
             cancel=getattr(rec,"cancel",None)
-            if callable(cancel):cancel()
+            if callable(cancel) and not recovery_cancelled:cancel()
             tasks=[t for t in (ws_task,leadership_task,*child_tasks) if t is not None]
             for task in tasks:task.cancel()
             if tasks:await asyncio.gather(*tasks,return_exceptions=True)
