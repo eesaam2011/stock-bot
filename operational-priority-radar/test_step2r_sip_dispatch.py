@@ -80,7 +80,8 @@ class TestBoundedDispatch(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(rec.status_tracker.current("A"),"UNKNOWN")
   await ws.on_message({"T":"s","S":"A","sc":"3","t":"2026-09-22T15:00:00Z",
                        "_sip_epoch":2})
-  self.assertEqual(rec.status_tracker.current("A"),"TRADING")
+  # Even the current ACK epoch is untrusted until canonical replay completes.
+  self.assertEqual(rec.status_tracker.current("A"),"UNKNOWN")
   ws.connected_event.clear()
   await ws.on_disconnect()
   await ws.on_message({"T":"s","S":"A","sc":"3","t":"2026-09-22T15:00:00Z",
