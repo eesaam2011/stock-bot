@@ -69,6 +69,17 @@ class TestSessionScopedReplay(unittest.TestCase):
                                       if k!="_timeframe"})
         with self.assertRaisesRegex(ChronologyUnsafe,"SESSION_REPLAY_SYNTHETIC_5M"):
             replay(tuple(p))
+    def test_native_wrapper_cannot_forge_bar_start_or_duration(self):
+        p=list(history())
+        for bad in (
+            replace(p[0],bar={**p[0].bar,
+                               "t":(p[0].start+timedelta(minutes=1)).isoformat()}),
+            replace(p[0],end=p[0].end+timedelta(minutes=1)),
+            replace(p[0],bar={**p[0].bar,"S":"DIFFERENT"})):
+            modified=[bad,*p[1:]]
+            with self.assertRaisesRegex(
+                    ChronologyUnsafe,"SESSION_REPLAY_BAR_PROVENANCE_MISMATCH"):
+                replay(tuple(modified))
     def test_conflicting_duplicate_rejected(self):
         p=history()
         with self.assertRaisesRegex(ChronologyUnsafe,"SESSION_REPLAY_DUPLICATE_EVENT"):
