@@ -12,12 +12,23 @@ from state_store import base_record
 from early_core_score import ARTIFACT
 
 SESSION="2026-09-22"
+class FullRecordingBase(RecordingBase):
+    """Deterministic fixture with the complete production B payload shape."""
+    def on_completed_native_1m(self,symbol,bar,received_at):
+        result=super().on_completed_native_1m(symbol,bar,received_at)
+        if result.get("base_ready"):
+            result["features"]={"opportunity":90.0,"failure_pressure":0.1}
+            result["diagnostics"]={
+                "price":10.0,"vwap":10.0,"demand_efficiency":0.8,
+                "price_acceptance":0.8,"volume_acceleration":2.0}
+        return result
+
 def observed():
     events,c=inputs()
     signals,a=preview_session_overlap(
         events,c,session=SESSION,epoch=7,symbols=["A"],
         session_start=START,session_end=NOW,requested_start=START,
-        as_of=NOW,base_factory=RecordingBase,
+        as_of=NOW,base_factory=FullRecordingBase,
         early_score=lambda rows,end:(.9,.9))
     return signals,c
 
