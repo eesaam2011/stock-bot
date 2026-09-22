@@ -126,6 +126,9 @@ class ShadowRuntimeSupervisor:
                        "native5_cycles":self.native5_cycles,
                        "native5_batch_size":500,
                        "native5_last":self.native5_last_stats,
+                       "sip_receive_processing":(
+                           self.websocket_runtime.performance_snapshot()
+                           if hasattr(self.websocket_runtime,"performance_snapshot") else None),
                        "operational_session":session,
                        "early_core_events_session":e_session,
                        "base_ready_events_session":b_session,
@@ -187,85 +190,90 @@ class ShadowRuntimeSupervisor:
     async def run(self):
         if not await self._wait_for_leadership():
             return
-
-        if hasattr(self,"decision_pipeline"):
-            print({"stage":"SYNC_LEADER_GENERATION_START"}, flush=True)
-            self.decision_pipeline.leadership.sync_generation()
-            print({"stage":"SYNC_LEADER_GENERATION_OK",
-                   "lease":self._leadership_snapshot()}, flush=True)
-
-        # Keep lease renewal alive throughout long startup recovery.
-        leadership_task=asyncio.create_task(self.leadership_loop())
-        print({"stage":"LEADERSHIP_RENEW_TASK_STARTED",
-               "lease":self._leadership_snapshot()},flush=True)
-
-        print({"stage":"STARTUP_RECOVERY_START"}, flush=True)
-        recovery_result=await asyncio.to_thread(self.orchestrator.begin_recovery)
-        print({"stage":"STARTUP_RECOVERY_RETURNED",
-               "reconciled": recovery_result.get("reconciled",False)
-                   if isinstance(recovery_result,dict) else None,
-               "lease":self._leadership_snapshot()}, flush=True)
-        # Fail closed before stream trust if the lease was lost during recovery.
-        self.decision_pipeline.leadership.require_current() if hasattr(self,"decision_pipeline") else None
-
-        print({"stage":"SIP_WEBSOCKET_TASK_START",
-               "symbols_count":len(self.symbols)}, flush=True)
-        ws_task=asyncio.create_task(self.websocket_runtime.reconnect_loop(
-                self.stream_url,self.key,self.secret,self.symbols))
-
-        # CONNECTED is not trusted. Never wait silently forever during startup.
-        print({"stage":"WAITING_FOR_SIP_CONNECTED","timeout_sec":45}, flush=True)
+        leadership_task=None
+        ws_task=None
+        child_tasks=[]
         try:
-            await asyncio.wait_for(
-                self.websocket_runtime.connected_event.wait(),
-                timeout=45.0
-            )
-        except asyncio.TimeoutError:
-            print({"stage":"SIP_CONNECTED_TIMEOUT",
-                   "timeout_sec":45,
-                   "new_entries_allowed":False}, flush=True)
-            self.websocket_runtime.stop()
-            ws_task.cancel()
-            await asyncio.gather(ws_task, return_exceptions=True)
-            raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT")
-
-        print({"stage":"SIP_CONNECTED_NOT_YET_TRUSTED"}, flush=True)
-        connected_epoch=getattr(self.websocket_runtime,"connection_epoch",None)
-        self.orchestrator.mark_stream_connected()
-        recovery=self.orchestrator.c.recovery
-        while hasattr(recovery,"ready_after_stream") and not recovery.ready_after_stream():
-            if self.stop_event.is_set():break
-            await asyncio.sleep(0.05)
-        if not self.stop_event.is_set():
-            reconciled = recovery.ready_after_stream() if hasattr(recovery,"ready_after_stream") else recovery_result.get("reconciled",False)
-            if not reconciled:
-                raise RuntimeError("POST_STREAM_RECONCILIATION_UNPROVEN")
-            # No synthetic continuity=True: require direct SIP handoff, actual
-            # replay evidence, matching connection epoch and current leadership.
+            if hasattr(self,"decision_pipeline"):
+                print({"stage":"SYNC_LEADER_GENERATION_START"},flush=True)
+                self.decision_pipeline.leadership.sync_generation()
+                print({"stage":"SYNC_LEADER_GENERATION_OK",
+                       "lease":self._leadership_snapshot()},flush=True)
+            leadership_task=asyncio.create_task(self.leadership_loop())
+            print({"stage":"LEADERSHIP_RENEW_TASK_STARTED",
+                   "lease":self._leadership_snapshot()},flush=True)
+            print({"stage":"STARTUP_RECOVERY_START"},flush=True)
+            recovery_result=await asyncio.wait_for(
+                asyncio.to_thread(self.orchestrator.begin_recovery),
+                timeout=getattr(self,"startup_recovery_timeout",900.0))
+            print({"stage":"STARTUP_RECOVERY_RETURNED",
+                   "reconciled":recovery_result.get("reconciled",False)
+                       if isinstance(recovery_result,dict) else None,
+                   "lease":self._leadership_snapshot()},flush=True)
+            if hasattr(self,"decision_pipeline"):
+                self.decision_pipeline.leadership.require_current()
+            if leadership_task.done():
+                raise RuntimeError("LEADERSHIP_RENEW_TASK_ENDED_DURING_RECOVERY")
+            print({"stage":"SIP_WEBSOCKET_TASK_START",
+                   "symbols_count":len(self.symbols)},flush=True)
+            ws_task=asyncio.create_task(self.websocket_runtime.reconnect_loop(
+                self.stream_url,self.key,self.secret,self.symbols))
+            print({"stage":"WAITING_FOR_SIP_CONNECTED","timeout_sec":45},flush=True)
+            try:
+                await asyncio.wait_for(self.websocket_runtime.connected_event.wait(),
+                                       timeout=getattr(self,"sip_connect_timeout",45.0))
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT") from exc
+            connected_epoch=getattr(self.websocket_runtime,"connection_epoch",None)
+            print({"stage":"SIP_CONNECTED_NOT_YET_TRUSTED",
+                   "epoch":connected_epoch},flush=True)
+            self.orchestrator.mark_stream_connected()
+            recovery=self.orchestrator.c.recovery
+            ready=getattr(recovery,"ready_after_stream",None)
+            if not callable(ready):
+                raise RuntimeError("POST_STREAM_RECONCILIATION_PROOF_MISSING")
+            deadline=asyncio.get_running_loop().time()+getattr(
+                self,"post_stream_timeout",60.0)
+            while not ready():
+                if self.stop_event.is_set():
+                    return
+                if (not self.websocket_runtime.connected_event.is_set() or
+                    getattr(self.websocket_runtime,"connection_epoch",None)!=connected_epoch):
+                    raise RuntimeError("SIP_EPOCH_LOST_DURING_RECOVERY")
+                if leadership_task.done() or ws_task.done():
+                    raise RuntimeError("SUPERVISOR_TASK_ENDED_DURING_RECOVERY")
+                if asyncio.get_running_loop().time()>=deadline:
+                    raise RuntimeError("POST_STREAM_RECONCILIATION_TIMEOUT")
+                await asyncio.sleep(0.05)
+            if self.stop_event.is_set():
+                return
             from trust_gate import require_live_trust_proof
             pipeline=getattr(self,"decision_pipeline",None)
             if pipeline is None:
                 raise RuntimeError("DECISION_PIPELINE_MISSING_FOR_TRUST_PROOF")
             require_live_trust_proof(self.websocket_runtime,recovery,
-                pipeline.leadership,connected_epoch)
-            trust_state = self.orchestrator.finish_reconciliation(
+                                     pipeline.leadership,connected_epoch)
+            trust_state=self.orchestrator.finish_reconciliation(
                 continuity_ok=True,epoch=connected_epoch)
             print({"stage":"SIP_LIVE_TRUSTED",
-                   "trust_state": getattr(trust_state, "value", str(trust_state)),
-                   "lease":self._leadership_snapshot()}, flush=True)
-        tasks=[
-            ws_task,
-            asyncio.create_task(self.outbox_loop()),
-            asyncio.create_task(self.native5_loop()),
-            leadership_task,
-            asyncio.create_task(self.telemetry_loop()),
-        ]
-        await self.stop_event.wait()
-        self.drain.begin()
-        self.websocket_runtime.stop()
-        for t in tasks:t.cancel()
-        await asyncio.gather(*tasks,return_exceptions=True)
-        self.drain.complete()
+                   "trust_state":getattr(trust_state,"value",str(trust_state)),
+                   "lease":self._leadership_snapshot()},flush=True)
+            child_tasks=[
+                asyncio.create_task(self.outbox_loop()),
+                asyncio.create_task(self.native5_loop()),
+                asyncio.create_task(self.telemetry_loop()),
+            ]
+            await self.stop_event.wait()
+        finally:
+            # Also run after startup recovery errors/timeouts, normal EOF or
+            # SIGTERM. Never leave a lease-renewal task alive after failure.
+            self.stop_event.set()
+            self.drain.begin()
+            self.websocket_runtime.stop()
+            tasks=[t for t in (ws_task,leadership_task,*child_tasks) if t is not None]
+            for task in tasks:task.cancel()
+            if tasks:await asyncio.gather(*tasks,return_exceptions=True)
+            self.drain.complete()
 
     def request_stop(self):
         self.stop_event.set()
