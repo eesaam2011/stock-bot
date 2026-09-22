@@ -27,7 +27,7 @@ class TestEpochPrefixIntegrity(unittest.TestCase):
         self.assertEqual(item.sequence,1)
         self.assertEqual(item.epoch,8)
         c.begin_drain(8)
-        self.assertEqual(c.snapshot_prefix(8)[1]["first_sequence"],1)
+        self.assertEqual(c.snapshot_prefix(8,max_items=c.max_messages)[1]["first_sequence"],1)
     def test_ingress_nested_payload_is_immutable_copy(self):
         c=BoundedEpochCapture(max_messages=5,max_bytes=4096)
         c.start(7)
@@ -36,7 +36,7 @@ class TestEpochPrefixIntegrity(unittest.TestCase):
         msg["conditions"][0]["codes"][0]=999
         self.assertEqual(item.payload["conditions"][0]["codes"],[1,2])
         c.begin_drain(7)
-        copied,_=c.snapshot_prefix(7)
+        copied,_=c.snapshot_prefix(7,max_items=c.max_messages)
         copied[0].payload["conditions"][0]["codes"][1]=777
         self.assertEqual(c.peek_batch(7)[0].payload["conditions"][0]["codes"],[1,2])
     def test_previously_acked_prefix_rejected_before_frozen_replay(self):
@@ -60,7 +60,7 @@ class TestEpochPrefixIntegrity(unittest.TestCase):
         c.ack_batch(7,1)
         c.ingest(7,{"T":"t","S":"A","t":"2026-09-22T16:00:15Z","p":10.4},
                  received_at=FETCH+timedelta(seconds=15))
-        meta=c.snapshot_prefix(7)[1]
+        meta=c.snapshot_prefix(7,max_items=c.max_messages)[1]
         self.assertEqual(meta["first_sequence"],2)
         self.assertEqual(meta["acked_upto_at_snapshot"],1)
         with self.assertRaisesRegex(
