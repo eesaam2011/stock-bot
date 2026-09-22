@@ -4,6 +4,7 @@ from state_store import key_early_core,key_base_ready,key_opportunity,validate_r
 from recovery_chronology import plan_native_batch
 from recovery_signal_replay import reconstruct_window_signals
 from recovery_session_replay import reconstruct_session_signals,EARLY_WARMUP_MINUTES
+from recovery_session_preview import preview_session_overlap
 from recovery_chronology import _utc
 UTC=timezone.utc
 class RecoveryFailure(RuntimeError):pass
@@ -67,13 +68,17 @@ class RedisCanonicalReader:
 
 class ProductionStartupRecovery:
  def __init__(self,reader,rest,trade_reconciler,session,symbols,now_fn=None,overlap_seconds=120,status_tracker=None,audit_window_signals=False,
-              audit_session_signals=False,session_start=None):
+              audit_session_signals=False,session_start=None,
+              audit_session_overlap=False,sip_capture=None,sip_epoch=None):
   self.reader=reader;self.rest=rest;self.trade_reconciler=trade_reconciler
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
   self.audit_window_signals=bool(audit_window_signals)
   self.audit_session_signals=bool(audit_session_signals)
   self.session_start=session_start
+  self.audit_session_overlap=bool(audit_session_overlap)
+  self.sip_capture=sip_capture
+  self.sip_epoch=sip_epoch
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
@@ -120,7 +125,18 @@ class ProductionStartupRecovery:
     # Native5 pre-session warm-up is part of the request, not a claim
     # that REST observed every market event during that interval.
     start=min(start,session_start-timedelta(minutes=EARLY_WARMUP_MINUTES))
+   if self.audit_session_overlap:
+    if (not self.audit_session_signals or self.sip_capture is None
+        or not isinstance(self.sip_epoch,int) or self.sip_epoch<1
+        or len(self.symbols)>80 or not self.symbols
+        or not hasattr(self.rest,"native_recovery_batch_audited")):
+     raise RecoveryFailure("SESSION_OVERLAP_REQUIRES_ONE_AUDITED_BATCH")
+    snap=self.sip_capture.snapshot()
+    if (snap["phase"]!=self.sip_capture.DRAINING
+        or snap["epoch"]!=self.sip_epoch):
+     raise RecoveryFailure("SESSION_OVERLAP_REQUIRES_EXTERNAL_DRAIN")
    batch_audits=[]
+   overlap_audits=[]
    session_audits=[]
    signal_audits=[]
    pagination_audits=[]
@@ -146,15 +162,23 @@ class ProductionStartupRecovery:
       r1,r5=self.rest.native_recovery_batch(batch,start,now,batch_size=batch_size,max_workers=2)
      self._require_not_cancelled()
      plan,audit=plan_native_batch(r1,r5,batch,window_start=start,
-                                  window_end=now,recovered_at=self.now_fn())
+                                  window_end=now,recovered_at=now if self.audit_session_overlap else self.now_fn())
      self._require_not_cancelled()
      if self.audit_window_signals:
       _,signals_audit=reconstruct_window_signals(plan,self.session,recovered_at=plan[0].recovered_at if plan else self.now_fn())
       signal_audits.append(signals_audit)
      if self.audit_session_signals:
-      _,session_audit=reconstruct_session_signals(
-          plan,self.session,session_start=session_start,session_end=now,
-          requested_start=start,recovered_at=plan[0].recovered_at if plan else self.now_fn())
+      if self.audit_session_overlap:
+       _,overlap_audit=preview_session_overlap(
+           plan,self.sip_capture,session=self.session,epoch=self.sip_epoch,
+           symbols=batch,session_start=session_start,session_end=now,
+           requested_start=start,as_of=now)
+       overlap_audits.append(overlap_audit)
+       session_audit=overlap_audit["session_signals"]
+      else:
+       _,session_audit=reconstruct_session_signals(
+           plan,self.session,session_start=session_start,session_end=now,
+           requested_start=start,recovered_at=plan[0].recovered_at if plan else self.now_fn())
       session_audit["rest_pagination_proven"]=bool(pagination_audits and page_audit.get("both_api_page_chains_exhausted")) if hasattr(self.rest,"native_recovery_batch_audited") else False
       session_audits.append(session_audit)
      batch_audits.append(audit)
@@ -205,6 +229,12 @@ class ProductionStartupRecovery:
                       "batch_digests":[a["chronological_sha256"] for a in batch_audits],
                       "signal_audit_enabled":self.audit_window_signals,
                       "session_signal_audit_enabled":self.audit_session_signals,
+                      "session_sip_overlap_audit_enabled":self.audit_session_overlap,
+                      "session_sip_overlap_audited_batches":len(overlap_audits),
+                      "session_sip_overlap_equal_bars":sum(a["overlap"]["overlap_equal_1m_bars"] for a in overlap_audits),
+                      "session_sip_overlap_new_bars":sum(a["overlap"]["unmatched_sip_1m_bars"] for a in overlap_audits),
+                      "session_sip_trades_not_reconciled":sum(a["overlap"]["sip_trades"] for a in overlap_audits),
+                      "session_sip_statuses_not_reconciled":sum(a["overlap"]["sip_statuses"] for a in overlap_audits),
                       "session_observed_E":sum(a["session_observed_E"] for a in session_audits),
                       "session_observed_B":sum(a["session_observed_B"] for a in session_audits),
                       "session_warmup_window_requested":bool(session_audits) and all(a["warmup_window_requested"] for a in session_audits),
