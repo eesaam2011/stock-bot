@@ -39,8 +39,10 @@ class Drain:
 class TestStep16A(unittest.IsolatedAsyncioTestCase):
  async def test_supervisor_is_long_running_until_stop(self):
   o,w,d=Orch(),WS(),Drain();s=ShadowRuntimeSupervisor(o,w,Sender(),OStore(),[], "k","s","url",d)
-  s.decision_pipeline=SimpleNamespace(leadership=SimpleNamespace(
-      require_current=lambda:True,sync_generation=lambda:1))
+  s.decision_pipeline=SimpleNamespace(
+      leadership=SimpleNamespace(require_current=lambda:True,sync_generation=lambda:1),
+      bars={},trades={},session="S",memory_stats=lambda:{},
+      poll_native5=lambda *args:{})
   task=asyncio.create_task(s.run())
   try:
    await asyncio.wait_for(w.started.wait(),timeout=3.0)
