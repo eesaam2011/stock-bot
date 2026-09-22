@@ -39,7 +39,41 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Unittest (full OPR directory)
         run: python -m unittest discover -v
-      - name: Pytest (full OPR directory)
-        run: pytest -q
+      - name: Pytest (full OPR directory; export exact stdout)
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee "$GITHUB_WORKSPACE/pytest-q-output.txt"
+      - name: Package reviewed source and exact pytest output
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="$RUNNER_TEMP/opr-review-package"
+          mkdir -p "$pkg"
+          git archive --format=tar HEAD operational-priority-radar .github/workflows/opr-review-tests.yml | tar -x -C "$pkg"
+          if test -f "$GITHUB_WORKSPACE/pytest-q-output.txt"; then
+            cp "$GITHUB_WORKSPACE/pytest-q-output.txt" "$pkg/pytest-q-output.txt"
+          else
+            printf 'pytest -q did not run; see workflow job logs.\\n' > "$pkg/pytest-q-output.txt"
+          fi
+          {
+            printf 'review_only=true\\n'
+            printf 'tested_git_sha=%s\\n' "$(git rev-parse HEAD)"
+            printf 'github_run=%s/%s/actions/runs/%s\\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'pytest_command=pytest -q\\n'
+            printf 'render_deployed=false\\n'
+          } > "$pkg/REVIEW_MANIFEST.txt"
+          (cd "$pkg" && zip -qr "$GITHUB_WORKSPACE/opr-review-package.zip" .)
+      - name: Upload review package and pytest text evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opr-step2u-review-bundle
+          path: |
+            opr-review-package.zip
+            pytest-q-output.txt
+          if-no-files-found: error
+          retention-days: 30
 
 # No secrets, Render deploy, push or merge permissions.
