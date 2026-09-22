@@ -104,4 +104,55 @@ class TestSessionScopedReplay(unittest.TestCase):
         self.assertEqual(a["frozen_early_core_threshold"],ARTIFACT["threshold"])
         self.assertFalse(a["sip_continuity_proven"])
 
+class TestStartupSessionAudit(unittest.TestCase):
+    class Reader:
+        def active_trades(self):return []
+        def earliest_decision_anchor(self,session):return None
+    class REST:
+        def __init__(self):self.calls=[]
+        def native_recovery_batch(self,symbols,start,end,**kw):
+            self.calls.append((tuple(symbols),start,end,kw))
+            return ({sym:[bar(SESSION+timedelta(minutes=i)) for i in range(25)
+                          if SESSION+timedelta(minutes=i)<end]
+                     for sym in symbols},
+                    {sym:[bar(SESSION-timedelta(minutes=5),"5m"),
+                              bar(SESSION,"5m")]
+                     for sym in symbols})
+    def test_explicit_session_start_fetches_warmup_but_no_trust(self):
+        from production_recovery import ProductionStartupRecovery
+        rest=self.REST()
+        rec=ProductionStartupRecovery(self.Reader(),rest,None,"2026-09-22",
+            ["A"],now_fn=lambda:SESSION+timedelta(minutes=30),
+            audit_session_signals=True,session_start=SESSION)
+        result=rec.run()
+        self.assertEqual(result["reason"],"CANONICAL_REPLAY_NOT_IMPLEMENTED")
+        a=result["fetch_audit"]
+        self.assertEqual(rest.calls[0][1],REQUEST)
+        self.assertEqual(a["session_audited_batches"],1)
+        self.assertTrue(a["session_warmup_window_requested"])
+        self.assertFalse(a["full_session_coverage_proven"])
+        self.assertFalse(result["gap_recovered"])
+        self.assertFalse(rec.continuity_verified(7))
+    def test_session_audit_without_explicit_start_fails_closed(self):
+        from production_recovery import ProductionStartupRecovery
+        rest=self.REST()
+        rec=ProductionStartupRecovery(self.Reader(),rest,None,"2026-09-22",
+            ["A"],now_fn=lambda:FETCH,audit_session_signals=True)
+        result=rec.run()
+        self.assertEqual(result["reason"],"RecoveryFailure")
+        self.assertEqual(rest.calls,[])
+        self.assertFalse(rec.ready_after_stream())
+    def test_session_audit_uses_bounded_80_symbol_batches(self):
+        from production_recovery import ProductionStartupRecovery
+        rest=self.REST()
+        syms=["A"+str(i) for i in range(161)]
+        rec=ProductionStartupRecovery(self.Reader(),rest,None,"2026-09-22",
+            syms,now_fn=lambda:SESSION+timedelta(minutes=30),
+            audit_session_signals=True,session_start=SESSION)
+        result=rec.run()
+        self.assertEqual(result["reason"],"CANONICAL_REPLAY_NOT_IMPLEMENTED")
+        self.assertEqual([len(x[0]) for x in rest.calls],[80,80,1])
+        self.assertEqual(result["fetch_audit"]["session_audited_batches"],3)
+        self.assertFalse(result["fetch_audit"]["api_page_chains_exhausted"])
+
 if __name__=="__main__":unittest.main()
