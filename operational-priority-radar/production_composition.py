@@ -2,6 +2,7 @@ import os,uuid
 from alpaca_production_market import AlpacaCredentials,AlpacaREST,AlpacaSIPProtocol,SIP_STREAM_URL
 from runtime_wiring import RuntimeComponents,RuntimeOrchestrator
 from websocket_runtime import WebSocketRuntime
+from sip_epoch_capture import BoundedEpochCapture
 from durable_outbox_sender import DurableOutboxSender
 from redis_outbox_store import RedisOutboxStore
 from resource_guard import ResourceGuard
@@ -102,7 +103,11 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         pipeline.halted.clear()
         pipeline._entry_opportunities.clear()
         pipeline.trades.clear()
-    ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect)
+    # Bounded capture is intentionally not sufficient to establish trust.
+    # Overflow invalidates the epoch and forces fail-closed reconnect.
+    capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
+    ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect,
+                        epoch_capture=capture)
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
     supervisor.decision_pipeline=pipeline
