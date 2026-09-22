@@ -1,4 +1,4 @@
-import json
+import json,threading
 from datetime import datetime,timedelta,timezone
 from state_store import key_early_core,key_base_ready,key_opportunity,validate_record,SchemaError
 UTC=timezone.utc
@@ -68,7 +68,15 @@ class ProductionStartupRecovery:
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
   self._base_reconciled=False
   self._fetch_audit=None
+  self.cancel_event=threading.Event()
+  if self.trade_reconciler is not None:
+   self.trade_reconciler.cancel_event=self.cancel_event
+ def cancel(self):
+  self.cancel_event.set()
+ def _require_not_cancelled(self):
+  if self.cancel_event.is_set():raise RecoveryFailure("RECOVERY_CANCELLED")
  def run(self):
+  self._require_not_cancelled()
   self._base_reconciled=False
   self._fetch_audit=None
   self.pending_halted.clear()
@@ -76,6 +84,7 @@ class ProductionStartupRecovery:
    trades=self.reader.active_trades()
    # P0 first. HALTED_ACTIVE waits for authoritative SIP status after subscription.
    for t in trades:
+    self._require_not_cancelled()
     if t["state"]=="HALTED_ACTIVE":
      self.pending_halted[t["symbol"]]=t;continue
     r=self.trade_reconciler.reconcile(t)
@@ -102,8 +111,10 @@ class ProductionStartupRecovery:
     recovered_1m_count=0
     recovered_5m_count=0
     for offset in range(0,total,batch_size):
+     self._require_not_cancelled()
      batch=self.symbols[offset:offset+batch_size]
      r1,r5=self.rest.native_recovery_batch(batch,start,now,batch_size=batch_size,max_workers=2)
+     self._require_not_cancelled()
      batch_1m_symbols=sum(1 for sym in batch if r1.get(sym))
      batch_5m_symbols=sum(1 for sym in batch if r5.get(sym))
      recovered_1m_count += batch_1m_symbols
@@ -120,9 +131,11 @@ class ProductionStartupRecovery:
    else:
     # Deterministic adapter/test compatibility; keep rows ephemeral here too.
     for sym in self.symbols:
+     self._require_not_cancelled()
      rows1=self._dedup(self.rest.native_1m_gap(sym,start,now))
      rows5=self._dedup(self.rest.native_5m(sym,start,now))
      del rows1,rows5
+   self._require_not_cancelled()
    # REST rows were fetched then discarded: no canonical E/B replay or
    # end-to-end coverage proof occurred. Never report this as recovered.
    self._base_reconciled=False
