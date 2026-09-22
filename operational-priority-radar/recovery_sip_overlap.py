@@ -55,7 +55,8 @@ def merge_native_and_captured(native_events,captured,*,epoch,as_of,max_events=10
     for item in captured:
         if not isinstance(item,CapturedSIP) or item.epoch!=epoch:
             raise SIPOverlapUnsafe("CAPTURE_EPOCH_MISMATCH")
-        if previous_seq is not None and item.sequence!=previous_seq+1:
+        if (not isinstance(item.sequence,int) or item.sequence<1
+            or (previous_seq is not None and item.sequence!=previous_seq+1)):
             raise SIPOverlapUnsafe("CAPTURE_SEQUENCE_GAP")
         previous_seq=item.sequence
         event_ts=_utc(item.event_ts)
@@ -68,6 +69,14 @@ def merge_native_and_captured(native_events,captured,*,epoch,as_of,max_events=10
         if not isinstance(msg,dict) or not msg.get("S"):
             raise SIPOverlapUnsafe("CAPTURE_SYMBOL_MISSING")
         symbol=msg["S"]
+        # event_ts is transport metadata, not an independent trusted clock.
+        # If a caller mutates payload.t after capture, chronology must reject it.
+        try:
+            payload_ts=_utc(msg.get("t"))
+        except ChronologyUnsafe as exc:
+            raise SIPOverlapUnsafe("CAPTURE_PAYLOAD_TIME_INVALID") from exc
+        if payload_ts!=event_ts:
+            raise SIPOverlapUnsafe("CAPTURE_EVENT_TIME_MISMATCH")
         if item.kind=="BAR":
             if msg.get("T")!="b":raise SIPOverlapUnsafe("CAPTURE_KIND_MISMATCH")
             end=event_ts+timedelta(minutes=1)
