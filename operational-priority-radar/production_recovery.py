@@ -69,6 +69,9 @@ class ProductionStartupRecovery:
   self._base_reconciled=False
   self._fetch_audit=None
  def run(self):
+  self._base_reconciled=False
+  self._fetch_audit=None
+  self.pending_halted.clear()
   try:
    trades=self.reader.active_trades()
    # P0 first. HALTED_ACTIVE waits for authoritative SIP status after subscription.
@@ -145,6 +148,9 @@ class ProductionStartupRecovery:
  def on_disconnect(self):
   self._base_reconciled=False
   self._fetch_audit=None
+  self.pending_halted.clear()
+  if self.status_tracker is not None and hasattr(self.status_tracker,"reset"):
+   self.status_tracker.reset()
  def on_status(self,msg):
   if self.status_tracker is None:return
   rec=self.status_tracker.ingest(msg)
