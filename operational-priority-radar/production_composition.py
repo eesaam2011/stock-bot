@@ -102,8 +102,14 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         if kind=="BAR" and symbol and allow:pipeline.on_bar(symbol,msg,received_at,True)
         elif kind=="TRADE" and symbol and allow:pipeline.on_trade(symbol,msg,received_at,True)
         elif kind=="STATUS":
-          rec.on_status(msg)
-          pipeline.on_status(msg)
+          # Pre-trust statuses belong to the captured SIP epoch, not the
+          # authoritative halt state. In particular, a premature TRADING
+          # status must never resume a HALTED_ACTIVE trade or authorize entry.
+          # The chronological recovery coordinator must replay these statuses
+          # before continuity can be proven and DIRECT processing enabled.
+          if allow:
+            rec.on_status(msg)
+            pipeline.on_status(msg)
         rec.on_stream_message(kind,msg)
     async def on_message(msg):
       # Redis and active-trade REST work must not block the SIP socket reader.
