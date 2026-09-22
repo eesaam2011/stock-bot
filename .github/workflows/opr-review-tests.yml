@@ -98,7 +98,8 @@ jobs:
             printf 'integrated_eb_sip_preview=read_only\n'
             printf 'sip_prefix_snapshot=atomic_copy_no_ack\n'
             printf 'canonical_eb_replay=not_implemented\n'
-            printf 'rest_pagination_audit=bounded_native_1m_5m\n'
+            printf 'rest_pagination_audit=bounded_native_1m_5m\n'            printf 'active_trade_pagination=bounded_trades_and_native_1m\n'
+            printf 'active_trade_sip_completeness_proven=false\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
@@ -114,7 +115,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3a-review-bundle
+          name: opr-step3b-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
