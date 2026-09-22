@@ -277,9 +277,24 @@ class ShadowRuntimeSupervisor:
             self.stop_event.set()
             self.drain.begin()
             self.websocket_runtime.stop()
+            rec=getattr(getattr(self.orchestrator,"c",None),"recovery",None)
+            cancel=getattr(rec,"cancel",None)
+            if callable(cancel):cancel()
             tasks=[t for t in (ws_task,leadership_task,*child_tasks) if t is not None]
             for task in tasks:task.cancel()
             if tasks:await asyncio.gather(*tasks,return_exceptions=True)
+            # The REST recovery thread may survive wait_for cancellation.
+            # Owner-checked Lua release prevents its late canonical commits.
+            release=getattr(self.orchestrator.redis,"release",None)
+            if callable(release):
+                try:
+                    released=await asyncio.to_thread(release,self.orchestrator.worker_id)
+                    print({"stage":"LEADERSHIP_RELEASE_ON_SHUTDOWN",
+                           "released":released},flush=True)
+                except Exception as exc:
+                    print({"stage":"LEADERSHIP_RELEASE_ERROR",
+                           "error_type":type(exc).__name__,
+                           "error":str(exc)[:200]},flush=True)
             self.drain.complete()
 
     def request_stop(self):
