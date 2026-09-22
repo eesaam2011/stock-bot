@@ -1,6 +1,6 @@
 from runtime_provenance import stamp
 from datetime import datetime,timedelta,timezone
-import gc,os,time
+import gc,os,time,threading
 from state_store import CanonicalStateStore,key_early_core,key_base_ready,key_opportunity,key_trade,canonical_json,base_record,validate_record
 from early_core_state import EarlyCoreStateWriter
 from base_ready_state import BaseReadyStateWriter
@@ -21,6 +21,8 @@ class ProductionDecisionPipeline:
   self.ew=EarlyCoreStateWriter(self.store,leadership);self.bw=BaseReadyStateWriter(self.store,leadership);self.cw=ConfluenceStateWriter(self.store,leadership)
   self.trades={};self.bars={};self.halted=set();self.last_native5={}
   self.status_tracker=None  # Bound by production composition; UNKNOWN blocks entries.
+  self.decision_lock=threading.RLock()
+  self.decision_gate=lambda:False  # Fail closed until the orchestrator binds it.
   self.max_bar_buffer=20;self.entry_trade_buffer_seconds=15
   self.raw_trade_messages_received=0
   # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
@@ -132,10 +134,12 @@ class ProductionDecisionPipeline:
    self._confluence(symbol,received_at)
   if symbol in self._structure_watch_symbols:self._retain_structure_bar(symbol,bar,received_at)
   self._monitor_bar(symbol,bar,received_at)
+ def _decision_gate_open(self):
+  return bool(self.decision_gate())
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
   stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"eligible_rows":0,"invalid_close_bars":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"eligible_above_threshold":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"early_core_crossings_detected":0,"early_core_persisted":0,"early_core_persist_errors":0,"early_core_first_persist_error":None,"batch_size":int(batch_size)}
-  if not allow_decision:return stats
+  if not allow_decision or not self._decision_gate_open():return stats
   # One Redis round-trip per chunk instead of one GET per symbol. This is transport/runtime
   # optimization only; it does not change Early Core eligibility or event semantics.
   pending=[]
@@ -162,6 +166,8 @@ class ProductionDecisionPipeline:
   # Memory-safe streaming: never materialize native 5m rows for the full universe at once.
   # Each REST request remains native Alpaca 5Min and uses the frozen engineering batch size.
   for i in range(0,len(pending),batch_size):
+   if not self._decision_gate_open():
+    stats["aborted_untrusted"]=True;break
    chunk=pending[i:i+batch_size]
    batch_no=(i//batch_size)+1
    batch_t0=time.monotonic()
@@ -172,6 +178,8 @@ class ProductionDecisionPipeline:
    self._memory_probe("native5_after_bars_multi",batch_no=batch_no,chunk_symbols=len(chunk),fetched_rows=fetched_rows,fetch_seconds=fetch_seconds)
    process_t0=time.monotonic()
    for symbol in chunk:
+    if not self._decision_gate_open():
+     stats["aborted_untrusted"]=True;break
     rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
     if rows:stats["symbols_with_rows"]+=1
     if rows:
@@ -192,26 +200,30 @@ class ProductionDecisionPipeline:
       stats["max_score"]=sc;stats["max_score_symbol"]=symbol;stats["gap_to_threshold"]=tele.get("gap_to_threshold")
     crossing=self.ec.evaluate(symbol,rows,now)
     if crossing:
-     # STEP16Z observability only: distinguish detection from canonical E persistence.
-     # No Early Core threshold, crossing rule, state semantics, or alert policy changes.
-     stats["early_core_crossings_detected"]+=1
-     try:
-      _e_key,e_record=self.ew.persist_first_e(crossing)
-     except Exception as exc:
-      stats["early_core_persist_errors"]+=1
-      if stats["early_core_first_persist_error"] is None:
-       stats["early_core_first_persist_error"]={"type":type(exc).__name__,"message":str(exc)[:300],"symbol":symbol}
-      print({"stage":"SHADOW_E_PERSIST_ERROR","symbol":symbol,
-             "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
-     else:
-      stats["crossings"]+=1
-      stats["early_core_persisted"]+=1
-      self._structure_watch_symbols.add(symbol)
-      print({"stage":"SHADOW_FIRST_E","symbol":symbol,
-             "score":e_record.get("score"),
-             "bar_end_ts":e_record.get("bar_end_ts"),
-             "decision_available_ts":e_record.get("decision_available_ts")},flush=True)
-     self._confluence(symbol,now)
+     # A native5 REST cycle runs in a separate thread. The disconnect
+     # callback takes the same lock before invalidating trust, preventing
+     # a pre-disconnect allow_decision snapshot from authorizing late E.
+     with self.decision_lock:
+      if not self._decision_gate_open():
+       stats["aborted_untrusted"]=True;break
+      stats["early_core_crossings_detected"]+=1
+      try:
+       _e_key,e_record=self.ew.persist_first_e(crossing)
+      except Exception as exc:
+       stats["early_core_persist_errors"]+=1
+       if stats["early_core_first_persist_error"] is None:
+        stats["early_core_first_persist_error"]={"type":type(exc).__name__,"message":str(exc)[:300],"symbol":symbol}
+       print({"stage":"SHADOW_E_PERSIST_ERROR","symbol":symbol,
+              "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
+      else:
+       stats["crossings"]+=1
+       stats["early_core_persisted"]+=1
+       self._structure_watch_symbols.add(symbol)
+       print({"stage":"SHADOW_FIRST_E","symbol":symbol,
+              "score":e_record.get("score"),
+              "bar_end_ts":e_record.get("bar_end_ts"),
+              "decision_available_ts":e_record.get("decision_available_ts")},flush=True)
+      self._confluence(symbol,now)
    process_seconds=round(time.monotonic()-process_t0,3)
    self._memory_probe("native5_after_processing",batch_no=batch_no,chunk_symbols=len(chunk),fetched_rows=fetched_rows,process_seconds=process_seconds)
    del rows_by_symbol
