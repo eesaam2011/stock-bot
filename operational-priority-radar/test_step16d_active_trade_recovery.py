@@ -1,4 +1,5 @@
 import unittest,json
+from types import SimpleNamespace
 from datetime import datetime,timedelta,timezone
 from active_trade_recovery import ActiveTradeChronologicalReconciler
 from redis_lua_production import ACQUIRE_LEASE_LUA,ATOMIC_TRADE_EVENT_LUA
@@ -9,8 +10,9 @@ class Redis:
  def get(self,k):return self.d.get(k)
  def eval(self,script,n,*a):
   if script==ATOMIC_TRADE_EVENT_LUA:
-   keys=a[:n];v=a[n:];leader,tk,ok=keys;wid,expected,new,out=v
+   keys=a[:n];v=a[n:];leader,gen,tk,ok=keys;wid,expected,new,out,g=v
    if self.d.get(leader)!=wid:return -10
+   if self.d.get(gen)!=g:return -11
    if self.d.get(tk)!=expected:return -20
    if self.d.get(ok) not in (None,out):return -30
    self.d[tk]=new;self.d[ok]=out;return 1
@@ -22,7 +24,9 @@ class REST:
 def trade(state='ACTIVE_PRE_T1'):
  return {'schema_version':1,'record_type':'trade','session':'S','symbol':'A','state':state,'created_at':T.isoformat(),'updated_at':T.isoformat(),'trade_id':'TR','entry_alert_price':10.,'structure_low':9.5,'structural_stop':9.,'risk_pct':10.,'t1':11.,'t2':12.,'monitoring_deadline':(T+timedelta(minutes=120)).isoformat(),'leader_generation':1,'worker_instance_id':'W'}
 def setup(t,r):
- rd=Redis();rd.d[key_trade('TR')]=canonical_json(t);return ActiveTradeChronologicalReconciler(r,rd,'W',lambda:T+timedelta(minutes=30)),rd
+ rd=Redis();rd.d[key_trade('TR')]=canonical_json(t)
+ leader=SimpleNamespace(require_current=lambda:SimpleNamespace(worker_instance_id='W',leader_generation=1))
+ return ActiveTradeChronologicalReconciler(r,rd,'W',lambda:T+timedelta(minutes=30),leadership=leader),rd
 class TestStep16D(unittest.TestCase):
  def test_t1_then_t2_chronology_committed(self):
   t=trade();rec,rd=setup(t,REST([{'t':(T+timedelta(minutes=1)).isoformat(),'p':11.1},{'t':(T+timedelta(minutes=2)).isoformat(),'p':12.1}]))
