@@ -99,10 +99,12 @@ class BoundedEpochCapture:
             raise EpochCaptureError("CAPTURE_DRAIN_EPOCH_INVALID")
         self.phase=self.DRAINING
     @_locked
-    def peek_batch(self,epoch,max_items=512):
+    def peek_batch(self,epoch,max_items=None):
         if self.epoch!=epoch or self.phase!=self.DRAINING:
             raise EpochCaptureError("CAPTURE_NOT_DRAINING")
-        if max_items<1 or max_items>self.max_messages:raise ValueError("invalid batch")
+        if max_items is None:max_items=min(512,self.max_messages)
+        if not isinstance(max_items,int) or max_items<1 or max_items>self.max_messages:
+            raise ValueError("invalid batch")
         # Non-destructive until the coordinator has committed chronological
         # replay; a failed replay must not silently discard captured events.
         from itertools import islice
@@ -131,7 +133,7 @@ class BoundedEpochCapture:
             raise EpochCaptureError("EXTERNAL_RECONCILIATION_PROOF_REQUIRED")
         self.phase=self.DIRECT
     @_locked
-    def snapshot_prefix(self,epoch,max_items=512):
+    def snapshot_prefix(self,epoch,max_items=None):
         """Atomic deep-copy of a DRAINING prefix; never ACKs captured events.
 
         A copy cannot be changed by a later append, disconnect or accidental
@@ -140,6 +142,7 @@ class BoundedEpochCapture:
         """
         if self.phase!=self.DRAINING or self.epoch!=epoch:
             raise EpochCaptureError("CAPTURE_NOT_DRAINING")
+        if max_items is None:max_items=min(512,self.max_messages)
         if not isinstance(max_items,int) or not 1<=max_items<=self.max_messages:
             raise ValueError("invalid snapshot limit")
         from itertools import islice
