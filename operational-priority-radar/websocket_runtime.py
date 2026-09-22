@@ -4,8 +4,9 @@ from collections import deque
 class WebSocketProtocolError(RuntimeError):pass
 
 class WebSocketRuntime:
- def __init__(self,connector,protocol,on_message,on_disconnect):
-  self.connector=connector;self.protocol=protocol;self.on_message=on_message;self.on_disconnect=on_disconnect
+ def __init__(self,connector,protocol,on_message,on_disconnect,epoch_capture=None):
+  self.connector=connector;self.protocol=protocol;self.on_message=on_message;self.on_disconnect
+  self.epoch_capture=epoch_capture=on_disconnect
   self.stopping=False;self.connected_event=asyncio.Event();self.last_error=None;self.subscription_stats={}
   self.connection_epoch=0
   self._rx_started=None;self._received=0;self._handled=0
@@ -37,6 +38,7 @@ class WebSocketRuntime:
    z=sorted(xs);return round(z[min(len(z)-1,int((len(z)-1)*p))]/1e6,3)
   elapsed=max(time.monotonic()-self._rx_started,1e-6) if self._rx_started else None
   return {"epoch":self.connection_epoch,"received":self._received,
+          "capture":self.epoch_capture.snapshot() if self.epoch_capture else None,
           "handled":self._handled,
           "observed_rx_per_sec":round(self._received/elapsed,2) if elapsed else None,
           "processing_ms":{k:{"count":len(v),"p50":percentile(v,.5),
@@ -45,6 +47,7 @@ class WebSocketRuntime:
                            for k,v in self._processing_ns.items()}}
  async def run_once(self,url,key,secret,symbols):
   self.connected_event.clear();self.subscription_stats={};self.last_error=None
+  if self.epoch_capture:self.epoch_capture.invalidate("STARTING_NEW_CONNECTION")
   try:
    async with self.connector(url) as ws:
     welcome=await self._recv_control(ws)
@@ -67,6 +70,7 @@ class WebSocketRuntime:
       f"ALPACA_WS_SUBSCRIPTION_INCOMPLETE:trades_missing={len(missing_trades)},bars_missing={len(missing_bars)},statuses_star={'*' in statuses}")
     self.subscription_stats={"requested":len(req),"trades":len(got_trades),"bars":len(got_bars),"statuses_star":True}
     self.connection_epoch+=1
+    if self.epoch_capture:self.epoch_capture.start(self.connection_epoch)
     self._rx_started=time.monotonic();self._received=0;self._handled=0
     for samples in self._processing_ns.values():samples.clear()
     self.connected_event.set()  # Means authenticated + subscription ACK verified, not merely TCP-open.
@@ -76,7 +80,9 @@ class WebSocketRuntime:
       if msg.get("T")=="error":raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
       kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
       self._received+=1;start_ns=time.monotonic_ns()
-      try:await self.on_message(msg)
+      try:
+       if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
+       await self.on_message(msg)
       finally:self._processing_ns[kind].append(time.monotonic_ns()-start_ns)
       self._handled+=1
     if not self.stopping:
@@ -93,6 +99,7 @@ class WebSocketRuntime:
    # Normal async-iterator EOF is a disconnect too. Clear trust BEFORE the
    # callback, so no message from a successor epoch can use stale trust.
    self.connected_event.clear()
+   if self.epoch_capture:self.epoch_capture.invalidate("SIP_DISCONNECTED")
    await self.on_disconnect()
 
  async def reconnect_loop(self,*args,base_delay=1,max_delay=30):
