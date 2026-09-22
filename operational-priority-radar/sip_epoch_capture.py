@@ -43,7 +43,7 @@ class BoundedEpochCapture:
         self._lock=threading.RLock()
         self.max_messages=max_messages;self.max_bytes=max_bytes
         self.phase=self.INVALID;self.epoch=None
-        self._items=deque();self._bytes=0;self._seq=0
+        self._items=deque();self._bytes=0;self._seq=0;self._acked_upto=0
         self._invalid_reason="NOT_STARTED"
         # Trust gate uses capture.buffer.epoch to tie DIRECT to the ACK epoch.
         self.buffer=self
@@ -53,11 +53,13 @@ class BoundedEpochCapture:
             raise EpochCaptureError("INVALID_EPOCH")
         self.invalidate("NEW_EPOCH")
         self.epoch=epoch;self.phase=self.CAPTURING
+        # Sequence numbers and ACK watermarks belong to one ACK epoch only.
+        self._seq=0;self._acked_upto=0
         self._invalid_reason=None
     @_locked
     def invalidate(self,reason="DISCONNECT"):
         self.phase=self.INVALID;self.epoch=None
-        self._items.clear();self._bytes=0
+        self._items.clear();self._bytes=0;self._acked_upto=0
         self._invalid_reason=reason
     @staticmethod
     def _timestamp(msg):
@@ -88,7 +90,7 @@ class BoundedEpochCapture:
             self.invalidate("CAPTURE_OVERFLOW")
             raise EpochCaptureOverflow("SIP_CAPTURE_OVERFLOW_FAIL_CLOSED")
         self._seq+=1
-        item=CapturedSIP(epoch,self._seq,kind,ts,dict(msg),size,captured)
+        item=CapturedSIP(epoch,self._seq,kind,ts,deepcopy(msg),size,captured)
         self._items.append(item);self._bytes+=size
         return item
     @_locked
@@ -119,6 +121,7 @@ class BoundedEpochCapture:
             raise EpochCaptureError("CAPTURE_ACK_NONCONTIGUOUS")
         for _ in range(count):
             item=self._items.popleft();self._bytes-=item.bytes
+        self._acked_upto=upto_sequence
         return count
     @_locked
     def finish_direct(self,epoch,*,reconciliation_proven=False):
@@ -146,7 +149,8 @@ class BoundedEpochCapture:
                        "last_sequence":copied[-1].sequence if copied else None,
                        "captured_prefix_count":len(copied),
                        "queue_size_at_snapshot":len(self._items),
-                       "last_sequence_at_snapshot":self._seq}
+                       "last_sequence_at_snapshot":self._seq,
+                       "acked_upto_at_snapshot":self._acked_upto}
 
     @_locked
     def prefix_still_valid(self,epoch,first_sequence,last_sequence):
@@ -163,4 +167,5 @@ class BoundedEpochCapture:
     def snapshot(self):
         return {"phase":self.phase,"epoch":self.epoch,"buffered":len(self._items),
                 "bytes":self._bytes,"last_sequence":self._seq,
+                "acked_upto":self._acked_upto,
                 "invalid_reason":self._invalid_reason}
