@@ -230,6 +230,7 @@ class ShadowRuntimeSupervisor:
             raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT")
 
         print({"stage":"SIP_CONNECTED_NOT_YET_TRUSTED"}, flush=True)
+        connected_epoch=getattr(self.websocket_runtime,"connection_epoch",None)
         self.orchestrator.mark_stream_connected()
         recovery=self.orchestrator.c.recovery
         while hasattr(recovery,"ready_after_stream") and not recovery.ready_after_stream():
@@ -239,7 +240,16 @@ class ShadowRuntimeSupervisor:
             reconciled = recovery.ready_after_stream() if hasattr(recovery,"ready_after_stream") else recovery_result.get("reconciled",False)
             if not reconciled:
                 raise RuntimeError("POST_STREAM_RECONCILIATION_UNPROVEN")
-            trust_state = self.orchestrator.finish_reconciliation(continuity_ok=True)
+            # No synthetic continuity=True: require direct SIP handoff, actual
+            # replay evidence, matching connection epoch and current leadership.
+            from trust_gate import require_live_trust_proof
+            pipeline=getattr(self,"decision_pipeline",None)
+            if pipeline is None:
+                raise RuntimeError("DECISION_PIPELINE_MISSING_FOR_TRUST_PROOF")
+            require_live_trust_proof(self.websocket_runtime,recovery,
+                pipeline.leadership,connected_epoch)
+            trust_state = self.orchestrator.finish_reconciliation(
+                continuity_ok=True,epoch=connected_epoch)
             print({"stage":"SIP_LIVE_TRUSTED",
                    "trust_state": getattr(trust_state, "value", str(trust_state)),
                    "lease":self._leadership_snapshot()}, flush=True)
