@@ -9,16 +9,28 @@ from urllib.parse import urlparse
 from redis_lua_production import ProductionRedisLua,LeaseLost,AtomicConflict
 from production_runtime_state import RedisCanonicalBackend
 
-URL=os.getenv("OPR_REDIS_TEST_URL")
-def local_test_redis():
-    if not URL:
+def validate_test_url(url,*,required=False):
+    """CI must fail, never silently skip, if the real Redis service is absent.
+
+    Always reject nonlocal hosts and databases other than dedicated DB 15.
+    """
+    if not url:
+        if required:raise RuntimeError("REAL_REDIS_REQUIRED_URL_MISSING")
         raise unittest.SkipTest("OPR_REDIS_TEST_URL not set; real Redis tests not run")
-    parsed=urlparse(URL)
-    if parsed.hostname not in {"127.0.0.1","localhost"} or parsed.path!="/15":
-        raise unittest.SkipTest("real Redis tests require local dedicated database /15")
+    parsed=urlparse(url)
+    if (parsed.scheme!="redis" or parsed.hostname not in {"127.0.0.1","localhost"}
+        or parsed.port!=6379 or parsed.path!="/15" or parsed.username
+        or parsed.password or parsed.query or parsed.fragment):
+        if required:raise RuntimeError("REAL_REDIS_REQUIRED_UNSAFE_URL")
+        raise unittest.SkipTest("real Redis tests require localhost:6379 dedicated database /15")
+    return url
+
+def local_test_redis():
+    required=os.getenv("OPR_REQUIRE_REAL_REDIS")=="1"
+    url=validate_test_url(os.getenv("OPR_REDIS_TEST_URL"),required=required)
     import redis
-    r=redis.Redis.from_url(URL,decode_responses=True,socket_timeout=2)
-    r.ping()
+    r=redis.Redis.from_url(url,decode_responses=True,socket_timeout=2)
+    if r.ping() is not True:raise RuntimeError("REAL_REDIS_PING_FAILED")
     return r
 
 def raw(state,g=1):
