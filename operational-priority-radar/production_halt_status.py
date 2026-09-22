@@ -16,3 +16,6 @@ class ProductionStatusTracker:
  def current(self,symbol):
   x=self.latest.get(symbol)
   return x["state"] if x else "UNKNOWN"
+ def reset(self):
+  # A prior SIP connection's statuses cannot authorize entries in a new epoch.
+  self.latest.clear()
