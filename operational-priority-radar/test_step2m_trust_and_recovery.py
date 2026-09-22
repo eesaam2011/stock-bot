@@ -14,8 +14,8 @@ class Reader:
     def earliest_decision_anchor(self,session):return None
 class Rest:
     def native_recovery_batch(self,symbols,start,end,**kw):
-        return ({s:[{"t":"2026-09-22T15:59:00Z"}] for s in symbols},
-                {s:[{"t":"2026-09-22T15:55:00Z"}] for s in symbols})
+        return ({s:[{"t":"2026-09-22T15:59:00Z","o":10,"h":11,"l":9,"c":10,"v":100}] for s in symbols},
+                {s:[{"t":"2026-09-22T15:55:00Z","o":10,"h":11,"l":9,"c":10,"v":100,"_timeframe":"native_5Min"}] for s in symbols})
 class Leader:
     def __init__(self):self.current=True;self.checks=0
     def require_current(self):
