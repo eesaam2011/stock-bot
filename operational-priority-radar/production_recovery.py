@@ -3,6 +3,8 @@ from datetime import datetime,timedelta,timezone
 from state_store import key_early_core,key_base_ready,key_opportunity,validate_record,SchemaError
 from recovery_chronology import plan_native_batch
 from recovery_signal_replay import reconstruct_window_signals
+from recovery_session_replay import reconstruct_session_signals,EARLY_WARMUP_MINUTES
+from recovery_chronology import _utc
 UTC=timezone.utc
 class RecoveryFailure(RuntimeError):pass
 
@@ -64,11 +66,14 @@ class RedisCanonicalReader:
    if int(cur)==0:return out
 
 class ProductionStartupRecovery:
- def __init__(self,reader,rest,trade_reconciler,session,symbols,now_fn=None,overlap_seconds=120,status_tracker=None,audit_window_signals=False):
+ def __init__(self,reader,rest,trade_reconciler,session,symbols,now_fn=None,overlap_seconds=120,status_tracker=None,audit_window_signals=False,
+              audit_session_signals=False,session_start=None):
   self.reader=reader;self.rest=rest;self.trade_reconciler=trade_reconciler
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
   self.audit_window_signals=bool(audit_window_signals)
+  self.audit_session_signals=bool(audit_session_signals)
+  self.session_start=session_start
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
@@ -106,13 +111,25 @@ class ProductionStartupRecovery:
      anchors.extend(datetime.fromisoformat(x.get("decision_available_ts").replace("Z","+00:00")) for x in (e,b) if x and x.get("decision_available_ts"))
     anchor=min(anchors,default=now-timedelta(minutes=60))
    start=anchor-timedelta(seconds=self.overlap_seconds)
+   if self.audit_session_signals:
+    if self.session_start is None:
+     raise RecoveryFailure("SESSION_AUDIT_REQUIRES_EXPLICIT_SESSION_START")
+    session_start=_utc(self.session_start)
+    if not session_start<now:
+     raise RecoveryFailure("SESSION_AUDIT_INVALID_SESSION_START")
+    # Native5 pre-session warm-up is part of the request, not a claim
+    # that REST observed every market event during that interval.
+    start=min(start,session_start-timedelta(minutes=EARLY_WARMUP_MINUTES))
    batch_audits=[]
+   session_audits=[]
    signal_audits=[]
    pagination_audits=[]
    if hasattr(self.rest,"native_recovery_batch"):
     # Plan/audit one bounded batch at a time; never retain a universe-wide
     # history. A plan is not canonical replay or proof of SIP continuity.
-    batch_size=200
+    # Full-session 1m+native5 history can exceed the 100k-event plan
+    # at 200 symbols. Keep the opt-in audit batches bounded.
+    batch_size=80 if self.audit_session_signals else 200
     total=len(self.symbols)
     recovered_1m_count=0
     recovered_5m_count=0
@@ -134,6 +151,12 @@ class ProductionStartupRecovery:
      if self.audit_window_signals:
       _,signals_audit=reconstruct_window_signals(plan,self.session,recovered_at=plan[0].recovered_at if plan else self.now_fn())
       signal_audits.append(signals_audit)
+     if self.audit_session_signals:
+      _,session_audit=reconstruct_session_signals(
+          plan,self.session,session_start=session_start,session_end=now,
+          requested_start=start,recovered_at=plan[0].recovered_at if plan else self.now_fn())
+      session_audit["rest_pagination_proven"]=bool(pagination_audits and page_audit.get("both_api_page_chains_exhausted")) if hasattr(self.rest,"native_recovery_batch_audited") else False
+      session_audits.append(session_audit)
      batch_audits.append(audit)
      batch_1m_symbols=sum(1 for sym in batch if r1.get(sym))
      batch_5m_symbols=sum(1 for sym in batch if r5.get(sym))
@@ -161,6 +184,11 @@ class ProductionStartupRecovery:
      if self.audit_window_signals:
       _,signals_audit=reconstruct_window_signals(plan,self.session,recovered_at=plan[0].recovered_at if plan else self.now_fn())
       signal_audits.append(signals_audit)
+     if self.audit_session_signals:
+      _,session_audit=reconstruct_session_signals(
+          plan,self.session,session_start=session_start,session_end=now,
+          requested_start=start,recovered_at=plan[0].recovered_at if plan else self.now_fn())
+      session_audits.append(session_audit)
      batch_audits.append(audit)
      del plan,rows1,rows5
    self._require_not_cancelled()
@@ -176,6 +204,11 @@ class ProductionStartupRecovery:
                       "empty_symbol_timeframe_lanes":sum(a["empty_symbol_timeframe_lanes"] for a in batch_audits),
                       "batch_digests":[a["chronological_sha256"] for a in batch_audits],
                       "signal_audit_enabled":self.audit_window_signals,
+                      "session_signal_audit_enabled":self.audit_session_signals,
+                      "session_observed_E":sum(a["session_observed_E"] for a in session_audits),
+                      "session_observed_B":sum(a["session_observed_B"] for a in session_audits),
+                      "session_warmup_window_requested":bool(session_audits) and all(a["warmup_window_requested"] for a in session_audits),
+                      "session_audited_batches":len(session_audits),
                       "window_local_E":sum(a["window_local_E"] for a in signal_audits),
                       "window_local_B":sum(a["window_local_B"] for a in signal_audits),
                       "rest_pagination_audited_batches":len(pagination_audits),
