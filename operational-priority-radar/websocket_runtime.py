@@ -5,7 +5,7 @@ class WebSocketProtocolError(RuntimeError):pass
 
 class WebSocketRuntime:
  def __init__(self,connector,protocol,on_message,on_disconnect,epoch_capture=None):
-  self.connector=connector;self.protocol=protocol;self.on_message=on_message;self.on_disconnect
+  self.connector=connector;self.protocol=protocol;self.on_message=on_message;self.on_disconnect=on_disconnect
   self.epoch_capture=epoch_capture=on_disconnect
   self.stopping=False;self.connected_event=asyncio.Event();self.last_error=None;self.subscription_stats={}
   self.connection_epoch=0
