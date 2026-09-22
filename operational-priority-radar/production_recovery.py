@@ -108,6 +108,7 @@ class ProductionStartupRecovery:
    start=anchor-timedelta(seconds=self.overlap_seconds)
    batch_audits=[]
    signal_audits=[]
+   pagination_audits=[]
    if hasattr(self.rest,"native_recovery_batch"):
     # Plan/audit one bounded batch at a time; never retain a universe-wide
     # history. A plan is not canonical replay or proof of SIP continuity.
@@ -118,7 +119,14 @@ class ProductionStartupRecovery:
     for offset in range(0,total,batch_size):
      self._require_not_cancelled()
      batch=self.symbols[offset:offset+batch_size]
-     r1,r5=self.rest.native_recovery_batch(batch,start,now,batch_size=batch_size,max_workers=2)
+     if hasattr(self.rest,"native_recovery_batch_audited"):
+      r1,r5,page_audit=self.rest.native_recovery_batch_audited(
+          batch,start,now,batch_size=batch_size,max_workers=2)
+      if not page_audit.get("both_api_page_chains_exhausted"):
+       raise RecoveryFailure("REST_PAGINATION_UNPROVEN")
+      pagination_audits.append(page_audit)
+     else:
+      r1,r5=self.rest.native_recovery_batch(batch,start,now,batch_size=batch_size,max_workers=2)
      self._require_not_cancelled()
      plan,audit=plan_native_batch(r1,r5,batch,window_start=start,
                                   window_end=now,recovered_at=self.now_fn())
@@ -170,6 +178,11 @@ class ProductionStartupRecovery:
                       "signal_audit_enabled":self.audit_window_signals,
                       "window_local_E":sum(a["window_local_E"] for a in signal_audits),
                       "window_local_B":sum(a["window_local_B"] for a in signal_audits),
+                      "rest_pagination_audited_batches":len(pagination_audits),
+                      "rest_pagination_pages_1m":sum(a["native_1m"]["pages"] for a in pagination_audits),
+                      "rest_pagination_pages_5m":sum(a["native_5m"]["pages"] for a in pagination_audits),
+                      "api_page_chains_exhausted":bool(pagination_audits) and len(pagination_audits)==len(batch_audits),
+                      "full_session_coverage_proven":False,
                       "first_of_session_proven":False,
                       "replay_completed":False,"continuity_proven":False}
    result={"gap_recovered":False,"reconciled":False,
