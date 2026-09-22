@@ -14,20 +14,65 @@ class AlpacaREST:
   try:
    with self.opener(req,timeout=20) as r:return json.loads(r.read().decode())
   except Exception as e:raise AlpacaMarketDataError(str(e))
+ def _single_symbol_paged(self,symbol,start,end,kind,*,timeframe=None,
+                            limit=10000,max_pages=64,max_rows=100000):
+  """Bounded single-symbol SIP REST fetch, for active-trade recovery.
+
+  A terminal API page proves pagination exhaustion only. It is NOT proof
+  that SIP recorded every trade/bar or that halt/status events were replayed.
+  """
+  from datetime import datetime
+  if (not isinstance(symbol,str) or not symbol or symbol!=symbol.strip()
+      or any(ch in symbol for ch in "/?& ")
+      or kind not in {"bars","trades"}
+      or (kind=="bars" and timeframe not in {"1Min","5Min"})
+      or not isinstance(start,datetime) or not isinstance(end,datetime)
+      or start.tzinfo is None or end.tzinfo is None or start>=end
+      or not isinstance(limit,int) or not 1<=limit<=10000
+      or not isinstance(max_pages,int) or not 1<=max_pages<=1000
+      or not isinstance(max_rows,int) or not 1<=max_rows<=350000):
+   raise AlpacaMarketDataError("INVALID_SINGLE_SYMBOL_REST_REQUEST")
+  base={"start":start.isoformat(),"end":end.isoformat(),"feed":"sip",
+        "sort":"asc","limit":limit}
+  if kind=="bars":base.update(timeframe=timeframe,adjustment="raw")
+  out=[];token=None;seen_tokens=set();pages=0
+  while True:
+   if pages>=max_pages:raise AlpacaMarketDataError("REST_PAGE_LIMIT_EXCEEDED")
+   q=dict(base)
+   if token is not None:q["page_token"]=token
+   d=self._get(f"/v2/stocks/{symbol}/{kind}",q)
+   if not isinstance(d,dict) or kind not in d:
+    raise AlpacaMarketDataError("REST_MISSING_SINGLE_SYMBOL_ROWS")
+   rows=d[kind]
+   if rows is None:rows=[]  # Alpaca can report no observations for a symbol.
+   if not isinstance(rows,list) or any(not isinstance(x,dict) for x in rows):
+    raise AlpacaMarketDataError("REST_INVALID_SINGLE_SYMBOL_ROWS")
+   pages+=1
+   if len(out)+len(rows)>max_rows:
+    raise AlpacaMarketDataError("REST_ROW_LIMIT_EXCEEDED")
+   out.extend(rows)
+   next_token=d.get("next_page_token")
+   if next_token is None or next_token=="":
+    return out,{"kind":kind,"timeframe":timeframe,"symbol":symbol,
+                "pages":pages,"rows":len(out),"api_pagination_exhausted":True,
+                "full_session_coverage_proven":False,
+                "sip_trade_coverage_proven":False,"halt_coverage_proven":False}
+   if (not isinstance(next_token,str) or len(next_token)>4096
+       or next_token in seen_tokens):
+    raise AlpacaMarketDataError("REST_REPEATED_OR_INVALID_PAGE_TOKEN")
+   seen_tokens.add(next_token);token=next_token
+ def bars_audited(self,symbol,start,end,timeframe,limit=10000,*,
+                  max_pages=64,max_rows=100000):
+  return self._single_symbol_paged(symbol,start,end,"bars",timeframe=timeframe,
+                  limit=limit,max_pages=max_pages,max_rows=max_rows)
+ def trades_audited(self,symbol,start,end,limit=10000,*,
+                    max_pages=64,max_rows=100000):
+  return self._single_symbol_paged(symbol,start,end,"trades",limit=limit,
+                  max_pages=max_pages,max_rows=max_rows)
  def bars(self,symbol,start,end,timeframe,limit=10000):
-  base={"timeframe":timeframe,"start":start.isoformat(),"end":end.isoformat(),"feed":"sip","adjustment":"raw","sort":"asc","limit":limit};out=[];token=None
-  while True:
-   p=dict(base)
-   if token:p["page_token"]=token
-   d=self._get(f"/v2/stocks/{symbol}/bars",p);out.extend(d.get("bars") or []);token=d.get("next_page_token")
-   if not token:return out
+  return self.bars_audited(symbol,start,end,timeframe,limit=limit)[0]
  def trades(self,symbol,start,end,limit=10000):
-  base={"start":start.isoformat(),"end":end.isoformat(),"feed":"sip","sort":"asc","limit":limit};out=[];token=None
-  while True:
-   p=dict(base)
-   if token:p["page_token"]=token
-   d=self._get(f"/v2/stocks/{symbol}/trades",p);out.extend(d.get("trades") or []);token=d.get("next_page_token")
-   if not token:return out
+  return self.trades_audited(symbol,start,end,limit=limit)[0]
  def active_us_equity_assets(self):
   req=urllib.request.Request(TRADING_BASE+"/v2/assets?status=active&asset_class=us_equity",
       headers={"APCA-API-KEY-ID":self.creds.key_id,"APCA-API-SECRET-KEY":self.creds.secret_key})
