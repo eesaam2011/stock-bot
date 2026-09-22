@@ -1,6 +1,6 @@
 import json,math
 from datetime import datetime,timedelta,timezone
-from itertools import groupby
+from itertools import groupby,permutations
 from trade_monitor import TradeState,MarketEvent,apply_event,MonitorEvent
 from state_store import key_trade,key_outbox,canonical_json,base_record,validate_record
 from event_ids import trade_event_id
@@ -78,13 +78,55 @@ class ActiveTradeChronologicalReconciler:
         return sorted(ev,key=lambda e:(e.event_ts,e.sequence))
 
     def _group_ambiguous(self,state,group):
-        # Historical recovery cannot prove ordering for equal timestamps. If the first
-        # eligible event could yield different terminal outcomes, fail closed.
-        outcomes=set()
+        """Exact bounded same-timestamp ordering audit, including outbox events.
+
+        REST event timestamps do not establish order for simultaneous trades
+        and bar closes. A T1->STOP trace differs from STOP alone even if both
+        end CLOSED_STOP; T1 must not be committed on such evidence.
+        """
+        # Identical observations have the same state effects, so collapse
+        # only for the ambiguity audit, not the actual event replay.
+        unique={}
         for e in group:
-            ns,_=apply_event(state,e);outcomes.add(ns.state if ns.state in TERMINAL else "NONTERMINAL")
-        terminals={x for x in outcomes if x!="NONTERMINAL"}
-        return len(terminals)>1
+            unique[(e.kind,e.price,e.eligible)]=e
+        events=list(unique.values())
+        if len(events)<=1:return False
+        if len(events)>7:
+            # Avoid factorial work under a busy SIP timestamp. If every
+            # observation is a no-op now, their order cannot change state.
+            if all(apply_event(state,e)[1]==MonitorEvent.NONE for e in events):
+                return False
+            return True
+        reference=None
+        for order in permutations(events):
+            current=state;emitted=[]
+            for e in order:
+                current,evt=apply_event(current,e)
+                if evt!=MonitorEvent.NONE:emitted.append(evt.value)
+                if current.state in TERMINAL:break
+            outcome=(current,tuple(emitted))
+            if reference is None:reference=outcome
+            elif outcome!=reference:return True
+        return False
+
+    def _preflight_chronology(self,state,events):
+        """Audit all recoverable history BEFORE the first fenced Redis write.
+
+        A later ambiguous timestamp must not leave an earlier partial T1
+        transition or an outbox event committed.
+        """
+        current=state
+        for _,items in groupby(events,key=lambda e:e.event_ts):
+            self._require_not_cancelled()
+            group=list(items)
+            if self._group_ambiguous(current,group):
+                return {"ambiguous":True,"reason":"RECOVERY_PATH_AMBIGUOUS",
+                        "event_ts":group[0].event_ts.isoformat()}
+            for e in group:
+                current,_=apply_event(current,e)
+                if current.state in TERMINAL:
+                    return {"ambiguous":False}
+        return {"ambiguous":False}
 
     def _commit(self,expected,new_state,event_name,event_ts,breach_price=None):
         self._require_not_cancelled()
@@ -110,11 +152,12 @@ class ActiveTradeChronologicalReconciler:
         if trade["state"]=="HALTED_ACTIVE":return {"ambiguous":True,"reason":"HALTED_ACTIVE_REQUIRES_STATUS_RECONCILIATION"}
         start=parse_ts(trade.get("updated_at") or trade.get("entry_alert_sent_at"))
         now=self.now_fn();events=self._events(trade,start,now);state=self._state(trade);current=dict(trade)
+        preflight=self._preflight_chronology(state,events)
+        if preflight["ambiguous"]:return preflight
+        self._require_not_cancelled()
         for _,g in groupby(events,key=lambda e:e.event_ts):
             self._require_not_cancelled()
             group=list(g)
-            if self._group_ambiguous(state,group):
-                return {"ambiguous":True,"reason":"RECOVERY_PATH_AMBIGUOUS","event_ts":group[0].event_ts.isoformat()}
             for e in group:
                 ns,evt=apply_event(state,e)
                 if evt!=MonitorEvent.NONE:
