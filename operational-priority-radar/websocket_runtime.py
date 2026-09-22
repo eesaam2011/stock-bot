@@ -53,7 +53,7 @@ class WebSocketRuntime:
                               "p95":percentile(v,.95),"p99":percentile(v,.99),
                               "max":round(max(v)/1e6,3) if v else None}
                            for k,v in self._processing_ns.items()}}
- async def _receive_queued(self,ws):
+ async def _receive_queued(self,ws,initial_messages=()):
   # Exactly one ordered consumer. The receiver never waits for synchronous
   # REST/Redis processing; full queue is a fatal disconnect, never a drop.
   q=asyncio.Queue(maxsize=self.dispatch_queue_max)
@@ -68,8 +68,21 @@ class WebSocketRuntime:
      q.task_done();self._queue_depth=q.qsize()
     self._handled+=1
   worker=asyncio.create_task(consumer())
+  def enqueue(msg):
+   if msg.get("T")=="error":
+    raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
+   if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
+   self._received+=1
+   try:q.put_nowait({**msg,"_sip_epoch":self.connection_epoch})
+   except asyncio.QueueFull:
+    self._queue_overflows+=1
+    self.connected_event.clear()
+    raise WebSocketProtocolError("SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED")
+   self._queue_depth=q.qsize()
+   self._queue_high_water=max(self._queue_high_water,self._queue_depth)
   iterator=ws.__aiter__()
   try:
+   for msg in initial_messages:enqueue(msg)
    while not self.stopping:
     next_frame=asyncio.create_task(iterator.__anext__())
     done,_=await asyncio.wait({next_frame,worker},return_when=asyncio.FIRST_COMPLETED)
@@ -81,20 +94,7 @@ class WebSocketRuntime:
     try:raw=next_frame.result()
     except StopAsyncIteration:
      raise WebSocketProtocolError("SIP_STREAM_EOF_UNTRUSTED")
-    for msg in self._decode(raw):
-     if msg.get("T")=="error":
-      raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
-     if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
-     self._received+=1
-     # Tag at receive time; a canceled to_thread handler must never apply
-     # a previous connection's status after the next ACK.
-     try:q.put_nowait({**msg,"_sip_epoch":self.connection_epoch})
-     except asyncio.QueueFull:
-      self._queue_overflows+=1
-      self.connected_event.clear()
-      raise WebSocketProtocolError("SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED")
-     self._queue_depth=q.qsize()
-     self._queue_high_water=max(self._queue_high_water,self._queue_depth)
+    for msg in self._decode(raw):enqueue(msg)
   finally:
    self.connected_event.clear()
    worker.cancel()
@@ -109,15 +109,26 @@ class WebSocketRuntime:
     welcome=await self._recv_control(ws)
     if not self._has_success(welcome,"connected"):
      raise WebSocketProtocolError("ALPACA_WS_CONNECTED_ACK_MISSING")
+    if any(m.get("T") in {"b","t","s"} for m in welcome):
+     raise WebSocketProtocolError("SIP_DATA_BEFORE_AUTH")
     await ws.send(json.dumps(self.protocol.auth(key,secret)))
     auth=await self._recv_control(ws)
     if not self._has_success(auth,"authenticated"):
      raise WebSocketProtocolError("ALPACA_WS_AUTH_ACK_MISSING")
+    if any(m.get("T") in {"b","t","s"} for m in auth):
+     raise WebSocketProtocolError("SIP_DATA_BEFORE_SUBSCRIPTION")
     requested=list(symbols)
     await ws.send(json.dumps(self.protocol.subscribe(requested)))
     sub_msgs=await self._recv_control(ws)
-    sub=next((m for m in sub_msgs if m.get("T")=="subscription"),None)
-    if sub is None:raise WebSocketProtocolError("ALPACA_WS_SUBSCRIPTION_ACK_MISSING")
+    sub_index=next((i for i,m in enumerate(sub_msgs) if m.get("T")=="subscription"),None)
+    if sub_index is None:raise WebSocketProtocolError("ALPACA_WS_SUBSCRIPTION_ACK_MISSING")
+    if any(m.get("T") in {"b","t","s"} for m in sub_msgs[:sub_index]):
+     raise WebSocketProtocolError("SIP_DATA_BEFORE_SUBSCRIPTION_ACK")
+    sub=sub_msgs[sub_index]
+    # Alpaca may combine subscription ACK and market data in one frame.
+    # Post-ACK events must enter this epoch; never silently discard them.
+    initial_messages=[m for m in sub_msgs[sub_index+1:]
+                      if m.get("T") in {"b","t","s"}]
     req=set(requested);got_trades=set(sub.get("trades") or []);got_bars=set(sub.get("bars") or [])
     statuses=set(sub.get("statuses") or [])
     missing_trades=req-got_trades;missing_bars=req-got_bars
@@ -131,8 +142,16 @@ class WebSocketRuntime:
     for samples in self._processing_ns.values():samples.clear()
     self.connected_event.set()  # Means authenticated + subscription ACK verified, not merely TCP-open.
     if self.dispatch_queue_max:
-     await self._receive_queued(ws)
+     await self._receive_queued(ws,initial_messages)
      return
+    for msg in initial_messages:
+     kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
+     self._received+=1;started=time.monotonic_ns()
+     try:
+      if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
+      await self.on_message(msg)
+     finally:self._processing_ns[kind].append(time.monotonic_ns()-started)
+     self._handled+=1
     async for raw in ws:
      if self.stopping:break
      for msg in self._decode(raw):
