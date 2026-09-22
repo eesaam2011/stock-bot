@@ -22,14 +22,21 @@ class ActiveTradeChronologicalReconciler:
         # Set after lease acquisition in production composition; absent means
         # recovery cannot commit, not permission to read a fresh generation.
         self.leadership=leadership
+        self.cancel_event=None
+    def _require_not_cancelled(self):
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise ActiveTradeRecoveryError("RECOVERY_CANCELLED")
 
     def _state(self,t):
         pre=t.get("pre_halt_state")
         return TradeState(t["state"],float(t["entry_alert_price"]),float(t["structural_stop"]),float(t["t1"]),float(t["t2"]),parse_ts(t["monitoring_deadline"]),pre)
 
     def _events(self,t,start,end):
+        self._require_not_cancelled()
         trades=self.rest.trades(t["symbol"],start,end)
+        self._require_not_cancelled()
         bars=self.rest.native_1m_gap(t["symbol"],start,end)
+        self._require_not_cancelled()
         ev=[];seq=0
         for x in trades:
             ts=x.get("t");price=x.get("p")
@@ -52,6 +59,7 @@ class ActiveTradeChronologicalReconciler:
         return len(terminals)>1
 
     def _commit(self,expected,new_state,event_name,event_ts,breach_price=None):
+        self._require_not_cancelled()
         if self.leadership is None:
             raise ActiveTradeRecoveryError("RECOVERY_LEADERSHIP_UNBOUND")
         token=self.leadership.require_current()
@@ -65,14 +73,17 @@ class ActiveTradeChronologicalReconciler:
         if breach_price is not None:payload["first_observed_breach_price"]=breach_price
         out.update(event_id=eid,event_type=et,payload=payload,attempt_count=0,leader_generation=generation)
         validate_record(new);validate_record(out)
+        self._require_not_cancelled()
         self.lua.atomic_trade_event(self.worker_id,key_trade(expected["trade_id"]),canonical_json(expected),canonical_json(new),key_outbox(eid),canonical_json(out),generation)
         return new
 
     def reconcile(self,trade):
+        self._require_not_cancelled()
         if trade["state"]=="HALTED_ACTIVE":return {"ambiguous":True,"reason":"HALTED_ACTIVE_REQUIRES_STATUS_RECONCILIATION"}
         start=parse_ts(trade.get("updated_at") or trade.get("entry_alert_sent_at"))
         now=self.now_fn();events=self._events(trade,start,now);state=self._state(trade);current=dict(trade)
         for _,g in groupby(events,key=lambda e:e.event_ts):
+            self._require_not_cancelled()
             group=list(g)
             if self._group_ambiguous(state,group):
                 return {"ambiguous":True,"reason":"RECOVERY_PATH_AMBIGUOUS","event_ts":group[0].event_ts.isoformat()}
