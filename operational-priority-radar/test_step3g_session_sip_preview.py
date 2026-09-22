@@ -80,7 +80,7 @@ class TestSessionSIPPreview(unittest.TestCase):
     def test_conflicting_rest_sip_bar_fails_without_ack(self):
         events,c=inputs()
         first=events[0]
-        c.ingest(7,bar(first.start.isoformat(),c=12),
+        c.ingest(7,bar(first.start.isoformat(),c=10.5),
                  received_at=FETCH+timedelta(seconds=30))
         with self.assertRaisesRegex(SIPOverlapUnsafe,
                                     "REST_SIP_BAR_CONFLICT"):
