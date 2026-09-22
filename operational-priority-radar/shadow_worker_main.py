@@ -219,9 +219,44 @@ class ShadowRuntimeSupervisor:
             print({"stage":"SIP_CAPTURING_NOT_TRUSTED",
                    "epoch":connected_epoch},flush=True)
             print({"stage":"STARTUP_RECOVERY_START","epoch":connected_epoch},flush=True)
-            recovery_result=await asyncio.wait_for(
-                asyncio.to_thread(self.orchestrator.begin_recovery),
-                timeout=getattr(self,"startup_recovery_timeout",900.0))
+            # A REST request may run for minutes. Do not wait for its full
+            # timeout if the ACK epoch, capture, or lease becomes invalid.
+            # Cancellation is cooperative: the recovery thread checks its
+            # cancellation event before each batch and canonical commit.
+            recovery_task=asyncio.create_task(
+                asyncio.to_thread(self.orchestrator.begin_recovery))
+            recovery_deadline=asyncio.get_running_loop().time()+getattr(
+                self,"startup_recovery_timeout",900.0)
+            try:
+                while not recovery_task.done():
+                    if self.stop_event.is_set():
+                        raise RuntimeError("STARTUP_STOPPED_DURING_RECOVERY")
+                    if leadership_task.done():
+                        raise RuntimeError("LEADERSHIP_LOST_DURING_RECOVERY")
+                    capture=getattr(self.websocket_runtime,"epoch_capture",None)
+                    if (ws_task.done()
+                        or not self.websocket_runtime.connected_event.is_set()
+                        or getattr(self.websocket_runtime,"connection_epoch",None)!=connected_epoch
+                        or (capture is not None
+                            and getattr(capture,"phase",None)==getattr(capture,"INVALID","INVALID"))):
+                        raise RuntimeError("SIP_CAPTURE_INVALID_DURING_RECOVERY")
+                    if asyncio.get_running_loop().time()>=recovery_deadline:
+                        raise RuntimeError("STARTUP_RECOVERY_TIMEOUT")
+                    await asyncio.wait({recovery_task},timeout=0.1)
+                recovery_result=recovery_task.result()
+            except BaseException:
+                rec=getattr(getattr(self.orchestrator,"c",None),"recovery",None)
+                cancel=getattr(rec,"cancel",None)
+                if callable(cancel):cancel()
+                recovery_task.cancel()
+                await asyncio.gather(recovery_task,return_exceptions=True)
+                raise
+            if (not isinstance(recovery_result,dict)
+                or recovery_result.get("gap_recovered") is not True
+                or recovery_result.get("reconciled") is not True):
+                reason=(recovery_result.get("reason","UNPROVEN")
+                        if isinstance(recovery_result,dict) else "INVALID_RECOVERY_RESULT")
+                raise RuntimeError(f"STARTUP_RECOVERY_UNPROVEN:{reason}")
             print({"stage":"STARTUP_RECOVERY_RETURNED",
                    "reconciled":recovery_result.get("reconciled",False)
                        if isinstance(recovery_result,dict) else None,
