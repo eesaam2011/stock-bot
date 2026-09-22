@@ -53,6 +53,27 @@ class TestStep16A(unittest.IsolatedAsyncioTestCase):
    if not task.done():
     task.cancel();await asyncio.gather(task,return_exceptions=True)
   self.assertEqual(o.calls,["leader","recovery","stream","trusted"]);self.assertTrue(w.stopped);self.assertEqual(d.calls,["DRAINING","STOPPED"])
+ async def test_socket_capture_starts_before_rest_recovery(self):
+  o,w,d=Orch(),WS(),Drain()
+  observed=[]
+  def recovery():
+   observed.append(("ws_started",w.started.is_set(),
+                    "ack",w.connected_event.is_set()))
+   return {"gap_recovered":True,"reconciled":True}
+  o.begin_recovery=recovery
+  s=ShadowRuntimeSupervisor(o,w,Sender(),OStore(),[],"k","s","u",d)
+  s.decision_pipeline=SimpleNamespace(
+      leadership=SimpleNamespace(require_current=lambda:True,sync_generation=lambda:1),
+      bars={},trades={},session="S",memory_stats=lambda:{},
+      poll_native5=lambda *args:{})
+  task=asyncio.create_task(s.run())
+  try:
+   await asyncio.wait_for(w.started.wait(),timeout=2)
+   await asyncio.sleep(.08)
+   self.assertEqual(observed,[("ws_started",True,"ack",True)])
+  finally:
+   s.request_stop()
+   await asyncio.wait_for(task,timeout=2)
  async def test_unproven_post_stream_recovery_times_out_and_cleans_up(self):
   o,w,d=Orch(),WS(),Drain()
   o.c.recovery.ready_after_stream=lambda:False
