@@ -38,9 +38,11 @@ class TestCaptureContract(unittest.TestCase):
   with self.assertRaises(EpochCaptureError):c.ack_batch(3,3)
   self.assertEqual(c.ack_batch(3,1),1)
   self.assertEqual(c.peek_batch(3,2)[0].sequence,2)
-  with self.assertRaisesRegex(EpochCaptureError,"EXTERNAL_RECONCILIATION"):
+  with self.assertRaisesRegex(EpochCaptureError,"CAPTURE_DIRECT_HANDOFF_INVALID"):
    c.finish_direct(3)
   self.assertEqual(c.ack_batch(3,2),1)
+  with self.assertRaisesRegex(EpochCaptureError,"EXTERNAL_RECONCILIATION"):
+   c.finish_direct(3)
   c.finish_direct(3,reconciliation_proven=True)
   self.assertEqual(c.phase,c.DIRECT)
  def test_reconnect_invalidates_old_epoch(self):
