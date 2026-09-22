@@ -28,6 +28,16 @@ class TestEpochPrefixIntegrity(unittest.TestCase):
         self.assertEqual(item.epoch,8)
         c.begin_drain(8)
         self.assertEqual(c.snapshot_prefix(8,max_items=c.max_messages)[1]["first_sequence"],1)
+    def test_default_snapshot_and_peek_work_with_small_capture(self):
+        c=BoundedEpochCapture(max_messages=2,max_bytes=2048)
+        c.start(7)
+        c.ingest(7,bar("2026-09-22T15:59:00Z"),received_at=FETCH)
+        c.begin_drain(7)
+        self.assertEqual(len(c.peek_batch(7)),1)
+        self.assertEqual(len(c.snapshot_prefix(7)[0]),1)
+        with self.assertRaises(ValueError):c.snapshot_prefix(7,3)
+        with self.assertRaises(ValueError):c.peek_batch(7,3)
+
     def test_ingress_nested_payload_is_immutable_copy(self):
         c=BoundedEpochCapture(max_messages=5,max_bytes=4096)
         c.start(7)
