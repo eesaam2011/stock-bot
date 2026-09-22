@@ -94,6 +94,8 @@ jobs:
             printf 'render_deployed=false\n'
             printf 'canonical_replay_completed=false\n'
             printf 'sip_continuity_proven=false\n'
+            printf 'rest_sip_overlap_audit=read_only\n'
+            printf 'canonical_eb_replay=not_implemented\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
             else
@@ -108,7 +110,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step2x-review-bundle
+          name: opr-step2y-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
