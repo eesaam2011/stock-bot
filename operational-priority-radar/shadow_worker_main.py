@@ -1,6 +1,7 @@
 import asyncio, os, signal
 from operational_priority_radar import WorkerConfig
 from shutdown import GracefulDrain
+from runtime_wiring import RuntimeFailClosed
 
 REQUIRED=("REDIS_URL",)
 
@@ -154,11 +155,38 @@ class ShadowRuntimeSupervisor:
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=10.0)
             except asyncio.TimeoutError: pass
 
+    async def _wait_for_leadership(self):
+        """Stand by on an occupied lease; never delete or bypass another leader."""
+        while not self.stop_event.is_set():
+            print({"stage":"ACQUIRE_LEADERSHIP_START"}, flush=True)
+            try:
+                self.orchestrator.acquire_leadership()
+            except RuntimeFailClosed as exc:
+                if str(exc) != "LEADER_NOT_ACQUIRED":
+                    raise
+                lease=self._leadership_snapshot()
+                # Redis TTL -1/-2 and diagnostic failures are not evidence
+                # that taking leadership is safe. The Lua acquire remains authoritative.
+                ttl=lease.get("leader_ttl_sec")
+                delay=max(1,min(10,ttl if isinstance(ttl,int) and ttl>0 else 5))
+                print({"stage":"LEADERSHIP_STANDBY",
+                       "reason":"LEADER_NOT_ACQUIRED",
+                       "lease":lease,"retry_after_sec":delay,
+                       "new_entries_allowed":False},flush=True)
+                try:
+                    await asyncio.wait_for(self.stop_event.wait(),timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            print({"stage":"ACQUIRE_LEADERSHIP_OK",
+                   "lease":self._leadership_snapshot()},flush=True)
+            return True
+        print({"stage":"LEADERSHIP_STANDBY_STOPPED"},flush=True)
+        return False
+
     async def run(self):
-        print({"stage":"ACQUIRE_LEADERSHIP_START"}, flush=True)
-        self.orchestrator.acquire_leadership()
-        print({"stage":"ACQUIRE_LEADERSHIP_OK",
-               "lease":self._leadership_snapshot()}, flush=True)
+        if not await self._wait_for_leadership():
+            return
 
         if hasattr(self,"decision_pipeline"):
             print({"stage":"SYNC_LEADER_GENERATION_START"}, flush=True)
