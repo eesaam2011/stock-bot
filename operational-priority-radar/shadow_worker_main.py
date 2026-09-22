@@ -202,7 +202,23 @@ class ShadowRuntimeSupervisor:
             leadership_task=asyncio.create_task(self.leadership_loop())
             print({"stage":"LEADERSHIP_RENEW_TASK_STARTED",
                    "lease":self._leadership_snapshot()},flush=True)
-            print({"stage":"STARTUP_RECOVERY_START"},flush=True)
+            # Subscribe first so every event arriving during the REST recovery
+            # window is captured under one ACK epoch. No decisions are allowed:
+            # the orchestrator remains STARTING until recovery completes.
+            print({"stage":"SIP_CAPTURE_BEFORE_RECOVERY",
+                   "symbols_count":len(self.symbols)},flush=True)
+            ws_task=asyncio.create_task(self.websocket_runtime.reconnect_loop(
+                self.stream_url,self.key,self.secret,self.symbols))
+            print({"stage":"WAITING_FOR_SIP_CONNECTED","timeout_sec":45},flush=True)
+            try:
+                await asyncio.wait_for(self.websocket_runtime.connected_event.wait(),
+                                       timeout=getattr(self,"sip_connect_timeout",45.0))
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT") from exc
+            connected_epoch=getattr(self.websocket_runtime,"connection_epoch",None)
+            print({"stage":"SIP_CAPTURING_NOT_TRUSTED",
+                   "epoch":connected_epoch},flush=True)
+            print({"stage":"STARTUP_RECOVERY_START","epoch":connected_epoch},flush=True)
             recovery_result=await asyncio.wait_for(
                 asyncio.to_thread(self.orchestrator.begin_recovery),
                 timeout=getattr(self,"startup_recovery_timeout",900.0))
@@ -214,19 +230,10 @@ class ShadowRuntimeSupervisor:
                 self.decision_pipeline.leadership.require_current()
             if leadership_task.done():
                 raise RuntimeError("LEADERSHIP_RENEW_TASK_ENDED_DURING_RECOVERY")
-            print({"stage":"SIP_WEBSOCKET_TASK_START",
-                   "symbols_count":len(self.symbols)},flush=True)
-            ws_task=asyncio.create_task(self.websocket_runtime.reconnect_loop(
-                self.stream_url,self.key,self.secret,self.symbols))
-            print({"stage":"WAITING_FOR_SIP_CONNECTED","timeout_sec":45},flush=True)
-            try:
-                await asyncio.wait_for(self.websocket_runtime.connected_event.wait(),
-                                       timeout=getattr(self,"sip_connect_timeout",45.0))
-            except asyncio.TimeoutError as exc:
-                raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT") from exc
-            connected_epoch=getattr(self.websocket_runtime,"connection_epoch",None)
-            print({"stage":"SIP_CONNECTED_NOT_YET_TRUSTED",
-                   "epoch":connected_epoch},flush=True)
+            if (ws_task.done()
+                or not self.websocket_runtime.connected_event.is_set()
+                or getattr(self.websocket_runtime,"connection_epoch",None)!=connected_epoch):
+                raise RuntimeError("SIP_EPOCH_CHANGED_DURING_STARTUP_RECOVERY")
             self.orchestrator.mark_stream_connected()
             recovery=self.orchestrator.c.recovery
             ready=getattr(recovery,"ready_after_stream",None)
