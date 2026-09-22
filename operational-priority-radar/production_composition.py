@@ -78,6 +78,7 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     if isinstance(rec,ProductionStartupRecovery) and rec.trade_reconciler is not None:
         rec.trade_reconciler.leadership=leadership
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
+    pipeline.status_tracker=getattr(rec,"status_tracker",None)
     async def on_message(msg):
       kind=AlpacaSIPProtocol.classify(msg)
       received_at=datetime.now(timezone.utc);symbol=msg.get("S")
@@ -88,7 +89,11 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         rec.on_status(msg);pipeline.on_status(msg)
       rec.on_stream_message(kind,msg)
     async def on_disconnect():
+      # The websocket clears its ACK before invoking this callback.
       orch.on_disconnect();rec.on_disconnect()
+      pipeline.halted.clear()
+      pipeline._entry_opportunities.clear()
+      pipeline.trades.clear()
     ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect)
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
