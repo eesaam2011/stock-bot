@@ -46,6 +46,12 @@ def reconstruct_session_signals(events,session,*,session_start,session_end,
             raise ChronologyUnsafe("SESSION_REPLAY_EVENT_OUTSIDE_FETCH")
         if e.timeframe=="5m" and e.bar.get("_timeframe")!="native_5Min":
             raise ChronologyUnsafe("SESSION_REPLAY_SYNTHETIC_5M")
+        # A forged NativeEvent wrapper must not override the actual bar's
+        # timestamp or duration; this audit is a prerequisite for replay.
+        delta=timedelta(minutes=1 if e.timeframe=="1m" else 5)
+        if (_utc(e.bar.get("t"))!=e.start or e.end!=e.start+delta
+            or (e.bar.get("S") is not None and e.bar["S"]!=e.symbol)):
+            raise ChronologyUnsafe("SESSION_REPLAY_BAR_PROVENANCE_MISMATCH")
         _normalize(e.bar,e.timeframe)
         key=(e.symbol,e.timeframe,e.start)
         if key in seen:raise ChronologyUnsafe("SESSION_REPLAY_DUPLICATE_EVENT")
