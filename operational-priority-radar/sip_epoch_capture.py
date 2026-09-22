@@ -78,16 +78,28 @@ class BoundedEpochCapture:
         if self.epoch!=epoch or self.phase!=self.CAPTURING:
             raise EpochCaptureError("CAPTURE_DRAIN_EPOCH_INVALID")
         self.phase=self.DRAINING
-    def take_batch(self,epoch,max_items=512):
+    def peek_batch(self,epoch,max_items=512):
         if self.epoch!=epoch or self.phase!=self.DRAINING:
             raise EpochCaptureError("CAPTURE_NOT_DRAINING")
         if max_items<1 or max_items>self.max_messages:raise ValueError("invalid batch")
-        out=[]
-        for _ in range(min(max_items,len(self._items))):
-            item=self._items.popleft();self._bytes-=item.bytes;out.append(item)
-        # Sequence is preserved; the coordinator must reconcile event time,
-        # overlapping REST bars and SIP events before declaring continuity.
-        return out
+        # Non-destructive until the coordinator has committed chronological
+        # replay; a failed replay must not silently discard captured events.
+        from itertools import islice
+        return list(islice(self._items,max_items))
+    def ack_batch(self,epoch,upto_sequence):
+        if self.epoch!=epoch or self.phase!=self.DRAINING or not self._items:
+            raise EpochCaptureError("CAPTURE_ACK_INVALID")
+        if not isinstance(upto_sequence,int) or upto_sequence<self._items[0].sequence:
+            raise EpochCaptureError("CAPTURE_ACK_NONCONTIGUOUS")
+        count=0
+        for item in self._items:
+            if item.sequence>upto_sequence:break
+            count+=1
+        if count==0 or self._items[count-1].sequence!=upto_sequence:
+            raise EpochCaptureError("CAPTURE_ACK_NONCONTIGUOUS")
+        for _ in range(count):
+            item=self._items.popleft();self._bytes-=item.bytes
+        return count
     def finish_direct(self,epoch,*,reconciliation_proven=False):
         if self.epoch!=epoch or self.phase!=self.DRAINING or self._items:
             raise EpochCaptureError("CAPTURE_DIRECT_HANDOFF_INVALID")
