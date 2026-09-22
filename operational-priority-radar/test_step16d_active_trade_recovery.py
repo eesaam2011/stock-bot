@@ -2,13 +2,25 @@ import unittest,json
 from types import SimpleNamespace
 from datetime import datetime,timedelta,timezone
 from active_trade_recovery import ActiveTradeChronologicalReconciler
-from redis_lua_production import ACQUIRE_LEASE_LUA,ATOMIC_TRADE_EVENT_LUA
+from redis_lua_production import ACQUIRE_LEASE_LUA,ATOMIC_TRADE_EVENT_LUA,ATOMIC_TRADE_RECOVERY_LUA
 from state_store import canonical_json,key_trade
 UTC=timezone.utc;T=datetime(2026,1,1,15,tzinfo=UTC)
 class Redis:
  def __init__(self):self.d={};self.g=1;self.d['operational_priority_radar:v1:runtime:leader']='W';self.d['operational_priority_radar:v1:runtime:leader_generation']='1'
  def get(self,k):return self.d.get(k)
  def eval(self,script,n,*a):
+  if script==ATOMIC_TRADE_RECOVERY_LUA:
+   keys=a[:n];v=a[n:];leader,gen,tk=keys[:3];outkeys=keys[3:]
+   wid,expected,new,g=v[:4];outs=v[4:]
+   if self.d.get(leader)!=wid:return -10
+   if self.d.get(gen)!=g:return -11
+   if self.d.get(tk)!=expected:return -20
+   if len(outkeys)!=len(outs) or not 1<=len(outs)<=4:return -40
+   if len(set(outkeys))!=len(outkeys):return -50
+   if any(self.d.get(k) not in (None,raw) for k,raw in zip(outkeys,outs)):return -30
+   self.d[tk]=new
+   for k,raw in zip(outkeys,outs):self.d[k]=raw
+   return 1
   if script==ATOMIC_TRADE_EVENT_LUA:
    keys=a[:n];v=a[n:];leader,gen,tk,ok=keys;wid,expected,new,out,g=v
    if self.d.get(leader)!=wid:return -10
