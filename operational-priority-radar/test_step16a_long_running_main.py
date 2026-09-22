@@ -1,5 +1,6 @@
 import unittest,asyncio
 from unittest.mock import patch
+from types import SimpleNamespace
 from shadow_worker_main import ShadowRuntimeSupervisor,startup_probe_env
 from production_composition import compose_shadow_runtime,CompositionUnavailable
 from operational_priority_radar import WorkerConfig
@@ -8,6 +9,7 @@ class RedisLua:
  def renew(self,*a):return None
 class Rec:
  def ready_after_stream(self):return True
+ def continuity_verified(self,epoch):return epoch==1
 class C:
  def __init__(self):self.recovery=Rec()
 class Orch:
@@ -15,9 +17,14 @@ class Orch:
  def acquire_leadership(self):self.calls.append("leader")
  def begin_recovery(self):self.calls.append("recovery");return {"gap_recovered":True,"reconciled":True}
  def mark_stream_connected(self):self.calls.append("stream")
- def finish_reconciliation(self,continuity_ok=True):self.calls.append("trusted")
+ def finish_reconciliation(self,continuity_ok=False,epoch=None):
+  if not continuity_ok or epoch!=1:raise AssertionError("missing proof")
+  self.calls.append("trusted")
 class WS:
- def __init__(self):self.stopped=False;self.started=asyncio.Event();self.connected_event=asyncio.Event()
+ def __init__(self):
+  self.stopped=False;self.started=asyncio.Event();self.connected_event=asyncio.Event()
+  self.connection_epoch=1
+  self.epoch_capture=SimpleNamespace(DIRECT="DIRECT",phase="DIRECT",buffer=SimpleNamespace(epoch=1))
  async def reconnect_loop(self,*a):self.started.set();self.connected_event.set();await asyncio.Event().wait()
  def stop(self):self.stopped=True
 class OStore:
@@ -32,6 +39,7 @@ class Drain:
 class TestStep16A(unittest.IsolatedAsyncioTestCase):
  async def test_supervisor_is_long_running_until_stop(self):
   o,w,d=Orch(),WS(),Drain();s=ShadowRuntimeSupervisor(o,w,Sender(),OStore(),[], "k","s","url",d)
+  s.decision_pipeline=SimpleNamespace(leadership=SimpleNamespace(require_current=lambda:True))
   task=asyncio.create_task(s.run());await w.started.wait();await asyncio.sleep(0)
   self.assertFalse(task.done());s.request_stop();await task
   self.assertEqual(o.calls,["leader","recovery","stream","trusted"]);self.assertTrue(w.stopped);self.assertEqual(d.calls,["DRAINING","STOPPED"])
