@@ -86,7 +86,9 @@ class WebSocketRuntime:
       raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
      if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
      self._received+=1
-     try:q.put_nowait(msg)
+     # Tag at receive time; a canceled to_thread handler must never apply
+     # a previous connection's status after the next ACK.
+     try:q.put_nowait({**msg,"_sip_epoch":self.connection_epoch})
      except asyncio.QueueFull:
       self._queue_overflows+=1
       self.connected_event.clear()
