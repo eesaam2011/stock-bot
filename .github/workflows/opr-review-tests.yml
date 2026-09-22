@@ -51,7 +51,7 @@ jobs:
           set -euo pipefail
           pkg="$RUNNER_TEMP/opr-review-package"
           mkdir -p "$pkg"
-          git archive --format=tar HEAD operational-priority-radar .github/workflows/opr-review-tests.yml | tar -x -C "$pkg"
+          git -C "$GITHUB_WORKSPACE" archive --format=tar HEAD operational-priority-radar .github/workflows/opr-review-tests.yml | tar -x -C "$pkg"
           if test -f "$GITHUB_WORKSPACE/pytest-q-output.txt"; then
             cp "$GITHUB_WORKSPACE/pytest-q-output.txt" "$pkg/pytest-q-output.txt"
           else
