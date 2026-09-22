@@ -1,6 +1,7 @@
 import json,threading
 from datetime import datetime,timedelta,timezone
 from state_store import key_early_core,key_base_ready,key_opportunity,validate_record,SchemaError
+from recovery_chronology import plan_native_batch
 UTC=timezone.utc
 class RecoveryFailure(RuntimeError):pass
 
@@ -103,9 +104,10 @@ class ProductionStartupRecovery:
      anchors.extend(datetime.fromisoformat(x.get("decision_available_ts").replace("Z","+00:00")) for x in (e,b) if x and x.get("decision_available_ts"))
     anchor=min(anchors,default=now-timedelta(minutes=60))
    start=anchor-timedelta(seconds=self.overlap_seconds)
+   batch_audits=[]
    if hasattr(self.rest,"native_recovery_batch"):
-    # Memory-safe streaming startup recovery: fetch bounded chunks, prove
-    # coverage, then discard market rows. Do not build a universe history cache.
+    # Plan/audit one bounded batch at a time; never retain a universe-wide
+    # history. A plan is not canonical replay or proof of SIP continuity.
     batch_size=200
     total=len(self.symbols)
     recovered_1m_count=0
@@ -115,11 +117,15 @@ class ProductionStartupRecovery:
      batch=self.symbols[offset:offset+batch_size]
      r1,r5=self.rest.native_recovery_batch(batch,start,now,batch_size=batch_size,max_workers=2)
      self._require_not_cancelled()
+     plan,audit=plan_native_batch(r1,r5,batch,window_start=start,
+                                  window_end=now,recovered_at=self.now_fn())
+     self._require_not_cancelled()
+     batch_audits.append(audit)
      batch_1m_symbols=sum(1 for sym in batch if r1.get(sym))
      batch_5m_symbols=sum(1 for sym in batch if r5.get(sym))
      recovered_1m_count += batch_1m_symbols
      recovered_5m_count += batch_5m_symbols
-     del r1,r5
+     del plan,r1,r5
      print({"stage":"STARTUP_RECOVERY_BATCH",
             "processed":min(offset+len(batch),total),"total":total,
             "batch_size":len(batch),
@@ -132,15 +138,27 @@ class ProductionStartupRecovery:
     # Deterministic adapter/test compatibility; keep rows ephemeral here too.
     for sym in self.symbols:
      self._require_not_cancelled()
-     rows1=self._dedup(self.rest.native_1m_gap(sym,start,now))
-     rows5=self._dedup(self.rest.native_5m(sym,start,now))
-     del rows1,rows5
+     rows1=self.rest.native_1m_gap(sym,start,now)
+     rows5=self.rest.native_5m(sym,start,now)
+     plan,audit=plan_native_batch({sym:rows1},{sym:rows5},[sym],
+                                  window_start=start,window_end=now,
+                                  recovered_at=self.now_fn())
+     self._require_not_cancelled()
+     batch_audits.append(audit)
+     del plan,rows1,rows5
    self._require_not_cancelled()
-   # REST rows were fetched then discarded: no canonical E/B replay or
-   # end-to-end coverage proof occurred. Never report this as recovered.
+   # Completed native bars were normalized, deduplicated, ordered and
+   # audited per batch, then discarded. E/B canonical replay, SIP merge and
+   # independent end-to-end coverage proof are still missing. Fail closed.
    self._base_reconciled=False
-   self._fetch_audit={"kind":"REST_FETCH_ONLY","replay_completed":False,
-                      "continuity_proven":False}
+   self._fetch_audit={"kind":"REST_CHRONOLOGY_AUDIT_ONLY",
+                      "batch_count":len(batch_audits),
+                      "native_1m":sum(a["native_1m"] for a in batch_audits),
+                      "native_5m":sum(a["native_5m"] for a in batch_audits),
+                      "observed_interbar_gaps":sum(a["observed_interbar_gaps"] for a in batch_audits),
+                      "empty_symbol_timeframe_lanes":sum(a["empty_symbol_timeframe_lanes"] for a in batch_audits),
+                      "batch_digests":[a["chronological_sha256"] for a in batch_audits],
+                      "replay_completed":False,"continuity_proven":False}
    result={"gap_recovered":False,"reconciled":False,
            "reason":"CANONICAL_REPLAY_NOT_IMPLEMENTED","fetch_audit":self._fetch_audit}
    if self.pending_halted:result["pending_halt_status"]=sorted(self.pending_halted)
