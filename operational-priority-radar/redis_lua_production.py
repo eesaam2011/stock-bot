@@ -58,6 +58,31 @@ redis.call('SET',outbox,ARGV[4])
 return 1
 """
 
+# Step 3D: validate every outbox before writing any recovered state.
+ATOMIC_TRADE_RECOVERY_LUA = """
+local leader=KEYS[1]
+local genkey=KEYS[2]
+local trade=KEYS[3]
+local n=#KEYS-3
+if n<1 or n>4 or #ARGV~=4+n then return -40 end
+if redis.call('GET',leader)~=ARGV[1] then return -10 end
+if tostring(redis.call('GET',genkey) or '0')~=ARGV[4] then return -11 end
+if redis.call('GET',trade)~=ARGV[2] then return -20 end
+local seen={}
+for i=1,n do
+ local k=KEYS[3+i]
+ if seen[k] or k==trade or k==leader or k==genkey then return -50 end
+ seen[k]=true
+ local existing=redis.call('GET',k)
+ if existing and existing~=ARGV[4+i] then return -30 end
+end
+redis.call('SET',trade,ARGV[3])
+for i=1,n do
+ redis.call('SET',KEYS[3+i],ARGV[4+i])
+end
+return 1
+"""
+
 class ProductionRedisLua:
     def __init__(self,redis_client,prefix="operational_priority_radar:v1"):
         self.r=redis_client;self.prefix=prefix
@@ -88,6 +113,28 @@ class ProductionRedisLua:
                            worker_id,expected_raw,new_raw,trade_raw,outbox_raw,g))
         if rc in (-10,-11):raise LeaseLost(f"ENTRY_FENCED:{rc}")
         if rc<0:raise AtomicConflict(str(rc))
+        return True
+    def atomic_trade_recovery(self,worker_id,trade_key,expected_raw,new_raw,
+                              outboxes,expected_generation):
+        """One fenced transaction: final trade and 1..4 recovered outboxes."""
+        if (not isinstance(outboxes,(list,tuple)) or not 1<=len(outboxes)<=4
+            or any(not isinstance(x,(list,tuple)) or len(x)!=2 for x in outboxes)):
+            raise AtomicConflict("INVALID_RECOVERY_OUTBOX_BATCH")
+        keys=[x[0] for x in outboxes]
+        if (any(not isinstance(k,str) or not k for k in keys)
+            or len(set(keys))!=len(keys)
+            or trade_key in keys or self.leader_key in keys
+            or self.generation_key in keys):
+            raise AtomicConflict("INVALID_RECOVERY_OUTBOX_KEYS")
+        raws=[x[1] for x in outboxes]
+        g=self._assert_payload_generation(expected_generation,new_raw,*raws)
+        rc=int(self.r.eval(
+            ATOMIC_TRADE_RECOVERY_LUA,3+len(outboxes),
+            self.leader_key,self.generation_key,trade_key,*keys,
+            worker_id,expected_raw,new_raw,g,*raws))
+        if rc in (-10,-11):raise LeaseLost(f"RECOVERY_FENCED:{rc}")
+        if rc<0:raise AtomicConflict(f"RECOVERY_CONFLICT:{rc}")
+        if rc!=1:raise RedisLuaError(f"RECOVERY_UNEXPECTED:{rc}")
         return True
     def atomic_trade_event(self,worker_id,trade_key,expected_raw,new_raw,outbox_key,outbox_raw,expected_generation):
         g=self._assert_payload_generation(expected_generation,new_raw,outbox_raw)
