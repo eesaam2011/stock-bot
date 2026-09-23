@@ -5,6 +5,7 @@ from recovery_chronology import plan_native_batch
 from recovery_signal_replay import reconstruct_window_signals
 from recovery_session_replay import reconstruct_session_signals,EARLY_WARMUP_MINUTES
 from recovery_session_preview import preview_session_overlap
+from recovery_stable_preview import stable_session_preview
 from recovery_canonical_audit import audit_session_canonical
 from recovery_chronology import _utc
 UTC=timezone.utc
@@ -98,7 +99,8 @@ class ProductionStartupRecovery:
               audit_session_overlap=False,sip_capture=None,sip_epoch=None,
               audit_session_canonical_records=False,
               atomic_canonical_snapshot=False,
-              auto_begin_capture_drain=False):
+              auto_begin_capture_drain=False,
+              stable_preview_max_attempts=1):
   self.reader=reader;self.rest=rest;self.trade_reconciler=trade_reconciler
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
@@ -111,6 +113,7 @@ class ProductionStartupRecovery:
   self.audit_session_canonical_records=bool(audit_session_canonical_records)
   self.atomic_canonical_snapshot=bool(atomic_canonical_snapshot)
   self.auto_begin_capture_drain=bool(auto_begin_capture_drain)
+  self.stable_preview_max_attempts=stable_preview_max_attempts
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
@@ -157,6 +160,12 @@ class ProductionStartupRecovery:
     # Native5 pre-session warm-up is part of the request, not a claim
     # that REST observed every market event during that interval.
     start=min(start,session_start-timedelta(minutes=EARLY_WARMUP_MINUTES))
+   if (not isinstance(self.stable_preview_max_attempts,int)
+       or isinstance(self.stable_preview_max_attempts,bool)
+       or not 1<=self.stable_preview_max_attempts<=3
+       or (self.stable_preview_max_attempts>1
+           and not self.audit_session_overlap)):
+    raise RecoveryFailure("INVALID_STABLE_PREVIEW_RETRY_POLICY")
    if self.auto_begin_capture_drain and not self.audit_session_overlap:
     raise RecoveryFailure("AUTO_DRAIN_REQUIRES_SESSION_OVERLAP")
    if self.atomic_canonical_snapshot and (not self.audit_session_canonical_records
@@ -224,20 +233,39 @@ class ProductionStartupRecovery:
             or snap["last_sequence"]!=snap["buffered"]):
          raise RecoveryFailure("AUTO_DRAIN_CAPTURE_CHANGED_DURING_REST")
         self.sip_capture.begin_drain(self.sip_epoch)
-       overlap_signals,overlap_audit=preview_session_overlap(
-           plan,self.sip_capture,session=self.session,epoch=self.sip_epoch,
-           symbols=batch,session_start=session_start,session_end=now,
-           requested_start=start,as_of=now)
-       # Preview validates its own snapshot, but the producer can append
-       # immediately after preview returns. Recheck at the caller boundary.
-       preview_prefix=overlap_audit["overlap"]["audited_prefix"]
-       post_preview=self.sip_capture.snapshot()
-       if (post_preview["phase"]!=self.sip_capture.DRAINING
-           or post_preview["epoch"]!=self.sip_epoch
-           or post_preview["buffered"]!=preview_prefix["queue_size_at_snapshot"]
-           or post_preview["last_sequence"]!=preview_prefix["last_sequence_at_snapshot"]
-           or post_preview["acked_upto"]!=preview_prefix["acked_upto_at_snapshot"]):
-        raise RecoveryFailure("SESSION_PREVIEW_CAPTURE_CHANGED_AFTER_RETURN")
+       if self.stable_preview_max_attempts>1:
+        overlap_signals,overlap_audit=stable_session_preview(
+            plan,self.sip_capture,session=self.session,epoch=self.sip_epoch,
+            symbols=batch,session_start=session_start,requested_start=start,
+            rest_cutoff=now,now_fn=self.now_fn,
+            max_attempts=self.stable_preview_max_attempts,
+            preview_fn=preview_session_overlap,
+            cancel_check=self._require_not_cancelled)
+       else:
+        # REST cutoff is fixed, but SIP received during REST may be later.
+        # Use a fresh audit clock without claiming REST coverage to that time.
+        audit_now=_utc(self.now_fn())
+        if audit_now<now:
+         raise RecoveryFailure("SESSION_AUDIT_CLOCK_REGRESSION")
+        overlap_signals,overlap_audit=preview_session_overlap(
+            plan,self.sip_capture,session=self.session,epoch=self.sip_epoch,
+            symbols=batch,session_start=session_start,session_end=audit_now,
+            requested_start=start,as_of=audit_now)
+        # Preview validates its own snapshot, but the producer can append
+        # immediately after preview returns. Recheck at the caller boundary.
+        preview_prefix=overlap_audit["overlap"]["audited_prefix"]
+        post_preview=self.sip_capture.snapshot()
+        if (post_preview["phase"]!=self.sip_capture.DRAINING
+            or post_preview["epoch"]!=self.sip_epoch
+            or post_preview["buffered"]!=preview_prefix["queue_size_at_snapshot"]
+            or post_preview["last_sequence"]!=preview_prefix["last_sequence_at_snapshot"]
+            or post_preview["acked_upto"]!=preview_prefix["acked_upto_at_snapshot"]):
+         raise RecoveryFailure("SESSION_PREVIEW_CAPTURE_CHANGED_AFTER_RETURN")
+        overlap_audit["stable_preview_attempts"]=1
+        overlap_audit["stable_preview_append_retries"]=0
+        overlap_audit["rest_cutoff"]=_utc(now).isoformat()
+        overlap_audit["audit_as_of"]=audit_now.isoformat()
+        overlap_audit["post_rest_sip_coverage_proven"]=False
        overlap_audits.append(overlap_audit)
        session_audit=overlap_audit["session_signals"]
        if self.audit_session_canonical_records:
@@ -324,6 +352,10 @@ class ProductionStartupRecovery:
                       "session_signal_audit_enabled":self.audit_session_signals,
                       "session_sip_overlap_audit_enabled":self.audit_session_overlap,
                       "session_auto_begin_capture_drain":self.auto_begin_capture_drain,
+                      "session_stable_preview_max_attempts":self.stable_preview_max_attempts,
+                      "session_stable_preview_attempts":sum(a["stable_preview_attempts"] for a in overlap_audits),
+                      "session_stable_preview_append_retries":sum(a["stable_preview_append_retries"] for a in overlap_audits),
+                      "post_rest_sip_coverage_proven":False,
                       "session_capture_acknowledged":False,
                       "session_direct_handoff_authorized":False,
                       "session_canonical_comparison_enabled":self.audit_session_canonical_records,
