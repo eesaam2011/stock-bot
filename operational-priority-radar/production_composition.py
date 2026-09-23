@@ -88,7 +88,10 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     # Empty symbols exist only in the deterministic injection seam above.
     # Real production always has a non-empty universe and therefore uses the
     # semantic journal before capture ACK.
-    semantic_journal=(ProductionSIPSemanticJournal(orch.redis,session,syms)
+    semantic_journal=(ProductionSIPSemanticJournal(
+                          orch.redis,session,syms,
+                          bar_window_start=os.getenv("OPR_SESSION_START_UTC"),
+                          bar_window_end=os.getenv("OPR_SESSION_END_UTC"))
                       if syms else ProductionSIPTransportJournal(
                           orch.redis,session))
     sip_drain=BoundedSIPDrainCoordinator(

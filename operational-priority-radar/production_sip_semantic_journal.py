@@ -1,19 +1,19 @@
 """Fenced, payload-free validation journal for every captured SIP message."""
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from datetime import datetime, timezone
 
 from recovery_chronology import _normalize
 from sip_drain_coordinator import PROOF_SCHEMA, captured_batch_digest
 from sip_epoch_capture import CapturedSIP
+from sip_semantic_digest import (
+    ZERO_MULTISET, add_bar_members, canonical_sha256, normalized_bar_member,
+)
 
 
 JOURNAL_SCHEMA = "OPR_SIP_SEMANTIC_JOURNAL_V1"
-ZERO = "0" * 64
-MODULUS = 1 << 256
+ZERO = ZERO_MULTISET
 
 
 class SIPSemanticJournalUnsafe(RuntimeError):
@@ -21,9 +21,7 @@ class SIPSemanticJournalUnsafe(RuntimeError):
 
 
 def _sha(value):
-    raw = json.dumps(value, sort_keys=True, separators=(",", ":"),
-                     ensure_ascii=False, allow_nan=False)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return canonical_sha256(value)
 
 
 def _utc(value):
@@ -79,7 +77,8 @@ def _semantic_row(item, scope):
 class ProductionSIPSemanticJournal:
     """Validate and atomically receipt exact semantic batches without payloads."""
 
-    def __init__(self, lua, session, symbols, *, ttl_seconds=604800):
+    def __init__(self, lua, session, symbols, *, bar_window_start=None,
+                 bar_window_end=None, ttl_seconds=604800):
         if (not isinstance(session, str) or not session
                 or not isinstance(symbols, (tuple, list)) or not symbols
                 or len(symbols) > 12000 or len(set(symbols)) != len(symbols)
@@ -93,6 +92,16 @@ class ProductionSIPSemanticJournal:
         self.scope = set(self.symbols)
         self.symbols_sha256 = _sha(list(self.symbols))
         self.ttl_seconds = ttl_seconds
+        if (bar_window_start is None) != (bar_window_end is None):
+            raise ValueError("semantic bar window incomplete")
+        if bar_window_start is None:
+            self.bar_window_start = self.bar_window_end = None
+        else:
+            start = datetime.fromisoformat(_utc(bar_window_start))
+            end = datetime.fromisoformat(_utc(bar_window_end))
+            if not start < end:
+                raise ValueError("semantic bar window invalid")
+            self.bar_window_start, self.bar_window_end = start, end
 
     def _key(self, worker, generation, epoch):
         identity = _sha([self.session, worker, generation, epoch,
@@ -152,10 +161,16 @@ class ProductionSIPSemanticJournal:
         semantic_batch = _sha(rows)
         # Exclude receive order/time so the commutative accumulator can later
         # be reproduced from the same native REST bar multiset.
-        bar_hashes = [_sha({"symbol": row["symbol"],
-                            "event_ts": row["event_ts"],
-                            "ohlcv": row["ohlcv"]})
-                      for row in rows if row["kind"] == "BAR"]
+        bar_members = []
+        for row, item in zip(rows, items):
+            if row["kind"] != "BAR":
+                continue
+            event = datetime.fromisoformat(row["event_ts"])
+            if (self.bar_window_start is not None
+                    and not self.bar_window_start <= event < self.bar_window_end):
+                continue
+            bar_members.append(normalized_bar_member(
+                row["symbol"], row["event_ts"], item.payload))
         key = self._key(worker, generation, epoch)
         state = self._state(key)
         if first != state["last"] + 1 and last != state["last"]:
@@ -167,9 +182,8 @@ class ProductionSIPSemanticJournal:
         semantic_next = (state["semantic"] if retry else self._chain(
             JOURNAL_SCHEMA, state["semantic"], context,
             {"semantic_batch_sha256": semantic_batch, "counts": counts}))
-        bar_next = state["bar_acc"] if retry else format(
-            (int(state["bar_acc"], 16)
-             + sum(int(value, 16) for value in bar_hashes)) % MODULUS, "064x")
+        bar_next = (state["bar_acc"] if retry
+                    else add_bar_members(state["bar_acc"], bar_members))
         result = self.lua.atomic_sip_semantic_batch(
             worker, generation, key, schema=JOURNAL_SCHEMA, epoch=epoch,
             first_sequence=first, last_sequence=last, item_count=len(items),
@@ -179,6 +193,7 @@ class ProductionSIPSemanticJournal:
             symbols_sha256=self.symbols_sha256,
             bar_count=counts["BAR"], trade_count=counts["TRADE"],
             status_count=counts["STATUS"],
+            bar_window_count=len(bar_members),
             semantic_batch_sha256=semantic_batch,
             previous_semantic_chain_sha256=state["semantic"],
             next_semantic_chain_sha256=semantic_next,
@@ -193,6 +208,7 @@ class ProductionSIPSemanticJournal:
                 "batch_bar_count": counts["BAR"],
                 "batch_trade_count": counts["TRADE"],
                 "batch_status_count": counts["STATUS"],
+                "batch_bar_window_count": len(bar_members),
                 "idempotent_retry": result["idempotent"],
                 "payload_retained": False,
                 "sip_semantics_validated": True,
@@ -211,14 +227,21 @@ class ProductionSIPSemanticJournal:
             item_count = int(raw["item_count"])
             counts = {kind: int(raw[f"{kind.lower()}_count"])
                       for kind in ("BAR", "TRADE", "STATUS")}
+            window_count = int(raw["bar_window_count"])
         except (KeyError, TypeError, ValueError) as exc:
             raise SIPSemanticJournalUnsafe("SIP_SEMANTIC_STATE_INVALID") from exc
         if sum(counts.values()) != item_count:
             raise SIPSemanticJournalUnsafe("SIP_SEMANTIC_COUNT_INVALID")
-        return {"schema": JOURNAL_SCHEMA, "epoch": epoch,
+        body = {"schema": JOURNAL_SCHEMA, "session": self.session,
+                "epoch": epoch,
                 "last_sequence": state["last"], "item_count": item_count,
                 "bar_count": counts["BAR"], "trade_count": counts["TRADE"],
                 "status_count": counts["STATUS"],
+                "bar_window_count": window_count,
+                "bar_window_start_utc": (self.bar_window_start.isoformat()
+                                         if self.bar_window_start else None),
+                "bar_window_end_utc": (self.bar_window_end.isoformat()
+                                       if self.bar_window_end else None),
                 "symbols_sha256": self.symbols_sha256,
                 "transport_chain_sha256": state["transport"],
                 "semantic_chain_sha256": state["semantic"],
@@ -229,3 +252,5 @@ class ProductionSIPSemanticJournal:
                 "full_session_coverage_proven": False,
                 "direct_handoff_authorized": False,
                 "retroactive_entries_allowed": False}
+        body["snapshot_sha256"] = _sha(body)
+        return body

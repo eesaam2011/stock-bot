@@ -243,6 +243,9 @@ jobs:
             printf 'sip_semantic_bar_multiset_digest=commutative_sha256_sum\n'
             printf 'sip_semantics_validated_before_capture_ack=true\n'
             printf 'sip_semantics_reconciled=false\n'
+            printf 'sip_rest_session_bar_multiset_reconciliation=exact_digest_bound\n'
+            printf 'sip_rest_bar_reconciliation_requires_explicit_window=true\n'
+            printf 'sip_rest_bar_reconciliation_scope=bars_only\n'
             printf 'post_rest_auto_capture_drain=opt_in_read_only\n'
             printf 'post_rest_capture_race_recheck=after_preview_and_before_report\n'
             printf 'capture_drain_acknowledged=false\n'
@@ -340,7 +343,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3aa-sip-semantic-journal-review-bundle
+          name: opr-step3ab-sip-rest-bar-reconciliation-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt

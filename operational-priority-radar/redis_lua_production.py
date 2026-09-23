@@ -144,7 +144,7 @@ return 1
 # summary in the same fenced Redis transaction.  The semantic accumulator is
 # sufficient for later equality checks, but is not itself a coverage claim.
 ATOMIC_SIP_SEMANTIC_BATCH_LUA = """
-if #KEYS~=3 or #ARGV~=20 then return -40 end
+if #KEYS~=3 or #ARGV~=21 then return -40 end
 if redis.call('GET',KEYS[1])~=ARGV[1] then return -10 end
 if tostring(redis.call('GET',KEYS[2]) or '0')~=ARGV[2] then return -11 end
 local first=tonumber(ARGV[4])
@@ -153,45 +153,48 @@ local count=tonumber(ARGV[6])
 local bars=tonumber(ARGV[12])
 local trades=tonumber(ARGV[13])
 local statuses=tonumber(ARGV[14])
+local window_bars=tonumber(ARGV[15])
 if not first or not last or not count or count<1 or last-first+1~=count then return -41 end
-if not bars or not trades or not statuses or bars<0 or trades<0 or statuses<0
+if not bars or not trades or not statuses or not window_bars
+ or bars<0 or trades<0 or statuses<0 or window_bars<0 or window_bars>bars
  or bars+trades+statuses~=count then return -42 end
 local prior_last=tonumber(redis.call('HGET',KEYS[3],'last_sequence') or '0')
 local prior_transport=redis.call('HGET',KEYS[3],'chain_sha256') or ARGV[8]
-local prior_semantic=redis.call('HGET',KEYS[3],'semantic_chain_sha256') or ARGV[16]
-local prior_bar_acc=redis.call('HGET',KEYS[3],'bar_multiset_sha256') or ARGV[18]
+local prior_semantic=redis.call('HGET',KEYS[3],'semantic_chain_sha256') or ARGV[17]
+local prior_bar_acc=redis.call('HGET',KEYS[3],'bar_multiset_sha256') or ARGV[19]
 local old_first=tonumber(redis.call('HGET',KEYS[3],'last_batch_first') or '0')
 local old_batch=redis.call('HGET',KEYS[3],'last_batch_sha256')
 local old_transport=redis.call('HGET',KEYS[3],'last_batch_chain_sha256')
 local old_semantic=redis.call('HGET',KEYS[3],'last_batch_semantic_chain_sha256')
 local old_bar_acc=redis.call('HGET',KEYS[3],'last_batch_bar_multiset_sha256')
 if prior_last==last and old_first==first and old_batch==ARGV[7]
- and old_transport==ARGV[9] and old_semantic==ARGV[17] and old_bar_acc==ARGV[19] then
- redis.call('EXPIRE',KEYS[3],tonumber(ARGV[20]))
+ and old_transport==ARGV[9] and old_semantic==ARGV[18] and old_bar_acc==ARGV[20] then
+ redis.call('EXPIRE',KEYS[3],tonumber(ARGV[21]))
  return 0
 end
 if first~=prior_last+1 then return -20 end
-if ARGV[8]~=prior_transport or ARGV[16]~=prior_semantic
- or ARGV[18]~=prior_bar_acc then return -21 end
+if ARGV[8]~=prior_transport or ARGV[17]~=prior_semantic
+ or ARGV[19]~=prior_bar_acc then return -21 end
 redis.call('HSET',KEYS[3],
  'schema',ARGV[3],
  'last_sequence',tostring(last),
  'item_count',tostring(tonumber(redis.call('HGET',KEYS[3],'item_count') or '0')+count),
  'bar_count',tostring(tonumber(redis.call('HGET',KEYS[3],'bar_count') or '0')+bars),
+ 'bar_window_count',tostring(tonumber(redis.call('HGET',KEYS[3],'bar_window_count') or '0')+window_bars),
  'trade_count',tostring(tonumber(redis.call('HGET',KEYS[3],'trade_count') or '0')+trades),
  'status_count',tostring(tonumber(redis.call('HGET',KEYS[3],'status_count') or '0')+statuses),
  'chain_sha256',ARGV[9],
- 'semantic_chain_sha256',ARGV[17],
- 'bar_multiset_sha256',ARGV[19],
+ 'semantic_chain_sha256',ARGV[18],
+ 'bar_multiset_sha256',ARGV[20],
  'last_batch_first',tostring(first),
  'last_batch_sha256',ARGV[7],
  'last_batch_chain_sha256',ARGV[9],
- 'last_batch_semantic_sha256',ARGV[15],
- 'last_batch_semantic_chain_sha256',ARGV[17],
- 'last_batch_bar_multiset_sha256',ARGV[19],
+ 'last_batch_semantic_sha256',ARGV[16],
+ 'last_batch_semantic_chain_sha256',ARGV[18],
+ 'last_batch_bar_multiset_sha256',ARGV[20],
  'epoch',ARGV[10],
  'symbols_sha256',ARGV[11])
-redis.call('EXPIRE',KEYS[3],tonumber(ARGV[20]))
+redis.call('EXPIRE',KEYS[3],tonumber(ARGV[21]))
 return 1
 """
 
@@ -349,7 +352,8 @@ class ProductionRedisLua:
                                   item_count,batch_sha256,
                                   previous_chain_sha256,next_chain_sha256,
                                   symbols_sha256,bar_count,trade_count,
-                                  status_count,semantic_batch_sha256,
+                                  status_count,bar_window_count,
+                                  semantic_batch_sha256,
                                   previous_semantic_chain_sha256,
                                   next_semantic_chain_sha256,
                                   previous_bar_multiset_sha256,
@@ -373,6 +377,8 @@ class ProductionRedisLua:
             or item_count!=last_sequence-first_sequence+1
             or any(type(value) is not int or value<0 for value in counts)
             or sum(counts)!=item_count
+            or type(bar_window_count) is not int
+            or not 0<=bar_window_count<=bar_count
             or any(not isinstance(value,str)
                    or not re.fullmatch(r"[0-9a-f]{64}",value)
                    for value in digests)
@@ -386,7 +392,8 @@ class ProductionRedisLua:
             str(last_sequence),str(item_count),batch_sha256,
             previous_chain_sha256,next_chain_sha256,str(epoch),symbols_sha256,
             str(bar_count),str(trade_count),str(status_count),
-            semantic_batch_sha256,previous_semantic_chain_sha256,
+            str(bar_window_count),semantic_batch_sha256,
+            previous_semantic_chain_sha256,
             next_semantic_chain_sha256,previous_bar_multiset_sha256,
             next_bar_multiset_sha256,str(ttl_seconds)))
         if rc in (-10,-11):raise LeaseLost(f"SIP_SEMANTIC_FENCED:{rc}")

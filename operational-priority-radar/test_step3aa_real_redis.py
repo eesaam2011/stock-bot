@@ -54,7 +54,7 @@ class TestRealRedisSIPSemanticJournal(unittest.TestCase):
             item_count=last-first+1, batch_sha256=batch,
             previous_chain_sha256=previous, next_chain_sha256=transport_next,
             symbols_sha256=digest("symbols"), bar_count=1,
-            trade_count=last-first, status_count=0,
+            trade_count=last-first, status_count=0, bar_window_count=1,
             semantic_batch_sha256=semantic_batch,
             previous_semantic_chain_sha256=semantic_previous,
             next_semantic_chain_sha256=semantic_next,
@@ -102,6 +102,7 @@ class TestRealRedisSIPSemanticJournal(unittest.TestCase):
         state = self.r.hgetall(self.key)
         self.assertEqual(state["item_count"], "3")
         self.assertEqual(state["bar_count"], "1")
+        self.assertEqual(state["bar_window_count"], "1")
         self.assertEqual(state["trade_count"], "2")
         self.assertEqual(state["status_count"], "0")
         self.assertFalse(any(name in state for name in (

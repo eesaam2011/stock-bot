@@ -13,6 +13,10 @@ from datetime import timedelta
 
 from recovery_chronology import _utc, plan_native_batch
 from recovery_session_replay import EARLY_WARMUP_MINUTES, reconstruct_session_signals
+from sip_semantic_digest import (
+    ZERO_MULTISET, add_bar_members, combine_bar_multisets,
+    normalized_bar_member,
+)
 
 
 SCHEMA = "OPR_NATIVE_SESSION_RECOVERY_BATCH_V1"
@@ -88,6 +92,12 @@ def recover_native_session_batch(rest, symbols, *, session, session_start,
             or any(signal.symbol not in scope for signal in signals)):
         raise NativeSessionRecoveryUnsafe("NATIVE_SESSION_REPLAY_UNSAFE")
     signal_rows = [_signal_body(signal) for signal in signals]
+    session_bars = [event for event in plan
+                    if event.timeframe == "1m"
+                    and event.start >= start and event.end <= end]
+    bar_multiset = add_bar_members(ZERO_MULTISET, [
+        normalized_bar_member(event.symbol, event.start, event.bar)
+        for event in session_bars])
     body = {
         "schema": SCHEMA,
         "batch_index": batch_index,
@@ -102,6 +112,8 @@ def recover_native_session_batch(rest, symbols, *, session, session_start,
         "native_1m_rows": chronology["native_1m"],
         "native_5m_rows": chronology["native_5m"],
         "native_events": chronology["event_count"],
+        "session_native_1m_bar_count": len(session_bars),
+        "session_native_1m_bar_multiset_sha256": bar_multiset,
         "chronological_sha256": chronology["chronological_sha256"],
         "observed_interbar_gaps": chronology["observed_interbar_gaps"],
         "empty_symbol_timeframe_lanes": chronology[
@@ -203,6 +215,10 @@ def combine_native_session_batches(batch_results, *, expected_symbols):
         "native_1m_rows": sum(p["native_1m_rows"] for p in proofs),
         "native_5m_rows": sum(p["native_5m_rows"] for p in proofs),
         "native_events": sum(p["native_events"] for p in proofs),
+        "session_native_1m_bar_count": sum(
+            p["session_native_1m_bar_count"] for p in proofs),
+        "session_native_1m_bar_multiset_sha256": combine_bar_multisets([
+            p["session_native_1m_bar_multiset_sha256"] for p in proofs]),
         "observed_interbar_gaps": sum(p["observed_interbar_gaps"] for p in proofs),
         "empty_symbol_timeframe_lanes": sum(
             p["empty_symbol_timeframe_lanes"] for p in proofs),

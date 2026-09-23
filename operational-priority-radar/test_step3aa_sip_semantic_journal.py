@@ -80,12 +80,15 @@ class FakeLua:
                 or kw["previous_bar_multiset_sha256"] != bar_acc):
             raise RuntimeError("CHAIN_CONFLICT")
         prior = state or {"item_count": "0", "bar_count": "0",
-                          "trade_count": "0", "status_count": "0"}
+                          "bar_window_count": "0", "trade_count": "0",
+                          "status_count": "0"}
         self.r.hashes[key] = {
             "schema": JOURNAL_SCHEMA,
             "last_sequence": str(kw["last_sequence"]),
             "item_count": str(int(prior["item_count"]) + kw["item_count"]),
             "bar_count": str(int(prior["bar_count"]) + kw["bar_count"]),
+            "bar_window_count": str(int(prior["bar_window_count"])
+                                    + kw["bar_window_count"]),
             "trade_count": str(int(prior["trade_count"]) + kw["trade_count"]),
             "status_count": str(int(prior["status_count"]) + kw["status_count"]),
             "chain_sha256": kw["next_chain_sha256"],
@@ -122,6 +125,7 @@ class TestSIPSemanticJournal(unittest.TestCase):
         snap = journal.snapshot("W", 3, 7)
         self.assertEqual((snap["bar_count"], snap["trade_count"],
                           snap["status_count"]), (1, 1, 1))
+        self.assertEqual(snap["bar_window_count"], 1)
         self.assertEqual(snap["last_sequence"], 3)
         self.assertTrue(snap["sip_semantics_validated"])
         self.assertFalse(snap["sip_semantics_reconciled"])
