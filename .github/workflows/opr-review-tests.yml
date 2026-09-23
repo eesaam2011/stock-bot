@@ -270,6 +270,11 @@ jobs:
             printf 'sip_drain_10000_message_regression=passed_offline\n'
             printf 'sip_drain_direct_handoff_authorized=false\n'
             printf 'sip_drain_production_reconciler_wired=false\n'
+            printf 'live_sip_soak_runner=read_only_payload_free_metrics\n'
+            printf 'live_sip_soak_explicit_gate_required=true\n'
+            printf 'live_sip_soak_redis_writes=false\n'
+            printf 'live_sip_soak_direct_handoff_authorized=false\n'
+            printf 'live_sip_soak_real_session_completed=false\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
@@ -299,7 +304,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3q-bounded-sip-drain-review-bundle
+          name: opr-step3r-live-sip-soak-runner-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
