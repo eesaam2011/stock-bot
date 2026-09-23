@@ -70,7 +70,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python operational_acceptance.py --output "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"
+          python operational_acceptance.py --ci-pytest-passed --ci-real-redis-passed --output "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"
           python - <<'PY'
           import json,os
           p=os.path.join(os.environ["GITHUB_WORKSPACE"],"SHADOW_READINESS_REPORT.json")
@@ -78,6 +78,8 @@ jobs:
           assert r["status"]=="NOT_AUTHORIZED_FOR_LIVE_SHADOW"
           assert len(r["outstanding_proofs"])==8
           assert not r["render_deploy_authorized"]
+          assert r["observed_offline_evidence"]["ci_pytest_passed"]
+          assert r["observed_offline_evidence"]["ci_real_redis_passed"]
           print("SHADOW_RELEASE_GATE_FAIL_CLOSED_OK")
           PY
       - name: Package reviewed source and exact pytest output
