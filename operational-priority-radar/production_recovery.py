@@ -97,7 +97,8 @@ class ProductionStartupRecovery:
               audit_session_signals=False,session_start=None,
               audit_session_overlap=False,sip_capture=None,sip_epoch=None,
               audit_session_canonical_records=False,
-              atomic_canonical_snapshot=False):
+              atomic_canonical_snapshot=False,
+              auto_begin_capture_drain=False):
   self.reader=reader;self.rest=rest;self.trade_reconciler=trade_reconciler
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
@@ -109,6 +110,7 @@ class ProductionStartupRecovery:
   self.sip_epoch=sip_epoch
   self.audit_session_canonical_records=bool(audit_session_canonical_records)
   self.atomic_canonical_snapshot=bool(atomic_canonical_snapshot)
+  self.auto_begin_capture_drain=bool(auto_begin_capture_drain)
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
@@ -155,6 +157,8 @@ class ProductionStartupRecovery:
     # Native5 pre-session warm-up is part of the request, not a claim
     # that REST observed every market event during that interval.
     start=min(start,session_start-timedelta(minutes=EARLY_WARMUP_MINUTES))
+   if self.auto_begin_capture_drain and not self.audit_session_overlap:
+    raise RecoveryFailure("AUTO_DRAIN_REQUIRES_SESSION_OVERLAP")
    if self.atomic_canonical_snapshot and (not self.audit_session_canonical_records
        or not hasattr(self.reader,"get_eb_snapshot")):
     raise RecoveryFailure("ATOMIC_SNAPSHOT_REQUIRES_CANONICAL_AUDIT_AND_READER")
@@ -168,9 +172,12 @@ class ProductionStartupRecovery:
         or not hasattr(self.rest,"native_recovery_batch_audited")):
      raise RecoveryFailure("SESSION_OVERLAP_REQUIRES_ONE_AUDITED_BATCH")
     snap=self.sip_capture.snapshot()
-    if (snap["phase"]!=self.sip_capture.DRAINING
-        or snap["epoch"]!=self.sip_epoch):
-     raise RecoveryFailure("SESSION_OVERLAP_REQUIRES_EXTERNAL_DRAIN")
+    expected_phase=(self.sip_capture.CAPTURING if self.auto_begin_capture_drain
+                    else self.sip_capture.DRAINING)
+    if (snap["phase"]!=expected_phase or snap["epoch"]!=self.sip_epoch
+        or snap["acked_upto"]!=0 or (self.auto_begin_capture_drain
+          and snap["buffered"] and snap["last_sequence"]!=snap["buffered"])):
+     raise RecoveryFailure("SESSION_OVERLAP_INVALID_CAPTURE_START")
    batch_audits=[]
    overlap_audits=[]
    canonical_audits=[]
@@ -206,6 +213,17 @@ class ProductionStartupRecovery:
       signal_audits.append(signals_audit)
      if self.audit_session_signals:
       if self.audit_session_overlap:
+       if self.auto_begin_capture_drain:
+        # REST fetch runs while the producer continues to capture SIP.
+        # Begin DRAINING only after REST + chronology validation. The
+        # producer may still append; the preview rejects any race.
+        snap=self.sip_capture.snapshot()
+        if (snap["phase"]!=self.sip_capture.CAPTURING
+            or snap["epoch"]!=self.sip_epoch
+            or snap["acked_upto"]!=0
+            or snap["last_sequence"]!=snap["buffered"]):
+         raise RecoveryFailure("AUTO_DRAIN_CAPTURE_CHANGED_DURING_REST")
+        self.sip_capture.begin_drain(self.sip_epoch)
        overlap_signals,overlap_audit=preview_session_overlap(
            plan,self.sip_capture,session=self.session,epoch=self.sip_epoch,
            symbols=batch,session_start=session_start,session_end=now,
@@ -284,6 +302,9 @@ class ProductionStartupRecovery:
                       "signal_audit_enabled":self.audit_window_signals,
                       "session_signal_audit_enabled":self.audit_session_signals,
                       "session_sip_overlap_audit_enabled":self.audit_session_overlap,
+                      "session_auto_begin_capture_drain":self.auto_begin_capture_drain,
+                      "session_capture_acknowledged":False,
+                      "session_direct_handoff_authorized":False,
                       "session_canonical_comparison_enabled":self.audit_session_canonical_records,
                       "session_canonical_audited_batches":len(canonical_audits),
                       "session_canonical_matches":sum(len(a["matched"]) for a in canonical_audits),
