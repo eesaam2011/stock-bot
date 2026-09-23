@@ -58,4 +58,16 @@ class TestOperationalAcceptance(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text())["schema"],
                              "OPR_SHADOW_ACCEPTANCE_V1")
 
+    def test_cli_ci_success_still_blocked_on_live_proofs(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/"report.json"
+            subprocess.run([sys.executable,"operational_acceptance.py",
+                "--ci-pytest-passed","--ci-real-redis-passed",
+                "--output",str(path)],capture_output=True,text=True,check=True)
+            report=json.loads(path.read_text())
+            self.assertTrue(report["observed_offline_evidence"]["ci_pytest_passed"])
+            self.assertTrue(report["observed_offline_evidence"]["ci_real_redis_passed"])
+            self.assertEqual(len(report["outstanding_proofs"]),8)
+            self.assertFalse(report["render_deploy_authorized"])
+
 if __name__=="__main__":unittest.main()
