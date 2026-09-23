@@ -5,7 +5,7 @@ single async consumer, asyncio.to_thread and compact-tuple BASE_READY. Fake
 frames only: no Alpaca connection, no Redis, no deployment and no 407 proof.
 Run: python benchmark_sip_queue_burst.py --symbols 3000 --burst 5000
 """
-import argparse,asyncio,json,resource,time
+import argparse,asyncio,contextlib,io,json,resource,time
 from datetime import datetime,timedelta,timezone
 from production_adapters import OperationalBaseReady
 from websocket_runtime import WebSocketRuntime,WebSocketProtocolError
@@ -94,12 +94,16 @@ async def scenario(symbol_count,*,mode,queue_limit=1024,capture_limit=4096,
                              dispatch_queue_max=queue_limit)
     ws.runtime=runtime
     started=time.perf_counter()
-    try:
-        await asyncio.wait_for(runtime.run_once("synthetic","NO_KEY","NO_SECRET",symbols),
-                               timeout=75)
-        error="UNEXPECTED_SUCCESS"
-    except (WebSocketProtocolError,EpochCaptureOverflow) as exc:
-        error=str(exc)
+    # Production runtime emits a Python-dict epoch-end diagnostic on stdout.
+    # Capture it as evidence instead of corrupting the benchmark JSON artifact.
+    runtime_stdout=io.StringIO()
+    with contextlib.redirect_stdout(runtime_stdout):
+        try:
+            await asyncio.wait_for(runtime.run_once("synthetic","NO_KEY","NO_SECRET",symbols),
+                                   timeout=75)
+            error="UNEXPECTED_SUCCESS"
+        except (WebSocketProtocolError,EpochCaptureOverflow) as exc:
+            error=str(exc)
     elapsed=time.perf_counter()-started
     snap=runtime.performance_snapshot()
     return {"scenario":mode,"symbols":symbol_count,"elapsed_seconds":round(elapsed,3),
@@ -110,6 +114,7 @@ async def scenario(symbol_count,*,mode,queue_limit=1024,capture_limit=4096,
         "observed_rx_per_sec":snap["observed_rx_per_sec"],
         "peak_process_rss_kib_linux":resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         "error":error,"disconnected":len(disconnect)==1,
+        "epoch_end_diagnostic_emitted":"SIP_EPOCH_END" in runtime_stdout.getvalue(),
         "connected_after_disconnect":runtime.connected_event.is_set(),
         "production_queue_limit_used":queue_limit==1024,
         "production_capture_limit_used":capture_limit==4096,
