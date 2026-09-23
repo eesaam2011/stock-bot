@@ -275,7 +275,7 @@ class ProductionStartupRecovery:
          raise RecoveryFailure("CANONICAL_AUDIT_CAPTURE_CHANGED")
         canonical_audit=audit_session_canonical(
             overlap_signals,self.reader,session=self.session,
-            symbols=batch,as_of=now,
+            symbols=batch,as_of=_utc(overlap_audit["audit_as_of"]),
             require_atomic_snapshot=self.atomic_canonical_snapshot)
         capture_after=self.sip_capture.snapshot()
         if (capture_before!=capture_after
