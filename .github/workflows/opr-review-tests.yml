@@ -235,6 +235,9 @@ jobs:
             printf 'recovery_eb_full_scope_permit_supports_bounded_commit_batches=true\n'
             printf 'recovered_signal_to_canonical_eb_batches=bounded_80_deterministic\n'
             printf 'recovered_signal_conversion_actionable_side_effects=zero\n'
+            printf 'native_session_recovery_batches=bounded_80_exact_partition\n'
+            printf 'native_session_recovery_rest_page_chains=both_terminal_required\n'
+            printf 'native_session_recovery_sip_semantics_reconciled=false\n'
             printf 'post_rest_auto_capture_drain=opt_in_read_only\n'
             printf 'post_rest_capture_race_recheck=after_preview_and_before_report\n'
             printf 'capture_drain_acknowledged=false\n'
@@ -332,7 +335,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3y-recovered-eb-records-review-bundle
+          name: opr-step3z-native-session-recovery-batches-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
