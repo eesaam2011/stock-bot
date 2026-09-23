@@ -5,6 +5,8 @@ from trade_monitor import TradeState,MarketEvent,apply_event,MonitorEvent
 from state_store import key_trade,key_outbox,canonical_json,base_record,validate_record
 from event_ids import trade_event_id
 from redis_lua_production import ProductionRedisLua
+from alpaca_production_market import AlpacaMarketDataError
+from recovery_trade_chunks import fetch_chunked_trades
 UTC=timezone.utc
 TERMINAL={"CLOSED_STOP","CLOSED_T2","CLOSED_POST_T1_BREAKEVEN_EXIT","MONITORING_EXPIRED","RECOVERY_PATH_AMBIGUOUS"}
 EVENT_MAP={"T1":"T1","T2":"T2","STOP":"STOP","POST_T1_EXIT":"POST_T1_EXIT","MONITORING_EXPIRED":"FINAL","RECOVERY_PATH_AMBIGUOUS":"FINAL"}
@@ -16,12 +18,14 @@ def parse_ts(v):
     return datetime.fromisoformat(str(v).replace("Z","+00:00"))
 
 class ActiveTradeChronologicalReconciler:
-    def __init__(self,rest,redis_client,worker_id,now_fn=None,leadership=None):
+    def __init__(self,rest,redis_client,worker_id,now_fn=None,leadership=None,
+                 enable_trade_chunk_fallback=False):
         self.rest=rest;self.r=redis_client;self.worker_id=worker_id
         self.lua=ProductionRedisLua(redis_client);self.now_fn=now_fn or (lambda:datetime.now(UTC))
         # Set after lease acquisition in production composition; absent means
         # recovery cannot commit, not permission to read a fresh generation.
         self.leadership=leadership
+        self.enable_trade_chunk_fallback=bool(enable_trade_chunk_fallback)
         self.cancel_event=None
     def _require_not_cancelled(self):
         if self.cancel_event is not None and self.cancel_event.is_set():
@@ -36,7 +40,19 @@ class ActiveTradeChronologicalReconciler:
         # Both page chains must terminate before a recovered trade can be
         # committed. A truncated trade tape could hide an earlier STOP/T2.
         if hasattr(self.rest,"trades_audited"):
-            trades,trade_audit=self.rest.trades_audited(t["symbol"],start,end)
+            try:
+                trades,trade_audit=self.rest.trades_audited(t["symbol"],start,end)
+            except AlpacaMarketDataError as exc:
+                if (not self.enable_trade_chunk_fallback
+                    or str(exc) not in ("REST_PAGE_LIMIT_EXCEEDED",
+                                       "REST_ROW_LIMIT_EXCEEDED")):
+                    raise
+                # Restart the entire tape in disjoint, bounded time windows.
+                # No partial Redis writes have happened at this point.
+                trades,trade_audit=fetch_chunked_trades(
+                    self.rest,t["symbol"],start,end)
+                trade_audit["api_pagination_exhausted"]=trade_audit[
+                    "all_api_page_chains_exhausted"]
             if not trade_audit.get("api_pagination_exhausted"):
                 raise ActiveTradeRecoveryError("TRADE_PAGINATION_UNPROVEN")
         else:
