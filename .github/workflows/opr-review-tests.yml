@@ -133,6 +133,11 @@ jobs:
             printf 'canonical_audit_capture_race_guard=before_and_after\n'
             printf 'canonical_atomic_snapshot_does_not_prove_coverage=true\n'
             printf 'real_redis_integration_tests=18_required\n'
+            printf 'post_rest_auto_capture_drain=opt_in_read_only\n'
+            printf 'post_rest_capture_race_recheck=after_preview_and_before_report\n'
+            printf 'capture_drain_acknowledged=false\n'
+            printf 'capture_direct_handoff_authorized=false\n'
+            printf 'capture_auto_drain_regressions=10\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
@@ -148,7 +153,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3i-review-bundle
+          name: opr-step3j-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
