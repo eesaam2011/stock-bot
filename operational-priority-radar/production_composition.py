@@ -65,7 +65,8 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         if not syms:
             rec=ProductionRecoveryBridge()  # explicit fail-closed until deployment context supplied
         else:
-            trade_reconciler=ActiveTradeChronologicalReconciler(rest,r,worker_id)
+            trade_reconciler=ActiveTradeChronologicalReconciler(
+                rest,r,worker_id,enable_trade_chunk_fallback=True)
             status_tracker=ProductionStatusTracker()
             rec=ProductionStartupRecovery(RedisCanonicalReader(r),rest,trade_reconciler,session,syms,status_tracker=status_tracker)
     guard=ResourceGuard()
