@@ -86,7 +86,7 @@ def _match(signal,rec):
     return True,None
 
 def audit_session_canonical(signals,reader,*,session,symbols,as_of,
-                            max_symbols=80):
+                            max_symbols=80,require_atomic_snapshot=False):
     """Read every E/B key for one bounded batch before comparing signals.
 
     Existing canonical without observed signal is INDETERMINATE: REST/SIP
@@ -97,7 +97,10 @@ def audit_session_canonical(signals,reader,*,session,symbols,as_of,
         or not isinstance(symbols,(list,tuple)) or not symbols
         or len(symbols)>max_symbols or len(set(symbols))!=len(symbols)
         or any(not isinstance(s,str) or not s for s in symbols)
-        or not hasattr(reader,"get_e") or not hasattr(reader,"get_b")
+        or (not require_atomic_snapshot and
+            (not hasattr(reader,"get_e") or not hasattr(reader,"get_b")))
+        or (require_atomic_snapshot and
+            not hasattr(reader,"get_eb_snapshot"))
         or len(signals)>len(symbols)*2):
         raise CanonicalAuditUnsafe("CANONICAL_AUDIT_INVALID_BATCH")
     now=_utc(as_of);allowed=set(symbols);observed={}
@@ -113,14 +116,28 @@ def audit_session_canonical(signals,reader,*,session,symbols,as_of,
             raise CanonicalAuditUnsafe("CANONICAL_AUDIT_SIGNAL_TIME_INVALID")
         observed[(signal.symbol,signal.kind)]=signal
     matched=[];uncommitted=[];unobserved=[];divergent=[]
-    # The read is not an atomic multi-key snapshot. Results remain audit
-    # evidence only, never a gate for writes or trust.
+    # A single Redis MGET is atomic with respect to other Redis commands,
+    # unlike two serial GETs. This is ONLY an E/B point-in-time snapshot:
+    # it cannot prove historical first-of-session or feed completeness.
+    snapshot=None
+    if require_atomic_snapshot:
+        try:snapshot=reader.get_eb_snapshot(session,sorted(allowed))
+        except Exception as exc:
+            raise CanonicalAuditUnsafe("CANONICAL_SNAPSHOT_READ_FAILED") from exc
+        if (not isinstance(snapshot,dict)
+            or set(snapshot)!={(sym,kind) for sym in allowed for kind in ("E","B")}):
+            raise CanonicalAuditUnsafe("CANONICAL_SNAPSHOT_INCOMPLETE")
+    # Legacy serial GET remains available for older test adapters only.
+    # Neither read path grants write, trust or backfill permission.
     for sym in sorted(allowed):
         for kind,getter,typ in (("E",reader.get_e,"early_core"),
                                 ("B",reader.get_b,"base_ready")):
-            try:rec=getter(session,sym)
-            except Exception as exc:
-                raise CanonicalAuditUnsafe("CANONICAL_READ_FAILED") from exc
+            if require_atomic_snapshot:
+                rec=snapshot[(sym,kind)]
+            else:
+                try:rec=getter(session,sym)
+                except Exception as exc:
+                    raise CanonicalAuditUnsafe("CANONICAL_READ_FAILED") from exc
             rec=_validate_canonical(rec,typ,session,sym,now)
             signal=observed.get((sym,kind))
             label=f"{sym}:{kind}"
@@ -135,7 +152,8 @@ def audit_session_canonical(signals,reader,*,session,symbols,as_of,
            "matched":matched,"observed_without_canonical":uncommitted,
            "canonical_without_observed":unobserved,"divergent":divergent,
            "read_only":True,"canonical_writes":0,
-           "multi_key_snapshot_atomic":False,
+           "multi_key_snapshot_atomic":bool(require_atomic_snapshot),
+           "snapshot_scope":"EB_KEYS_ONLY" if require_atomic_snapshot else "SERIAL_GET",
            "canonical_backfill_authorized":False,
            "retroactive_entries_allowed":False,
            "full_session_coverage_proven":False,
