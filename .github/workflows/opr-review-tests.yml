@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
+          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
       - name: Verify real Redis 7 integration service
         shell: bash
         run: |
@@ -55,8 +55,8 @@ jobs:
           assert client.ping(), "Redis integration service unreachable"
           print("REAL_REDIS_7_PING_OK")
           PY
-          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
-          grep -q "Ran 18 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "Ran 25 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           grep -q "^OK$" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           printf 'real_redis_integration=passed\\n' > "$GITHUB_WORKSPACE/redis-integration-ok.txt"
       - name: Unittest (full OPR directory)
@@ -132,7 +132,7 @@ jobs:
             printf 'canonical_eb_snapshot=opt_in_atomic_mget_eb_keys_only\n'
             printf 'canonical_audit_capture_race_guard=before_and_after\n'
             printf 'canonical_atomic_snapshot_does_not_prove_coverage=true\n'
-            printf 'real_redis_integration_tests=18_required\n'
+            printf 'real_redis_integration_tests=25_required\n'
             printf 'post_rest_auto_capture_drain=opt_in_read_only\n'
             printf 'post_rest_capture_race_recheck=after_preview_and_before_report\n'
             printf 'capture_drain_acknowledged=false\n'
@@ -142,6 +142,10 @@ jobs:
             printf 'stable_preview_retry=opt_in_max_3_append_only\n'
             printf 'post_rest_sip_coverage_proven=false\n'
             printf 'sip_preview_retry_regressions=11\n'
+            printf 'fenced_eb_batch_lua=test_only_max_80\n'
+            printf 'fenced_eb_batch_conflict=all_or_none\n'
+            printf 'production_recovery_eb_commit=hard_disabled_pending_coverage\n'
+            printf 'fenced_eb_real_redis_tests=7_required\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
@@ -157,7 +161,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3k-review-bundle
+          name: opr-step3l-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
