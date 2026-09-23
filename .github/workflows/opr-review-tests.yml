@@ -100,6 +100,33 @@ jobs:
           assert not r["merge_or_deploy_authorized"]
           print("SIP_INTEGRATED_SYNTHETIC_STRESS_OK")
           PY
+      - name: Step3O independent repeated-minute integrated SIP burst cross-check
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          python websocket_burst_stress.py --symbols 300 --cycles 10 > "$GITHUB_WORKSPACE/SIP_REPEATED_MINUTE_STRESS.json" 2> "$GITHUB_WORKSPACE/SIP_REPEATED_MINUTE_RUNTIME_LOG.txt"
+          python - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ["GITHUB_WORKSPACE"],"SIP_REPEATED_MINUTE_STRESS.json")))
+          a=x["paced_real_base_ready"]
+          b=x["single_frame_dispatch_overflow"]
+          c=x["paced_capture_limit_overflow"]
+          d=x["injected_407_disconnect"]
+          assert a["offered_messages"]==3000==a["received"]==a["handled"]
+          assert a["dispatch_queue"]["overflows"]==0
+          assert a["processing_ms"]["BAR"]["p95"] is not None
+          assert b["dispatch_queue"]["high_water"]==1024
+          assert "SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED" in b["error"]
+          assert c["received"]==4096
+          assert "SIP_CAPTURE_OVERFLOW_FAIL_CLOSED" in c["error"]
+          assert "407 slow client synthetic" in d["error"]
+          assert all(v["disconnects"]==[{"ack_cleared":True,"capture_invalid":True}]
+                     for v in (a,b,c,d))
+          assert not x["real_407_causality_proven"]
+          assert not x["shadow_deploy_authorized"]
+          print("SIP_REPEATED_MINUTE_STRESS_4_SCENARIOS_OK")
+          PY
       - name: Export fail-closed Shadow acceptance report
         shell: bash
         run: |
@@ -215,6 +242,10 @@ jobs:
             printf 'synthetic_407_does_not_prove_live_407=true\n'
             printf 'synthetic_stress_real_upstream_lambda_measured=false\n'
             printf 'synthetic_stress_regressions=5\n'
+            printf 'repeated_minute_sip_stress=300_symbols_x_10_completed_bars\n'
+            printf 'repeated_minute_independent_stress=4_scenarios\n'
+            printf 'repeated_minute_stress_regressions=5\n'
+            printf 'repeated_minute_live_407_proven=false\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
@@ -231,6 +262,11 @@ jobs:
           if test -f "$GITHUB_WORKSPACE/BASE_READY_BURST_BENCHMARK.json"; then
             cp "$GITHUB_WORKSPACE/BASE_READY_BURST_BENCHMARK.json" "$pkg/BASE_READY_BURST_BENCHMARK.json"
           fi
+          for evidence in SIP_REPEATED_MINUTE_STRESS.json SIP_REPEATED_MINUTE_RUNTIME_LOG.txt; do
+            if test -f "$GITHUB_WORKSPACE/$evidence"; then
+              cp "$GITHUB_WORKSPACE/$evidence" "$pkg/$evidence"
+            fi
+          done
           if test -f "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"; then
             cp "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json" "$pkg/SHADOW_READINESS_REPORT.json"
           fi
@@ -239,7 +275,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3o-integrated-sip-review-bundle
+          name: opr-step3o-repeated-minute-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
@@ -248,6 +284,8 @@ jobs:
             SHADOW_READINESS_REPORT.json
             BASE_READY_BURST_BENCHMARK.json
             SIP_INTEGRATED_STRESS.json
+            SIP_REPEATED_MINUTE_STRESS.json
+            SIP_REPEATED_MINUTE_RUNTIME_LOG.txt
           if-no-files-found: error
           retention-days: 30
 
