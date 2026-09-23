@@ -90,7 +90,9 @@ def _require_live_gate(env):
 
 
 def build_evidence(*, started_at, ended_at, duration_requested, symbols_count,
-                   runtime, drain, ledger, terminal_error):
+                   runtime, drain, ledger, terminal_error,
+                   subscription_ack_at=None, expected_session_start=None,
+                   expected_session_end=None):
     terminal = runtime.last_epoch_diagnostic
     if terminal is None:
         terminal = {
@@ -109,6 +111,28 @@ def build_evidence(*, started_at, ended_at, duration_requested, symbols_count,
     received = terminal.get("received", 0)
     handled = terminal.get("handled", 0)
     acked = drain_snapshot["acked_messages"]
+    session_window = None
+    if expected_session_start is not None or expected_session_end is not None:
+        def parsed(value):
+            if not isinstance(value, str):
+                raise LiveSIPSoakBlocked("SESSION_WINDOW_INVALID")
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                raise LiveSIPSoakBlocked("SESSION_WINDOW_INVALID")
+            return dt.astimezone(timezone.utc)
+        start = parsed(expected_session_start)
+        end = parsed(expected_session_end)
+        ack = parsed(subscription_ack_at) if subscription_ack_at else None
+        stopped = parsed(ended_at)
+        if start >= end:
+            raise LiveSIPSoakBlocked("SESSION_WINDOW_INVALID")
+        session_window = {
+            "expected_start_utc": start.isoformat(),
+            "expected_end_utc": end.isoformat(),
+            "subscription_ack_at_utc": ack.isoformat() if ack else None,
+            "ack_before_or_at_session_start": bool(ack and ack <= start),
+            "observed_through_session_end": stopped >= end,
+        }
     body = {
         "schema": SCHEMA,
         "started_at_utc": started_at,
@@ -117,6 +141,7 @@ def build_evidence(*, started_at, ended_at, duration_requested, symbols_count,
         "real_alpaca_sip_endpoint": SIP_STREAM_URL,
         "real_connection_attempted": True,
         "symbols_requested": symbols_count,
+        "session_window": session_window,
         "terminal_error_type": (
             type(terminal_error).__name__ if terminal_error is not None else None),
         "terminal": terminal,
@@ -151,9 +176,15 @@ def build_evidence(*, started_at, ended_at, duration_requested, symbols_count,
 
 
 async def run_live_soak(*, duration_sec, max_symbols, output_path,
-                        env=os.environ, connector=None):
-    if not isinstance(duration_sec, int) or not 60 <= duration_sec <= 21600:
-        raise LiveSIPSoakBlocked("DURATION_MUST_BE_60_TO_21600_SECONDS")
+                        env=os.environ, connector=None,
+                        expected_session_start=None,
+                        expected_session_end=None):
+    # 8 hours permits a 10-minute pre-open connection, the full 6.5-hour
+    # regular session, and a bounded post-close tail.
+    if not isinstance(duration_sec, int) or not 60 <= duration_sec <= 28800:
+        raise LiveSIPSoakBlocked("DURATION_MUST_BE_60_TO_28800_SECONDS")
+    if (expected_session_start is None) != (expected_session_end is None):
+        raise LiveSIPSoakBlocked("SESSION_WINDOW_BOTH_ENDPOINTS_REQUIRED")
     if not isinstance(max_symbols, int) or not 1 <= max_symbols <= 12000:
         raise LiveSIPSoakBlocked("MAX_SYMBOLS_MUST_BE_1_TO_12000")
     key, secret = _require_live_gate(env)
@@ -185,15 +216,38 @@ async def run_live_soak(*, duration_sec, max_symbols, output_path,
         connector, AlpacaSIPProtocol, on_message, on_disconnect,
         epoch_capture=capture, dispatch_queue_max=1024)
     started = datetime.now(timezone.utc).isoformat()
+    subscription_ack_at = None
     terminal_error = None
     task = asyncio.create_task(runtime.run_once(
         SIP_STREAM_URL, key, secret, symbols))
+    connect_wait = asyncio.create_task(runtime.connected_event.wait())
+    duration_wait = None
     try:
-        await asyncio.wait_for(runtime.connected_event.wait(), timeout=45)
-        await asyncio.sleep(duration_sec)
+        done, _ = await asyncio.wait(
+            {task, connect_wait}, timeout=45,
+            return_when=asyncio.FIRST_COMPLETED)
+        if task in done:
+            task.result()
+            raise LiveSIPSoakBlocked("SIP_TASK_ENDED_BEFORE_ACK")
+        if connect_wait not in done:
+            raise LiveSIPSoakBlocked("SIP_SUBSCRIPTION_ACK_TIMEOUT")
+        subscription_ack_at = datetime.now(timezone.utc).isoformat()
+        duration_wait = asyncio.create_task(asyncio.sleep(duration_sec))
+        done, _ = await asyncio.wait(
+            {task, duration_wait}, return_when=asyncio.FIRST_COMPLETED)
+        if task in done:
+            # An early EOF/error is terminal evidence. Do not sleep until the
+            # nominal session end and accidentally imply continuous coverage.
+            task.result()
     except BaseException as exc:
         terminal_error = exc
     finally:
+        for waiter in (connect_wait, duration_wait):
+            if waiter is not None and not waiter.done():
+                waiter.cancel()
+        await asyncio.gather(
+            *(w for w in (connect_wait, duration_wait) if w is not None),
+            return_exceptions=True)
         runtime.stop()
         if not task.done():
             task.cancel()
@@ -209,7 +263,10 @@ async def run_live_soak(*, duration_sec, max_symbols, output_path,
         runtime=runtime,
         drain=drain,
         ledger=ledger,
-        terminal_error=terminal_error)
+        terminal_error=terminal_error,
+        subscription_ack_at=subscription_ack_at,
+        expected_session_start=expected_session_start,
+        expected_session_end=expected_session_end)
     with open(output_path, "w", encoding="utf-8") as fh:
         json.dump(evidence, fh, indent=2, sort_keys=True, ensure_ascii=False)
         fh.write("\n")
@@ -221,11 +278,15 @@ def main():
     parser.add_argument("--duration-sec", type=int, default=1800)
     parser.add_argument("--max-symbols", type=int, default=12000)
     parser.add_argument("--output", default="LIVE_SIP_SOAK_EVIDENCE.json")
+    parser.add_argument("--session-start-utc")
+    parser.add_argument("--session-end-utc")
     args = parser.parse_args()
     evidence = asyncio.run(run_live_soak(
         duration_sec=args.duration_sec,
         max_symbols=args.max_symbols,
-        output_path=args.output))
+        output_path=args.output,
+        expected_session_start=args.session_start_utc,
+        expected_session_end=args.session_end_utc))
     print(json.dumps({
         "schema": evidence["schema"],
         "subscription_ack_verified": evidence["observations"][

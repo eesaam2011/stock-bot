@@ -279,6 +279,10 @@ jobs:
             printf 'sip_transport_journal_ttl_days=7\n'
             printf 'sip_transport_journal_is_session_continuity_proof=false\n'
             printf 'sip_semantic_market_state_reconciler_wired=false\n'
+            printf 'full_session_runner_max_duration_hours=8\n'
+            printf 'full_session_ack_must_precede_open=true\n'
+            printf 'full_session_early_disconnect_fails_immediately=true\n'
+            printf 'full_session_transport_contract_is_semantic_coverage=false\n'
             printf 'live_sip_soak_runner=read_only_payload_free_metrics\n'
             printf 'live_sip_soak_explicit_gate_required=true\n'
             printf 'live_sip_soak_redis_writes=false\n'
@@ -323,7 +327,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3u-production-sip-transport-journal-review-bundle
+          name: opr-step3v-full-session-transport-contract-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
