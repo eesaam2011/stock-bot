@@ -12,7 +12,7 @@ class WebSocketRuntime:
   self.dispatch_queue_max=dispatch_queue_max
   self._queue_depth=0;self._queue_high_water=0;self._queue_overflows=0
   self.stopping=False;self.connected_event=asyncio.Event();self.last_error=None;self.subscription_stats={}
-  self.connection_epoch=0
+  self.connection_epoch=0;self._epoch_ack_verified=False
   # Retain one bounded, payload-free terminal record across teardown/reconnect.
   self.last_epoch_diagnostic=None
   self._rx_started=None;self._received=0;self._handled=0
@@ -112,6 +112,10 @@ class WebSocketRuntime:
  async def run_once(self,url,key,secret,symbols):
   self.connected_event.clear();self.subscription_stats={};self.last_error=None
   self._queue_depth=0;self._queue_high_water=0;self._queue_overflows=0
+  # Pre-ACK failure must never inherit prior epoch throughput evidence.
+  self._epoch_ack_verified=False;self._rx_started=None
+  self._received=0;self._handled=0
+  for samples in self._processing_ns.values():samples.clear()
   if self.epoch_capture:self.epoch_capture.invalidate("STARTING_NEW_CONNECTION")
   try:
    async with self.connector(url) as ws:
@@ -145,7 +149,7 @@ class WebSocketRuntime:
      raise WebSocketProtocolError(
       f"ALPACA_WS_SUBSCRIPTION_INCOMPLETE:trades_missing={len(missing_trades)},bars_missing={len(missing_bars)},statuses_star={'*' in statuses}")
     self.subscription_stats={"requested":len(req),"trades":len(got_trades),"bars":len(got_bars),"statuses_star":True}
-    self.connection_epoch+=1
+    self.connection_epoch+=1;self._epoch_ack_verified=True
     if self.epoch_capture:self.epoch_capture.start(self.connection_epoch)
     self._rx_started=time.monotonic();self._received=0;self._handled=0
     for samples in self._processing_ns.values():samples.clear()
@@ -198,7 +202,8 @@ class WebSocketRuntime:
     failure="OTHER_OR_CANCELLED"
    self.last_epoch_diagnostic={
     "schema":"OPR_SIP_EPOCH_TERMINAL_V1",
-    "epoch":self.connection_epoch,
+    "epoch":self.connection_epoch if self._epoch_ack_verified else None,
+    "subscription_ack_verified":self._epoch_ack_verified,
     "failure_class":failure,
     "received":before["received"],"handled":before["handled"],
     "received_not_confirmed_handled":max(0,before["received"]-before["handled"]),
