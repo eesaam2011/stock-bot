@@ -83,6 +83,27 @@ end
 return 1
 """
 
+# Step3L: low-level E/B batch primitive; production recovery stays disabled.
+ATOMIC_EB_BATCH_LUA = """
+local n=#KEYS-2
+if n<1 or n>80 or #ARGV~=3+n then return -40 end
+if redis.call('GET',KEYS[1])~=ARGV[1] then return -10 end
+if tostring(redis.call('GET',KEYS[2]) or '0')~=ARGV[2] then return -11 end
+local seen={}
+for i=1,n do
+ local k=KEYS[i+2]
+ if seen[k] or k==KEYS[1] or k==KEYS[2] then return -50 end
+ seen[k]=true
+ local existing=redis.call('GET',k)
+ if existing and existing~=ARGV[i+3] then return -20 end
+end
+local inserted=0
+for i=1,n do
+ if redis.call('SET',KEYS[i+2],ARGV[i+3],'NX') then inserted=inserted+1 end
+end
+return inserted
+"""
+
 class ProductionRedisLua:
     def __init__(self,redis_client,prefix="operational_priority_radar:v1"):
         self.r=redis_client;self.prefix=prefix
@@ -136,6 +157,38 @@ class ProductionRedisLua:
         if rc<0:raise AtomicConflict(f"RECOVERY_CONFLICT:{rc}")
         if rc!=1:raise RedisLuaError(f"RECOVERY_UNEXPECTED:{rc}")
         return True
+    def _atomic_eb_batch_testonly(self,worker_id,records,expected_generation):
+        """Low-level Lua test harness; no production recovery coverage gate."""
+        from state_store import validate_record,record_key,canonical_json,SchemaError
+        if (not isinstance(worker_id,str) or not worker_id
+            or not isinstance(expected_generation,int)
+            or isinstance(expected_generation,bool) or expected_generation<1
+            or not isinstance(records,(tuple,list)) or not 1<=len(records)<=80):
+            raise AtomicConflict("INVALID_EB_BATCH")
+        keys=[];raws=[]
+        for record in records:
+            if not isinstance(record,dict) or record.get("record_type") not in ("early_core","base_ready"):
+                raise AtomicConflict("INVALID_EB_RECORD_TYPE")
+            try:validate_record(record,record["record_type"])
+            except (SchemaError,TypeError,ValueError) as exc:
+                raise AtomicConflict("INVALID_EB_SCHEMA") from exc
+            if (record.get("worker_instance_id")!=worker_id
+                or type(record.get("leader_generation")) is not int
+                or record["leader_generation"]!=expected_generation):
+                raise AtomicConflict("EB_PAYLOAD_LEADERSHIP_MISMATCH")
+            keys.append(record_key(record));raws.append(canonical_json(record))
+        if len(set(keys))!=len(keys) or self.leader_key in keys or self.generation_key in keys:
+            raise AtomicConflict("DUPLICATE_OR_RESERVED_EB_KEY")
+        rc=int(self.r.eval(ATOMIC_EB_BATCH_LUA,2+len(keys),
+            self.leader_key,self.generation_key,*keys,
+            worker_id,str(expected_generation),"RESERVED",*raws))
+        if rc in (-10,-11):raise LeaseLost(f"EB_BATCH_FENCED:{rc}")
+        if rc<0:raise AtomicConflict(f"EB_BATCH_CONFLICT:{rc}")
+        if rc>len(keys):raise RedisLuaError("EB_BATCH_UNEXPECTED_RESULT")
+        return {"inserted":rc,"already_identical":len(keys)-rc}
+    def atomic_recovery_eb(self,*args,**kwargs):
+        """No production E/B recovery writes until independent coverage proof."""
+        raise AtomicConflict("RECOVERY_EB_COVERAGE_GATE_NOT_IMPLEMENTED")
     def atomic_trade_event(self,worker_id,trade_key,expected_raw,new_raw,outbox_key,outbox_raw,expected_generation):
         g=self._assert_payload_generation(expected_generation,new_raw,outbox_raw)
         rc=int(self.r.eval(ATOMIC_TRADE_EVENT_LUA,4,self.leader_key,self.generation_key,trade_key,outbox_key,
