@@ -8,6 +8,7 @@ from test_step3j_auto_capture_drain import capturing,HookedREST
 from test_step2z_recovery_preview import START
 from test_step2y_sip_overlap import NOW
 import test_step3g_session_sip_preview as bridge_tests
+import test_step3i_atomic_canonical_snapshot as snapshot_tests
 from production_recovery import ProductionStartupRecovery
 
 def trade(t,received):
@@ -176,6 +177,26 @@ class TestStartupStablePreview(unittest.TestCase):
         self.assertEqual(a["session_sip_trades_not_reconciled"],2)
         self.assertEqual(c.snapshot()["acked_upto"],0)
         self.assertFalse(rec.continuity_verified(7))
+    def test_moving_clock_canonical_mget_uses_audit_time(self):
+        events,c=capturing()
+        later=NOW+timedelta(seconds=10)
+        def append():
+            msg,received=trade(NOW+timedelta(seconds=1),
+                                  NOW+timedelta(seconds=2))
+            c.ingest(7,msg,received_at=received)
+        rec=ProductionStartupRecovery(
+            snapshot_tests.AtomicReader(),HookedREST(events,append),
+            None,"2026-09-22",["A"],now_fn=Clock(NOW,later),
+            audit_session_signals=True,session_start=START,
+            audit_session_overlap=True,sip_capture=c,sip_epoch=7,
+            auto_begin_capture_drain=True,
+            audit_session_canonical_records=True,
+            atomic_canonical_snapshot=True)
+        result=rec.run()
+        self.assertEqual(result["reason"],"CANONICAL_REPLAY_NOT_IMPLEMENTED")
+        self.assertEqual(result["fetch_audit"]["session_canonical_audited_batches"],1)
+        self.assertTrue(result["fetch_audit"]["session_canonical_multi_key_snapshot_atomic"])
+        self.assertEqual(c.snapshot()["acked_upto"],0)
     def test_retry_policy_without_overlap_fails_closed(self):
         events,c=capturing()
         rec=ProductionStartupRecovery(
