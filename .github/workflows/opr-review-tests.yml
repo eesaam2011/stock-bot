@@ -66,6 +66,20 @@ jobs:
         run: |
           set -o pipefail
           pytest -q 2>&1 | tee "$GITHUB_WORKSPACE/pytest-q-output.txt"
+      - name: Export fail-closed Shadow acceptance report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python operational_acceptance.py --output "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"
+          python - <<'PY'
+          import json,os
+          p=os.path.join(os.environ["GITHUB_WORKSPACE"],"SHADOW_READINESS_REPORT.json")
+          r=json.load(open(p))
+          assert r["status"]=="NOT_AUTHORIZED_FOR_LIVE_SHADOW"
+          assert len(r["outstanding_proofs"])==8
+          assert not r["render_deploy_authorized"]
+          print("SHADOW_RELEASE_GATE_FAIL_CLOSED_OK")
+          PY
       - name: Package reviewed source and exact pytest output
         if: always()
         shell: bash
@@ -151,6 +165,10 @@ jobs:
             printf 'native_slot_cross_timeframe_mismatch=diagnostic_only\n'
             printf 'native_slot_regressions=14\n'
             printf 'native_slot_full_session_coverage_proven=false\n'
+            printf 'native_slot_rest_start=explicit_session_start_fixed\n'
+            printf 'active_trade_chunked_rest_fallback=bounded_15m_max96_350k\n'
+            printf 'live_shadow_acceptance=fail_closed_8_external_proofs\n'
+            printf 'final_consolidated_review=source_plus_pytest_redis_readiness\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
@@ -161,17 +179,21 @@ jobs:
           if test -f "$GITHUB_WORKSPACE/redis-integration-output.txt"; then
             cp "$GITHUB_WORKSPACE/redis-integration-output.txt" "$pkg/redis-integration-output.txt"
           fi
+          if test -f "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"; then
+            cp "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json" "$pkg/SHADOW_READINESS_REPORT.json"
+          fi
           (cd "$pkg" && zip -qr "$GITHUB_WORKSPACE/opr-review-package.zip" .)
       - name: Upload review package and pytest text evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3m-review-bundle
+          name: opr-final-consolidated-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
             redis-integration-output.txt
             redis-real-output.txt
+            SHADOW_READINESS_REPORT.json
           if-no-files-found: error
           retention-days: 30
 
