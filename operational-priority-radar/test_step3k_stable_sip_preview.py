@@ -4,10 +4,10 @@ from datetime import timedelta
 from unittest.mock import patch
 from recovery_stable_preview import stable_session_preview,StablePreviewUnsafe
 from recovery_session_preview import preview_session_overlap as real_preview
-from test_step3j_auto_capture_drain import capturing,startup,HookedREST
+from test_step3j_auto_capture_drain import capturing,HookedREST
 from test_step2z_recovery_preview import START
 from test_step2y_sip_overlap import NOW
-from test_step3g_session_sip_preview import TestStartupSessionSIPBridge
+import test_step3g_session_sip_preview as bridge_tests
 from production_recovery import ProductionStartupRecovery
 
 def trade(t,received):
@@ -136,7 +136,7 @@ class TestStartupStablePreview(unittest.TestCase):
                                   NOW+timedelta(seconds=2))
             c.ingest(7,msg,received_at=received)
         rec=ProductionStartupRecovery(
-            TestStartupSessionSIPBridge.Reader(),HookedREST(events,append),
+            bridge_tests.TestStartupSessionSIPBridge.Reader(),HookedREST(events,append),
             None,"2026-09-22",["A"],now_fn=Clock(NOW,later),
             audit_session_signals=True,session_start=START,
             audit_session_overlap=True,sip_capture=c,sip_epoch=7,
@@ -161,7 +161,7 @@ class TestStartupStablePreview(unittest.TestCase):
             calls[0]+=1
             return out
         rec=ProductionStartupRecovery(
-            TestStartupSessionSIPBridge.Reader(),HookedREST(events),None,
+            bridge_tests.TestStartupSessionSIPBridge.Reader(),HookedREST(events),None,
             "2026-09-22",["A"],now_fn=clock,
             audit_session_signals=True,session_start=START,
             audit_session_overlap=True,sip_capture=c,sip_epoch=7,
@@ -179,7 +179,7 @@ class TestStartupStablePreview(unittest.TestCase):
     def test_retry_policy_without_overlap_fails_closed(self):
         events,c=capturing()
         rec=ProductionStartupRecovery(
-            TestStartupSessionSIPBridge.Reader(),HookedREST(events),None,
+            bridge_tests.TestStartupSessionSIPBridge.Reader(),HookedREST(events),None,
             "2026-09-22",["A"],now_fn=lambda:NOW,
             stable_preview_max_attempts=2)
         result=rec.run()
