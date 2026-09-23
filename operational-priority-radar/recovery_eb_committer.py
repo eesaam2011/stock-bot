@@ -28,7 +28,7 @@ class FencedEBRecoveryCommitter:
         self.lua = lua
         self.leadership = leadership
 
-    def commit(self, records, permit):
+    def commit(self, records, permit, *, coverage_scope_symbols=None):
         if (not isinstance(records, (list, tuple)) or not records
                 or len(records) > 80):
             raise RecoveryEBCommitUnsafe("RECOVERY_EB_BATCH_INVALID")
@@ -46,11 +46,18 @@ class FencedEBRecoveryCommitter:
             sessions.add(record["session"]); symbols.add(record["symbol"])
         if len(sessions) != 1:
             raise RecoveryEBCommitUnsafe("RECOVERY_EB_SESSION_MISMATCH")
+        scope=(sorted(coverage_scope_symbols)
+               if coverage_scope_symbols is not None else sorted(symbols))
+        if (not scope or len(set(scope))!=len(scope)
+                or any(not isinstance(s,str) or not s for s in scope)
+                or not symbols.issubset(scope)):
+            raise RecoveryEBCommitUnsafe("RECOVERY_EB_COVERAGE_SCOPE_INVALID")
         proof = validate_recovery_commit_permit(
             permit, worker_instance_id=worker, leader_generation=generation,
-            session=next(iter(sessions)), symbols=sorted(symbols))
+            session=next(iter(sessions)), symbols=scope)
         result = self.lua.atomic_recovery_eb(
-            worker, records, generation, coverage_permit=permit)
+            worker, records, generation, coverage_permit=permit,
+            coverage_scope_symbols=scope)
         after = self.leadership.require_current()
         if _identity(after) != (worker, generation):
             raise RecoveryEBCommitUnsafe("RECOVERY_EB_LEADERSHIP_CHANGED_AFTER_COMMIT")
@@ -66,4 +73,3 @@ class FencedEBRecoveryCommitter:
             "direct_handoff_authorized": False,
             "shadow_deploy_authorized": False,
         }
-

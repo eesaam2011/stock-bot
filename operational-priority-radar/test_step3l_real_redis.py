@@ -67,5 +67,13 @@ class TestRealRedisEBBatch(unittest.TestCase):
             self.lua.atomic_recovery_eb('W',self.records,1,
                 coverage_permit=proof)
         self.assertEqual(self.r.mget(self.keys),[None,None])
+    def test_full_scope_permit_allows_bounded_subset_atomic_commit(self):
+        proof=permit(symbols=("A","B"))
+        self.assertEqual(
+            self.lua.atomic_recovery_eb('W',self.records,1,
+                coverage_permit=proof,coverage_scope_symbols=["A","B"]),
+            {'inserted':2,'already_identical':0})
+        self.assertEqual(self.r.mget(self.keys),
+                         [canonical_json(x) for x in self.records])
 
 if __name__=='__main__':unittest.main()

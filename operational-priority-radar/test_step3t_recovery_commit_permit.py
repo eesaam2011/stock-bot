@@ -145,6 +145,22 @@ class TestRecoveryCommitPermit(unittest.TestCase):
             FencedEBRecoveryCommitter(lua, Leadership()).commit(rows, permit())
         self.assertEqual(redis.calls, [])
 
+    def test_full_universe_permit_can_commit_bounded_subset_batch(self):
+        redis = FakeRedis(); lua = ProductionRedisLua(redis)
+        result = FencedEBRecoveryCommitter(lua, Leadership()).commit(
+            self.records, permit(symbols=("A", "B")),
+            coverage_scope_symbols=["A", "B"])
+        self.assertEqual(result["inserted"], 2)
+        self.assertEqual(len(redis.calls), 1)
+
+    def test_batch_symbol_outside_permit_scope_rejected_before_redis(self):
+        redis = FakeRedis(); lua = ProductionRedisLua(redis)
+        with self.assertRaisesRegex(RecoveryEBCommitUnsafe, "COVERAGE_SCOPE"):
+            FencedEBRecoveryCommitter(lua, Leadership()).commit(
+                self.records, permit(symbols=("B",)),
+                coverage_scope_symbols=["B"])
+        self.assertEqual(redis.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

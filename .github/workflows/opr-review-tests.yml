@@ -56,7 +56,7 @@ jobs:
           print("REAL_REDIS_7_PING_OK")
           PY
           python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
-          grep -q "Ran 31 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "Ran 32 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           grep -q "^OK$" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           printf 'real_redis_integration=passed\\n' > "$GITHUB_WORKSPACE/redis-integration-ok.txt"
       - name: Unittest (full OPR directory)
@@ -224,7 +224,7 @@ jobs:
             printf 'canonical_eb_snapshot=opt_in_atomic_mget_eb_keys_only\n'
             printf 'canonical_audit_capture_race_guard=before_and_after\n'
             printf 'canonical_atomic_snapshot_does_not_prove_coverage=true\n'
-            printf 'real_redis_integration_tests=31_required\n'
+            printf 'real_redis_integration_tests=32_required\n'
             printf 'recovery_eb_commit_permit=full_session_exact_digest_bound\n'
             printf 'recovery_eb_leadership_fence=before_lua_after_commit\n'
             printf 'recovery_eb_retroactive_entries=forbidden\n'
@@ -232,6 +232,7 @@ jobs:
             printf 'recovery_eb_full_session_permit_available=false\n'
             printf 'recovery_permit_requires_transport_and_semantic_digests=true\n'
             printf 'semantic_session_reconciliation_evidence_available=false\n'
+            printf 'recovery_eb_full_scope_permit_supports_bounded_commit_batches=true\n'
             printf 'post_rest_auto_capture_drain=opt_in_read_only\n'
             printf 'post_rest_capture_race_recheck=after_preview_and_before_report\n'
             printf 'capture_drain_acknowledged=false\n'
@@ -329,7 +330,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3w-recovery-coverage-issuer-review-bundle
+          name: opr-step3x-bounded-full-scope-eb-commit-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt

@@ -222,7 +222,8 @@ class ProductionRedisLua:
         if rc<0:raise AtomicConflict(f"EB_BATCH_CONFLICT:{rc}")
         if rc>len(keys):raise RedisLuaError("EB_BATCH_UNEXPECTED_RESULT")
         return {"inserted":rc,"already_identical":len(keys)-rc}
-    def atomic_recovery_eb(self,worker_id,records,expected_generation,*,coverage_permit=None):
+    def atomic_recovery_eb(self,worker_id,records,expected_generation,*,
+                           coverage_permit=None,coverage_scope_symbols=None):
         """Insert recovered E/B only behind an exact full-session permit.
 
         The Lua transaction still owns the authoritative owner/generation
@@ -233,8 +234,14 @@ class ProductionRedisLua:
             raise AtomicConflict("INVALID_EB_BATCH")
         try:
             sessions={r.get("session") for r in records if isinstance(r,dict)}
-            symbols=sorted({r.get("symbol") for r in records if isinstance(r,dict)})
-            if len(sessions)!=1 or len(symbols)<1 or any(not s for s in symbols):
+            batch_symbols=sorted({r.get("symbol") for r in records if isinstance(r,dict)})
+            symbols=(sorted(coverage_scope_symbols)
+                     if coverage_scope_symbols is not None else batch_symbols)
+            if (len(sessions)!=1 or len(batch_symbols)<1
+                or any(not s for s in batch_symbols)
+                or not symbols or len(set(symbols))!=len(symbols)
+                or any(not isinstance(s,str) or not s for s in symbols)
+                or not set(batch_symbols).issubset(symbols)):
                 raise AtomicConflict("RECOVERY_EB_SCOPE_INVALID")
             validate_recovery_commit_permit(
                 coverage_permit,worker_instance_id=worker_id,
