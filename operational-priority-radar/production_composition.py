@@ -4,6 +4,7 @@ from runtime_wiring import RuntimeComponents,RuntimeOrchestrator
 from websocket_runtime import WebSocketRuntime
 from sip_epoch_capture import BoundedEpochCapture
 from sip_drain_coordinator import BoundedSIPDrainCoordinator
+from production_sip_semantic_journal import ProductionSIPSemanticJournal
 from production_sip_transport_journal import ProductionSIPTransportJournal
 from durable_outbox_sender import DurableOutboxSender
 from redis_outbox_store import RedisOutboxStore
@@ -84,9 +85,14 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
     pipeline.status_tracker=getattr(rec,"status_tracker",None)
     capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
-    transport_journal=ProductionSIPTransportJournal(orch.redis,session)
+    # Empty symbols exist only in the deterministic injection seam above.
+    # Real production always has a non-empty universe and therefore uses the
+    # semantic journal before capture ACK.
+    semantic_journal=(ProductionSIPSemanticJournal(orch.redis,session,syms)
+                      if syms else ProductionSIPTransportJournal(
+                          orch.redis,session))
     sip_drain=BoundedSIPDrainCoordinator(
-        capture,leadership,transport_journal.reconcile_batch,batch_size=128)
+        capture,leadership,semantic_journal.reconcile_batch,batch_size=128)
     # Capture/ACK are transport prerequisites, not continuity evidence.
     # Closing the ACK instantly closes the gate, even before disconnect
     # callback acquires the decision lock.
@@ -141,5 +147,8 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
     supervisor.decision_pipeline=pipeline
     supervisor.sip_drain_coordinator=sip_drain
-    supervisor.sip_transport_journal=transport_journal
+    # The combined journal atomically advances the original transport receipt
+    # and validated semantic summaries.  It still cannot claim reconciliation.
+    supervisor.sip_transport_journal=semantic_journal
+    supervisor.sip_semantic_journal=(semantic_journal if syms else None)
     return supervisor
