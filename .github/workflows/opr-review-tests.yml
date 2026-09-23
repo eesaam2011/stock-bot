@@ -304,8 +304,8 @@ jobs:
               cp "$GITHUB_WORKSPACE/$evidence" "$pkg/$evidence"
             fi
           done
-          cp operational-priority-radar/evidence/STEP3S_LIVE_SIP_MARKET_SESSION_EVIDENCE.json "$pkg/"
-          cp operational-priority-radar/evidence/STEP3S_LIVE_SIP_MARKET_SESSION_RUNTIME.log "$pkg/"
+          cp "$GITHUB_WORKSPACE/operational-priority-radar/evidence/STEP3S_LIVE_SIP_MARKET_SESSION_EVIDENCE.json" "$pkg/"
+          cp "$GITHUB_WORKSPACE/operational-priority-radar/evidence/STEP3S_LIVE_SIP_MARKET_SESSION_RUNTIME.log" "$pkg/"
           if test -f "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"; then
             cp "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json" "$pkg/SHADOW_READINESS_REPORT.json"
           fi
