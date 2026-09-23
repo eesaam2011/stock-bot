@@ -7,6 +7,7 @@ Run: python benchmark_sip_queue_burst.py --symbols 3000 --burst 5000
 """
 import argparse,asyncio,contextlib,io,json,resource,time
 from datetime import datetime,timedelta,timezone
+from collections import deque
 from production_adapters import OperationalBaseReady
 from websocket_runtime import WebSocketRuntime,WebSocketProtocolError
 from sip_epoch_capture import BoundedEpochCapture,EpochCaptureOverflow
@@ -61,10 +62,13 @@ async def scenario(symbol_count,*,mode,queue_limit=1024,capture_limit=4096,
     # The paced case evaluates a mature 60-bar frozen BASE_READY for every
     # symbol. Overload cases use no-op processing to isolate queue/capture.
     if mode=="paced_mature":
+        # Seed the exact production compact 59-bar representation. Do not
+        # spend benchmark setup time re-evaluating all earlier 24..59 bars;
+        # the measured socket path evaluates the real 60th bar once/symbol.
         for symbol in symbols:
-            for i in range(59):
-                engine.on_completed_native_1m(symbol,bar(i,symbol),
-                    START+timedelta(minutes=i+1))
+            engine.history[symbol]=deque(
+                (engine._compact_bar(bar(i,symbol)) for i in range(59)),
+                maxlen=60)
     incoming=[bar(59,s) for s in symbols]
     if mode=="queue_overflow":
         frames=[incoming]  # one Alpaca-like batch: receiver cannot yield
