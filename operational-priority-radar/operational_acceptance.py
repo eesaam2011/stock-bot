@@ -66,8 +66,12 @@ def assess_shadow_readiness(*,ci_evidence=None,recovery_audit=None,
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--output",default="SHADOW_READINESS_REPORT.json")
+    parser.add_argument("--ci-pytest-passed",action="store_true")
+    parser.add_argument("--ci-real-redis-passed",action="store_true")
     args=parser.parse_args()
-    report=assess_shadow_readiness()
+    report=assess_shadow_readiness(ci_evidence={
+        "pytest_passed":args.ci_pytest_passed,
+        "real_redis_passed":args.ci_real_redis_passed})
     path=Path(args.output)
     path.write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n",
                     encoding="utf-8")
