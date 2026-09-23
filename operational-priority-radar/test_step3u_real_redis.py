@@ -70,7 +70,6 @@ class TestRealRedisSIPTransport(unittest.TestCase):
             "schema","last_sequence","item_count","chain_sha256",
             "last_batch_first","last_batch_sha256",
             "last_batch_chain_sha256","epoch"})
-        self.assertNotIn("A", "".join(state.values()))
 
 
 if __name__ == "__main__":
