@@ -37,6 +37,31 @@ class RedisCanonicalReader:
   try:x=json.loads(raw)
   except Exception as e:raise RecoveryFailure("INVALID_CANONICAL_JSON") from e
   validate_record(x,typ);return x
+ def get_eb_snapshot(self,sess,symbols):
+  # Redis MGET is a single atomic read command for these exact E/B keys.
+  # Validate *every* response before returning any result to the caller.
+  if (not isinstance(symbols,(list,tuple)) or not symbols
+      or len(symbols)>80 or len(set(symbols))!=len(symbols
+      ) or any(not isinstance(s,str) or not s for s in symbols)):
+   raise RecoveryFailure("INVALID_EB_SNAPSHOT_BATCH")
+  order=sorted(symbols)
+  keys=[key_early_core(sess,sym) if kind=="E"
+        else key_base_ready(sess,sym)
+        for sym in order for kind in ("E","B")]
+  try:raw=self.r.mget(keys)
+  except Exception as exc:raise RecoveryFailure("EB_SNAPSHOT_MGET_FAILED") from exc
+  if not isinstance(raw,(list,tuple)) or len(raw)!=len(keys):
+   raise RecoveryFailure("EB_SNAPSHOT_MGET_INCOMPLETE")
+  result={}
+  for (sym,kind),value in zip(
+      ((sym,kind) for sym in order for kind in ("E","B")),raw):
+   if value is None:result[(sym,kind)]=None;continue
+   try:record=json.loads(value)
+   except (ValueError,TypeError) as exc:
+    raise RecoveryFailure("EB_SNAPSHOT_INVALID_JSON") from exc
+   validate_record(record,"early_core" if kind=="E" else "base_ready")
+   result[(sym,kind)]=record
+  return result
  def get_e(self,sess,sym):return self._read(key_early_core(sess,sym),"early_core")
  def get_b(self,sess,sym):return self._read(key_base_ready(sess,sym),"base_ready")
  def get_opportunity(self,sess,sym):return self._read(key_opportunity(sess,sym),"opportunity")
@@ -71,7 +96,8 @@ class ProductionStartupRecovery:
  def __init__(self,reader,rest,trade_reconciler,session,symbols,now_fn=None,overlap_seconds=120,status_tracker=None,audit_window_signals=False,
               audit_session_signals=False,session_start=None,
               audit_session_overlap=False,sip_capture=None,sip_epoch=None,
-              audit_session_canonical_records=False):
+              audit_session_canonical_records=False,
+              atomic_canonical_snapshot=False):
   self.reader=reader;self.rest=rest;self.trade_reconciler=trade_reconciler
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
@@ -82,6 +108,7 @@ class ProductionStartupRecovery:
   self.sip_capture=sip_capture
   self.sip_epoch=sip_epoch
   self.audit_session_canonical_records=bool(audit_session_canonical_records)
+  self.atomic_canonical_snapshot=bool(atomic_canonical_snapshot)
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
@@ -128,6 +155,9 @@ class ProductionStartupRecovery:
     # Native5 pre-session warm-up is part of the request, not a claim
     # that REST observed every market event during that interval.
     start=min(start,session_start-timedelta(minutes=EARLY_WARMUP_MINUTES))
+   if self.atomic_canonical_snapshot and (not self.audit_session_canonical_records
+       or not hasattr(self.reader,"get_eb_snapshot")):
+    raise RecoveryFailure("ATOMIC_SNAPSHOT_REQUIRES_CANONICAL_AUDIT_AND_READER")
    if self.audit_session_canonical_records and (not self.audit_session_overlap
        or not hasattr(self.reader,"get_e") or not hasattr(self.reader,"get_b")):
     raise RecoveryFailure("CANONICAL_AUDIT_REQUIRES_SESSION_OVERLAP_AND_READER")
@@ -183,9 +213,19 @@ class ProductionStartupRecovery:
        overlap_audits.append(overlap_audit)
        session_audit=overlap_audit["session_signals"]
        if self.audit_session_canonical_records:
+        capture_before=self.sip_capture.snapshot()
+        if (capture_before["phase"]!=self.sip_capture.DRAINING
+            or capture_before["epoch"]!=self.sip_epoch):
+         raise RecoveryFailure("CANONICAL_AUDIT_CAPTURE_CHANGED")
         canonical_audit=audit_session_canonical(
             overlap_signals,self.reader,session=self.session,
-            symbols=batch,as_of=now)
+            symbols=batch,as_of=now,
+            require_atomic_snapshot=self.atomic_canonical_snapshot)
+        capture_after=self.sip_capture.snapshot()
+        if (capture_before!=capture_after
+            or capture_after["phase"]!=self.sip_capture.DRAINING
+            or capture_after["epoch"]!=self.sip_epoch):
+         raise RecoveryFailure("CANONICAL_AUDIT_CAPTURE_CHANGED")
         canonical_audits.append(canonical_audit)
         if canonical_audit["divergent"]:
          raise RecoveryFailure("CANONICAL_SESSION_SIGNAL_DIVERGENCE")
@@ -249,7 +289,8 @@ class ProductionStartupRecovery:
                       "session_canonical_matches":sum(len(a["matched"]) for a in canonical_audits),
                       "session_observed_without_canonical":sum(len(a["observed_without_canonical"]) for a in canonical_audits),
                       "session_canonical_without_observed":sum(len(a["canonical_without_observed"]) for a in canonical_audits),
-                      "session_canonical_multi_key_snapshot_atomic":False,
+                      "session_canonical_multi_key_snapshot_atomic":bool(canonical_audits) and all(a["multi_key_snapshot_atomic"] for a in canonical_audits),
+                      "session_canonical_snapshot_scope":"EB_KEYS_ONLY" if self.atomic_canonical_snapshot else "SERIAL_GET",
                       "session_canonical_backfill_authorized":False,
                       "session_sip_overlap_audited_batches":len(overlap_audits),
                       "session_sip_overlap_equal_bars":sum(a["overlap"]["overlap_equal_1m_bars"] for a in overlap_audits),
