@@ -6,6 +6,7 @@ from recovery_signal_replay import reconstruct_window_signals
 from recovery_session_replay import reconstruct_session_signals,EARLY_WARMUP_MINUTES
 from recovery_session_preview import preview_session_overlap
 from recovery_stable_preview import stable_session_preview
+from recovery_slot_coverage import audit_native_session_slots
 from recovery_canonical_audit import audit_session_canonical
 from recovery_chronology import _utc
 UTC=timezone.utc
@@ -100,7 +101,8 @@ class ProductionStartupRecovery:
               audit_session_canonical_records=False,
               atomic_canonical_snapshot=False,
               auto_begin_capture_drain=False,
-              stable_preview_max_attempts=1):
+              stable_preview_max_attempts=1,
+              audit_native_slots=False):
   self.reader=reader;self.rest=rest;self.trade_reconciler=trade_reconciler
   self.session=session;self.symbols=list(symbols);self.now_fn=now_fn or (lambda:datetime.now(UTC));self.overlap_seconds=overlap_seconds
   self.status_tracker=status_tracker;self.recovered_1m={};self.recovered_5m={};self.pending_halted={}
@@ -114,6 +116,7 @@ class ProductionStartupRecovery:
   self.atomic_canonical_snapshot=bool(atomic_canonical_snapshot)
   self.auto_begin_capture_drain=bool(auto_begin_capture_drain)
   self.stable_preview_max_attempts=stable_preview_max_attempts
+  self.audit_native_slots=bool(audit_native_slots)
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
@@ -166,6 +169,11 @@ class ProductionStartupRecovery:
        or (self.stable_preview_max_attempts>1
            and not self.audit_session_overlap)):
     raise RecoveryFailure("INVALID_STABLE_PREVIEW_RETRY_POLICY")
+   if self.audit_native_slots and (
+       self.session_start is None or not self.symbols
+       or len(self.symbols)>80
+       or not hasattr(self.rest,"native_recovery_batch_audited")):
+    raise RecoveryFailure("SLOT_AUDIT_REQUIRES_EXPLICIT_SESSION_AND_AUDITED_REST")
    if self.auto_begin_capture_drain and not self.audit_session_overlap:
     raise RecoveryFailure("AUTO_DRAIN_REQUIRES_SESSION_OVERLAP")
    if self.atomic_canonical_snapshot and (not self.audit_session_canonical_records
@@ -193,6 +201,7 @@ class ProductionStartupRecovery:
    session_audits=[]
    signal_audits=[]
    pagination_audits=[]
+   slot_audits=[]
    if hasattr(self.rest,"native_recovery_batch"):
     # Plan/audit one bounded batch at a time; never retain a universe-wide
     # history. A plan is not canonical replay or proof of SIP continuity.
@@ -217,6 +226,9 @@ class ProductionStartupRecovery:
      plan,audit=plan_native_batch(r1,r5,batch,window_start=start,
                                   window_end=now,recovered_at=now if self.audit_session_overlap else self.now_fn())
      self._require_not_cancelled()
+     if self.audit_native_slots:
+      slot_audits.append(audit_native_session_slots(
+          plan,batch,session_start=self.session_start,rest_cutoff=now))
      if self.audit_window_signals:
       _,signals_audit=reconstruct_window_signals(plan,self.session,recovered_at=plan[0].recovered_at if plan else self.now_fn())
       signal_audits.append(signals_audit)
@@ -343,6 +355,16 @@ class ProductionStartupRecovery:
    self._base_reconciled=False
    self._fetch_audit={"kind":"REST_CHRONOLOGY_AUDIT_ONLY",
                       "batch_count":len(batch_audits),
+                      "native_slot_audit_enabled":self.audit_native_slots,
+                      "native_slot_audited_batches":len(slot_audits),
+                      "native_slot_observed_1m":sum(a["observed_native_1m_slots"] for a in slot_audits),
+                      "native_slot_observed_5m":sum(a["observed_native_5m_slots"] for a in slot_audits),
+                      "native_slot_unknown_missing_1m":sum(a["unobserved_1m_slots_unknown_cause"] for a in slot_audits),
+                      "native_slot_unknown_missing_5m":sum(a["unobserved_5m_slots_unknown_cause"] for a in slot_audits),
+                      "native_slot_cross_timeframe_mismatches":sum(a["cross_timeframe_observation_mismatches"] for a in slot_audits),
+                      "native_slot_both_absent_unknown_windows":sum(a["both_timeframes_absent_5m_windows_unknown_cause"] for a in slot_audits),
+                      "native_slot_batch_digests":[a["slot_observation_sha256"] for a in slot_audits],
+                      "native_slot_missing_does_not_prove_feed_loss":True,
                       "native_1m":sum(a["native_1m"] for a in batch_audits),
                       "native_5m":sum(a["native_5m"] for a in batch_audits),
                       "observed_interbar_gaps":sum(a["observed_interbar_gaps"] for a in batch_audits),
