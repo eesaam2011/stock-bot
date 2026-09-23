@@ -154,15 +154,17 @@ class ProductionStartupRecovery:
      anchors.extend(datetime.fromisoformat(x.get("decision_available_ts").replace("Z","+00:00")) for x in (e,b) if x and x.get("decision_available_ts"))
     anchor=min(anchors,default=now-timedelta(minutes=60))
    start=anchor-timedelta(seconds=self.overlap_seconds)
-   if self.audit_session_signals:
+   if self.audit_session_signals or self.audit_native_slots:
     if self.session_start is None:
      raise RecoveryFailure("SESSION_AUDIT_REQUIRES_EXPLICIT_SESSION_START")
     session_start=_utc(self.session_start)
     if not session_start<now:
      raise RecoveryFailure("SESSION_AUDIT_INVALID_SESSION_START")
-    # Native5 pre-session warm-up is part of the request, not a claim
-    # that REST observed every market event during that interval.
-    start=min(start,session_start-timedelta(minutes=EARLY_WARMUP_MINUTES))
+    # Request the entire session for slot diagnostics, and native5
+    # pre-session warmup only when frozen E/B replay is enabled.
+    required_start=(session_start-timedelta(minutes=EARLY_WARMUP_MINUTES)
+                    if self.audit_session_signals else session_start)
+    start=min(start,required_start)
    if (not isinstance(self.stable_preview_max_attempts,int)
        or isinstance(self.stable_preview_max_attempts,bool)
        or not 1<=self.stable_preview_max_attempts<=3
