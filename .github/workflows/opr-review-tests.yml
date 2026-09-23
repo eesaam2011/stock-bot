@@ -66,6 +66,20 @@ jobs:
         run: |
           set -o pipefail
           pytest -q 2>&1 | tee "$GITHUB_WORKSPACE/pytest-q-output.txt"
+      - name: Synthetic BASE_READY 5000-symbol minute-boundary benchmark (not a live 407 proof)
+        shell: bash
+        run: |
+          set -o pipefail
+          python benchmark_base_ready_burst.py --symbols 5000 --full-evals 300 | tee "$GITHUB_WORKSPACE/BASE_READY_BURST_BENCHMARK.json"
+          python - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ["GITHUB_WORKSPACE"],"BASE_READY_BURST_BENCHMARK.json")))
+          assert x["symbols_at_same_minute_boundary"]==5000
+          assert not x["real_alpaca_sip_407_reproduced"]
+          assert not x["shadow_deploy_authorized"]
+          assert x["peak_tracemalloc_bytes_resident_subset"]["compact_tuple"]<x["peak_tracemalloc_bytes_resident_subset"]["persistent_dict"]
+          print("BASE_READY_BURST_OFFLINE_BENCHMARK_OK")
+          PY
       - name: Export fail-closed Shadow acceptance report
         shell: bash
         run: |
@@ -171,6 +185,10 @@ jobs:
             printf 'active_trade_chunked_rest_fallback=bounded_15m_max96_350k\n'
             printf 'live_shadow_acceptance=fail_closed_8_external_proofs\n'
             printf 'final_consolidated_review=source_plus_pytest_redis_readiness\n'
+            printf 'base_ready_short_history_preflight=under_24_skip_transient_dicts\n'
+            printf 'base_ready_frozen_signal_parity=24_30_45_60_90_bars\n'
+            printf 'base_ready_burst_benchmark=synthetic_5000_symbols_not_live_407_proof\n'
+            printf 'base_ready_persistent_dict_cache=false\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
@@ -181,6 +199,9 @@ jobs:
           if test -f "$GITHUB_WORKSPACE/redis-integration-output.txt"; then
             cp "$GITHUB_WORKSPACE/redis-integration-output.txt" "$pkg/redis-integration-output.txt"
           fi
+          if test -f "$GITHUB_WORKSPACE/BASE_READY_BURST_BENCHMARK.json"; then
+            cp "$GITHUB_WORKSPACE/BASE_READY_BURST_BENCHMARK.json" "$pkg/BASE_READY_BURST_BENCHMARK.json"
+          fi
           if test -f "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"; then
             cp "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json" "$pkg/SHADOW_READINESS_REPORT.json"
           fi
@@ -189,13 +210,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-final-consolidated-review-bundle
+          name: opr-step3n-performance-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
             redis-integration-output.txt
             redis-real-output.txt
             SHADOW_READINESS_REPORT.json
+            BASE_READY_BURST_BENCHMARK.json
           if-no-files-found: error
           retention-days: 30
 
