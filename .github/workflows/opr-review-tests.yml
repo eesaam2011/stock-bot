@@ -56,7 +56,7 @@ jobs:
           print("REAL_REDIS_7_PING_OK")
           PY
           python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
-          grep -q "Ran 25 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "Ran 27 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           grep -q "^OK$" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           printf 'real_redis_integration=passed\\n' > "$GITHUB_WORKSPACE/redis-integration-ok.txt"
       - name: Unittest (full OPR directory)
@@ -224,7 +224,12 @@ jobs:
             printf 'canonical_eb_snapshot=opt_in_atomic_mget_eb_keys_only\n'
             printf 'canonical_audit_capture_race_guard=before_and_after\n'
             printf 'canonical_atomic_snapshot_does_not_prove_coverage=true\n'
-            printf 'real_redis_integration_tests=25_required\n'
+            printf 'real_redis_integration_tests=27_required\n'
+            printf 'recovery_eb_commit_permit=full_session_exact_digest_bound\n'
+            printf 'recovery_eb_leadership_fence=before_lua_after_commit\n'
+            printf 'recovery_eb_retroactive_entries=forbidden\n'
+            printf 'recovery_eb_commit_entrypoint=permit_gated_not_yet_wired\n'
+            printf 'recovery_eb_full_session_permit_available=false\n'
             printf 'post_rest_auto_capture_drain=opt_in_read_only\n'
             printf 'post_rest_capture_race_recheck=after_preview_and_before_report\n'
             printf 'capture_drain_acknowledged=false\n'
@@ -314,7 +319,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3s-live-sip-market-evidence-review-bundle
+          name: opr-step3t-recovery-eb-commit-permit-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt

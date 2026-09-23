@@ -19,8 +19,8 @@ class TestEBBatchPreflight(unittest.TestCase):
         args=self.r.calls[0]
         self.assertEqual(args[1],4)
         self.assertEqual(args[2:4],(self.lua.leader_key,self.lua.generation_key))
-    def test_production_entrypoint_is_hard_disabled(self):
-        with self.assertRaisesRegex(AtomicConflict,'COVERAGE_GATE_NOT_IMPLEMENTED'):
+    def test_production_entrypoint_requires_coverage_permit(self):
+        with self.assertRaisesRegex(AtomicConflict,'COVERAGE_PERMIT_REJECTED'):
             self.lua.atomic_recovery_eb('W',self.records,1)
         self.assertEqual(self.r.calls,[])
     def test_duplicate_key_rejected_before_redis(self):

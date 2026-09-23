@@ -4,6 +4,7 @@ from redis_lua_production import ProductionRedisLua,LeaseLost,AtomicConflict
 from test_step2n_real_redis import local_test_redis
 from test_step3h_canonical_audit import observed,record
 from state_store import record_key,canonical_json
+from test_step3t_recovery_commit_permit import permit
 
 class TestRealRedisEBBatch(unittest.TestCase):
     def setUp(self):
@@ -44,9 +45,27 @@ class TestRealRedisEBBatch(unittest.TestCase):
         with self.assertRaisesRegex(AtomicConflict,'LEADERSHIP_MISMATCH'):
             self.commit(rows)
         self.assertEqual(self.r.mget(self.keys),[None,None])
-    def test_public_recovery_commit_remains_disabled(self):
-        with self.assertRaisesRegex(AtomicConflict,'COVERAGE_GATE_NOT_IMPLEMENTED'):
+    def test_public_recovery_commit_requires_coverage_permit(self):
+        with self.assertRaisesRegex(AtomicConflict,'COVERAGE_PERMIT_REJECTED'):
             self.lua.atomic_recovery_eb('W',self.records,1)
+        self.assertEqual(self.r.mget(self.keys),[None,None])
+    def test_public_recovery_commit_with_exact_permit_is_atomic_and_idempotent(self):
+        proof=permit()
+        self.assertEqual(
+            self.lua.atomic_recovery_eb('W',self.records,1,
+                coverage_permit=proof),
+            {'inserted':2,'already_identical':0})
+        before=self.r.mget(self.keys)
+        self.assertEqual(
+            self.lua.atomic_recovery_eb('W',self.records,1,
+                coverage_permit=proof),
+            {'inserted':0,'already_identical':2})
+        self.assertEqual(self.r.mget(self.keys),before)
+    def test_tampered_permit_rejected_before_redis(self):
+        proof=permit();proof['handled']-=1
+        with self.assertRaisesRegex(AtomicConflict,'COVERAGE_PERMIT_REJECTED'):
+            self.lua.atomic_recovery_eb('W',self.records,1,
+                coverage_permit=proof)
         self.assertEqual(self.r.mget(self.keys),[None,None])
 
 if __name__=='__main__':unittest.main()

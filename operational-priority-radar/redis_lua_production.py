@@ -186,9 +186,30 @@ class ProductionRedisLua:
         if rc<0:raise AtomicConflict(f"EB_BATCH_CONFLICT:{rc}")
         if rc>len(keys):raise RedisLuaError("EB_BATCH_UNEXPECTED_RESULT")
         return {"inserted":rc,"already_identical":len(keys)-rc}
-    def atomic_recovery_eb(self,*args,**kwargs):
-        """No production E/B recovery writes until independent coverage proof."""
-        raise AtomicConflict("RECOVERY_EB_COVERAGE_GATE_NOT_IMPLEMENTED")
+    def atomic_recovery_eb(self,worker_id,records,expected_generation,*,coverage_permit=None):
+        """Insert recovered E/B only behind an exact full-session permit.
+
+        The Lua transaction still owns the authoritative owner/generation
+        fence.  This method cannot create opportunities, outboxes or trades.
+        """
+        from recovery_commit_permit import validate_recovery_commit_permit
+        if not isinstance(records,(tuple,list)) or not records:
+            raise AtomicConflict("INVALID_EB_BATCH")
+        try:
+            sessions={r.get("session") for r in records if isinstance(r,dict)}
+            symbols=sorted({r.get("symbol") for r in records if isinstance(r,dict)})
+            if len(sessions)!=1 or len(symbols)<1 or any(not s for s in symbols):
+                raise AtomicConflict("RECOVERY_EB_SCOPE_INVALID")
+            validate_recovery_commit_permit(
+                coverage_permit,worker_instance_id=worker_id,
+                leader_generation=expected_generation,
+                session=next(iter(sessions)),symbols=symbols)
+        except AtomicConflict:
+            raise
+        except Exception as exc:
+            raise AtomicConflict("RECOVERY_EB_COVERAGE_PERMIT_REJECTED") from exc
+        return self._atomic_eb_batch_testonly(
+            worker_id,records,expected_generation)
     def atomic_trade_event(self,worker_id,trade_key,expected_raw,new_raw,outbox_key,outbox_raw,expected_generation):
         g=self._assert_payload_generation(expected_generation,new_raw,outbox_raw)
         rc=int(self.r.eval(ATOMIC_TRADE_EVENT_LUA,4,self.leader_key,self.generation_key,trade_key,outbox_key,
