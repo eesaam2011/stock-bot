@@ -3,6 +3,8 @@ from alpaca_production_market import AlpacaCredentials,AlpacaREST,AlpacaSIPProto
 from runtime_wiring import RuntimeComponents,RuntimeOrchestrator
 from websocket_runtime import WebSocketRuntime
 from sip_epoch_capture import BoundedEpochCapture
+from sip_drain_coordinator import BoundedSIPDrainCoordinator
+from production_sip_transport_journal import ProductionSIPTransportJournal
 from durable_outbox_sender import DurableOutboxSender
 from redis_outbox_store import RedisOutboxStore
 from resource_guard import ResourceGuard
@@ -82,6 +84,9 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
     pipeline.status_tracker=getattr(rec,"status_tracker",None)
     capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
+    transport_journal=ProductionSIPTransportJournal(orch.redis,session)
+    sip_drain=BoundedSIPDrainCoordinator(
+        capture,leadership,transport_journal.reconcile_batch,batch_size=128)
     # Capture/ACK are transport prerequisites, not continuity evidence.
     # Closing the ACK instantly closes the gate, even before disconnect
     # callback acquires the decision lock.
@@ -112,6 +117,10 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
             rec.on_status(msg)
             pipeline.on_status(msg)
         rec.on_stream_message(kind,msg)
+        # During startup recovery this is transport reconciliation only.  A
+        # durable exact receipt permits bounded capture ACK, but never DIRECT.
+        if capture.phase==capture.DRAINING and capture.snapshot()["buffered"]>=sip_drain.batch_size:
+          sip_drain.drain_available(ws.connection_epoch,max_batches=4)
     async def on_message(msg):
       # Redis and active-trade REST work must not block the SIP socket reader.
       # A single bounded queue consumer preserves message arrival order.
@@ -131,4 +140,6 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
     supervisor.decision_pipeline=pipeline
+    supervisor.sip_drain_coordinator=sip_drain
+    supervisor.sip_transport_journal=transport_journal
     return supervisor

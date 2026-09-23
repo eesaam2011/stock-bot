@@ -104,6 +104,42 @@ end
 return inserted
 """
 
+# Step3U: retain only a bounded, payload-free receipt chain for one SIP epoch.
+# This proves that an exact captured prefix was durably consumed by the
+# transport reconciler.  It is deliberately not session-continuity evidence.
+ATOMIC_SIP_TRANSPORT_BATCH_LUA = """
+if #KEYS~=3 or #ARGV~=11 then return -40 end
+if redis.call('GET',KEYS[1])~=ARGV[1] then return -10 end
+if tostring(redis.call('GET',KEYS[2]) or '0')~=ARGV[2] then return -11 end
+local first=tonumber(ARGV[4])
+local last=tonumber(ARGV[5])
+local count=tonumber(ARGV[6])
+if not first or not last or not count or count<1 or last-first+1~=count then return -41 end
+local prior_last=tonumber(redis.call('HGET',KEYS[3],'last_sequence') or '0')
+local prior_chain=redis.call('HGET',KEYS[3],'chain_sha256') or ARGV[8]
+local prior_count=tonumber(redis.call('HGET',KEYS[3],'item_count') or '0')
+local old_first=tonumber(redis.call('HGET',KEYS[3],'last_batch_first') or '0')
+local old_batch=redis.call('HGET',KEYS[3],'last_batch_sha256')
+local old_next=redis.call('HGET',KEYS[3],'last_batch_chain_sha256')
+if prior_last==last and old_first==first and old_batch==ARGV[7] and old_next==ARGV[9] then
+ redis.call('EXPIRE',KEYS[3],tonumber(ARGV[11]))
+ return 0
+end
+if first~=prior_last+1 then return -20 end
+if ARGV[8]~=prior_chain then return -21 end
+redis.call('HSET',KEYS[3],
+ 'schema',ARGV[3],
+ 'last_sequence',tostring(last),
+ 'item_count',tostring(prior_count+count),
+ 'chain_sha256',ARGV[9],
+ 'last_batch_first',tostring(first),
+ 'last_batch_sha256',ARGV[7],
+ 'last_batch_chain_sha256',ARGV[9],
+ 'epoch',ARGV[10])
+redis.call('EXPIRE',KEYS[3],tonumber(ARGV[11]))
+return 1
+"""
+
 class ProductionRedisLua:
     def __init__(self,redis_client,prefix="operational_priority_radar:v1"):
         self.r=redis_client;self.prefix=prefix
@@ -210,6 +246,42 @@ class ProductionRedisLua:
             raise AtomicConflict("RECOVERY_EB_COVERAGE_PERMIT_REJECTED") from exc
         return self._atomic_eb_batch_testonly(
             worker_id,records,expected_generation)
+    def atomic_sip_transport_batch(self,worker_id,expected_generation,receipt_key,
+                                   *,schema,epoch,first_sequence,last_sequence,
+                                   item_count,batch_sha256,previous_chain_sha256,
+                                   next_chain_sha256,ttl_seconds=604800):
+        """Advance one exact SIP transport receipt chain under the lease.
+
+        Redis stores hashes/counts only.  No SIP payload, symbol, price, or
+        status is written by this primitive.
+        """
+        import re
+        values=(batch_sha256,previous_chain_sha256,next_chain_sha256)
+        if (not isinstance(worker_id,str) or not worker_id
+            or type(expected_generation) is not int or expected_generation<1
+            or not isinstance(receipt_key,str) or not receipt_key
+            or not isinstance(schema,str) or not schema
+            or type(epoch) is not int or epoch<1
+            or type(first_sequence) is not int or first_sequence<1
+            or type(last_sequence) is not int or last_sequence<first_sequence
+            or type(item_count) is not int
+            or item_count!=last_sequence-first_sequence+1
+            or any(not isinstance(v,str) or not re.fullmatch(r"[0-9a-f]{64}",v)
+                   for v in values)
+            or type(ttl_seconds) is not int or not 60<=ttl_seconds<=2592000
+            or receipt_key in (self.leader_key,self.generation_key)):
+            raise AtomicConflict("INVALID_SIP_TRANSPORT_BATCH")
+        rc=int(self.r.eval(
+            ATOMIC_SIP_TRANSPORT_BATCH_LUA,3,
+            self.leader_key,self.generation_key,receipt_key,
+            worker_id,str(expected_generation),schema,str(first_sequence),
+            str(last_sequence),str(item_count),batch_sha256,
+            previous_chain_sha256,next_chain_sha256,str(epoch),str(ttl_seconds)))
+        if rc in (-10,-11):raise LeaseLost(f"SIP_TRANSPORT_FENCED:{rc}")
+        if rc in (-20,-21):raise AtomicConflict(f"SIP_TRANSPORT_CHAIN_CONFLICT:{rc}")
+        if rc<0:raise AtomicConflict(f"SIP_TRANSPORT_INVALID:{rc}")
+        if rc not in (0,1):raise RedisLuaError(f"SIP_TRANSPORT_UNEXPECTED:{rc}")
+        return {"inserted":rc==1,"idempotent":rc==0}
     def atomic_trade_event(self,worker_id,trade_key,expected_raw,new_raw,outbox_key,outbox_raw,expected_generation):
         g=self._assert_payload_generation(expected_generation,new_raw,outbox_raw)
         rc=int(self.r.eval(ATOMIC_TRADE_EVENT_LUA,4,self.leader_key,self.generation_key,trade_key,outbox_key,

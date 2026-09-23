@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
+          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
       - name: Verify real Redis 7 integration service
         shell: bash
         run: |
@@ -55,8 +55,8 @@ jobs:
           assert client.ping(), "Redis integration service unreachable"
           print("REAL_REDIS_7_PING_OK")
           PY
-          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
-          grep -q "Ran 27 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "Ran 31 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           grep -q "^OK$" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           printf 'real_redis_integration=passed\\n' > "$GITHUB_WORKSPACE/redis-integration-ok.txt"
       - name: Unittest (full OPR directory)
@@ -224,7 +224,7 @@ jobs:
             printf 'canonical_eb_snapshot=opt_in_atomic_mget_eb_keys_only\n'
             printf 'canonical_audit_capture_race_guard=before_and_after\n'
             printf 'canonical_atomic_snapshot_does_not_prove_coverage=true\n'
-            printf 'real_redis_integration_tests=27_required\n'
+            printf 'real_redis_integration_tests=31_required\n'
             printf 'recovery_eb_commit_permit=full_session_exact_digest_bound\n'
             printf 'recovery_eb_leadership_fence=before_lua_after_commit\n'
             printf 'recovery_eb_retroactive_entries=forbidden\n'
@@ -274,7 +274,11 @@ jobs:
             printf 'sip_drain_ack=contiguous_after_exact_commit_proof\n'
             printf 'sip_drain_10000_message_regression=passed_offline\n'
             printf 'sip_drain_direct_handoff_authorized=false\n'
-            printf 'sip_drain_production_reconciler_wired=false\n'
+            printf 'sip_drain_production_transport_journal_wired=true\n'
+            printf 'sip_transport_journal_payload_retained=false\n'
+            printf 'sip_transport_journal_ttl_days=7\n'
+            printf 'sip_transport_journal_is_session_continuity_proof=false\n'
+            printf 'sip_semantic_market_state_reconciler_wired=false\n'
             printf 'live_sip_soak_runner=read_only_payload_free_metrics\n'
             printf 'live_sip_soak_explicit_gate_required=true\n'
             printf 'live_sip_soak_redis_writes=false\n'
@@ -319,7 +323,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3t-recovery-eb-commit-permit-review-bundle
+          name: opr-step3u-production-sip-transport-journal-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt

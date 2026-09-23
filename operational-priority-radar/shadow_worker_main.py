@@ -217,8 +217,16 @@ class ShadowRuntimeSupervisor:
             except asyncio.TimeoutError as exc:
                 raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT") from exc
             connected_epoch=getattr(self.websocket_runtime,"connection_epoch",None)
+            capture=getattr(self.websocket_runtime,"epoch_capture",None)
+            sip_drain=getattr(self,"sip_drain_coordinator",None)
+            # Switch immediately after the verified subscription ACK.  The
+            # websocket keeps appending while exact prefixes are committed
+            # and ACKed; this does not authorize DIRECT processing.
+            if capture is not None and sip_drain is not None:
+                capture.begin_drain(connected_epoch)
             print({"stage":"SIP_CAPTURING_NOT_TRUSTED",
-                   "epoch":connected_epoch},flush=True)
+                   "epoch":connected_epoch,
+                   "bounded_drain":sip_drain is not None},flush=True)
             print({"stage":"STARTUP_RECOVERY_START","epoch":connected_epoch},flush=True)
             # A REST request may run for minutes. Do not wait for its full
             # timeout if the ACK epoch, capture, or lease becomes invalid.
@@ -264,6 +272,10 @@ class ShadowRuntimeSupervisor:
                    "reconciled":recovery_result.get("reconciled",False)
                        if isinstance(recovery_result,dict) else None,
                    "lease":self._leadership_snapshot()},flush=True)
+            # Commit any tail smaller than the regular drain batch.  This is
+            # still only a payload-free transport receipt chain.
+            if sip_drain is not None:
+                sip_drain.drain_available(connected_epoch,max_batches=256)
             if hasattr(self,"decision_pipeline"):
                 self.decision_pipeline.leadership.require_current()
             if leadership_task.done():
