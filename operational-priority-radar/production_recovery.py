@@ -228,6 +228,16 @@ class ProductionStartupRecovery:
            plan,self.sip_capture,session=self.session,epoch=self.sip_epoch,
            symbols=batch,session_start=session_start,session_end=now,
            requested_start=start,as_of=now)
+       # Preview validates its own snapshot, but the producer can append
+       # immediately after preview returns. Recheck at the caller boundary.
+       preview_prefix=overlap_audit["overlap"]["audited_prefix"]
+       post_preview=self.sip_capture.snapshot()
+       if (post_preview["phase"]!=self.sip_capture.DRAINING
+           or post_preview["epoch"]!=self.sip_epoch
+           or post_preview["buffered"]!=preview_prefix["queue_size_at_snapshot"]
+           or post_preview["last_sequence"]!=preview_prefix["last_sequence_at_snapshot"]
+           or post_preview["acked_upto"]!=preview_prefix["acked_upto_at_snapshot"]):
+        raise RecoveryFailure("SESSION_PREVIEW_CAPTURE_CHANGED_AFTER_RETURN")
        overlap_audits.append(overlap_audit)
        session_audit=overlap_audit["session_signals"]
        if self.audit_session_canonical_records:
@@ -288,6 +298,17 @@ class ProductionStartupRecovery:
      batch_audits.append(audit)
      del plan,rows1,rows5
    self._require_not_cancelled()
+   if self.audit_session_overlap and overlap_audits:
+    # Final report is also invalid if the capture changed after the
+    # last preview / canonical read. No ACK or DIRECT is ever issued.
+    prefix=overlap_audits[-1]["overlap"]["audited_prefix"]
+    final=self.sip_capture.snapshot()
+    if (final["phase"]!=self.sip_capture.DRAINING
+        or final["epoch"]!=self.sip_epoch
+        or final["buffered"]!=prefix["queue_size_at_snapshot"]
+        or final["last_sequence"]!=prefix["last_sequence_at_snapshot"]
+        or final["acked_upto"]!=prefix["acked_upto_at_snapshot"]):
+     raise RecoveryFailure("SESSION_CAPTURE_CHANGED_BEFORE_REPORT")
    # Completed native bars were normalized, deduplicated, ordered and
    # audited per batch, then discarded. E/B canonical replay, SIP merge and
    # independent end-to-end coverage proof are still missing. Fail closed.
