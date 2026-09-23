@@ -54,7 +54,7 @@ async def run_case(*,symbols,cycles,frame_size,pacing,max_messages=4096,
     base.on_completed_native_1m(sym,native_bar(j),
       START+timedelta(minutes=j+1))
  capture=BoundedEpochCapture(max_messages=max_messages,max_bytes=8*1024*1024)
- disconnected=[];processed_symbols=[];runtime=None
+ disconnected=[];forensic_seen_by_disconnect=[];processed_symbols=[];runtime=None
  def process(msg):
   symbol=msg["S"]
   base.on_completed_native_1m(symbol,msg,
@@ -64,6 +64,7 @@ async def run_case(*,symbols,cycles,frame_size,pacing,max_messages=4096,
  async def on_disconnect():
   disconnected.append({"ack_cleared":not runtime.connected_event.is_set(),
                        "capture_invalid":capture.phase==capture.INVALID})
+  forensic_seen_by_disconnect.append(runtime.last_epoch_diagnostic is not None)
  sock=SyntheticSIPSocket(events,frame_size=frame_size,pacing=pacing,
                          final_error=final_error)
  runtime=WebSocketRuntime(lambda _:sock,AlpacaSIPProtocol,on_message,
@@ -91,7 +92,9 @@ async def run_case(*,symbols,cycles,frame_size,pacing,max_messages=4096,
          "processed_symbols":len(processed_symbols),
          "dispatch_queue":stats["dispatch_queue"],
          "processing_ms":stats["processing_ms"],"capture":stats["capture"],
-         "disconnects":disconnected,"resident_tuple_bars":base.buffered_bars(),
+         "disconnects":disconnected,"forensic_seen_by_disconnect":forensic_seen_by_disconnect,
+         "last_epoch_diagnostic":runtime.last_epoch_diagnostic,
+         "resident_tuple_bars":base.buffered_bars(),
          "production_recovery_eb_writes":0,"real_alpaca_407_reproduced":False,
          "full_session_coverage_proven":False,"shadow_deploy_authorized":False}
 
