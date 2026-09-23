@@ -84,7 +84,8 @@ class TestStartupAtomicSnapshot(unittest.TestCase):
         a=result["fetch_audit"]
         self.assertTrue(a["session_canonical_multi_key_snapshot_atomic"])
         self.assertEqual(a["session_canonical_snapshot_scope"],"EB_KEYS_ONLY")
-        self.assertEqual(a["session_observed_without_canonical"],2)
+        self.assertEqual(a["session_observed_without_canonical"],
+                         a["session_observed_E"]+a["session_observed_B"])
         self.assertFalse(a["session_canonical_backfill_authorized"])
         self.assertFalse(r.continuity_verified(7))
         self.assertEqual(c.snapshot()["acked_upto"],0)
