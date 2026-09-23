@@ -34,9 +34,11 @@ def run(symbols=5000,full_evals=300):
     materialize=lambda:OperationalBaseReady._materialize_history(compact)
     direct=lambda:[dict(x) for x in rows]
     # Reuse identical rows to isolate the conversion from feed variability.
+    raw_no_copy_us=timed(lambda:rows,symbols)
     raw_direct_us=timed(direct,symbols)
     compact_materialize_us=timed(materialize,symbols)
     # Full feature evaluation matters more than the isolated conversion ratio.
+    no_copy_full_us=timed(lambda:phase2_features(rows,end),full_evals)
     direct_full_us=timed(lambda:phase2_features(direct(),end),full_evals)
     compact_full_us=timed(lambda:phase2_features(materialize(),end),full_evals)
     short=deque(list(compact)[:23],maxlen=60)
@@ -58,10 +60,12 @@ def run(symbols=5000,full_evals=300):
       "bars_per_mature_symbol":60,
       "prequalification_bars":23,
       "conversion_only_microseconds_per_symbol":{
+          "existing_dict_reference_no_copy":round(raw_no_copy_us,3),
           "direct_dict_copy":round(raw_direct_us,3),
           "compact_tuple_materialization":round(compact_materialize_us,3),
           "compact_vs_direct_ratio":round(compact_materialize_us/max(raw_direct_us,.001),2)},
       "full_frozen_features_microseconds_per_symbol":{
+          "existing_dict_reference_then_features":round(no_copy_full_us,3),
           "direct_dict_copy_then_features":round(direct_full_us,3),
           "compact_materialize_then_features":round(compact_full_us,3)},
       "transient_23_bars_microseconds_per_symbol":{
