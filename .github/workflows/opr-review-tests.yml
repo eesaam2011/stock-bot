@@ -104,7 +104,7 @@ jobs:
           assert not r["merge_or_deploy_authorized"]
           print("SIP_INTEGRATED_SYNTHETIC_STRESS_OK")
           PY
-      - name: Step3O independent repeated-minute integrated SIP burst cross-check
+      - name: Step3Q independent bounded-drain SIP cross-check
         timeout-minutes: 4
         shell: bash
         run: |
@@ -116,6 +116,7 @@ jobs:
           a=x["paced_real_base_ready"]
           b=x["single_frame_dispatch_overflow"]
           c=x["paced_capture_limit_overflow"]
+          q=x["paced_continuous_bounded_drain"]
           d=x["injected_407_disconnect"]
           assert a["offered_messages"]==3000==a["received"]==a["handled"]
           assert a["dispatch_queue"]["overflows"]==0
@@ -124,17 +125,22 @@ jobs:
           assert "SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED" in b["error"]
           assert c["received"]==4096
           assert "SIP_CAPTURE_OVERFLOW_FAIL_CLOSED" in c["error"]
+          assert q["offered_messages"]==5000==q["received"]==q["handled"]
+          assert q["reconciled_sequences"]==5000
+          assert q["continuous_drain"]["acked_messages"]==5000
+          assert not q["continuous_drain"]["direct_handoff_authorized"]
+          assert "SIP_STREAM_EOF_UNTRUSTED" in q["error"]
           assert "407 slow client synthetic" in d["error"]
           assert a["last_epoch_diagnostic"]["failure_class"]=="STREAM_EOF"
           assert b["last_epoch_diagnostic"]["failure_class"]=="DISPATCH_QUEUE_OVERFLOW"
           assert c["last_epoch_diagnostic"]["capture_before_teardown"]["invalid_reason"]=="CAPTURE_OVERFLOW"
           assert d["last_epoch_diagnostic"]["failure_class"]=="OTHER_407_EXCEPTION_NOT_ALPACA_PROOF"
-          assert all(v["forensic_seen_by_disconnect"]==[True] for v in (a,b,c,d))
+          assert all(v["forensic_seen_by_disconnect"]==[True] for v in (a,b,c,q,d))
           assert all(v["disconnects"]==[{"ack_cleared":True,"capture_invalid":True}]
-                     for v in (a,b,c,d))
+                     for v in (a,b,c,q,d))
           assert not x["real_407_causality_proven"]
           assert not x["shadow_deploy_authorized"]
-          print("SIP_REPEATED_MINUTE_STRESS_4_SCENARIOS_OK")
+          print("SIP_REPEATED_MINUTE_STRESS_5_SCENARIOS_OK")
           PY
       - name: Export fail-closed Shadow acceptance report
         shell: bash
@@ -258,6 +264,12 @@ jobs:
             printf 'sip_terminal_forensic=pre_teardown_payload_free_root_cause\n'
             printf 'sip_terminal_forensic_regressions=7\n'
             printf 'sip_terminal_forensic_capture_overflow_reason_preserved=true\n'
+            printf 'sip_continuous_bounded_drain=batch_256_max_digest_bound\n'
+            printf 'sip_drain_generation_fenced=before_and_after_batch_commit\n'
+            printf 'sip_drain_ack=contiguous_after_exact_commit_proof\n'
+            printf 'sip_drain_10000_message_regression=passed_offline\n'
+            printf 'sip_drain_direct_handoff_authorized=false\n'
+            printf 'sip_drain_production_reconciler_wired=false\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
               printf 'real_redis_integration=passed\n'
@@ -287,7 +299,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3p-terminal-forensics-review-bundle
+          name: opr-step3q-bounded-sip-drain-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt

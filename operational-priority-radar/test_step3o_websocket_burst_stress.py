@@ -30,6 +30,16 @@ class TestIntegratedWebSocketBurst(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(r["received"],4096)
   self.assertEqual(r["disconnects"],[{"ack_cleared":True,"capture_invalid":True}])
   self.assertFalse(r["shadow_deploy_authorized"])
+ async def test_continuous_bounded_drain_handles_more_than_capture_capacity(self):
+  r=await run_case(symbols=500,cycles=10,frame_size=64,pacing=True,
+                   preseed=False,continuous_drain=True)
+  self.assertIn("SIP_STREAM_EOF_UNTRUSTED",r["error"])
+  self.assertEqual((r["received"],r["handled"]),(5000,5000))
+  self.assertEqual(r["reconciled_sequences"],5000)
+  self.assertEqual(r["dispatch_queue"]["overflows"],0)
+  self.assertEqual(r["continuous_drain"]["acked_messages"],5000)
+  self.assertFalse(r["continuous_drain"]["direct_handoff_authorized"])
+  self.assertFalse(r["shadow_deploy_authorized"])
  async def test_injected_407_disconnects_after_paced_processing(self):
   r=await run_case(symbols=12,cycles=3,frame_size=12,pacing=True,preseed=False,
                    final_error=RuntimeError("407 slow client synthetic"))
