@@ -230,6 +230,8 @@ jobs:
             printf 'recovery_eb_retroactive_entries=forbidden\n'
             printf 'recovery_eb_commit_entrypoint=permit_gated_not_yet_wired\n'
             printf 'recovery_eb_full_session_permit_available=false\n'
+            printf 'recovery_permit_requires_transport_and_semantic_digests=true\n'
+            printf 'semantic_session_reconciliation_evidence_available=false\n'
             printf 'post_rest_auto_capture_drain=opt_in_read_only\n'
             printf 'post_rest_capture_race_recheck=after_preview_and_before_report\n'
             printf 'capture_drain_acknowledged=false\n'
@@ -327,7 +329,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3v-full-session-transport-contract-review-bundle
+          name: opr-step3w-recovery-coverage-issuer-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt

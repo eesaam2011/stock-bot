@@ -43,6 +43,7 @@ def permit(*, worker="W", generation=1, symbols=("A",), received=550546):
         "sip_statuses_reconciled": True,
         "full_session_coverage_proven": True,
         "market_session_evidence_sha256": "a" * 64,
+        "semantic_reconciliation_evidence_sha256": "b" * 64,
         "retroactive_entries_allowed": False,
         "direct_handoff_authorized": False,
         "shadow_deploy_authorized": False,

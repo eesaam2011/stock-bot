@@ -108,12 +108,14 @@ def validate_recovery_commit_permit(proof, *, worker_instance_id,
             or proof.get("dispatch_overflows") != 0):
         raise RecoveryCommitPermitUnsafe("PERMIT_RECONCILIATION_MISMATCH")
     evidence_sha = proof.get("market_session_evidence_sha256")
+    semantic_sha = proof.get("semantic_reconciliation_evidence_sha256")
     permit_sha = proof.get("permit_sha256")
     if (not isinstance(evidence_sha, str) or len(evidence_sha) != 64
+            or not isinstance(semantic_sha, str) or len(semantic_sha) != 64
             or not isinstance(permit_sha, str) or len(permit_sha) != 64):
         raise RecoveryCommitPermitUnsafe("PERMIT_DIGEST_MISSING")
     try:
-        int(evidence_sha, 16); int(permit_sha, 16)
+        int(evidence_sha, 16); int(semantic_sha, 16); int(permit_sha, 16)
     except ValueError as exc:
         raise RecoveryCommitPermitUnsafe("PERMIT_DIGEST_INVALID") from exc
     actual = hashlib.sha256(_canonical_body(proof).encode("utf-8")).hexdigest()
@@ -126,9 +128,9 @@ def validate_recovery_commit_permit(proof, *, worker_instance_id,
         "symbol_count": len(symbols),
         "permit_sha256": permit_sha,
         "market_session_evidence_sha256": evidence_sha,
+        "semantic_reconciliation_evidence_sha256": semantic_sha,
         "full_session_coverage_proven": True,
         "retroactive_entries_allowed": False,
         "direct_handoff_authorized": False,
         "shadow_deploy_authorized": False,
     }
-
