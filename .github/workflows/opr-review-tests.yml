@@ -256,7 +256,7 @@ jobs:
             printf 'repeated_minute_stress_regressions=5\n'
             printf 'repeated_minute_live_407_proven=false\n'
             printf 'sip_terminal_forensic=pre_teardown_payload_free_root_cause\n'
-            printf 'sip_terminal_forensic_regressions=6\n'
+            printf 'sip_terminal_forensic_regressions=7\n'
             printf 'sip_terminal_forensic_capture_overflow_reason_preserved=true\n'
             printf 'full_session_coverage_proven=false\n'
             if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
