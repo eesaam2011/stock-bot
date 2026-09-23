@@ -13,6 +13,8 @@ class WebSocketRuntime:
   self._queue_depth=0;self._queue_high_water=0;self._queue_overflows=0
   self.stopping=False;self.connected_event=asyncio.Event();self.last_error=None;self.subscription_stats={}
   self.connection_epoch=0
+  # Retain one bounded, payload-free terminal record across teardown/reconnect.
+  self.last_epoch_diagnostic=None
   self._rx_started=None;self._received=0;self._handled=0
   self._processing_ns={k:deque(maxlen=2048) for k in ("BAR","TRADE","STATUS","OTHER")}
 
@@ -176,14 +178,39 @@ class WebSocketRuntime:
    self.last_error=f"{type(exc).__name__}:{exc}"
    raise
   finally:
-   # Preserve the last epoch's bounded 407 diagnostic before the next ACK
-   # resets its counters. This is observed receive throughput, not upstream λ.
-   print({"stage":"SIP_EPOCH_END","epoch":self.connection_epoch,
-          "error":self.last_error,
-          "receive_processing":self.performance_snapshot()},flush=True)
-   # Normal async-iterator EOF is a disconnect too. Clear trust BEFORE the
-   # callback, so no message from a successor epoch can use stale trust.
+   # Capture's terminal reason is overwritten by SIP_DISCONNECTED during
+   # cleanup. Retain bounded cause and queue evidence before invalidation.
+   # No event payloads, symbols, credentials, or secrets are retained.
    self.connected_event.clear()
+   before=self.performance_snapshot()
+   err=self.last_error or ""
+   if "SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED" in err:
+    failure="DISPATCH_QUEUE_OVERFLOW"
+   elif "SIP_CAPTURE_OVERFLOW_FAIL_CLOSED" in err:
+    failure="CAPTURE_OVERFLOW"
+   elif "ALPACA_WS_ERROR_407" in err:
+    failure="SIP_ERROR_FRAME_407"
+   elif "SIP_STREAM_EOF_UNTRUSTED" in err:
+    failure="STREAM_EOF"
+   elif "407" in err:
+    failure="OTHER_407_EXCEPTION_NOT_ALPACA_PROOF"
+   else:
+    failure="OTHER_OR_CANCELLED"
+   self.last_epoch_diagnostic={
+    "schema":"OPR_SIP_EPOCH_TERMINAL_V1",
+    "epoch":self.connection_epoch,
+    "failure_class":failure,
+    "received":before["received"],"handled":before["handled"],
+    "received_not_confirmed_handled":max(0,before["received"]-before["handled"]),
+    "dispatch_queue":before["dispatch_queue"],
+    "capture_before_teardown":before["capture"],
+    "processing_ms":before["processing_ms"],
+    "observed_rx_per_sec":before["observed_rx_per_sec"],
+    "observed_upstream_arrival_rate":False,
+    "continuity_proven":False,"direct_handoff_authorized":False}
+   print({"stage":"SIP_EPOCH_END","terminal":self.last_epoch_diagnostic},flush=True)
+   # Revoke ACK before callback; retain original capture overflow reason
+   # only in last_epoch_diagnostic, never restore invalidated epoch.
    if self.epoch_capture:self.epoch_capture.invalidate("SIP_DISCONNECTED")
    await self.on_disconnect()
 
