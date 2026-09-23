@@ -105,6 +105,18 @@ class TestNativeSlotDiagnostics(unittest.TestCase):
         self.assertGreater(a["native_slot_unknown_missing_1m"],0)
         self.assertFalse(a["full_session_coverage_proven"])
         self.assertFalse(rec.continuity_verified(7))
+    def test_slot_only_audit_fetches_from_explicit_session_start(self):
+        ev,_=preview_fixture.inputs()
+        rest=bridge.TestStartupSessionSIPBridge.REST(ev)
+        rec=ProductionStartupRecovery(
+            bridge.TestStartupSessionSIPBridge.Reader(),rest,None,
+            "2026-09-22",["A"],now_fn=lambda:NOW,
+            session_start=preview_fixture.START,audit_native_slots=True)
+        result=rec.run()
+        self.assertEqual(result["reason"],"CANONICAL_REPLAY_NOT_IMPLEMENTED")
+        self.assertEqual(len(rest.calls),1)
+        self.assertLessEqual(rest.calls[0][1],preview_fixture.START)
+        self.assertTrue(result["fetch_audit"]["native_slot_audit_enabled"])
     def test_startup_opt_in_requires_audited_rest_before_fetch(self):
         class Unverified:
             def native_recovery_batch(self,*a,**kw):
