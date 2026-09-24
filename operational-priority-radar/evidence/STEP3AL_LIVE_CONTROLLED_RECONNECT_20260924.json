@@ -1,0 +1,179 @@
+{
+  "connection_attempts": 2,
+  "continuity_proven": false,
+  "controlled_close_attempted": true,
+  "controlled_disconnect_after_sec": 10,
+  "direct_handoff_authorized": false,
+  "duration_requested_sec": 90,
+  "each_recorded_epoch_exact": false,
+  "ended_at": "2026-09-24T18:43:05.977953+00:00",
+  "epochs": [
+    {
+      "disconnected_at": "2026-09-24T18:41:47.083715+00:00",
+      "epoch": 1,
+      "ledger": {
+        "batches": 4731,
+        "counts": {
+          "BAR": 0,
+          "STATUS": 0,
+          "TRADE": 27872
+        },
+        "first_sequence": 1,
+        "last_sequence": 27872,
+        "retained_payloads": 0,
+        "retained_symbols": 0
+      },
+      "metrics_acked": 27872,
+      "previous_disconnect_at": null,
+      "previous_disconnect_to_ack_ms": null,
+      "subscription_ack_at": "2026-09-24T18:41:37.015171+00:00",
+      "terminal": {
+        "capture_before_teardown": {
+          "acked_upto": 27872,
+          "buffered": 0,
+          "bytes": 0,
+          "epoch": 1,
+          "invalid_reason": null,
+          "last_sequence": 27872,
+          "phase": "DRAINING"
+        },
+        "continuity_proven": false,
+        "direct_handoff_authorized": false,
+        "dispatch_queue": {
+          "depth": 0,
+          "high_water": 147,
+          "limit": 1024,
+          "overflows": 0
+        },
+        "epoch": 1,
+        "failure_class": "OTHER_OR_CANCELLED",
+        "handled": 27872,
+        "observed_rx_per_sec": 2768.41,
+        "observed_upstream_arrival_rate": false,
+        "processing_ms": {
+          "BAR": {
+            "count": 0,
+            "max": null,
+            "p50": null,
+            "p95": null,
+            "p99": null
+          },
+          "OTHER": {
+            "count": 0,
+            "max": null,
+            "p50": null,
+            "p95": null,
+            "p99": null
+          },
+          "STATUS": {
+            "count": 0,
+            "max": null,
+            "p50": null,
+            "p95": null,
+            "p99": null
+          },
+          "TRADE": {
+            "count": 2048,
+            "max": 46.687,
+            "p50": 0.006,
+            "p95": 0.198,
+            "p99": 0.411
+          }
+        },
+        "received": 27872,
+        "received_not_confirmed_handled": 0,
+        "schema": "OPR_SIP_EPOCH_TERMINAL_V1",
+        "subscription_ack_verified": true
+      }
+    },
+    {
+      "disconnected_at": "2026-09-24T18:43:05.977879+00:00",
+      "epoch": 2,
+      "ledger": {
+        "batches": 35549,
+        "counts": {
+          "BAR": 7301,
+          "STATUS": 1,
+          "TRADE": 244359
+        },
+        "first_sequence": 1,
+        "last_sequence": 251661,
+        "retained_payloads": 0,
+        "retained_symbols": 0
+      },
+      "metrics_acked": 251661,
+      "previous_disconnect_at": "2026-09-24T18:41:47.083715+00:00",
+      "previous_disconnect_to_ack_ms": 2010.68,
+      "subscription_ack_at": "2026-09-24T18:41:49.094381+00:00",
+      "terminal": {
+        "capture_before_teardown": {
+          "acked_upto": 251661,
+          "buffered": 0,
+          "bytes": 0,
+          "epoch": 2,
+          "invalid_reason": null,
+          "last_sequence": 251661,
+          "phase": "DRAINING"
+        },
+        "continuity_proven": false,
+        "direct_handoff_authorized": false,
+        "dispatch_queue": {
+          "depth": 0,
+          "high_water": 256,
+          "limit": 1024,
+          "overflows": 0
+        },
+        "epoch": 2,
+        "failure_class": "OTHER_OR_CANCELLED",
+        "handled": 251662,
+        "observed_rx_per_sec": 3273.37,
+        "observed_upstream_arrival_rate": false,
+        "processing_ms": {
+          "BAR": {
+            "count": 2048,
+            "max": 60.971,
+            "p50": 0.005,
+            "p95": 0.006,
+            "p99": 0.018
+          },
+          "OTHER": {
+            "count": 1,
+            "max": 0.111,
+            "p50": 0.111,
+            "p95": 0.111,
+            "p99": 0.111
+          },
+          "STATUS": {
+            "count": 1,
+            "max": 0.006,
+            "p50": 0.006,
+            "p95": 0.006,
+            "p99": 0.006
+          },
+          "TRADE": {
+            "count": 2048,
+            "max": 63.241,
+            "p50": 0.006,
+            "p95": 0.217,
+            "p99": 0.36
+          }
+        },
+        "received": 251662,
+        "received_not_confirmed_handled": 0,
+        "schema": "OPR_SIP_EPOCH_TERMINAL_V1",
+        "subscription_ack_verified": true
+      }
+    }
+  ],
+  "full_session_coverage_proven": false,
+  "production_leadership_proven": false,
+  "reconnect_ack_observed": true,
+  "retroactive_entries_allowed": false,
+  "schema": "OPR_LIVE_SIP_RECONNECT_PROBE_V1",
+  "started_at": "2026-09-24T18:41:35.906532+00:00",
+  "stopped_for_safety": false,
+  "subscription_ack_epochs": 2,
+  "symbols_count": 12000,
+  "worker_error": null,
+  "evidence_sha256": "b0d1d2e0d9c502fa0226c4c92dac6d01efd0993eba5b5341f1639ac90d99f1e3"
+}

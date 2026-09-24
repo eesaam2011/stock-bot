@@ -518,10 +518,18 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
     exact = bool(epochs) and all(
         row.get("terminal", {}).get("subscription_ack_verified")
         and row["terminal"]["received"] == row["terminal"]["handled"]
-        == row["metrics_acked"] == row["ledger"]["last_sequence"]
+        and row["terminal"]["received"] == (
+            row["terminal"]["market_data_received"]
+            + row["terminal"]["known_control_received"])
+        and row["terminal"]["unknown_nonmarket_received"] == 0
+        and row["terminal"]["market_data_received"]
+        == row["metrics_acked"] == (row["ledger"]["last_sequence"] or 0)
         and row["ledger"]["first_sequence"] == (1 if row["metrics_acked"] else None)
         and row["terminal"]["dispatch_queue"]["overflows"] == 0
         and row["terminal"]["capture_before_teardown"]["invalid_reason"] is None
+        and row["terminal"]["capture_before_teardown"]["buffered"] == 0
+        and row["terminal"]["capture_before_teardown"]["acked_upto"] == row["metrics_acked"]
+        and row["terminal"]["capture_before_teardown"]["last_sequence"] == row["metrics_acked"]
         for row in epochs)
     body = {
         "schema": RECONNECT_SCHEMA, "started_at": started,

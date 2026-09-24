@@ -21,6 +21,7 @@ class WebSocketRuntime:
   # Retain one bounded, payload-free terminal record across teardown/reconnect.
   self.last_epoch_diagnostic=None
   self._rx_started=None;self._received=0;self._handled=0
+  self._market_data_received=0;self._control_received=0;self._unknown_received=0
   self._processing_ns={k:deque(maxlen=2048) for k in ("BAR","TRADE","STATUS","OTHER")}
 
  @staticmethod
@@ -49,6 +50,9 @@ class WebSocketRuntime:
    z=sorted(xs);return round(z[min(len(z)-1,int((len(z)-1)*p))]/1e6,3)
   elapsed=max(time.monotonic()-self._rx_started,1e-6) if self._rx_started else None
   return {"epoch":self.connection_epoch,"received":self._received,
+          "market_data_received":self._market_data_received,
+          "known_control_received":self._control_received,
+          "unknown_nonmarket_received":self._unknown_received,
           "capture":self.epoch_capture.snapshot() if self.epoch_capture else None,
           "dispatch_queue":{"limit":self.dispatch_queue_max,
                             "depth":self._queue_depth,
@@ -60,6 +64,11 @@ class WebSocketRuntime:
                               "p95":percentile(v,.95),"p99":percentile(v,.99),
                               "max":round(max(v)/1e6,3) if v else None}
                            for k,v in self._processing_ns.items()}}
+ def _record_kind(self,msg):
+  kind=msg.get("T")
+  if kind in {"b","t","s"}:self._market_data_received+=1
+  elif kind in {"subscription","success"}:self._control_received+=1
+  else:self._unknown_received+=1
  async def _receive_queued(self,ws,initial_messages=()):
   # Exactly one ordered consumer. The receiver never waits for synchronous
   # REST/Redis processing; full queue is a fatal disconnect, never a drop.
@@ -80,6 +89,7 @@ class WebSocketRuntime:
     raise SIPErrorFrame(msg.get('code'),msg.get('msg'))
    if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
    self._received+=1
+   self._record_kind(msg)
    try:q.put_nowait({**msg,"_sip_epoch":self.connection_epoch})
    except asyncio.QueueFull:
     self._queue_overflows+=1
@@ -111,6 +121,13 @@ class WebSocketRuntime:
    if next_frame is not None and not next_frame.done():
     next_frame.cancel()
     await asyncio.gather(next_frame,return_exceptions=True)
+   # On an intentional diagnostic/supervisor stop, the receiver is no longer
+   # accepting frames. Give the single ordered consumer a bounded chance to
+   # finish already accepted messages before recording terminal counters.
+   # A real socket error or overflow never enters this graceful path.
+   if self.stopping and not worker.done():
+    try:await asyncio.wait_for(q.join(),timeout=5.0)
+    except asyncio.TimeoutError:pass  # terminal received != handled remains unsafe
    worker.cancel()
    await asyncio.gather(worker,return_exceptions=True)
    self._queue_depth=0
@@ -121,6 +138,7 @@ class WebSocketRuntime:
   # Pre-ACK failure must never inherit prior epoch throughput evidence.
   self._epoch_ack_verified=False;self._rx_started=None
   self._received=0;self._handled=0
+  self._market_data_received=0;self._control_received=0;self._unknown_received=0
   for samples in self._processing_ns.values():samples.clear()
   if self.epoch_capture:self.epoch_capture.invalidate("STARTING_NEW_CONNECTION")
   try:
@@ -158,6 +176,7 @@ class WebSocketRuntime:
     self.connection_epoch+=1;self._epoch_ack_verified=True
     if self.epoch_capture:self.epoch_capture.start(self.connection_epoch)
     self._rx_started=time.monotonic();self._received=0;self._handled=0
+    self._market_data_received=0;self._control_received=0;self._unknown_received=0
     for samples in self._processing_ns.values():samples.clear()
     self.connected_event.set()  # Means authenticated + subscription ACK verified, not merely TCP-open.
     if self.on_subscription_ack:self.on_subscription_ack(self.connection_epoch)
@@ -167,6 +186,7 @@ class WebSocketRuntime:
     for msg in initial_messages:
      kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
      self._received+=1;started=time.monotonic_ns()
+     self._record_kind(msg)
      try:
       if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
       await self.on_message(msg)
@@ -178,6 +198,7 @@ class WebSocketRuntime:
       if msg.get("T")=="error":raise SIPErrorFrame(msg.get('code'),msg.get('msg'))
       kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
       self._received+=1;start_ns=time.monotonic_ns()
+      self._record_kind(msg)
       try:
        if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
        await self.on_message(msg)
@@ -214,6 +235,9 @@ class WebSocketRuntime:
     "subscription_ack_verified":self._epoch_ack_verified,
     "failure_class":failure,
     "received":before["received"],"handled":before["handled"],
+    "market_data_received":before["market_data_received"],
+    "known_control_received":before["known_control_received"],
+    "unknown_nonmarket_received":before["unknown_nonmarket_received"],
     "received_not_confirmed_handled":max(0,before["received"]-before["handled"]),
     "dispatch_queue":before["dispatch_queue"],
     "capture_before_teardown":before["capture"],
