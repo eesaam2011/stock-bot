@@ -1,3 +1,15 @@
+# Same-service pilot option (selected 2026-09-25)
+
+The existing Flask service now registers **disabled-by-default** EHR G5 endpoints. This option does not add a Render service, but it cannot guarantee CPU/memory isolation from the main backtest. For this reason **only a three-symbol pilot is exposed**; a 376-symbol full run remains blocked pending actual CPU/memory measurements, durable storage and cross-process locking.
+
+Deployment gate:
+1. Review/merge this PR only after CI succeeds. Verify the current Render service auto-deploy policy before merging.
+2. Set `EHR_G5_ENABLED=1` on the existing backtest service **after deployment**, and do not change the existing Start Command. The existing `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` and `NDR_BT_ADMIN_TOKEN` are reused.
+3. From the existing authenticated UI or a local client, POST the frozen JSON as raw `application/json` to `/ehr-g5/requirements`, with the existing admin token in `X-Admin-Token`. This private file is never committed to public GitHub.
+4. Only after **17:30 New York time** (00:30 Saudi during US daylight saving), POST `/ehr-g5/start`. GET `/ehr-g5/status` to check progress; download the result with GET `/ehr-g5/download` after completion. All endpoints require admin authorization.
+5. The default checkpoint directory `/tmp/ehr_g5_pilot` is **ephemeral**; download the ZIP immediately. To preserve across deploys, configure `EHR_G5_OUTPUT_DIR` to an existing mounted persistent directory, if available. This does not alter Redis.
+6. No full-cohort execution, no returns, no corporate-action verification and no trading are authorized by this pilot.
+
 # EHR G5 isolated collection — deployment gate (NOT ACTIVE)
 
 This branch adds only a standalone, read-only SIP daily collector. It is deliberately **not imported** by `ndr_backtest_service.py`, not merged to `main`, and not running on Render.
