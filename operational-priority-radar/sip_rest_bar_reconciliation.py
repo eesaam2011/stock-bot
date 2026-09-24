@@ -29,7 +29,8 @@ def reconcile_sip_rest_bars(native_evidence, semantic_snapshot):
     native_sha = _verify(native_evidence, "aggregate_evidence_sha256")
     semantic_sha = _verify(semantic_snapshot, "snapshot_sha256")
     if (native_evidence.get("schema") != AGGREGATE_SCHEMA
-            or semantic_snapshot.get("schema") != JOURNAL_SCHEMA):
+            or semantic_snapshot.get("schema") not in {
+                JOURNAL_SCHEMA, "OPR_LIVE_SIP_SEMANTIC_LEDGER_V1"}):
         raise SIPRESTBarReconciliationUnsafe("BAR_RECONCILIATION_SCHEMA_INVALID")
     required_native = {
         "exact_disjoint_symbol_partition": True,

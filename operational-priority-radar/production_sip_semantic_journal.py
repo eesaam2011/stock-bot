@@ -41,7 +41,7 @@ def _finite_positive(value):
             and float(value) > 0)
 
 
-def _semantic_row(item, scope):
+def semantic_row(item, scope):
     if (not isinstance(item, CapturedSIP) or item.kind not in {
             "BAR", "TRADE", "STATUS"} or not isinstance(item.payload, dict)):
         raise SIPSemanticJournalUnsafe("SIP_SEMANTIC_ITEM_INVALID")
@@ -155,7 +155,7 @@ class ProductionSIPSemanticJournal:
         if (context.get("item_count") != len(items)
                 or context.get("batch_sha256") != captured_batch_digest(items)):
             raise SIPSemanticJournalUnsafe("SIP_SEMANTIC_DIGEST_MISMATCH")
-        rows = [_semantic_row(item, self.scope) for item in items]
+        rows = [semantic_row(item, self.scope) for item in items]
         counts = {kind: sum(item.kind == kind for item in items)
                   for kind in ("BAR", "TRADE", "STATUS")}
         semantic_batch = _sha(rows)

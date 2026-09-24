@@ -22,6 +22,10 @@ from production_universe import build_operational_universe
 from sip_drain_coordinator import BoundedSIPDrainCoordinator
 from sip_epoch_capture import BoundedEpochCapture
 from websocket_runtime import WebSocketRuntime
+from production_sip_semantic_journal import semantic_row
+from sip_semantic_digest import (
+    ZERO_MULTISET, add_bar_members, canonical_sha256, normalized_bar_member,
+)
 
 
 SCHEMA = "OPR_LIVE_SIP_SOAK_EVIDENCE_V1"
@@ -78,6 +82,102 @@ class PayloadFreeLedger:
             "last_sequence": self.last_sequence,
         }
 
+
+class LiveSemanticLedger(PayloadFreeLedger):
+    """Validate all payloads, then retain only read-only semantic summaries."""
+
+    SCHEMA = "OPR_LIVE_SIP_SEMANTIC_LEDGER_V1"
+
+    def __init__(self, symbols, session, window_start, window_end):
+        super().__init__()
+        if (not symbols or len(set(symbols)) != len(symbols)
+                or not isinstance(session, str) or not session):
+            raise LiveSIPSoakBlocked("SEMANTIC_LEDGER_SCOPE_INVALID")
+        self.scope = set(symbols)
+        self.session = session
+        self.symbols_sha256 = canonical_sha256(sorted(symbols))
+        self.window_start = self._time(window_start)
+        self.window_end = self._time(window_end)
+        if not self.window_start < self.window_end:
+            raise LiveSIPSoakBlocked("SEMANTIC_LEDGER_WINDOW_INVALID")
+        self.semantic_chain_sha256 = ZERO_MULTISET
+        self.bar_multiset_sha256 = ZERO_MULTISET
+        self.bar_window_count = 0
+        self.epoch = None
+
+    @staticmethod
+    def _time(value):
+        if not isinstance(value, str):
+            raise LiveSIPSoakBlocked("SEMANTIC_LEDGER_TIME_INVALID")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise LiveSIPSoakBlocked("SEMANTIC_LEDGER_TIME_INVALID") from exc
+        if parsed.tzinfo is None:
+            raise LiveSIPSoakBlocked("SEMANTIC_LEDGER_TIME_INVALID")
+        return parsed.astimezone(timezone.utc)
+
+    def reconcile(self, items, context):
+        rows = [semantic_row(item, self.scope) for item in items]
+        epoch = context.get("epoch")
+        if type(epoch) is not int or epoch < 1:
+            raise LiveSIPSoakBlocked("SEMANTIC_LEDGER_EPOCH_INVALID")
+        if self.epoch is not None and epoch != self.epoch:
+            raise LiveSIPSoakBlocked("SEMANTIC_LEDGER_EPOCH_CHANGED")
+        members = []
+        for row, item in zip(rows, items):
+            if row["kind"] != "BAR":
+                continue
+            event = self._time(row["event_ts"])
+            if self.window_start <= event < self.window_end:
+                members.append(normalized_bar_member(
+                    row["symbol"], row["event_ts"], item.payload))
+        proof = super().reconcile(items, context)
+        self.epoch = epoch
+        self.semantic_chain_sha256 = canonical_sha256({
+            "previous_sha256": self.semantic_chain_sha256,
+            "epoch": epoch,
+            "first_sequence": items[0].sequence,
+            "last_sequence": items[-1].sequence,
+            "rows": rows,
+        })
+        self.bar_multiset_sha256 = add_bar_members(
+            self.bar_multiset_sha256, members)
+        self.bar_window_count += len(members)
+        return {**proof, "sip_semantics_validated": True,
+                "sip_semantics_reconciled": False}
+
+    def semantic_snapshot(self):
+        body = {
+            "schema": self.SCHEMA,
+            "session": self.session,
+            "epoch": self.epoch,
+            "last_sequence": self.last_sequence,
+            "item_count": sum(self.counts.values()),
+            "bar_count": self.counts["BAR"],
+            "trade_count": self.counts["TRADE"],
+            "status_count": self.counts["STATUS"],
+            "bar_window_count": self.bar_window_count,
+            "bar_window_start_utc": self.window_start.isoformat(),
+            "bar_window_end_utc": self.window_end.isoformat(),
+            "symbols_sha256": self.symbols_sha256,
+            "semantic_chain_sha256": self.semantic_chain_sha256,
+            "bar_multiset_sha256": self.bar_multiset_sha256,
+            "payloads_retained": 0,
+            "entry_processing_enabled": False,
+            "active_trade_scope_count": 0,
+            "halted_trade_scope_count": 0,
+            "pipeline_writes": 0,
+            "trade_transition_commits": 0,
+            "status_transition_commits": 0,
+            "sip_semantics_validated": True,
+            "sip_semantics_reconciled": False,
+            "full_session_coverage_proven": False,
+            "direct_handoff_authorized": False,
+            "retroactive_entries_allowed": False,
+        }
+        body["snapshot_sha256"] = canonical_sha256(body)
+        return body
 
 def _require_live_gate(env):
     if env.get("OPR_LIVE_SIP_SOAK") != "I_UNDERSTAND_READ_ONLY_SIP":
@@ -147,6 +247,8 @@ def build_evidence(*, started_at, ended_at, duration_requested, symbols_count,
         "terminal": terminal,
         "metrics_drain": drain_snapshot,
         "payload_free_ledger": ledger_snapshot,
+        "semantic_ledger": (ledger.semantic_snapshot()
+                            if hasattr(ledger, "semantic_snapshot") else None),
         "observations": {
             "subscription_ack_verified": bool(
                 terminal.get("subscription_ack_verified")),
@@ -161,6 +263,7 @@ def build_evidence(*, started_at, ended_at, duration_requested, symbols_count,
         },
         "claims": {
             "transport_measurement_only": True,
+            "semantic_validation_only": hasattr(ledger, "semantic_snapshot"),
             "production_generation_fence_proven": False,
             "full_session_coverage_proven": False,
             "sip_continuity_proven": False,
@@ -199,7 +302,11 @@ async def run_live_soak(*, duration_sec, max_symbols, output_path,
         raise LiveSIPSoakBlocked("OPERATIONAL_UNIVERSE_EMPTY")
 
     capture = BoundedEpochCapture(max_messages=4096, max_bytes=8 * 1024 * 1024)
-    ledger = PayloadFreeLedger()
+    ledger = (LiveSemanticLedger(
+        symbols, datetime.fromisoformat(expected_session_start.replace(
+            "Z", "+00:00")).date().isoformat(), expected_session_start,
+        expected_session_end) if expected_session_start is not None
+        else PayloadFreeLedger())
     drain = BoundedSIPDrainCoordinator(
         capture, _MetricsLeadership(), ledger.reconcile, batch_size=256)
     runtime = None
