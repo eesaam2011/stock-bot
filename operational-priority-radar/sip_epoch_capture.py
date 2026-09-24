@@ -76,6 +76,12 @@ class BoundedEpochCapture:
     def ingest(self,epoch,msg,*,received_at=None):
         if self.phase not in {self.CAPTURING,self.DRAINING,self.DIRECT} or self.epoch!=epoch:
             raise EpochCaptureError("SIP_CAPTURE_EPOCH_INVALID")
+        # Alpaca delivers corrections and cancels automatically with trades.
+        # Until trade-ID reconciliation is implemented, they invalidate this
+        # epoch; treating them as ordinary control frames loses market state.
+        if msg.get("T") in {"c","x"}:
+            self.invalidate("SIP_TRADE_REVISION_UNRECONCILED")
+            raise EpochCaptureError("SIP_TRADE_REVISION_UNRECONCILED")
         kind=self.TYPES.get(msg.get("T"))
         if kind is None:return None
         if self.phase==self.DIRECT:return None  # caller delivers directly after verified handoff

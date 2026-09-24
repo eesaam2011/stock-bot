@@ -9,6 +9,7 @@ from unittest.mock import patch
 from live_sip_soak import run_live_reconnect_probe
 from websocket_runtime import SIPErrorFrame, WebSocketRuntime
 from alpaca_production_market import AlpacaSIPProtocol
+from sip_epoch_capture import BoundedEpochCapture, EpochCaptureError
 
 
 class FakeSocket:
@@ -50,6 +51,23 @@ class FakeSocket:
 
 
 class TestReconnectProbe(unittest.IsolatedAsyncioTestCase):
+    async def test_trade_revisions_invalidate_epoch_without_acking(self):
+        for revision in ("x", "c"):
+            with self.subTest(revision=revision):
+                capture = BoundedEpochCapture()
+                capture.start(1)
+                capture.ingest(1, {"T": "t", "S": "AAPL",
+                                   "t": "2026-09-24T13:30:01Z", "p": 10, "s": 1})
+                with self.assertRaisesRegex(EpochCaptureError,
+                                            "SIP_TRADE_REVISION_UNRECONCILED"):
+                    capture.ingest(1, {"T": revision, "S": "AAPL",
+                                       "t": "2026-09-24T13:30:02Z", "i": 1})
+                snapshot = capture.snapshot()
+                self.assertEqual(snapshot["phase"], capture.INVALID)
+                self.assertEqual(snapshot["invalid_reason"],
+                                 "SIP_TRADE_REVISION_UNRECONCILED")
+                self.assertEqual(snapshot["acked_upto"], 0)
+
     async def test_intentional_stop_drains_already_received_queue(self):
         class BurstSocket(FakeSocket):
             def __init__(self):

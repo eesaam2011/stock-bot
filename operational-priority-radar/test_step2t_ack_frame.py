@@ -3,7 +3,7 @@ import asyncio,json,unittest
 from test_step2o_websocket_epoch import FakeWS
 from websocket_runtime import WebSocketRuntime,WebSocketProtocolError
 from alpaca_production_market import AlpacaSIPProtocol
-from sip_epoch_capture import BoundedEpochCapture
+from sip_epoch_capture import BoundedEpochCapture,EpochCaptureError
 
 def t(n):
  return {"T":"t","S":"A","p":n,"t":f"2026-09-22T15:00:{n:02d}Z"}
@@ -19,6 +19,21 @@ class SlowWS(FakeWS):
   await self.keep_open.wait()
 
 class TestMixedAckFrame(unittest.IsolatedAsyncioTestCase):
+ async def test_post_ack_trade_cancel_fails_closed(self):
+  ws=FakeWS([])
+  ws.controls[-1]=json.dumps([ack(),{"T":"x","S":"A","i":123}])
+  capture=BoundedEpochCapture()
+  rt=WebSocketRuntime(lambda url:ws,AlpacaSIPProtocol,
+                      lambda msg:asyncio.sleep(0),lambda:asyncio.sleep(0),
+                      epoch_capture=capture)
+  with self.assertRaisesRegex(EpochCaptureError,"SIP_TRADE_REVISION_UNRECONCILED"):
+   await rt.run_once("u","k","s",["A"])
+  self.assertEqual(rt.last_epoch_diagnostic["failure_class"],
+                   "TRADE_REVISION_UNRECONCILED")
+  self.assertEqual(rt.last_epoch_diagnostic["capture_before_teardown"]["invalid_reason"],
+                   "SIP_TRADE_REVISION_UNRECONCILED")
+  self.assertEqual(capture.snapshot()["invalid_reason"],"SIP_DISCONNECTED")
+
  async def test_inline_post_ack_market_data_is_processed(self):
   ws=FakeWS([])
   ws.controls[-1]=json.dumps([ack(),t(1)])

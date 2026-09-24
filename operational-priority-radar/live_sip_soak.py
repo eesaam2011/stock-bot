@@ -491,7 +491,8 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
         current["ledger"] = current["ledger"].snapshot()
         current.pop("drain")
         current = None
-        if terminal["failure_class"] in {"CAPTURE_OVERFLOW", "DISPATCH_QUEUE_OVERFLOW"}:
+        if terminal["failure_class"] in {"CAPTURE_OVERFLOW", "DISPATCH_QUEUE_OVERFLOW",
+                                         "TRADE_REVISION_UNRECONCILED"}:
             stopped_for_safety = True
             runtime.stop()
 

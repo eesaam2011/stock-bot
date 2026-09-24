@@ -152,26 +152,25 @@ class WebSocketRuntime:
     welcome=await self._recv_control(ws)
     if not self._has_success(welcome,"connected"):
      raise WebSocketProtocolError("ALPACA_WS_CONNECTED_ACK_MISSING")
-    if any(m.get("T") in {"b","t","s"} for m in welcome):
+    if any(m.get("T") in {"b","t","s","c","x"} for m in welcome):
      raise WebSocketProtocolError("SIP_DATA_BEFORE_AUTH")
     await ws.send(json.dumps(self.protocol.auth(key,secret)))
     auth=await self._recv_control(ws)
     if not self._has_success(auth,"authenticated"):
      raise WebSocketProtocolError("ALPACA_WS_AUTH_ACK_MISSING")
-    if any(m.get("T") in {"b","t","s"} for m in auth):
+    if any(m.get("T") in {"b","t","s","c","x"} for m in auth):
      raise WebSocketProtocolError("SIP_DATA_BEFORE_SUBSCRIPTION")
     requested=list(symbols)
     await ws.send(json.dumps(self.protocol.subscribe(requested)))
     sub_msgs=await self._recv_control(ws)
     sub_index=next((i for i,m in enumerate(sub_msgs) if m.get("T")=="subscription"),None)
     if sub_index is None:raise WebSocketProtocolError("ALPACA_WS_SUBSCRIPTION_ACK_MISSING")
-    if any(m.get("T") in {"b","t","s"} for m in sub_msgs[:sub_index]):
+    if any(m.get("T") in {"b","t","s","c","x"} for m in sub_msgs[:sub_index]):
      raise WebSocketProtocolError("SIP_DATA_BEFORE_SUBSCRIPTION_ACK")
     sub=sub_msgs[sub_index]
     # Alpaca may combine subscription ACK and market data in one frame.
     # Post-ACK events must enter this epoch; never silently discard them.
-    initial_messages=[m for m in sub_msgs[sub_index+1:]
-                      if m.get("T") in {"b","t","s"}]
+    initial_messages=sub_msgs[sub_index+1:]
     req=set(requested);got_trades=set(sub.get("trades") or []);got_bars=set(sub.get("bars") or [])
     statuses=set(sub.get("statuses") or [])
     missing_trades=req-got_trades;missing_bars=req-got_bars
@@ -228,6 +227,8 @@ class WebSocketRuntime:
     failure="DISPATCH_QUEUE_OVERFLOW"
    elif "SIP_CAPTURE_OVERFLOW_FAIL_CLOSED" in err:
     failure="CAPTURE_OVERFLOW"
+   elif "SIP_TRADE_REVISION_UNRECONCILED" in err:
+    failure="TRADE_REVISION_UNRECONCILED"
    elif sip_error_frame_code==407:
     failure="SIP_ERROR_FRAME_407"
    elif "SIP_STREAM_EOF_UNTRUSTED" in err:
