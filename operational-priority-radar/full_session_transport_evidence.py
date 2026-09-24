@@ -85,6 +85,7 @@ def adjudicate_full_session_transport(evidence):
             or terminal["known_control_received"] != 0
             or type(terminal.get("unknown_nonmarket_received")) is not int
             or terminal["unknown_nonmarket_received"] != 0
+            or terminal.get("unknown_nonmarket_types") != {}
             or not isinstance(kinds, dict)
             or set(kinds) != {"BAR", "TRADE", "STATUS"}
             or any(type(kinds.get(kind)) is not int or kinds[kind] < 0

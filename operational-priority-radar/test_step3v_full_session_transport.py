@@ -32,6 +32,7 @@ def valid_evidence():
         "market_data_received": received,
         "known_control_received": 0,
         "unknown_nonmarket_received": 0,
+        "unknown_nonmarket_types": {},
         "received_not_confirmed_handled": 0,
         "capture_before_teardown": {
             "acked_upto": received, "last_sequence": received,
@@ -106,6 +107,7 @@ class TestFullSessionTransport(unittest.TestCase):
     def test_trade_cancel_or_legacy_missing_kind_counters_cannot_attest(self):
         mutations = (
             lambda e: e["terminal"].__setitem__("unknown_nonmarket_received", 1),
+            lambda e: e["terminal"].__setitem__("unknown_nonmarket_types", {"x": 1}),
             lambda e: e["terminal"].__setitem__("market_data_received", 899999),
             lambda e: e["terminal"].pop("market_data_received"),
             lambda e: e["payload_free_ledger"]["counts"].__setitem__("TRADE", 894899),
