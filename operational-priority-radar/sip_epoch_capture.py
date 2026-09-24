@@ -45,6 +45,7 @@ class BoundedEpochCapture:
         self.phase=self.INVALID;self.epoch=None
         self._items=deque();self._bytes=0;self._seq=0;self._acked_upto=0
         self._invalid_reason="NOT_STARTED"
+        self._revision_diagnostic=None
         # Trust gate uses capture.buffer.epoch to tie DIRECT to the ACK epoch.
         self.buffer=self
     @_locked
@@ -58,6 +59,7 @@ class BoundedEpochCapture:
         self._invalid_reason=None
     @_locked
     def invalidate(self,reason="DISCONNECT"):
+        self._revision_diagnostic=None
         self.phase=self.INVALID;self.epoch=None
         self._items.clear();self._bytes=0;self._acked_upto=0
         self._invalid_reason=reason
@@ -80,7 +82,11 @@ class BoundedEpochCapture:
         # Until trade-ID reconciliation is implemented, they invalidate this
         # epoch; treating them as ordinary control frames loses market state.
         if msg.get("T") in {"c","x"}:
+            from sip_revision_diagnostic import revision_diagnostic
+            diagnostic=revision_diagnostic(msg,epoch=epoch,
+                last_sequence=self._seq,acked_upto=self._acked_upto)
             self.invalidate("SIP_TRADE_REVISION_UNRECONCILED")
+            self._revision_diagnostic=diagnostic
             raise EpochCaptureError("SIP_TRADE_REVISION_UNRECONCILED")
         kind=self.TYPES.get(msg.get("T"))
         if kind is None:return None
@@ -174,7 +180,10 @@ class BoundedEpochCapture:
 
     @_locked
     def snapshot(self):
-        return {"phase":self.phase,"epoch":self.epoch,"buffered":len(self._items),
+        result={"phase":self.phase,"epoch":self.epoch,"buffered":len(self._items),
                 "bytes":self._bytes,"last_sequence":self._seq,
                 "acked_upto":self._acked_upto,
                 "invalid_reason":self._invalid_reason}
+        if self._revision_diagnostic is not None:
+            result['revision_diagnostic']=deepcopy(self._revision_diagnostic)
+        return result
