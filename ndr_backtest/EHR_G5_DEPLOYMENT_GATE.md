@@ -5,7 +5,7 @@ The existing Flask service now registers **disabled-by-default** EHR G5 endpoint
 Deployment gate:
 1. Review/merge this PR only after CI succeeds. Verify the current Render service auto-deploy policy before merging.
 2. Set `EHR_G5_ENABLED=1` on the existing backtest service **after deployment**, and do not change the existing Start Command. The existing `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` and `NDR_BT_ADMIN_TOKEN` are reused.
-3. From the existing authenticated UI or a local client, POST the frozen JSON as raw `application/json` to `/ehr-g5/requirements`, with the existing admin token in `X-Admin-Token`. This private file is never committed to public GitHub.
+3. Open `https://next-day-radar-backtest.onrender.com/ehr-g5` on mobile. Enter the existing admin token locally, choose the frozen JSON, and follow the four buttons. Alternatively POST the frozen JSON as raw `application/json` to `/ehr-g5/requirements`, with the existing admin token in `X-Admin-Token`. This private file is never committed to public GitHub.
 4. Only after **17:30 New York time** (00:30 Saudi during US daylight saving), POST `/ehr-g5/start`. GET `/ehr-g5/status` to check progress; download the result with GET `/ehr-g5/download` after completion. All endpoints require admin authorization.
 5. The default checkpoint directory `/tmp/ehr_g5_pilot` is **ephemeral**; download the ZIP immediately. To preserve across deploys, configure `EHR_G5_OUTPUT_DIR` to an existing mounted persistent directory, if available. This does not alter Redis.
 6. No full-cohort execution, no returns, no corporate-action verification and no trading are authorized by this pilot.
