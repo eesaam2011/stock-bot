@@ -75,6 +75,22 @@ def adjudicate_full_session_transport(evidence):
             or ledger.get("last_sequence") != received
             or terminal.get("epoch") != 1):
         raise FullSessionTransportUnsafe("FULL_SESSION_MESSAGE_CHAIN_MISMATCH")
+    # Older evidence has no kind counters, and a trade cancel/correction can
+    # be received and handled while bypassing the b/t/s semantic ledger.
+    # Transport attestation must reject that ambiguity, not infer coverage.
+    kinds = ledger.get("counts")
+    if (type(terminal.get("market_data_received")) is not int
+            or terminal["market_data_received"] != received
+            or type(terminal.get("known_control_received")) is not int
+            or terminal["known_control_received"] != 0
+            or type(terminal.get("unknown_nonmarket_received")) is not int
+            or terminal["unknown_nonmarket_received"] != 0
+            or not isinstance(kinds, dict)
+            or set(kinds) != {"BAR", "TRADE", "STATUS"}
+            or any(type(kinds.get(kind)) is not int or kinds[kind] < 0
+                   for kind in ("BAR", "TRADE", "STATUS"))
+            or sum(kinds[kind] for kind in ("BAR", "TRADE", "STATUS")) != received):
+        raise FullSessionTransportUnsafe("FULL_SESSION_MESSAGE_KIND_UNPROVEN")
     capture = terminal.get("capture_before_teardown")
     dispatch = terminal.get("dispatch_queue")
     if (not isinstance(capture, dict) or not isinstance(dispatch, dict)

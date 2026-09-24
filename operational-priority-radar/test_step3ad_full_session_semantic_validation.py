@@ -51,6 +51,8 @@ def valid_evidence():
         "subscription_ack_verified": True,
         "failure_class": "OTHER_OR_CANCELLED",
         "received": 3, "handled": 3, "received_not_confirmed_handled": 0,
+        "market_data_received": 3, "known_control_received": 0,
+        "unknown_nonmarket_received": 0,
         "capture_before_teardown": {
             "acked_upto": 3, "last_sequence": 3, "buffered": 0,
             "bytes": 0, "epoch": 1, "invalid_reason": None,

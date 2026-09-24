@@ -29,6 +29,9 @@ def valid_evidence():
         "failure_class": "OTHER_OR_CANCELLED",
         "received": received,
         "handled": received,
+        "market_data_received": received,
+        "known_control_received": 0,
+        "unknown_nonmarket_received": 0,
         "received_not_confirmed_handled": 0,
         "capture_before_teardown": {
             "acked_upto": received, "last_sequence": received,
@@ -99,6 +102,21 @@ class TestFullSessionTransport(unittest.TestCase):
             evidence = valid_evidence(); mutate(evidence); evidence = resign(evidence)
             with self.assertRaises(FullSessionTransportUnsafe):
                 adjudicate_full_session_transport(evidence)
+
+    def test_trade_cancel_or_legacy_missing_kind_counters_cannot_attest(self):
+        mutations = (
+            lambda e: e["terminal"].__setitem__("unknown_nonmarket_received", 1),
+            lambda e: e["terminal"].__setitem__("market_data_received", 899999),
+            lambda e: e["terminal"].pop("market_data_received"),
+            lambda e: e["payload_free_ledger"]["counts"].__setitem__("TRADE", 894899),
+            lambda e: e["terminal"].__setitem__("known_control_received", 1),
+        )
+        for mutate in mutations:
+            evidence = valid_evidence()
+            mutate(evidence)
+            with self.assertRaisesRegex(FullSessionTransportUnsafe,
+                                        "MESSAGE_KIND_UNPROVEN"):
+                adjudicate_full_session_transport(resign(evidence))
 
     def test_407_only_counts_from_exact_sip_error_frame_class(self):
         fake = valid_evidence()
