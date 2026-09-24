@@ -4,6 +4,10 @@ on:
     paths:
       - 'ndr_backtest/ehr_g5_isolated_collector.py'
       - 'ndr_backtest/test_ehr_g5_isolated_collector.py'
+      - 'ndr_backtest/ehr_g5_web_pilot.py'
+      - 'ndr_backtest/test_ehr_g5_web_pilot.py'
+      - 'ndr_backtest/ehr_g5_preflight.py'
+      - 'ndr_backtest/ndr_backtest_service.py'
       - '.github/workflows/ehr-g5-tests.yml'
   workflow_dispatch:
 jobs:
@@ -16,5 +20,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install Flask for route tests
+        run: python -m pip install 'flask>=3,<4'
       - name: Run isolated offline tests (no Alpaca keys)
-        run: python -m unittest discover -s ndr_backtest -p 'test_ehr_g5_isolated_collector.py' -v
+        run: python -m unittest discover -s ndr_backtest -p 'test_ehr_g5_*.py' -v
