@@ -95,6 +95,7 @@ class LiveSemanticLedger(PayloadFreeLedger):
             raise LiveSIPSoakBlocked("SEMANTIC_LEDGER_SCOPE_INVALID")
         self.scope = set(symbols)
         self.session = session
+        self.symbol_count = len(symbols)
         self.symbols_sha256 = canonical_sha256(sorted(symbols))
         self.window_start = self._time(window_start)
         self.window_end = self._time(window_end)
@@ -152,6 +153,7 @@ class LiveSemanticLedger(PayloadFreeLedger):
             "schema": self.SCHEMA,
             "session": self.session,
             "epoch": self.epoch,
+            "first_sequence": self.first_sequence,
             "last_sequence": self.last_sequence,
             "item_count": sum(self.counts.values()),
             "bar_count": self.counts["BAR"],
@@ -160,6 +162,7 @@ class LiveSemanticLedger(PayloadFreeLedger):
             "bar_window_count": self.bar_window_count,
             "bar_window_start_utc": self.window_start.isoformat(),
             "bar_window_end_utc": self.window_end.isoformat(),
+            "symbol_count": self.symbol_count,
             "symbols_sha256": self.symbols_sha256,
             "semantic_chain_sha256": self.semantic_chain_sha256,
             "bar_multiset_sha256": self.bar_multiset_sha256,
