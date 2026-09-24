@@ -29,12 +29,15 @@ class WebPilotTests(unittest.TestCase):
         with patch.dict("os.environ", {"EHR_G5_ENABLED":"0"}):
             response=app.test_client().post("/ehr-g5/start")
             self.assertEqual(response.status_code,403)
+            self.assertEqual(app.test_client().post("/ehr-g5/requirements", data=b"{}").status_code,403)
     def test_unauthorized(self):
         from flask import Flask
         app=Flask(__name__)
         module.register(app,lambda: False)
         self.assertEqual(app.test_client().post("/ehr-g5/start").status_code,401)
         self.assertEqual(app.test_client().get("/ehr-g5/status").status_code,401)
+        self.assertEqual(app.test_client().post("/ehr-g5/requirements", data=b"{}").status_code,401)
+        self.assertEqual(app.test_client().get("/ehr-g5/download").status_code,401)
 
 if __name__=="__main__":
     unittest.main()
