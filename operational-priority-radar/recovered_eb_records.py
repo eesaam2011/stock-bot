@@ -33,6 +33,34 @@ def _finite(value):
             and math.isfinite(float(value)))
 
 
+def recovered_records_sha256(records, *, session, scope_symbols):
+    """Digest one exact canonical recovered-record set and its full scope."""
+    if (not isinstance(records, (tuple, list))
+            or not isinstance(session, str) or not session
+            or not isinstance(scope_symbols, (tuple, list))
+            or not scope_symbols or len(set(scope_symbols)) != len(scope_symbols)
+            or any(not isinstance(symbol, str) or not symbol
+                   for symbol in scope_symbols)):
+        raise RecoveredEBRecordUnsafe("RECOVERED_EB_DIGEST_ARGUMENT_INVALID")
+    canonical_records = []
+    for record in records:
+        if (not isinstance(record, dict)
+                or record.get("record_type") not in {"early_core", "base_ready"}):
+            raise RecoveredEBRecordUnsafe("RECOVERED_EB_DIGEST_RECORD_INVALID")
+        validate_record(record, record["record_type"])
+        canonical_records.append(json.loads(canonical_json(record)))
+    digest_body = {
+        "session": session,
+        "scope_symbols_sha256": hashlib.sha256(json.dumps(
+            sorted(scope_symbols), separators=(",", ":")).encode()).hexdigest(),
+        "record_count": len(records),
+        "records": canonical_records,
+    }
+    raw = json.dumps(digest_body, sort_keys=True, separators=(",", ":"),
+                     ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 def recovered_signals_to_record_batches(
         signals, *, session, scope_symbols, worker_instance_id,
         leader_generation, as_of, max_records_per_batch=80):
@@ -118,15 +146,6 @@ def recovered_signals_to_record_batches(
     batches = tuple(
         tuple(records[offset:offset + max_records_per_batch])
         for offset in range(0, len(records), max_records_per_batch))
-    digest_body = {
-        "session": session,
-        "scope_symbols_sha256": hashlib.sha256(json.dumps(
-            sorted(scope_symbols), separators=(",", ":")).encode()).hexdigest(),
-        "record_count": len(records),
-        "records": [json.loads(canonical_json(record)) for record in records],
-    }
-    raw = json.dumps(digest_body, sort_keys=True, separators=(",", ":"),
-                     ensure_ascii=False, allow_nan=False)
     return batches, {
         "schema": "OPR_RECOVERED_EB_RECORD_BATCHES_V1",
         "session": session,
@@ -134,7 +153,8 @@ def recovered_signals_to_record_batches(
         "record_count": len(records),
         "batch_count": len(batches),
         "max_records_per_batch": max_records_per_batch,
-        "records_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+        "records_sha256": recovered_records_sha256(
+            records, session=session, scope_symbols=scope_symbols),
         "canonical_record_types": ["early_core", "base_ready"],
         "opportunities_created": 0,
         "trades_created": 0,
