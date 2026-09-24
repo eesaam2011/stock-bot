@@ -250,6 +250,8 @@ jobs:
             printf 'full_session_semantic_validation_is_reconciliation=false\n'
             printf 'empty_active_trade_scope_double_read=closed_pipeline_lock_and_generation_fenced\n'
             printf 'empty_trade_status_disposition_nonempty_scope_supported=false\n'
+            printf 'semantic_session_reconciliation=five_signed_evidence_join\n'
+            printf 'semantic_session_coverage_scope=historical_eb_empty_trade_scope_only\n'
             printf 'sip_rest_session_bar_multiset_reconciliation=exact_digest_bound\n'
             printf 'sip_rest_bar_reconciliation_requires_explicit_window=true\n'
             printf 'sip_rest_bar_reconciliation_scope=bars_only\n'
@@ -350,7 +352,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opr-step3ae-empty-trade-status-disposition-review-bundle
+          name: opr-step3af-semantic-session-reconciliation-review-bundle
           path: |
             opr-review-package.zip
             pytest-q-output.txt
