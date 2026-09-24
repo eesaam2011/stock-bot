@@ -22,6 +22,7 @@ class WebSocketRuntime:
   self.last_epoch_diagnostic=None
   self._rx_started=None;self._received=0;self._handled=0
   self._market_data_received=0;self._control_received=0;self._unknown_received=0
+  self._unknown_types={}
   self._processing_ns={k:deque(maxlen=2048) for k in ("BAR","TRADE","STATUS","OTHER")}
 
  @staticmethod
@@ -53,6 +54,7 @@ class WebSocketRuntime:
           "market_data_received":self._market_data_received,
           "known_control_received":self._control_received,
           "unknown_nonmarket_received":self._unknown_received,
+          "unknown_nonmarket_types":dict(self._unknown_types),
           "capture":self.epoch_capture.snapshot() if self.epoch_capture else None,
           "dispatch_queue":{"limit":self.dispatch_queue_max,
                             "depth":self._queue_depth,
@@ -68,7 +70,11 @@ class WebSocketRuntime:
   kind=msg.get("T")
   if kind in {"b","t","s"}:self._market_data_received+=1
   elif kind in {"subscription","success"}:self._control_received+=1
-  else:self._unknown_received+=1
+  else:
+   self._unknown_received+=1
+   label=kind if isinstance(kind,str) and 0<len(kind)<=32 and kind.isascii() and kind.isalnum() else "INVALID_TYPE"
+   if label not in self._unknown_types and len(self._unknown_types)>=8:label="OTHER_TYPES"
+   self._unknown_types[label]=self._unknown_types.get(label,0)+1
  async def _receive_queued(self,ws,initial_messages=()):
   # Exactly one ordered consumer. The receiver never waits for synchronous
   # REST/Redis processing; full queue is a fatal disconnect, never a drop.
@@ -177,6 +183,7 @@ class WebSocketRuntime:
     if self.epoch_capture:self.epoch_capture.start(self.connection_epoch)
     self._rx_started=time.monotonic();self._received=0;self._handled=0
     self._market_data_received=0;self._control_received=0;self._unknown_received=0
+    self._unknown_types={}
     for samples in self._processing_ns.values():samples.clear()
     self.connected_event.set()  # Means authenticated + subscription ACK verified, not merely TCP-open.
     if self.on_subscription_ack:self.on_subscription_ack(self.connection_epoch)
@@ -238,6 +245,7 @@ class WebSocketRuntime:
     "market_data_received":before["market_data_received"],
     "known_control_received":before["known_control_received"],
     "unknown_nonmarket_received":before["unknown_nonmarket_received"],
+    "unknown_nonmarket_types":before["unknown_nonmarket_types"],
     "received_not_confirmed_handled":max(0,before["received"]-before["handled"]),
     "dispatch_queue":before["dispatch_queue"],
     "capture_before_teardown":before["capture"],
