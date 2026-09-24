@@ -8,6 +8,8 @@ on:
       - 'ndr_backtest/test_ehr_g5_web_pilot.py'
       - 'ndr_backtest/ehr_g5_preflight.py'
       - 'ndr_backtest/ndr_backtest_service.py'
+      - 'ndr_backtest/independent_priority_radar.py'
+      - 'ndr_backtest/test_ehr_g5_actual_entrypoint.py'
       - '.github/workflows/ehr-g5-tests.yml'
   workflow_dispatch:
 jobs:
