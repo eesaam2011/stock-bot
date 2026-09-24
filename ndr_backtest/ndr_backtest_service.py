@@ -1775,5 +1775,10 @@ def phase4_start():
     })
 
 
+
+# EHR G5 routes are inert unless EHR_G5_ENABLED=1; no automatic collection.
+from ehr_g5_web_pilot import register as register_ehr_g5
+register_ehr_g5(app, authorized)
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
