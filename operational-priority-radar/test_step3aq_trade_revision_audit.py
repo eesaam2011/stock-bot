@@ -17,7 +17,7 @@ def cancel(i=1, **kw):
 
 
 def correction(**kw):
-    item = {'T':'c','S':'AAPL','t':TIME,'oi':1,'op':10.5,'os':100,'oc':[],'ci':2,'cp':11.0,'cs':80,'cc':[]}
+    item = {'T':'c','S':'AAPL','t':TIME,'x':'V','z':'C','oi':1,'op':10.5,'os':100,'oc':[],'ci':2,'cp':11.0,'cs':80,'cc':[]}
     item.update(kw)
     return item
 
@@ -35,11 +35,22 @@ class TestAudit(unittest.TestCase):
     def test_correct_then_cancel_new_identity(self):
         self.assertEqual(self.inspect([trade(),correction(),cancel(2,p=11.0,s=80)])['active_trade_ids'],0)
 
+    def test_documented_error_action_and_conditions(self):
+        original = trade(i=52983525033527, c=[' ', '7'], x='M', z='B')
+        revised = correction(oi=52983525033527, ci=52983525034326,
+                             oc=[' ', '7'], cc=['@'], x='M', z='B')
+        error = cancel(52983525034326, p=11.0, s=80, x='M', z='B', a='E')
+        result = self.inspect([original, revised, error])
+        self.assertEqual((result['correction_frames'], result['cancel_frames'],
+                          result['active_trade_ids']), (1, 1, 0))
+
     def test_missing_duplicate_conflict_and_scope(self):
         cases = ([cancel()],[correction()],[trade(),trade()],[trade(),cancel(),cancel()],
                  [trade(),cancel(p=9)],[trade(),correction(op=9)],[trade(S='MSFT')],
                  [trade(t='yesterday')],[trade(p=float('nan'))],[trade(),correction(ci=1)],
-                 [trade(),correction(cc='bad')],[trade(),cancel(a='')])
+                 [trade(),correction(cc='bad')],[trade(),cancel(a='')],
+                 [trade(),cancel(a='UNKNOWN')],[trade(),correction(x='Q')],
+                 [trade(),correction(z='A')],[trade(),correction(oc=['X'])])
         for rows in cases:
             with self.subTest(rows=rows), self.assertRaises(RevisionAuditError):
                 self.inspect(rows)

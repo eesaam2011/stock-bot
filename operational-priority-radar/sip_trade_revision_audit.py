@@ -52,7 +52,7 @@ def audit_trade_revisions(frames, *, symbol, max_frames=4096, max_ids=4096):
             if len(seen) >= max_ids:
                 raise RevisionAuditError('TRADE_ID_LIMIT')
             seen.add(trade_id)
-            active[trade_id] = (frame['p'], frame['s'], frame['x'], frame['z'], frame['c'])
+            active[trade_id] = (frame['p'], frame['s'], frame['x'], frame['z'], tuple(frame['c']))
         else:
             trade_id = frame.get('i' if kind == 'x' else 'oi')
             if not _integer(trade_id) or trade_id not in active:
@@ -63,18 +63,23 @@ def audit_trade_revisions(frames, *, symbol, max_frames=4096, max_ids=4096):
             if not _number(price) or not _integer(size) or (price, size) != original[:2]:
                 raise RevisionAuditError('ORIGINAL_CONFLICT')
             if kind == 'x':
-                if frame.get('x') != original[2] or frame.get('z') != original[3] or not isinstance(frame.get('a'), str) or not frame['a']:
+                if frame.get('x') != original[2] or frame.get('z') != original[3] or frame.get('a') not in ('C', 'E'):
                     raise RevisionAuditError('CANCEL_SCHEMA')
                 del active[trade_id]
             else:
                 corrected_id = frame.get('ci')
-                if frame.get('oc') != original[4] or not _integer(corrected_id) or corrected_id in seen or not _number(frame.get('cp')) or not _integer(frame.get('cs')) or not isinstance(frame.get('cc'), list) or not all(isinstance(x, str) for x in frame['cc']):
+                if (not isinstance(frame.get('oc'), list) or tuple(frame['oc']) != original[4]
+                        or frame.get('x') != original[2] or frame.get('z') != original[3]
+                        or not _integer(corrected_id) or corrected_id in seen
+                        or not _number(frame.get('cp')) or not _integer(frame.get('cs'))
+                        or not isinstance(frame.get('cc'), list)
+                        or not all(isinstance(x, str) for x in frame['cc'])):
                     raise RevisionAuditError('CORRECTION_SCHEMA')
                 if len(seen) >= max_ids:
                     raise RevisionAuditError('TRADE_ID_LIMIT')
                 seen.add(corrected_id)
                 del active[trade_id]
-                active[corrected_id] = (frame['cp'], frame['cs'], original[2], original[3], frame['cc'])
+                active[corrected_id] = (frame['cp'], frame['cs'], original[2], original[3], tuple(frame['cc']))
         counts[kind] += 1
         digest.update(json.dumps(frame, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode())
         digest.update(b'\n')
