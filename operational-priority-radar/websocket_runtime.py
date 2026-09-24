@@ -2,11 +2,16 @@ import asyncio,json,time
 from collections import deque
 
 class WebSocketProtocolError(RuntimeError):pass
+class SIPErrorFrame(WebSocketProtocolError):
+ def __init__(self,code,message):
+  self.code=code
+  super().__init__(f"ALPACA_WS_ERROR_{code}:{message}")
 
 class WebSocketRuntime:
- def __init__(self,connector,protocol,on_message,on_disconnect,epoch_capture=None,dispatch_queue_max=0):
+ def __init__(self,connector,protocol,on_message,on_disconnect,epoch_capture=None,dispatch_queue_max=0,on_subscription_ack=None):
   self.connector=connector;self.protocol=protocol;self.on_message=on_message;self.on_disconnect=on_disconnect
   self.epoch_capture=epoch_capture
+  self.on_subscription_ack=on_subscription_ack
   if not isinstance(dispatch_queue_max,int) or dispatch_queue_max<0 or dispatch_queue_max>100000:
    raise ValueError("invalid dispatch queue limit")
   self.dispatch_queue_max=dispatch_queue_max
@@ -29,7 +34,7 @@ class WebSocketRuntime:
   msgs=self._decode(raw)
   for m in msgs:
    if m.get("T")=="error":
-    raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{m.get('code')}:{m.get('msg')}")
+    raise SIPErrorFrame(m.get('code'),m.get('msg'))
   return msgs
 
  @staticmethod
@@ -72,7 +77,7 @@ class WebSocketRuntime:
   worker=asyncio.create_task(consumer())
   def enqueue(msg):
    if msg.get("T")=="error":
-    raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
+    raise SIPErrorFrame(msg.get('code'),msg.get('msg'))
    if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
    self._received+=1
    try:q.put_nowait({**msg,"_sip_epoch":self.connection_epoch})
@@ -110,6 +115,7 @@ class WebSocketRuntime:
    await asyncio.gather(worker,return_exceptions=True)
    self._queue_depth=0
  async def run_once(self,url,key,secret,symbols):
+  sip_error_frame_code=None
   self.connected_event.clear();self.subscription_stats={};self.last_error=None
   self._queue_depth=0;self._queue_high_water=0;self._queue_overflows=0
   # Pre-ACK failure must never inherit prior epoch throughput evidence.
@@ -154,6 +160,7 @@ class WebSocketRuntime:
     self._rx_started=time.monotonic();self._received=0;self._handled=0
     for samples in self._processing_ns.values():samples.clear()
     self.connected_event.set()  # Means authenticated + subscription ACK verified, not merely TCP-open.
+    if self.on_subscription_ack:self.on_subscription_ack(self.connection_epoch)
     if self.dispatch_queue_max:
      await self._receive_queued(ws,initial_messages)
      return
@@ -168,7 +175,7 @@ class WebSocketRuntime:
     async for raw in ws:
      if self.stopping:break
      for msg in self._decode(raw):
-      if msg.get("T")=="error":raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
+      if msg.get("T")=="error":raise SIPErrorFrame(msg.get('code'),msg.get('msg'))
       kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
       self._received+=1;start_ns=time.monotonic_ns()
       try:
@@ -179,6 +186,7 @@ class WebSocketRuntime:
     if not self.stopping:
      raise WebSocketProtocolError("SIP_STREAM_EOF_UNTRUSTED")
   except Exception as exc:
+   if isinstance(exc,SIPErrorFrame):sip_error_frame_code=exc.code
    self.last_error=f"{type(exc).__name__}:{exc}"
    raise
   finally:
@@ -192,7 +200,7 @@ class WebSocketRuntime:
     failure="DISPATCH_QUEUE_OVERFLOW"
    elif "SIP_CAPTURE_OVERFLOW_FAIL_CLOSED" in err:
     failure="CAPTURE_OVERFLOW"
-   elif "ALPACA_WS_ERROR_407" in err:
+   elif sip_error_frame_code==407:
     failure="SIP_ERROR_FRAME_407"
    elif "SIP_STREAM_EOF_UNTRUSTED" in err:
     failure="STREAM_EOF"

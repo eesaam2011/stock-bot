@@ -29,6 +29,7 @@ from sip_semantic_digest import (
 
 
 SCHEMA = "OPR_LIVE_SIP_SOAK_EVIDENCE_V1"
+RECONNECT_SCHEMA = "OPR_LIVE_SIP_RECONNECT_PROBE_V1"
 
 
 class LiveSIPSoakBlocked(RuntimeError):
@@ -383,6 +384,116 @@ async def run_live_soak(*, duration_sec, max_symbols, output_path,
     return evidence
 
 
+async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
+                                   env=os.environ, connector=None,
+                                   symbols_override=None):
+    """Read-only reconnection diagnostic; each ACK starts a fresh capture epoch.
+
+    A disconnected epoch can never be merged into the next one without a
+    separate historical gap proof. Therefore this probe never asserts session
+    coverage, continuity, DIRECT, or canonical recovery.
+    """
+    if type(duration_sec) is not int or not 60 <= duration_sec <= 28800:
+        raise LiveSIPSoakBlocked("DURATION_MUST_BE_60_TO_28800_SECONDS")
+    if type(max_symbols) is not int or not 1 <= max_symbols <= 12000:
+        raise LiveSIPSoakBlocked("MAX_SYMBOLS_MUST_BE_1_TO_12000")
+    key, secret = _require_live_gate(env)
+    if connector is None:
+        import websockets
+        connector = websockets.connect
+    if symbols_override is None:
+        rest = AlpacaREST(AlpacaCredentials(key, secret))
+        symbols = (await asyncio.to_thread(build_operational_universe, rest))[:max_symbols]
+    else:
+        symbols = list(symbols_override)[:max_symbols]
+    if not symbols or len(set(symbols)) != len(symbols):
+        raise LiveSIPSoakBlocked("OPERATIONAL_UNIVERSE_INVALID")
+    capture = BoundedEpochCapture(max_messages=4096, max_bytes=8 * 1024 * 1024)
+    epochs = []
+    current = None
+    drain = None
+    runtime = None
+    stopped_for_safety = False
+
+    def on_ack(epoch):
+        nonlocal current, drain
+        if len(epochs) >= 128:
+            runtime.stop()
+            return
+        ledger = PayloadFreeLedger()
+        drain = BoundedSIPDrainCoordinator(
+            capture, _MetricsLeadership(), ledger.reconcile, batch_size=256)
+        current = {"epoch": epoch, "subscription_ack_at": datetime.now(timezone.utc).isoformat(),
+                   "ledger": ledger, "drain": drain}
+        epochs.append(current)
+
+    async def on_message(_message):
+        if capture.phase == capture.CAPTURING:
+            capture.begin_drain(runtime.connection_epoch)
+        drain.drain_available(runtime.connection_epoch, max_batches=16)
+
+    async def on_disconnect():
+        nonlocal current, stopped_for_safety
+        if current is None:
+            return
+        terminal = runtime.last_epoch_diagnostic
+        current["terminal"] = terminal
+        current["metrics_acked"] = current["ledger"].last_sequence or 0
+        current["ledger"] = current["ledger"].snapshot()
+        current.pop("drain")
+        current = None
+        if terminal["failure_class"] in {"CAPTURE_OVERFLOW", "DISPATCH_QUEUE_OVERFLOW"}:
+            stopped_for_safety = True
+            runtime.stop()
+
+    runtime = WebSocketRuntime(
+        connector, AlpacaSIPProtocol, on_message, on_disconnect,
+        epoch_capture=capture, dispatch_queue_max=1024,
+        on_subscription_ack=on_ack)
+    started = datetime.now(timezone.utc).isoformat()
+    worker = asyncio.create_task(runtime.reconnect_loop(
+        SIP_STREAM_URL, key, secret, symbols))
+    timer = asyncio.create_task(asyncio.sleep(duration_sec))
+    worker_error = None
+    try:
+        done, _ = await asyncio.wait({worker, timer}, return_when=asyncio.FIRST_COMPLETED)
+        if worker in done:
+            worker.result()
+    except Exception as exc:
+        worker_error = f"{type(exc).__name__}:{exc}"
+    finally:
+        runtime.stop()
+        timer.cancel()
+        worker.cancel()
+        await asyncio.gather(timer, worker, return_exceptions=True)
+    exact = bool(epochs) and all(
+        row.get("terminal", {}).get("subscription_ack_verified")
+        and row["terminal"]["received"] == row["terminal"]["handled"]
+        == row["metrics_acked"] == row["ledger"]["last_sequence"]
+        and row["ledger"]["first_sequence"] == (1 if row["metrics_acked"] else None)
+        and row["terminal"]["dispatch_queue"]["overflows"] == 0
+        and row["terminal"]["capture_before_teardown"]["invalid_reason"] is None
+        for row in epochs)
+    body = {
+        "schema": RECONNECT_SCHEMA, "started_at": started,
+        "ended_at": datetime.now(timezone.utc).isoformat(),
+        "duration_requested_sec": duration_sec, "symbols_count": len(symbols),
+        "subscription_ack_epochs": len(epochs), "reconnect_ack_observed": len(epochs) > 1,
+        "each_recorded_epoch_exact": exact,
+        "stopped_for_safety": stopped_for_safety,
+        "worker_error": worker_error, "epochs": epochs,
+        "full_session_coverage_proven": False, "continuity_proven": False,
+        "direct_handoff_authorized": False, "retroactive_entries_allowed": False,
+        "production_leadership_proven": False,
+    }
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    body["evidence_sha256"] = hashlib.sha256(canonical.encode()).hexdigest()
+    with open(output_path, "w", encoding="utf-8") as fh:
+        json.dump(body, fh, indent=2, sort_keys=True, ensure_ascii=False)
+        fh.write("\n")
+    return body
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration-sec", type=int, default=1800)
@@ -390,7 +501,20 @@ def main():
     parser.add_argument("--output", default="LIVE_SIP_SOAK_EVIDENCE.json")
     parser.add_argument("--session-start-utc")
     parser.add_argument("--session-end-utc")
+    parser.add_argument("--reconnect-probe", action="store_true")
     args = parser.parse_args()
+    if args.reconnect_probe:
+        if args.session_start_utc or args.session_end_utc:
+            parser.error("reconnect probe cannot attest full-session coverage")
+        evidence = asyncio.run(run_live_reconnect_probe(
+            duration_sec=args.duration_sec, max_symbols=args.max_symbols,
+            output_path=args.output))
+        print(json.dumps({"schema": evidence["schema"],
+                          "subscription_ack_epochs": evidence["subscription_ack_epochs"],
+                          "reconnect_ack_observed": evidence["reconnect_ack_observed"],
+                          "each_recorded_epoch_exact": evidence["each_recorded_epoch_exact"],
+                          "evidence_sha256": evidence["evidence_sha256"]}, sort_keys=True))
+        return
     evidence = asyncio.run(run_live_soak(
         duration_sec=args.duration_sec,
         max_symbols=args.max_symbols,
