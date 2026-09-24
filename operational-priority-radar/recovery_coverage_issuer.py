@@ -114,6 +114,10 @@ def issue_recovery_commit_permit(transport_audit, semantic_evidence,
         if semantic_evidence.get(key) != expected:
             raise RecoveryCoverageIssuerUnsafe(
                 "ISSUER_SEMANTIC_REQUIREMENT_FAILED:" + key)
+    if (semantic_evidence.get("worker_instance_id") != worker
+            or semantic_evidence.get("leader_generation") != generation):
+        raise RecoveryCoverageIssuerUnsafe(
+            "ISSUER_SEMANTIC_LEADERSHIP_MISMATCH")
 
     session = semantic_evidence.get("session")
     if not isinstance(session, str) or not session:

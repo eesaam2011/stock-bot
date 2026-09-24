@@ -132,8 +132,8 @@ def documents():
 
 @dataclass(frozen=True)
 class Token:
-    worker_instance_id: str = "W2"
-    leader_generation: int = 9
+    worker_instance_id: str = "W"
+    leader_generation: int = 3
 
 
 class TestSemanticSessionReconciliation(unittest.TestCase):
@@ -149,6 +149,15 @@ class TestSemanticSessionReconciliation(unittest.TestCase):
         self.assertFalse(permit["direct_handoff_authorized"])
         self.assertFalse(permit["shadow_deploy_authorized"])
         self.assertFalse(permit["retroactive_entries_allowed"])
+
+    def test_disposition_leadership_must_equal_permit_leadership(self):
+        docs = documents()
+        evidence = assemble_semantic_session_reconciliation(*docs)
+        with self.assertRaisesRegex(Exception, "LEADERSHIP_MISMATCH"):
+            issue_recovery_commit_permit(
+                docs[0], evidence,
+                Token(worker_instance_id="other", leader_generation=4),
+                SYMBOLS)
 
     def test_each_component_digest_is_mandatory(self):
         for index, field in ((1, "received"), (2, "native_1m_rows"),

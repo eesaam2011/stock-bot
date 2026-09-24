@@ -52,6 +52,8 @@ def transport():
 def semantic():
     body = {
         "schema": SEMANTIC_SCHEMA,
+        "worker_instance_id": "W",
+        "leader_generation": 4,
         "session": "2026-09-24",
         "session_start_utc": "2026-09-24T13:30:00+00:00",
         "session_end_utc": "2026-09-24T20:00:00+00:00",
@@ -164,6 +166,15 @@ class TestRecoveryCoverageIssuer(unittest.TestCase):
             validate_recovery_commit_permit(
                 permit, worker_instance_id="SUCCESSOR", leader_generation=5,
                 session="2026-09-24", symbols=SYMBOLS)
+
+    def test_semantic_disposition_leadership_must_be_current(self):
+        evidence = semantic()
+        evidence["leader_generation"] = 3
+        evidence = resign(evidence)
+        with self.assertRaisesRegex(
+                RecoveryCoverageIssuerUnsafe, "LEADERSHIP_MISMATCH"):
+            issue_recovery_commit_permit(
+                transport(), evidence, Token(), SYMBOLS)
 
 
 if __name__ == "__main__":

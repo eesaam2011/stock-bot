@@ -132,6 +132,12 @@ def assemble_semantic_session_reconciliation(
     symbol_count = validation.get("symbol_count")
     symbols_sha = validation.get("symbols_sha256")
     received = validation.get("received")
+    worker = trade_status_disposition.get("worker_instance_id")
+    generation = trade_status_disposition.get("leader_generation")
+    if (not isinstance(worker, str) or not worker
+            or type(generation) is not int or generation < 1):
+        raise SemanticSessionReconciliationUnsafe(
+            "SEMANTIC_RECONCILIATION_LEADERSHIP_INVALID")
     common = (session, start, end)
     for document in (native, bar_proof, trade_status_disposition):
         if tuple(document.get(key) for key in (
@@ -192,6 +198,8 @@ def assemble_semantic_session_reconciliation(
         "native_aggregate_evidence_sha256": native_sha,
         "bar_reconciliation_sha256": bar_sha,
         "trade_status_disposition_sha256": disposition_sha,
+        "worker_instance_id": worker,
+        "leader_generation": generation,
         "epoch": epoch,
         "received": received,
         "handled": received,
