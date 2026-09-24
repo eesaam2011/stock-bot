@@ -27,6 +27,11 @@ def after_close(now=None):
 
 def register(app, authorized):
     from flask import jsonify, request
+    @app.get("/ehr-g5")
+    def ehr_g5_page():
+        from flask import send_file
+        return send_file(Path(__file__).with_name("ehr_g5_pilot_page.html"), mimetype="text/html")
+
     @app.get("/ehr-g5/status")
     def ehr_g5_status():
         if not authorized():
