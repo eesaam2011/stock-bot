@@ -33,7 +33,7 @@ class TestTerminalForensics(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(d['capture_before_teardown']['invalid_reason'],'CAPTURE_OVERFLOW')
   self.assertEqual(d['capture_before_teardown']['phase'],'INVALID')
   self.assertEqual(r['capture']['invalid_reason'],'SIP_DISCONNECTED')
-  self.assertEqual(d['received'],4096)
+  self.assertEqual(d['received'],4097)  # receipt precedes capture acceptance
  async def test_synthetic_407_exception_not_mislabeled_alpaca(self):
   r=await run_case(symbols=8,cycles=1,frame_size=8,pacing=True,
                    preseed=False,final_error=RuntimeError('407 synthetic only'))

@@ -27,7 +27,7 @@ class TestIntegratedWebSocketBurst(unittest.IsolatedAsyncioTestCase):
   r=await run_case(symbols=500,cycles=10,frame_size=64,pacing=True,preseed=False)
   self.assertIn("SIP_CAPTURE_OVERFLOW_FAIL_CLOSED",r["error"])
   self.assertEqual(r["dispatch_queue"]["overflows"],0)
-  self.assertEqual(r["received"],4096)
+  self.assertEqual(r["received"],4097)  # includes the rejected overflow message
   self.assertEqual(r["disconnects"],[{"ack_cleared":True,"capture_invalid":True}])
   self.assertFalse(r["shadow_deploy_authorized"])
  async def test_continuous_bounded_drain_handles_more_than_capture_capacity(self):

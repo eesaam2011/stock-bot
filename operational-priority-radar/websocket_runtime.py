@@ -93,9 +93,9 @@ class WebSocketRuntime:
   def enqueue(msg):
    if msg.get("T")=="error":
     raise SIPErrorFrame(msg.get('code'),msg.get('msg'))
-   if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
    self._received+=1
    self._record_kind(msg)
+   if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
    try:q.put_nowait({**msg,"_sip_epoch":self.connection_epoch})
    except asyncio.QueueFull:
     self._queue_overflows+=1
@@ -219,7 +219,8 @@ class WebSocketRuntime:
   finally:
    # Capture's terminal reason is overwritten by SIP_DISCONNECTED during
    # cleanup. Retain bounded cause and queue evidence before invalidation.
-   # No event payloads, symbols, credentials, or secrets are retained.
+   # A bounded allowlisted revision diagnostic may contain symbol/trade fields.
+   # Authentication payloads and arbitrary unknown fields are never retained.
    self.connected_event.clear()
    before=self.performance_snapshot()
    err=self.last_error or ""
