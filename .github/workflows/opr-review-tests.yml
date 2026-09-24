@@ -123,7 +123,7 @@ jobs:
           assert a["processing_ms"]["BAR"]["p95"] is not None
           assert b["dispatch_queue"]["high_water"]==1024
           assert "SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED" in b["error"]
-          assert c["received"]==4096
+          assert c["received"]==4097  # includes the frame rejected by capture
           assert "SIP_CAPTURE_OVERFLOW_FAIL_CLOSED" in c["error"]
           assert q["offered_messages"]==5000==q["received"]==q["handled"]
           assert q["reconciled_sequences"]==5000
