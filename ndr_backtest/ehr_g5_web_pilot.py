@@ -55,8 +55,20 @@ def register(app, authorized):
             path = folder / "private_requirements.json"
             if len(data.get("requirements", [])) != 583:
                 raise ValueError("wrong_cohort")
-            atomic_json(path, data)
-            manifest = verify(path)
+            # Do not leave a partial/invalid cohort file behind.
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", dir=folder, prefix=".ehr_g5_", suffix=".json", delete=False) as tmp:
+                json.dump(data, tmp, separators=(",", ":"))
+                candidate = Path(tmp.name)
+            try:
+                manifest = verify(candidate)
+                with _lock:
+                    if _thread and _thread.is_alive():
+                        candidate.unlink(missing_ok=True)
+                        return jsonify({"ok": False, "error": "pilot_running"}), 409
+                    os.replace(candidate, path)
+            finally:
+                candidate.unlink(missing_ok=True)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             return jsonify({"ok": False, "error": "invalid_requirements",
                             "error_type": type(exc).__name__}), 422
