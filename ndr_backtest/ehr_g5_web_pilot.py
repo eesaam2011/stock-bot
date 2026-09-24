@@ -35,6 +35,56 @@ def register(app, authorized):
             return jsonify(dict(_state, enabled=os.getenv("EHR_G5_ENABLED") == "1",
                                 after_close=after_close()))
 
+
+    @app.post("/ehr-g5/requirements")
+    def ehr_g5_requirements():
+        if not authorized():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        if os.getenv("EHR_G5_ENABLED") != "1":
+            return jsonify({"ok": False, "error": "disabled"}), 403
+        if not after_close():
+            return jsonify({"ok": False, "error": "outside_after_close_window"}), 409
+        raw = request.get_data(cache=False)
+        if not raw or len(raw) > 1024 * 1024:
+            return jsonify({"ok": False, "error": "invalid_upload_size"}), 413
+        try:
+            from ehr_g5_preflight import verify
+            data = json.loads(raw)
+            folder = Path(os.getenv("EHR_G5_OUTPUT_DIR", "/tmp/ehr_g5_pilot"))
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / "private_requirements.json"
+            if len(data.get("requirements", [])) != 583:
+                raise ValueError("wrong_cohort")
+            atomic_json(path, data)
+            manifest = verify(path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return jsonify({"ok": False, "error": "invalid_requirements",
+                            "error_type": type(exc).__name__}), 422
+        return jsonify({"ok": True, "cases": manifest["cases"],
+                        "symbols": manifest["symbols"],
+                        "requirements_sha256": manifest["file_sha256"],
+                        "ephemeral_storage": True})
+
+    @app.get("/ehr-g5/download")
+    def ehr_g5_download():
+        if not authorized():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from flask import send_file
+        import io
+        import zipfile
+        with _lock:
+            if _state.get("status") not in ("COMPLETED", "PARTIAL"):
+                return jsonify({"ok": False, "error": "pilot_not_finished"}), 409
+        folder = Path(os.getenv("EHR_G5_OUTPUT_DIR", "/tmp/ehr_g5_pilot"))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            for path in sorted(folder.glob("*.json")):
+                if path.name != "private_requirements.json" and path.stat().st_size < 2000000:
+                    z.write(path, path.name)
+        buf.seek(0)
+        return send_file(buf, mimetype="application/zip", as_attachment=True,
+                         download_name="ehr_g5_pilot_sip.zip")
+
     @app.post("/ehr-g5/start")
     def ehr_g5_start():
         global _thread
@@ -47,8 +97,8 @@ def register(app, authorized):
         # Protect the existing web service: a single bounded three-symbol pilot.
         # A full 376-symbol run is deliberately not exposed until durable storage,
         # distributed locking and resource measurements have been verified.
-        path = os.getenv("EHR_G5_REQUIREMENTS_PATH", "")
-        out = os.getenv("EHR_G5_OUTPUT_DIR", "")
+        path = os.getenv("EHR_G5_REQUIREMENTS_PATH") or str(Path(os.getenv("EHR_G5_OUTPUT_DIR", "/tmp/ehr_g5_pilot")) / "private_requirements.json")
+        out = os.getenv("EHR_G5_OUTPUT_DIR", "/tmp/ehr_g5_pilot")
         if not path or not out or not os.path.isabs(out):
             return jsonify({"ok": False, "error": "private_requirements_or_output_not_configured"}), 503
         if not os.getenv("ALPACA_API_KEY") or not os.getenv("ALPACA_SECRET_KEY"):
