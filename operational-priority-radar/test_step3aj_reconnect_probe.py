@@ -13,6 +13,7 @@ from websocket_runtime import SIPErrorFrame, WebSocketRuntime
 class FakeSocket:
     def __init__(self, number):
         self.number = number
+        self.sent_trade = False
         self.frames = iter([
             json.dumps([{"T": "success", "msg": "connected"}]),
             json.dumps([{"T": "success", "msg": "authenticated"}]),
@@ -36,7 +37,13 @@ class FakeSocket:
         return self
 
     async def __anext__(self):
+        if not self.sent_trade:
+            self.sent_trade = True
+            return json.dumps([{"T": "t", "S": "AAPL",
+                                "t": "2026-09-24T13:30:01Z", "p": 10.0,
+                                "s": 1}])
         if self.number == 1:
+            await asyncio.sleep(0.03)
             raise TimeoutError("sent 1011 keepalive ping timeout")
         await asyncio.Future()
 
@@ -65,6 +72,13 @@ class TestReconnectProbe(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads((Path(folder) / "evidence.json").read_text()), proof)
         self.assertGreaterEqual(len(connections), 2)
         self.assertTrue(proof["reconnect_ack_observed"])
+        self.assertTrue(proof["each_recorded_epoch_exact"])
+        self.assertEqual([row["terminal"]["received"] for row in proof["epochs"]], [1, 1])
+        self.assertEqual([row["metrics_acked"] for row in proof["epochs"]], [1, 1])
+        self.assertEqual([row["ledger"]["first_sequence"] for row in proof["epochs"]], [1, 1])
+        self.assertEqual(proof["epochs"][1]["previous_disconnect_at"],
+                         proof["epochs"][0]["disconnected_at"])
+        self.assertGreater(proof["epochs"][1]["previous_disconnect_to_ack_ms"], 0)
         self.assertEqual(proof["epochs"][0]["terminal"]["failure_class"],
                          "OTHER_OR_CANCELLED")
         self.assertFalse(proof["full_session_coverage_proven"])

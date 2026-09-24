@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -414,6 +415,8 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
     drain = None
     runtime = None
     stopped_for_safety = False
+    previous_disconnect_at = None
+    previous_disconnect_monotonic = None
 
     def on_ack(epoch):
         nonlocal current, drain
@@ -424,6 +427,10 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
         drain = BoundedSIPDrainCoordinator(
             capture, _MetricsLeadership(), ledger.reconcile, batch_size=256)
         current = {"epoch": epoch, "subscription_ack_at": datetime.now(timezone.utc).isoformat(),
+                   "previous_disconnect_at": previous_disconnect_at,
+                   "previous_disconnect_to_ack_ms": (
+                       round((time.monotonic() - previous_disconnect_monotonic) * 1000, 3)
+                       if previous_disconnect_monotonic is not None else None),
                    "ledger": ledger, "drain": drain}
         epochs.append(current)
 
@@ -434,8 +441,12 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
 
     async def on_disconnect():
         nonlocal current, stopped_for_safety
+        nonlocal previous_disconnect_at, previous_disconnect_monotonic
         if current is None:
             return
+        previous_disconnect_at = datetime.now(timezone.utc).isoformat()
+        previous_disconnect_monotonic = time.monotonic()
+        current["disconnected_at"] = previous_disconnect_at
         terminal = runtime.last_epoch_diagnostic
         current["terminal"] = terminal
         current["metrics_acked"] = current["ledger"].last_sequence or 0

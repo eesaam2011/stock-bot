@@ -6,4 +6,6 @@
 
 التجربة للقراءة فقط. أي انقطاع يفتح فجوة تاريخية لم تثبت تسويتها؛ لذلك تبقى `continuity_proven` و`full_session_coverage_proven` و`direct_handoff_authorized` و`retroactive_entries_allowed` و`production_leadership_proven` جميعًا false، حتى بعد ACK جديد. لا تصل الأداة بـRedis أو إنتاج E/B. نجاح الاختبار الاصطناعي لا يثبت التعافي في جلسة Alpaca الفعلية، ولا سبب مهلة Ping.
 
+يسجل الاختبار وقت الانقطاع، ووقت ACK اللاحق، والمدة المقاسة بساعة monotonic بينهما، مع إعادة بدء تسلسل الرسائل من 1 لكل حقبة. هذه حدود نافذة الاسترجاع المرصودة، وليست إثباتًا لاكتمال بيانات السوق المفقودة فيها. مسار `ProductionStartupRecovery` الحالي يعيد `gap_recovered=false` و`continuity_verified=False` صراحةً؛ يحتاج إثبات REST/SIP مستقل قبل أي ترقية للثقة.
+
 التشغيل الميداني يحتاج اعتمادًا محفوظًا في بيئة التنفيذ، والبوابة الموجودة `OPR_LIVE_SIP_SOAK=I_UNDERSTAND_READ_ONLY_SIP`. مثال: `python live_sip_soak.py --reconnect-probe --duration-sec 1800 --max-symbols 12000 --output /tmp/OPR_STEP3AJ_RECONNECT_EVIDENCE.json`. لا تستخدم خيارات session-start/end في هذا الوضع؛ لا يدعي شمول جلسة التداول. يلزم اختبار REST وتسوية فجوة الانقطاع بشكل مستقل قبل الادعاء بالاستمرارية أو تفعيل Shadow.
