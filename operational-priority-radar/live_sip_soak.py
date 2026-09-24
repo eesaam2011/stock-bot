@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -387,7 +388,8 @@ async def run_live_soak(*, duration_sec, max_symbols, output_path,
 
 async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
                                    env=os.environ, connector=None,
-                                   symbols_override=None):
+                                   symbols_override=None,
+                                   controlled_disconnect_after_sec=None):
     """Read-only reconnection diagnostic; each ACK starts a fresh capture epoch.
 
     A disconnected epoch can never be merged into the next one without a
@@ -398,6 +400,12 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
         raise LiveSIPSoakBlocked("DURATION_MUST_BE_60_TO_28800_SECONDS")
     if type(max_symbols) is not int or not 1 <= max_symbols <= 12000:
         raise LiveSIPSoakBlocked("MAX_SYMBOLS_MUST_BE_1_TO_12000")
+    if controlled_disconnect_after_sec is not None and (
+        type(controlled_disconnect_after_sec) is not int
+        or not 5 <= controlled_disconnect_after_sec <= 120
+        or duration_sec < controlled_disconnect_after_sec + 30
+    ):
+        raise LiveSIPSoakBlocked("CONTROLLED_DISCONNECT_WINDOW_INVALID")
     key, secret = _require_live_gate(env)
     if connector is None:
         import websockets
@@ -417,6 +425,34 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
     stopped_for_safety = False
     previous_disconnect_at = None
     previous_disconnect_monotonic = None
+    controlled_ack = asyncio.Event()
+    controlled_close_attempted = False
+    connection_attempts = 0
+
+    if controlled_disconnect_after_sec is not None:
+        underlying_connector = connector
+
+        @asynccontextmanager
+        async def controlled_connector(url):
+            nonlocal controlled_close_attempted, connection_attempts
+            connection_attempts += 1
+            async with underlying_connector(url) as ws:
+                closer = None
+                if connection_attempts == 1:
+                    async def close_first_connection():
+                        nonlocal controlled_close_attempted
+                        await controlled_ack.wait()
+                        await asyncio.sleep(controlled_disconnect_after_sec)
+                        controlled_close_attempted = True
+                        await ws.close(code=1000, reason="OPR_READ_ONLY_RECONNECT_PROBE")
+                    closer = asyncio.create_task(close_first_connection())
+                try:
+                    yield ws
+                finally:
+                    if closer is not None:
+                        closer.cancel()
+                        await asyncio.gather(closer, return_exceptions=True)
+        connector = controlled_connector
 
     def on_ack(epoch):
         nonlocal current, drain
@@ -433,6 +469,8 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
                        if previous_disconnect_monotonic is not None else None),
                    "ledger": ledger, "drain": drain}
         epochs.append(current)
+        if len(epochs) == 1:
+            controlled_ack.set()
 
     async def on_message(_message):
         if capture.phase == capture.CAPTURING:
@@ -492,6 +530,9 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
         "subscription_ack_epochs": len(epochs), "reconnect_ack_observed": len(epochs) > 1,
         "each_recorded_epoch_exact": exact,
         "stopped_for_safety": stopped_for_safety,
+        "controlled_disconnect_after_sec": controlled_disconnect_after_sec,
+        "controlled_close_attempted": controlled_close_attempted,
+        "connection_attempts": connection_attempts if controlled_disconnect_after_sec is not None else None,
         "worker_error": worker_error, "epochs": epochs,
         "full_session_coverage_proven": False, "continuity_proven": False,
         "direct_handoff_authorized": False, "retroactive_entries_allowed": False,
@@ -513,19 +554,23 @@ def main():
     parser.add_argument("--session-start-utc")
     parser.add_argument("--session-end-utc")
     parser.add_argument("--reconnect-probe", action="store_true")
+    parser.add_argument("--controlled-disconnect-after-sec", type=int)
     args = parser.parse_args()
     if args.reconnect_probe:
         if args.session_start_utc or args.session_end_utc:
             parser.error("reconnect probe cannot attest full-session coverage")
         evidence = asyncio.run(run_live_reconnect_probe(
             duration_sec=args.duration_sec, max_symbols=args.max_symbols,
-            output_path=args.output))
+            output_path=args.output,
+            controlled_disconnect_after_sec=args.controlled_disconnect_after_sec))
         print(json.dumps({"schema": evidence["schema"],
                           "subscription_ack_epochs": evidence["subscription_ack_epochs"],
                           "reconnect_ack_observed": evidence["reconnect_ack_observed"],
                           "each_recorded_epoch_exact": evidence["each_recorded_epoch_exact"],
                           "evidence_sha256": evidence["evidence_sha256"]}, sort_keys=True))
         return
+    if args.controlled_disconnect_after_sec is not None:
+        parser.error("controlled disconnect requires --reconnect-probe")
     evidence = asyncio.run(run_live_soak(
         duration_sec=args.duration_sec,
         max_symbols=args.max_symbols,

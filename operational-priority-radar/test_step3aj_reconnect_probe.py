@@ -49,6 +49,57 @@ class FakeSocket:
 
 
 class TestReconnectProbe(unittest.IsolatedAsyncioTestCase):
+    async def test_controlled_disconnect_invokes_actual_reconnect(self):
+        class ControlledSocket(FakeSocket):
+            def __init__(self, number):
+                super().__init__(number)
+                self.closed = asyncio.Event()
+
+            async def close(self, *, code, reason):
+                self.closed.set()
+
+            async def __anext__(self):
+                if not self.sent_trade:
+                    self.sent_trade = True
+                    return json.dumps([{"T": "t", "S": "AAPL",
+                                        "t": "2026-09-24T13:30:01Z",
+                                        "p": 10.0, "s": 1}])
+                if self.number == 1:
+                    await self.closed.wait()
+                    raise StopAsyncIteration
+                await asyncio.Future()
+
+        connections = []
+
+        def connector(url):
+            ws = ControlledSocket(len(connections) + 1)
+            connections.append(ws)
+            return ws
+
+        real_sleep = asyncio.sleep
+
+        async def short_probe_sleep(seconds):
+            return await real_sleep(1.25 if seconds == 60 else
+                                    0.03 if seconds == 5 else seconds)
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("live_sip_soak.asyncio.sleep", short_probe_sleep):
+                result = await run_live_reconnect_probe(
+                    duration_sec=60, max_symbols=1,
+                    controlled_disconnect_after_sec=5,
+                    output_path=str(Path(folder) / "evidence.json"),
+                    connector=connector, symbols_override=["AAPL"],
+                    env={"OPR_LIVE_SIP_SOAK": "I_UNDERSTAND_READ_ONLY_SIP",
+                         "APCA_API_KEY_ID": "test", "APCA_API_SECRET_KEY": "test"})
+        self.assertTrue(connections[0].closed.is_set())
+        self.assertTrue(result["controlled_close_attempted"])
+        self.assertTrue(result["reconnect_ack_observed"])
+        self.assertTrue(result["each_recorded_epoch_exact"])
+        self.assertEqual(result["epochs"][0]["terminal"]["failure_class"],
+                         "STREAM_EOF")
+        self.assertEqual([e["metrics_acked"] for e in result["epochs"]], [1, 1])
+        self.assertFalse(result["continuity_proven"])
+
     async def test_real_reconnect_loop_acknowledges_new_epoch_without_coverage(self):
         connections = []
 
