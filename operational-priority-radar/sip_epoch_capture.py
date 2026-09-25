@@ -46,6 +46,8 @@ class BoundedEpochCapture:
         self._items=deque();self._bytes=0;self._seq=0;self._acked_upto=0
         self._invalid_reason="NOT_STARTED"
         self._revision_diagnostic=None
+        from sip_original_trade_window import OriginalTradeWindow
+        self._original_trades=OriginalTradeWindow()
         # Trust gate uses capture.buffer.epoch to tie DIRECT to the ACK epoch.
         self.buffer=self
     @_locked
@@ -60,6 +62,7 @@ class BoundedEpochCapture:
     @_locked
     def invalidate(self,reason="DISCONNECT"):
         self._revision_diagnostic=None
+        self._original_trades.clear()
         self.phase=self.INVALID;self.epoch=None
         self._items.clear();self._bytes=0;self._acked_upto=0
         self._invalid_reason=reason
@@ -85,11 +88,14 @@ class BoundedEpochCapture:
             from sip_revision_diagnostic import revision_diagnostic
             diagnostic=revision_diagnostic(msg,epoch=epoch,
                 last_sequence=self._seq,acked_upto=self._acked_upto)
+            diagnostic["original_trade_lookup_performed"]=True
+            diagnostic["original_trade_evidence"]=self._original_trades.inspect(diagnostic["frame"])
             self.invalidate("SIP_TRADE_REVISION_UNRECONCILED")
             self._revision_diagnostic=diagnostic
             raise EpochCaptureError("SIP_TRADE_REVISION_UNRECONCILED")
         kind=self.TYPES.get(msg.get("T"))
         if kind is None:return None
+        self._original_trades.observe(msg)
         if self.phase==self.DIRECT:return None  # caller delivers directly after verified handoff
         ts=self._timestamp(msg)
         captured=received_at or datetime.now(timezone.utc)
