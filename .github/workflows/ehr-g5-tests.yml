@@ -4,7 +4,7 @@ on:
     paths:
       - 'ndr_backtest/ehr_g5_isolated_collector.py'
       - 'ndr_backtest/test_ehr_g5_isolated_collector.py'
-      - 'ndr_backtest/ehr_g5_web_pilot.py'
+      - 'ndr_backtest/ehr_g5_web_pilot.py'\n      - 'ndr_backtest/ehr_g5_batch25.py'\n      - 'ndr_backtest/test_ehr_g5_batch25.py'
       - 'ndr_backtest/test_ehr_g5_web_pilot.py'
       - 'ndr_backtest/ehr_g5_preflight.py'
       - 'ndr_backtest/ndr_backtest_service.py'
