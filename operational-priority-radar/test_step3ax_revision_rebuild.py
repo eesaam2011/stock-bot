@@ -10,7 +10,7 @@ from test_step3z_native_session_recovery_batches import REST,START,END,AS_OF
 def diagnostic():
     capture=BoundedEpochCapture();capture.start(1)
     capture.ingest(1,trade(t=START.isoformat()))
-    try:capture.ingest(1,cancel(t=END.isoformat()))
+    try:capture.ingest(1,cancel(t=END.isoformat()),received_at=END)
     except EpochCaptureError:pass
     return capture.snapshot()['revision_diagnostic']
 
@@ -35,6 +35,9 @@ class TestRevisionNativeRebuild(unittest.TestCase):
 
     def test_missing_original_cannot_fetch(self):
         value=diagnostic();value['original_trade_evidence']['matched_within_retained_window']=False
+        from sip_semantic_digest import canonical_sha256
+        value.pop('diagnostic_sha256')
+        value['diagnostic_sha256']=canonical_sha256(value)
         with self.assertRaisesRegex(RevisionRebuildUnsafe,'ORIGINAL'):self.call(value)
 
     def test_leadership_change_during_fetch(self):

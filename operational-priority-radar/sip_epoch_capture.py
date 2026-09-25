@@ -88,8 +88,15 @@ class BoundedEpochCapture:
             from sip_revision_diagnostic import revision_diagnostic
             diagnostic=revision_diagnostic(msg,epoch=epoch,
                 last_sequence=self._seq,acked_upto=self._acked_upto)
+            observed=received_at if received_at is not None else datetime.now(timezone.utc)
+            if not isinstance(observed,datetime) or observed.tzinfo is None:
+                self.invalidate("SIP_REVISION_RECEIVED_AT_INVALID")
+                raise EpochCaptureError("SIP_REVISION_RECEIVED_AT_INVALID")
+            diagnostic["received_at_utc"]=observed.astimezone(timezone.utc).isoformat()
             diagnostic["original_trade_lookup_performed"]=True
             diagnostic["original_trade_evidence"]=self._original_trades.inspect(diagnostic["frame"])
+            from sip_semantic_digest import canonical_sha256
+            diagnostic["diagnostic_sha256"]=canonical_sha256(diagnostic)
             self.invalidate("SIP_TRADE_REVISION_UNRECONCILED")
             self._revision_diagnostic=diagnostic
             raise EpochCaptureError("SIP_TRADE_REVISION_UNRECONCILED")

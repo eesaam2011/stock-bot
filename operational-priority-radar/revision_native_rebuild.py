@@ -21,6 +21,9 @@ def rebuild_revision_candidate(diagnostic, rest, leadership, *, session,
     value=deepcopy(diagnostic)
     if not isinstance(value, dict) or value.get('schema') != 'OPR_SIP_REVISION_DIAGNOSTIC_V1':
         raise RevisionRebuildUnsafe('REVISION_DIAGNOSTIC_INVALID')
+    expected=value.pop('diagnostic_sha256',None)
+    if not expected or canonical_sha256(value)!=expected:
+        raise RevisionRebuildUnsafe('REVISION_DIAGNOSTIC_DIGEST_INVALID')
     evidence=value.get('original_trade_evidence', {})
     if not isinstance(evidence, dict) or evidence.get('matched_within_retained_window') is not True:
         raise RevisionRebuildUnsafe('REVISION_ORIGINAL_UNPROVEN')
@@ -33,6 +36,9 @@ def rebuild_revision_candidate(diagnostic, rest, leadership, *, session,
     if pair['observed_frame_sha256'] != evidence.get('pair_sha256'):
         raise RevisionRebuildUnsafe('REVISION_PAIR_DIGEST_MISMATCH')
     start,end,cutoff=map(_utc,(session_start,session_end,as_of))
+    received=_utc(value.get('received_at_utc'))
+    if received > cutoff:
+        raise RevisionRebuildUnsafe('REVISION_RECEIVED_AFTER_REBUILD_CUTOFF')
     # Limit this API to same-session original trades; revision time is not
     # interpreted as original execution time or an affected-bar timestamp.
     if not start <= _utc(original['t']) < end <= cutoff or _utc(revision['t']) > cutoff:
@@ -56,6 +62,9 @@ def rebuild_revision_candidate(diagnostic, rest, leadership, *, session,
            'symbol':original['S'],'session':session,
            'worker_instance_id':before[0],'leader_generation':before[1],
            'revision_pair_sha256':pair['observed_frame_sha256'],
+           'revision_diagnostic_sha256':expected,
+           'revision_received_at_utc':received.isoformat(),
+           'rebuild_cutoff_utc':cutoff.isoformat(),
            'native_batch_evidence_sha256':native['batch_evidence_sha256'],
            'native_session_replayed':True,'signal_count':len(signals),
            'rest_revision_applied_proven':False,'sip_semantics_reconciled':False,
