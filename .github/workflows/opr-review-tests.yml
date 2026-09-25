@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis test_step3aa_real_redis test_step3ah_real_redis test_step3av_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
+          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis test_step3aa_real_redis test_step3ah_real_redis test_step3av_real_redis test_step3ba_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
       - name: Verify real Redis 7 integration service
         shell: bash
         run: |
@@ -55,8 +55,8 @@ jobs:
           assert client.ping(), "Redis integration service unreachable"
           print("REAL_REDIS_7_PING_OK")
           PY
-          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis test_step3aa_real_redis test_step3ah_real_redis test_step3av_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
-          grep -q "Ran 42 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis test_step3aa_real_redis test_step3ah_real_redis test_step3av_real_redis test_step3ba_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "Ran 54 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           grep -q "^OK$" "$GITHUB_WORKSPACE/redis-integration-output.txt"
           printf 'real_redis_integration=passed\\n' > "$GITHUB_WORKSPACE/redis-integration-ok.txt"
       - name: Unittest (full OPR directory)

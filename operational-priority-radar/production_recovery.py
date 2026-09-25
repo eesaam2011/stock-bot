@@ -122,6 +122,8 @@ class ProductionStartupRecovery:
   self.cancel_event=threading.Event()
   from revision_recovery_inbox import RevisionRecoveryInbox
   self.revision_inbox=RevisionRecoveryInbox()
+  self.durable_revision_journal=None
+  self.revision_persistence_failed=False
   if self.trade_reconciler is not None:
    self.trade_reconciler.cancel_event=self.cancel_event
  def cancel(self):
@@ -130,11 +132,25 @@ class ProductionStartupRecovery:
   if self.cancel_event.is_set():raise RecoveryFailure("RECOVERY_CANCELLED")
  def retain_revision_terminal(self,terminal):
   self.revision_inbox.observe_terminal(terminal)
+ def persist_revision_terminal(self,terminal):
+  if self.durable_revision_journal is None:return
+  try:self.durable_revision_journal.record_terminal(terminal)
+  except Exception:
+   self.revision_persistence_failed=True
+   self.cancel()
+   raise
  def preview_pending_revision(self,leadership,*,session_end):
   """Read-only replay; never consumes evidence or upgrades startup trust."""
-  value=self.revision_inbox.snapshot()
+  durable=self.durable_revision_journal
+  pending=durable.snapshot() if durable is not None else None
+  if pending is not None:
+   if len(pending)!=1:raise RecoveryFailure("DURABLE_REVISION_SINGLE_PREVIEW_REQUIRED")
+   value=pending[0]
+  else:value=self.revision_inbox.snapshot()
   result=self.preview_revision_rebuild(value,leadership,session_end=session_end)
-  self.revision_inbox.require_unchanged(value['diagnostic_sha256'])
+  if durable is not None:
+   if durable.snapshot()!=pending:raise RecoveryFailure("DURABLE_REVISION_CHANGED_DURING_REPLAY")
+  else:self.revision_inbox.require_unchanged(value['diagnostic_sha256'])
   return result
  def preview_revision_rebuild(self,diagnostic,leadership,*,session_end):
   """Explicit write-free production adapter; never changes readiness."""
@@ -153,6 +169,10 @@ class ProductionStartupRecovery:
   self._fetch_audit=None
   self.pending_halted.clear()
   try:
+   if self.revision_persistence_failed:
+    raise RecoveryFailure("REVISION_PERSISTENCE_FAILED")
+   if self.durable_revision_journal is not None and self.durable_revision_journal.snapshot():
+    return {"gap_recovered":False,"reconciled":False,"reason":"UNRESOLVED_DURABLE_REVISIONS"}
    trades=self.reader.active_trades()
    # P0 first. HALTED_ACTIVE waits for authoritative SIP status after subscription.
    for t in trades:

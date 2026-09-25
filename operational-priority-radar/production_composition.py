@@ -33,6 +33,7 @@ class ProductionRecoveryBridge:
 
 def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=None,
                            recovery=None, early_core=None, base_ready=None, symbols=None):
+    production_redis=redis_client is None
     if redis_client is None:
         try:
             import redis
@@ -82,6 +83,9 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     leadership=RedisLeadershipFacade(orch.redis,worker_id)
     if isinstance(rec,ProductionStartupRecovery) and rec.trade_reconciler is not None:
         rec.trade_reconciler.leadership=leadership
+    if production_redis and isinstance(rec,ProductionStartupRecovery):
+        from durable_revision_journal import DurableRevisionJournal
+        rec.durable_revision_journal=DurableRevisionJournal(orch.redis,leadership)
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
     pipeline.status_tracker=getattr(rec,"status_tracker",None)
     capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
@@ -146,6 +150,11 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         pipeline.halted.clear()
         pipeline._entry_opportunities.clear()
         pipeline.trades.clear()
+      persist=getattr(rec,"persist_revision_terminal",None)
+      if callable(persist):
+        # Offload Redis outside the decision lock and socket event loop.
+        # Failure cancels recovery; reconnect alone cannot clear that failure.
+        await asyncio.to_thread(persist,ws.last_epoch_diagnostic)
     # Capture overflow and dispatch backlog overflow are fatal disconnects.
     # No drop-oldest behavior is permitted for trades, bars or halt statuses.
     ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect,

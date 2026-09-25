@@ -17,7 +17,8 @@ class TestEBBatchPreflight(unittest.TestCase):
         self.assertEqual(result,{'inserted':2,'already_identical':0})
         self.assertEqual(len(self.r.calls),1)
         args=self.r.calls[0]
-        self.assertEqual(args[1],4)
+        self.assertEqual(args[1],5)
+        self.assertEqual(args[4],self.lua.prefix+":recovery:unresolved_revisions")
         self.assertEqual(args[2:4],(self.lua.leader_key,self.lua.generation_key))
     def test_production_entrypoint_requires_coverage_permit(self):
         with self.assertRaisesRegex(AtomicConflict,'COVERAGE_PERMIT_REJECTED'):
