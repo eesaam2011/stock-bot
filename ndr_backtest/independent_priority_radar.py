@@ -15168,5 +15168,9 @@ def historical_replication_2017_h1_execution_result():
     if not r:return jsonify({"result_ready":False,"status_url":"/research/2017-historical-replication/h1-execution/status","fresh_forward_oos_opened":False}),202
     return jsonify(r)
 
-# EHR G5 pilot routes: disabled by default and bounded to three symbols.\nfrom ehr_g5_web_pilot import register as register_ehr_g5\nregister_ehr_g5(app, export_authorized)\n\nif __name__ == "__main__":
+# EHR G5 pilot routes: disabled by default and bounded to three symbols.
+from ehr_g5_web_pilot import register as register_ehr_g5
+register_ehr_g5(app, export_authorized)
+
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
