@@ -139,6 +139,10 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
       # The websocket has already cleared its ACK before this callback.
       with pipeline.decision_lock:
         orch.on_disconnect();rec.on_disconnect()
+        # Bounded memory-only handoff. Never perform REST under this lock or
+        # allow a later non-revision disconnect to erase unresolved evidence.
+        retain=getattr(rec,"retain_revision_terminal",None)
+        if callable(retain):retain(ws.last_epoch_diagnostic)
         pipeline.halted.clear()
         pipeline._entry_opportunities.clear()
         pipeline.trades.clear()

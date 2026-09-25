@@ -120,12 +120,22 @@ class ProductionStartupRecovery:
   self._base_reconciled=False
   self._fetch_audit=None
   self.cancel_event=threading.Event()
+  from revision_recovery_inbox import RevisionRecoveryInbox
+  self.revision_inbox=RevisionRecoveryInbox()
   if self.trade_reconciler is not None:
    self.trade_reconciler.cancel_event=self.cancel_event
  def cancel(self):
   self.cancel_event.set()
  def _require_not_cancelled(self):
   if self.cancel_event.is_set():raise RecoveryFailure("RECOVERY_CANCELLED")
+ def retain_revision_terminal(self,terminal):
+  self.revision_inbox.observe_terminal(terminal)
+ def preview_pending_revision(self,leadership,*,session_end):
+  """Read-only replay; never consumes evidence or upgrades startup trust."""
+  value=self.revision_inbox.snapshot()
+  result=self.preview_revision_rebuild(value,leadership,session_end=session_end)
+  self.revision_inbox.require_unchanged(value['diagnostic_sha256'])
+  return result
  def preview_revision_rebuild(self,diagnostic,leadership,*,session_end):
   """Explicit write-free production adapter; never changes readiness."""
   self._require_not_cancelled()
