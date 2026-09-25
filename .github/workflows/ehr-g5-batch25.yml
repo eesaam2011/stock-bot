@@ -1,0 +1,21 @@
+name: EHR G5 batch25 safety
+on:
+  pull_request:
+    paths:
+      - 'ndr_backtest/ehr_g5_batch25.py'
+      - 'ndr_backtest/test_ehr_g5_batch25.py'
+      - 'ndr_backtest/ehr_g5_entrypoint.py'
+      - '.github/workflows/ehr-g5-batch25.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest ndr_backtest/test_ehr_g5_batch25.py -v
+      - run: python -m py_compile ndr_backtest/ehr_g5_batch25.py ndr_backtest/ehr_g5_entrypoint.py
