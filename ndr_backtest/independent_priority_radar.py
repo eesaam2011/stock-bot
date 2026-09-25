@@ -15171,6 +15171,8 @@ def historical_replication_2017_h1_execution_result():
 # EHR G5 pilot routes: disabled by default and bounded to three symbols.
 from ehr_g5_web_pilot import register as register_ehr_g5
 register_ehr_g5(app, export_authorized)
+from ehr_g5_batch25 import register as register_ehr_g5_batch25
+register_ehr_g5_batch25(app, export_authorized)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")), threaded=True)
