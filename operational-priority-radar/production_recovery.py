@@ -126,6 +126,17 @@ class ProductionStartupRecovery:
   self.cancel_event.set()
  def _require_not_cancelled(self):
   if self.cancel_event.is_set():raise RecoveryFailure("RECOVERY_CANCELLED")
+ def preview_revision_rebuild(self,diagnostic,leadership,*,session_end):
+  """Explicit write-free production adapter; never changes readiness."""
+  self._require_not_cancelled()
+  if self.session_start is None:
+   raise RecoveryFailure("REVISION_SESSION_START_REQUIRED")
+  if not isinstance(diagnostic,dict) or diagnostic.get("frame",{}).get("S") not in self.symbols:
+   raise RecoveryFailure("REVISION_SYMBOL_OUTSIDE_SCOPE")
+  from revision_native_rebuild import rebuild_revision_candidate
+  return rebuild_revision_candidate(diagnostic,self.rest,leadership,
+   session=self.session,session_start=self.session_start,session_end=session_end,
+   as_of=self.now_fn(),require_not_cancelled=self._require_not_cancelled)
  def run(self):
   self._require_not_cancelled()
   self._base_reconciled=False
