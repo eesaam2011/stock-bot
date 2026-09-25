@@ -2,7 +2,7 @@
 import datetime as dt, hashlib, json, os, threading, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from ehr_g5_isolated_collector import collect, atomic_json
+try:\n    from ehr_g5_isolated_collector import collect, atomic_json\nexcept ImportError as exc:\n    raise RuntimeError(f"EHR_G5_IMPORT_FAILED: {exc}") from exc
 
 NY=ZoneInfo("America/New_York")
 lock=threading.Lock(); thread=None
