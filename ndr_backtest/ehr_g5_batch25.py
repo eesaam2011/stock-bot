@@ -15,8 +15,8 @@ def after_close(now=None):
 
 def register(app,authorized):
     from flask import jsonify
-    @app.post("/ehr-g5/start-batch25")
-    def start():
+    @app.post("/ehr-g5/start-batch25", endpoint="ehr_g5_batch25_start")
+    def ehr_g5_batch25_start():
         global thread
         if not authorized(): return jsonify({"ok":False,"error":"unauthorized"}),401
         if os.getenv("EHR_G5_ENABLED")!="1": return jsonify({"ok":False,"error":"disabled"}),403
@@ -47,8 +47,8 @@ def register(app,authorized):
             thread.start()
         return jsonify({"ok":True,"status":"RUNNING","total":len(symbols),"status_url":"/ehr-g5/batch25-status"}),202
 
-    @app.get("/ehr-g5/batch25-status")
-    def status():
+    @app.get("/ehr-g5/batch25-status", endpoint="ehr_g5_batch25_status")
+    def ehr_g5_batch25_status():
         if not authorized():return jsonify({"ok":False,"error":"unauthorized"}),401
         with lock:return jsonify(dict(state))
 
