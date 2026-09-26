@@ -2818,7 +2818,14 @@ def main_scanner():
                 f"⚠️ Float cache scheduler error: {e}",
                 flush=True
             )
-            
+        if FLOAT_ONLY_MODE:
+            print(
+                "🧬 FLOAT ONLY MODE | Market scanning and alerts are disabled.",
+                flush=True
+            )
+            time.sleep(60)
+            continue
+        
         if not is_scan_time_allowed():
             print("⏸️ Scan skipped: outside US premarket/market hours. Sleeping...", flush=True)
             time.sleep(60)
