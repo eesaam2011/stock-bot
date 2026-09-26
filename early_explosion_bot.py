@@ -134,6 +134,12 @@ reject_prev_bars = 0
 top_rejected_candidates = []
 
 SCAN_INTERVAL_SEC  = 60
+# =========================================================
+# تشغيل البوت لتحديث الفلوت فقط
+# True  = Float فقط، بدون فحص السوق أو تنبيهات
+# False = التشغيل الطبيعي الكامل
+# =========================================================
+FLOAT_ONLY_MODE = True
 TRACK_INTERVAL_SEC = 10
 ALERT_COOLDOWN_SEC = 3600
 ENTRY_MAX_BREAKOUT_EXTENSION_PCT = 5.0
