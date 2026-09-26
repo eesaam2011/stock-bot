@@ -104,9 +104,10 @@ FULL_UNIVERSE_REFRESH = 60 * 60 * 4
 
 LIGHT_UNIVERSE_REFRESH = None
 
-FULL_SNAPSHOT_REBUILD_TIMES_KSA = [
-    "10:45",
-    "16:20"
+# بتوقيت نيويورك: بعد بداية المسح بدقائق، وقبل الافتتاح بعشر دقائق
+FULL_SNAPSHOT_REBUILD_TIMES_NY = [
+    "04:05",
+    "09:20"
 ]
 
 NEWS_CACHE_TTL = 60 * 60
@@ -547,6 +548,12 @@ def today_ny():
     return now_ny().strftime("%Y-%m-%d")
 
 
+def trading_day():
+    # يوم التداول بتوقيت نيويورك (ثابت صيفًا وشتاءً)
+    return now_ny().strftime("%Y-%m-%d")
+
+
+
 def is_weekend():
     return now_ny().weekday() >= 5
 
@@ -577,8 +584,38 @@ def seconds_until_next_market_preopen():
         int((target - ny).total_seconds())
     )
     
+MARKET_HOLIDAY_CACHE = {}
+
+
+def is_market_holiday():
+    """يتحقق من تقويم Alpaca مرة يوميًا. عند فشل الطلب يفترض أن السوق يعمل."""
+    day = now_ny().strftime("%Y-%m-%d")
+
+    if day in MARKET_HOLIDAY_CACHE:
+        return MARKET_HOLIDAY_CACHE[day]
+
+    try:
+        calendar = api.get_calendar(start=day, end=day)
+        open_days = [
+            str(getattr(item, "date", ""))[:10]
+            for item in (calendar or [])
+        ]
+        holiday = day not in open_days
+        MARKET_HOLIDAY_CACHE[day] = holiday
+
+        if holiday:
+            log(f"📅 {day} عطلة رسمية للسوق الأمريكي حسب تقويم Alpaca.")
+
+        return holiday
+
+    except Exception as e:
+        log(f"Calendar check error: {e}")
+        return False
+
+
 def is_market_weekday():
-    return now_ny().weekday() < 5
+    return now_ny().weekday() < 5 and not is_market_holiday()
+
 
 
 def is_scan_window():
@@ -591,10 +628,11 @@ def is_scan_window():
     if not is_market_weekday():
         return False
 
-    current = now_ksa().time()
+    # مربوطة بتوقيت نيويورك حتى لا تتأثر بتغيير التوقيت الصيفي/الشتوي
+    current = now_ny().time()
 
-    start = datetime.strptime("11:00", "%H:%M").time()
-    end = datetime.strptime("23:15", "%H:%M").time()
+    start = datetime.strptime("04:00", "%H:%M").time()
+    end = datetime.strptime("16:15", "%H:%M").time()
 
     return start <= current <= end
 
@@ -1674,6 +1712,68 @@ def get_symbol_news(symbol):
 
 BAR_CACHE = {}
 
+
+def _timeframe_label(timeframe):
+    label = str(getattr(timeframe, "value", timeframe))
+    return label.replace("TimeFrame.", "")
+
+
+def get_bars_start(timeframe, limit):
+    """
+    Alpaca ترجع الشموع تصاعديًا من start، والافتراضي بداية اليوم.
+    لذلك نحدد start صراحة ثم نأخذ آخر الشموع.
+    """
+    ny = now_ny()
+    label = _timeframe_label(timeframe).lower()
+
+    if "day" in label:
+        return ny - timedelta(days=int(limit * 1.6) + 10)
+
+    if label in ("1min", "minute", "1m"):
+        session_start = ny.replace(hour=4, minute=0, second=0, microsecond=0)
+        if ny < session_start:
+            return ny - timedelta(hours=12)
+        return session_start
+
+    # 5Min / 15Min وغيرها: عدة أيام لتغطية العدد المطلوب
+    return ny - timedelta(days=6)
+
+
+def bars_cache_key(symbol, timeframe, limit):
+    """
+    شموع الدقيقة ترجع جلسة اليوم كاملة مهما كان limit،
+    فنستخدم مفتاحًا واحدًا لها حتى لا تُجلب نفس البيانات أكثر من مرة.
+    """
+    label = _timeframe_label(timeframe).lower()
+
+    if label in ("1min", "minute", "1m"):
+        return f"{symbol}:1Min:session"
+
+    return f"{symbol}:{timeframe}:{limit}"
+
+
+def trim_bars(df, timeframe, limit):
+    """
+    شموع الدقيقة: نُبقي كامل جلسة اليوم (تحتاجها VWAP)، وكل الحسابات
+    الأخرى تعتمد على آخر الشموع فلا تتأثر.
+    باقي الأطر: آخر limit شمعة.
+    """
+    if df is None or df.empty:
+        return df
+
+    try:
+        df = df.sort_index()
+    except Exception:
+        pass
+
+    label = _timeframe_label(timeframe).lower()
+
+    if label in ("1min", "minute", "1m"):
+        return df
+
+    return df.tail(limit)
+
+
 TREND_15M_CACHE = {}
 
 
@@ -1725,7 +1825,7 @@ def bars_to_dataframe(bars):
 
 
 def get_bars(symbol, timeframe, limit=120, cache_ttl=60):
-    key = f"{symbol}:{timeframe}:{limit}"
+    key = bars_cache_key(symbol, timeframe, limit)
 
     cached = BAR_CACHE.get(key)
 
@@ -1736,14 +1836,15 @@ def get_bars(symbol, timeframe, limit=120, cache_ttl=60):
             return df.copy()
 
     try:
+        start = get_bars_start(timeframe, limit)
+        is_daily = "day" in _timeframe_label(timeframe).lower()
         bars = api.get_bars(
             symbol,
             timeframe,
-            limit=limit
+            start=start.isoformat(),
+            adjustment="split" if is_daily else "raw"
         )
-
-        df = bars_to_dataframe(bars)
-
+        df = trim_bars(bars_to_dataframe(bars), timeframe, limit)
         BAR_CACHE[key] = (time.time(), df.copy())
 
         return df
@@ -1757,7 +1858,7 @@ def get_bars_batch(symbols, timeframe, limit=120, cache_ttl=60):
     missing_symbols = []
 
     for symbol in symbols:
-        key = f"{symbol}:{timeframe}:{limit}"
+        key = bars_cache_key(symbol, timeframe, limit)
 
         cached = BAR_CACHE.get(key)
 
@@ -1774,12 +1875,13 @@ def get_bars_batch(symbols, timeframe, limit=120, cache_ttl=60):
         return result
 
     try:
+        # بدون limit: في الطلب متعدد الرموز يكون limit إجماليًا لكل الرموز
+        start = get_bars_start(timeframe, limit)
         bars = api.get_bars(
             missing_symbols,
             timeframe,
-            limit=limit
+            start=start.isoformat()
         )
-
         df_all = bars.df
 
         if df_all.empty:
@@ -1801,7 +1903,8 @@ def get_bars_batch(symbols, timeframe, limit=120, cache_ttl=60):
                         subset=["open", "high", "low", "close", "volume"]
                     )
 
-                    key = f"{symbol}:{timeframe}:{limit}"
+                    df = trim_bars(df, timeframe, limit)
+                    key = bars_cache_key(symbol, timeframe, limit)
                     BAR_CACHE[key] = (time.time(), df.copy())
                     result[symbol] = df.copy()
 
@@ -1831,10 +1934,10 @@ def get_bars_batch(symbols, timeframe, limit=120, cache_ttl=60):
                     subset=["open", "high", "low", "close", "volume"]
                 )
 
-                key = f"{symbol}:{timeframe}:{limit}"
+                df = trim_bars(df, timeframe, limit)
+                key = bars_cache_key(symbol, timeframe, limit)
                 BAR_CACHE[key] = (time.time(), df.copy())
                 result[symbol] = df.copy()
-
         return result
 
     except Exception as e:
@@ -1993,9 +2096,40 @@ def chunk_list(items, size):
 # Indicator Engine
 # ==============================================================================
 
+def filter_current_session(df):
+    """يرجع شموع الجلسة الحالية فقط: من 9:30 أثناء السوق، ومن 4:00 قبله."""
+    if df is None or df.empty:
+        return df
+
+    try:
+        index = pd.to_datetime(df.index)
+        if index.tz is None:
+            index = index.tz_localize("UTC")
+        index_ny = index.tz_convert(ny_tz)
+
+        ny = now_ny()
+        if is_regular_market_hours():
+            anchor = ny.replace(hour=9, minute=30, second=0, microsecond=0)
+        else:
+            anchor = ny.replace(hour=4, minute=0, second=0, microsecond=0)
+
+        mask = index_ny >= anchor
+        session_df = df[mask]
+
+        if session_df.empty:
+            return df
+
+        return session_df
+
+    except Exception:
+        return df
+
+
 def calculate_vwap(df):
     if df.empty:
         return 0
+
+    df = filter_current_session(df)
 
     required = ["high", "low", "close", "volume"]
 
@@ -2478,7 +2612,8 @@ def fast_priority_check(symbol, snapshot=None):
     hot = (
         gap_pct >= 4
         or minute_volume >= 20_000
-        or near_high
+        # قرب القمة وحده لا يكفي: يلزم ارتفاع 2% على الأقل
+        or (near_high and gap_pct >= 2)
         or (day_volume >= 500_000 and gap_pct >= 2)
         or (
             low_float
@@ -2491,6 +2626,22 @@ def fast_priority_check(symbol, snapshot=None):
     )
 
     return hot, snapshot
+
+PRIORITY_TOP_ALWAYS = 100
+
+
+def calculate_priority_score(symbol, snapshot):
+    price = safe_float(snapshot.get("price"))
+    score = 0
+    score += min(max(safe_float(snapshot.get("gap_pct")), 0), 30)
+    score += min(safe_float(snapshot.get("day_volume")) / 100_000, 25)
+    score += min(safe_float(snapshot.get("dollar_volume")) / 250_000, 25)
+    day_high = safe_float(snapshot.get("day_high"))
+    if day_high > 0 and price >= day_high * 0.96:
+        score += 15
+    score += get_float_score(symbol) * 2
+    return score
+
 
 def build_priority_universe():
     global PRIORITY_UNIVERSE
@@ -2524,18 +2675,7 @@ def build_priority_universe():
                 if price < PRICE_MIN or price > PRICE_MAX:
                     continue
 
-                score = 0
-
-                score += min(max(safe_float(snapshot.get("gap_pct")), 0), 30)
-                score += min(safe_float(snapshot.get("day_volume")) / 100_000, 25)
-                score += min(safe_float(snapshot.get("dollar_volume")) / 250_000, 25)
-
-                day_high = safe_float(snapshot.get("day_high"))
-
-                if day_high > 0 and price >= day_high * 0.96:
-                    score += 15
-
-                score += get_float_score(symbol) * 2
+                score = calculate_priority_score(symbol, snapshot)
 
                 if hot:
                     priority_scored.append((score, symbol))
@@ -2561,8 +2701,8 @@ def build_priority_universe():
     ]
 
     priority_set = set(priority_symbols)
-
-    PRIORITY_UNIVERSE = sorted(priority_set)
+    # نحافظ على ترتيب القوة (الأقوى أولًا) بدل الترتيب الأبجدي
+    PRIORITY_UNIVERSE = list(dict.fromkeys(priority_symbols))
 
     NORMAL_UNIVERSE = sorted([
         symbol
@@ -2621,13 +2761,18 @@ def is_universe_empty():
 # Batch Engine
 # ==============================================================================
 
-priority_cursor = 0
+priority_cursor = ""
 
 DISCOVERY_INTERVAL = 90
 DISCOVERY_CHUNK_SIZE = 400
 
 
 def get_next_batch():
+    """
+    أقوى PRIORITY_TOP_ALWAYS سهم تُفحص في كل دورة،
+    والباقي يدور بالتناوب (بترتيب أبجدي ثابت حتى لا يتخطى المؤشر أسهمًا
+    عندما يتغير ترتيب القوة كل 90 ثانية).
+    """
     global priority_cursor
 
     batch_size = 300
@@ -2635,25 +2780,37 @@ def get_next_batch():
     if not PRIORITY_UNIVERSE:
         return []
 
-    source = list(PRIORITY_UNIVERSE)
+    source = list(dict.fromkeys(PRIORITY_UNIVERSE))
 
-    if priority_cursor >= len(source):
-        priority_cursor = 0
+    if len(source) <= batch_size:
+        return source
 
-    batch = source[
-        priority_cursor:
-        priority_cursor + batch_size
-    ]
+    top = source[:PRIORITY_TOP_ALWAYS]
+    rest = sorted(source[PRIORITY_TOP_ALWAYS:])
+    rotating_size = batch_size - len(top)
 
-    if len(batch) < batch_size:
-        remaining = batch_size - len(batch)
-        batch += source[:remaining]
+    # المؤشر يحفظ آخر رمز فُحص (لا رقم موضعه)، فيكمل من الرمز التالي
+    # أبجديًا حتى لو تغيرت عضوية القائمة بعد مسح الاكتشاف
+    last_symbol = priority_cursor if isinstance(priority_cursor, str) else ""
+    start_index = 0
 
-    priority_cursor = (
-        priority_cursor + batch_size
-    ) % max(len(source), 1)
+    if last_symbol:
+        start_index = next(
+            (i for i, sym in enumerate(rest) if sym > last_symbol),
+            0
+        )
 
-    return list(dict.fromkeys(batch))
+    rotating = rest[start_index:start_index + rotating_size]
+
+    if len(rotating) < rotating_size:
+        rotating += rest[:rotating_size - len(rotating)]
+
+    rotating = list(dict.fromkeys(rotating))
+
+    if rotating:
+        priority_cursor = rotating[-1]
+
+    return list(dict.fromkeys(top + rotating))
 
 def run_discovery_scan():
     global PRIORITY_UNIVERSE
@@ -2667,6 +2824,7 @@ def run_discovery_scan():
     scan_source = list(dict.fromkeys(UNIVERSE))
 
     hot_symbols = set()
+    hot_scores = {}
     checked_symbols = 0
     snapshot_count = 0
     error_count = 0
@@ -2713,13 +2871,16 @@ def run_discovery_scan():
                 if not snapshot:
                     continue
 
-                hot, _ = fast_priority_check(
+                hot, checked_snapshot = fast_priority_check(
                     symbol,
                     snapshot=snapshot
                 )
-
                 if hot:
                     hot_symbols.add(symbol)
+                    hot_scores[symbol] = calculate_priority_score(
+                        symbol,
+                        checked_snapshot
+                    )
 
             except Exception as e:
                 error_count += 1
@@ -2742,12 +2903,15 @@ def run_discovery_scan():
     promoted = new_priority_set - previous_priority
     demoted = previous_priority - new_priority_set
 
-    PRIORITY_UNIVERSE = sorted(new_priority_set)
+    # الأقوى أولًا حسب سكور الأولوية
+    PRIORITY_UNIVERSE = sorted(
+        new_priority_set,
+        key=lambda sym: hot_scores.get(sym, 0),
+        reverse=True
+    )
     NORMAL_UNIVERSE = sorted(new_normal_set)
 
-    # إعادة المؤشر إذا أصبحت قائمة Priority أصغر
-    if priority_cursor >= len(PRIORITY_UNIVERSE):
-        priority_cursor = 0
+    # المؤشر مبني على اسم آخر رمز، فلا يحتاج تصفيرًا عند تغير القائمة
 
     redis_set_json(
         KEY_PRIORITY,
@@ -2795,11 +2959,11 @@ def already_alerted_today(symbol):
     if not item:
         return False
 
-    return item.get("date") == today_ksa()
+    return item.get("date") == trading_day()
 
 def get_already_alerted_today_batch(symbols):
     alerts = get_sent_alerts()
-    today = today_ksa()
+    today = trading_day()
 
     already_alerted = set()
 
@@ -2821,7 +2985,7 @@ def add_to_watchlist(symbol, reason, data=None):
         "data": data,
         "added_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
         "last_checked": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
-        "date": today_ksa()
+        "date": trading_day()
     }
 
     WATCHLIST[symbol] = item
@@ -2906,7 +3070,7 @@ def detect_compression_pattern(symbol):
         "vwap": vwap,
         "obv_rising": obv_data.get("obv_rising"),
         "detected_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
-        "date": today_ksa()
+        "date": trading_day()
     }
 
     return data
@@ -2940,7 +3104,7 @@ def save_rejection(symbol, reason, details=None):
         "reason": reason,
         "details": details,
         "time": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
-        "date": today_ksa()
+        "date": trading_day()
     }
 
     key = f"{symbol}:{int(time.time())}"
@@ -2953,7 +3117,7 @@ def save_alert_history(symbol, metrics, trade_plan):
         "metrics": metrics,
         "trade_plan": trade_plan,
         "time": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
-        "date": today_ksa()
+        "date": trading_day()
     }
 
     key = f"{symbol}:{int(time.time())}"
@@ -3126,7 +3290,7 @@ def detect_compression_setup(symbol, df=None):
         "reasons": reasons,
         "detected_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
         "detected_ts": time.time(),
-        "date": today_ksa()
+        "date": trading_day()
     }
 
     return pattern_data 
@@ -3177,7 +3341,7 @@ def is_compression_breakout(symbol, metrics):
     if pattern_data.get("pattern") != "compression":
         return False, None
 
-    if pattern_data.get("date") != today_ksa():
+    if pattern_data.get("date") != trading_day():
         remove_pattern(symbol)
         return False, None
 
@@ -3337,6 +3501,167 @@ def detect_stock_phase(breakout, rvol, volume_accel_ratio, trend_15m_ok):
 # ==============================================================================
 # Scoring Helpers
 # ==============================================================================
+
+# ==============================================================================
+# Daily Context Gates (منقولة من Early Explosion)
+# ==============================================================================
+
+DAILY_RVOL_MIN = 2.0
+ENTRY_MAX_BREAKOUT_EXTENSION_PCT = 5.0
+ENTRY_LARGE_DAILY_MOVE_PCT = 12.0
+ENTRY_CONSOLIDATION_MAX_RANGE_PCT = 3.5
+DAILY_OVERHEAD_MIN_RISK_MULTIPLE = 1.2
+VOLUME_COOLING_PENALTY = 8
+
+# نسبة تقريبية من حجم اليوم الكامل تتداول حتى كل وقت (منحنى U المعتاد)
+INTRADAY_VOLUME_CURVE = [
+    (0, 0.00), (15, 0.10), (30, 0.18), (60, 0.30), (90, 0.38),
+    (150, 0.50), (210, 0.60), (270, 0.70), (330, 0.80),
+    (360, 0.87), (390, 1.00)
+]
+
+
+def expected_volume_fraction(minutes_since_open):
+    m = max(0, min(390, minutes_since_open))
+    for (m0, f0), (m1, f1) in zip(INTRADAY_VOLUME_CURVE, INTRADAY_VOLUME_CURVE[1:]):
+        if m0 <= m <= m1:
+            return f0 + (f1 - f0) * ((m - m0) / (m1 - m0))
+    return 1.0
+
+
+def get_previous_daily_bars(symbol):
+    daily = get_bars(symbol, TimeFrame.Day, limit=60, cache_ttl=3600)
+
+    if daily is None or daily.empty:
+        return pd.DataFrame()
+
+    try:
+        index = pd.to_datetime(daily.index)
+        if index.tz is None:
+            index = index.tz_localize("UTC")
+        dates = index.tz_convert(ny_tz).strftime("%Y-%m-%d")
+        return daily[dates < trading_day()]
+    except Exception:
+        return daily.iloc[:-1]
+
+
+def calculate_daily_atr(daily_df, period=14):
+    if daily_df is None or len(daily_df) < period + 1:
+        return 0
+    high = daily_df["high"]
+    low = daily_df["low"]
+    prev_close = daily_df["close"].shift(1)
+    tr = pd.concat(
+        [(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1
+    ).max(axis=1)
+    return safe_float(tr.tail(period).mean())
+
+
+def evaluate_daily_context(symbol, price, df, volume_accel_ratio):
+    """
+    يرجع (ok, reason, data).
+    - RVOL يومي حقيقي: حجم الجلسة مقابل متوسط 20 يوم معدّل حسب الوقت
+    - رفض الامتداد الزائد عن اختراق مقاومة 20 يوم
+    - رفض الحركة اليومية الكبيرة (+12%) بدون قاعدة جديدة
+    - أقرب قمة يومية فوق السعر (تُستخدم في خطة الصفقة)
+    """
+    data = {"daily_context": "unavailable"}
+
+    prev = get_previous_daily_bars(symbol)
+
+    if prev is None or len(prev) < 20:
+        return True, "OK", data
+
+    avg_vol_20 = safe_float(prev["volume"].tail(20).mean())
+    prev_close = safe_float(prev["close"].iloc[-1])
+    resistance_20 = safe_float(prev["high"].tail(20).max())
+    daily_atr = calculate_daily_atr(prev)
+
+    change_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+
+    overhead = prev.loc[prev["high"] > price, "high"]
+    nearest_overhead = safe_float(overhead.min()) if not overhead.empty else 0
+
+    data = {
+        "daily_context": "ok",
+        "avg_vol_20": avg_vol_20,
+        "prev_close": prev_close,
+        "daily_change_pct": change_pct,
+        "resistance_20d": resistance_20,
+        "daily_atr": daily_atr,
+        "nearest_overhead": nearest_overhead,
+        "daily_rvol": None,
+    }
+
+    # ---------------- RVOL يومي حقيقي ----------------
+    if is_regular_market_hours() and avg_vol_20 > 0:
+        ny = now_ny()
+        open_dt = ny.replace(hour=9, minute=30, second=0, microsecond=0)
+        minutes_since_open = (ny - open_dt).total_seconds() / 60
+
+        if minutes_since_open >= 5:
+            session_df = filter_current_session(df)
+            session_volume = safe_float(session_df["volume"].sum())
+            expected = avg_vol_20 * max(expected_volume_fraction(minutes_since_open), 0.02)
+            daily_rvol = session_volume / expected if expected > 0 else 0
+            data["daily_rvol"] = daily_rvol
+
+            if daily_rvol < DAILY_RVOL_MIN:
+                return False, "RVOL اليومي ضعيف", data
+
+    # ---------------- قاعدة جديدة / اختراق طازج ----------------
+    closes = df["close"].astype(float)
+    ema9 = closes.ewm(span=9, adjust=False).mean()
+    ema20 = closes.ewm(span=20, adjust=False).mean()
+    last_close = safe_float(closes.iloc[-1])
+
+    momentum_ok = (
+        safe_float(ema9.iloc[-1]) > safe_float(ema20.iloc[-1])
+        and last_close >= safe_float(ema9.iloc[-1])
+    )
+
+    prior_6 = df.iloc[-7:-1]
+    prior_high = safe_float(prior_6["high"].max())
+    prior_low = safe_float(prior_6["low"].min())
+    consolidation_pct = ((prior_high - prior_low) / prior_low) * 100 if prior_low > 0 else 999
+
+    consolidation_ok = consolidation_pct <= ENTRY_CONSOLIDATION_MAX_RANGE_PCT
+    fresh_breakout = (
+        last_close > prior_high * 1.001
+        and momentum_ok
+        and volume_accel_ratio >= 1.3
+    )
+    new_base = consolidation_ok and fresh_breakout
+
+    extension_pct = ((price - resistance_20) / resistance_20) * 100 if resistance_20 > 0 else 0
+
+    data.update({
+        "breakout_extension_pct": extension_pct,
+        "consolidation_range_pct": consolidation_pct,
+        "fresh_intraday_breakout": bool(fresh_breakout),
+    })
+
+    if extension_pct > ENTRY_MAX_BREAKOUT_EXTENSION_PCT and not new_base:
+        return False, "ممتد بعيدًا عن اختراق مقاومة 20 يوم", data
+
+    if change_pct >= ENTRY_LARGE_DAILY_MOVE_PCT and not new_base:
+        return False, "حركة يومية كبيرة بدون قاعدة جديدة", data
+
+    return True, "OK", data
+
+
+def volume_cooling_detected(df):
+    """قمة الحجم في آخر 3 دقائق لكن الحجم لم يعد يتصاعد = بداية تبريد."""
+    if df is None or len(df) < 13:
+        return False
+    volumes = df["volume"].astype(float)
+    lookback = volumes.iloc[-13:].reset_index(drop=True)
+    peak_recent = int(lookback.idxmax()) >= len(lookback) - 3
+    v1, v2, v3 = volumes.iloc[-3], volumes.iloc[-2], volumes.iloc[-1]
+    rising = v1 <= v2 <= v3
+    return peak_recent and not rising
+
 
 def score_linear(value, min_value, max_value, max_points):
     value = safe_float(value)
@@ -3688,6 +4013,17 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
 
         return None
 
+    daily_ok, daily_reason, daily_data = evaluate_daily_context(
+        symbol,
+        price,
+        df,
+        volume_accel_ratio
+    )
+
+    if not daily_ok:
+        save_rejection(symbol, daily_reason, daily_data)
+        return None
+
     resistance_data = calculate_resistance(df)
 
     trend_15m = get_15m_trend(symbol)
@@ -3751,6 +4087,10 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         breakout=resistance_data.get("breakout"),
         minor_negative_news=news_data.get("minor_negative")
     )
+
+    if volume_cooling_detected(df):
+        penalty_points += VOLUME_COOLING_PENALTY
+        warnings.append("الحجم بدأ يبرد بعد القمة")
 
     final_score = min(
         100,
@@ -3828,6 +4168,11 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
         "phase": phase,
         "high_target": high_target,
         "evaluated_at": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+        "daily_rvol": daily_data.get("daily_rvol"),
+        "daily_change_pct": daily_data.get("daily_change_pct"),
+        "breakout_extension_pct": daily_data.get("breakout_extension_pct"),
+        "nearest_overhead": daily_data.get("nearest_overhead"),
+        "daily_atr": daily_data.get("daily_atr"),
     }
 
     return metrics
@@ -4023,9 +4368,30 @@ def build_trade_plan(metrics):
             f"{reward_risk:.2f} < 1.20"
         )
 
+    nearest_overhead = safe_float(metrics.get("nearest_overhead"))
+
+    if nearest_overhead > price and risk > 0:
+        room_multiple = (nearest_overhead - price) / risk
+
+        if room_multiple < DAILY_OVERHEAD_MIN_RISK_MULTIPLE:
+            save_rejection(
+                symbol,
+                "قمة يومية سابقة قريبة فوق السعر",
+                {
+                    "price": price,
+                    "nearest_overhead": nearest_overhead,
+                    "room_in_risk_units": room_multiple
+                }
+            )
+            return None, (
+                f"daily overhead too close "
+                f"{room_multiple:.2f}R < {DAILY_OVERHEAD_MIN_RISK_MULTIPLE}R"
+            )
+
     plan = {
         "symbol": symbol,
         "entry": price,
+        "entry_spread_pct": safe_float(metrics.get("spread_pct")),
         "initial_stop": stop,
         "stop": stop,
         "stop_distance_pct": stop_distance_pct,
@@ -4043,7 +4409,7 @@ def build_trade_plan(metrics):
         "created_at": datetime.now(
             saudi_tz
         ).strftime("%Y-%m-%d %H:%M:%S"),
-        "date": today_ksa()
+        "date": trading_day()
     }
 
     return plan, "OK"
@@ -4638,7 +5004,7 @@ def activate_trade(symbol, metrics, trade_plan):
         "max_drawdown_pct": 0.0,
         "opened_at": now_str,
         "last_update": now_str,
-        "date": today_ksa()
+        "date": trading_day()
     }
 
     with ACTIVE_TRADES_LOCK:
@@ -4864,7 +5230,7 @@ def send_elite_alert(
     save_sent_alert(
         symbol,
         {
-            "date": today_ksa(),
+            "date": trading_day(),
             "time": alert_time,
             "score": safe_float(
                 metrics.get("final_score")
@@ -6493,6 +6859,8 @@ def maybe_refresh_universe():
     if is_universe_empty():
         rebuild_universe(full=True)
 
+        mark_passed_rebuild_slots_done()
+
         last_full_universe_refresh = now_time
 
         last_light_universe_refresh = now_time
@@ -6515,7 +6883,7 @@ def maybe_refresh_universe():
 # Daily Summary
 # ==============================================================================
 def send_daily_summary():
-    today = today_ksa()
+    today = trading_day()
 
     history = redis_hgetall_json(
         KEY_HISTORY
@@ -7206,7 +7574,6 @@ def weekend_analysis():
 ✅ صفقات ناجحة: {wins}
 ❌ صفقات فاشلة: {losses}
 ⚪ غير محسومة: {unknown}
-⚪ غير محسومة: {unknown}
 
 ━━━━━━━━━━━━━━
 
@@ -7259,25 +7626,42 @@ def maybe_reload_float_cache():
 
             last_float_reload_key = key
 
-last_full_snapshot_rebuild_key = ""
+COMPLETED_REBUILD_SLOTS = set()
+
+
+def _passed_rebuild_slots():
+    current = now_ny()
+    current_time = current.strftime("%H:%M")
+    day = current.strftime("%Y-%m-%d")
+
+    return [
+        f"{day} {slot}"
+        for slot in FULL_SNAPSHOT_REBUILD_TIMES_NY
+        if current_time >= slot
+    ]
+
+
+def mark_passed_rebuild_slots_done():
+    """تُستدعى بعد أي إعادة بناء كاملة حتى لا تتكرر بلا داعٍ."""
+    COMPLETED_REBUILD_SLOTS.update(_passed_rebuild_slots())
 
 
 def should_run_full_snapshot_rebuild():
-    global last_full_snapshot_rebuild_key
+    """
+    تعمل مرة واحدة لكل موعد بعد حلول وقته، حتى لو تأخرت دورة المسح
+    وتجاوزت الدقيقة المحددة. عند فوات أكثر من موعد (مثلاً بعد إعادة تشغيل)
+    تُنفَّذ إعادة بناء واحدة فقط.
+    """
+    pending = [
+        slot
+        for slot in _passed_rebuild_slots()
+        if slot not in COMPLETED_REBUILD_SLOTS
+    ]
 
-    current = now_ksa()
-
-    current_time = current.strftime("%H:%M")
-
-    if current_time not in FULL_SNAPSHOT_REBUILD_TIMES_KSA:
+    if not pending:
         return False
 
-    key = current.strftime("%Y-%m-%d %H:%M")
-
-    if key == last_full_snapshot_rebuild_key:
-        return False
-
-    last_full_snapshot_rebuild_key = key
+    mark_passed_rebuild_slots_done()
 
     return True
     
@@ -7398,11 +7782,11 @@ def main_loop():
             if is_weekend():
                 if (
                     current.hour == 12
-                    and today_ksa() != last_weekend_analysis_date
+                    and trading_day() != last_weekend_analysis_date
                 ):
                     weekend_analysis()
 
-                    last_weekend_analysis_date = today_ksa()
+                    last_weekend_analysis_date = trading_day()
 
                 log("Weekend mode. No trading alerts. Waiting...")
 
@@ -7417,16 +7801,18 @@ def main_loop():
             # في اليوم التالي عند دخول نافذة الفحص الساعة 11:00 صباحًا)
             # ------------------------------------------------------------------
 
+            ny_now = now_ny()
+
             if (
-                current.hour == 23
-                and current.minute >= 15
-                and today_ksa() != last_daily_summary_date
+                is_market_weekday()
+                and (ny_now.hour, ny_now.minute) >= (16, 15)
+                and trading_day() != last_daily_summary_date
             ):
-                log("الساعة 11:15 مساءً بتوقيت السعودية. إرسال تقرير الإنهاء وإيقاف الفحص لبقية اليوم...")
+                log("16:15 بتوقيت نيويورك. إرسال تقرير الإنهاء وإيقاف الفحص لبقية اليوم...")
 
                 send_daily_summary()
 
-                last_daily_summary_date = today_ksa()
+                last_daily_summary_date = trading_day()
 
                 log("تم إيقاف الفحص والتنبيهات لهذا اليوم. سيُستأنف العمل تلقائيًا غدًا الساعة 11:00 صباحًا.")
 
