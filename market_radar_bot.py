@@ -7741,10 +7741,115 @@ last_weekend_analysis_date = ""
 
 last_discovery_scan = 0
 
+def get_regular_session_close_price(symbol, date_str):
+    """آخر سعر إغلاق دقيقة قبل 16:00 نيويورك في يوم الصفقة."""
+    try:
+        day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=ny_tz)
+        start = day.replace(hour=15, minute=0)
+        close_dt = day.replace(hour=16, minute=0)
+
+        bars = api.get_bars(
+            symbol,
+            TimeFrame.Minute,
+            start=start.isoformat(),
+            end=close_dt.isoformat()
+        )
+        df = bars_to_dataframe(bars)
+
+        if df is None or df.empty:
+            return 0
+
+        index = pd.to_datetime(df.index)
+        if index.tz is None:
+            index = index.tz_localize("UTC")
+        df = df[index.tz_convert(ny_tz) < close_dt]
+
+        if df.empty:
+            return 0
+
+        return safe_float(df.sort_index()["close"].iloc[-1])
+
+    except Exception as e:
+        log(f"Session close price error {symbol}: {e}")
+        return 0
+
+
+SESSION_CLOSED_KEYS = set()
+
+
+def close_trades_at_session_end():
+    """
+    البوت للمضاربة اليومية: أي صفقة ما زالت نشطة خارج الجلسة الرسمية
+    تُغلق بسعر إغلاق الجلسة الرسمية ليومها، لا بأسعار ما بعد/قبل السوق.
+    """
+    trades = load_active_trades()
+
+    if not trades:
+        return
+
+    for symbol, item in list(trades.items()):
+        try:
+            trade_plan = item.get("trade_plan", {})
+            trade_date = (
+                item.get("date")
+                or trade_plan.get("date")
+                or trading_day()
+            )
+
+            # صفقة اليوم لا تُغلق قبل انتهاء جلسة اليوم (مثلًا بعد Restart قبل الافتتاح).
+            # صفقة يوم سابق تُغلق فورًا بسعر إغلاق جلستها الأصلية.
+            ny_now = now_ny()
+            if (
+                trade_date >= trading_day()
+                and (ny_now.hour, ny_now.minute) < (16, 0)
+            ):
+                continue
+
+            close_key = f"{symbol}:{trade_date}"
+
+            # حماية من تكرار رسالة الخروج إذا تأخر حذف الصفقة من Redis
+            if close_key in SESSION_CLOSED_KEYS:
+                continue
+
+            SESSION_CLOSED_KEYS.add(close_key)
+
+            exit_price = get_regular_session_close_price(symbol, trade_date)
+            price_note = "سعر إغلاق الجلسة الرسمية"
+
+            if exit_price <= 0:
+                exit_price = safe_float(get_snapshot(symbol).get("price"))
+                price_note = "آخر سعر متاح (تعذر جلب سعر إغلاق الجلسة)"
+
+            entry = safe_float(trade_plan.get("entry"))
+            pct_text = ""
+            if entry > 0 and exit_price > 0:
+                pct_text = f"\n📊 النتيجة: {fmt_pct(((exit_price - entry) / entry) * 100)}"
+
+            send_trade_exit(
+                symbol,
+                f"""💰 {price_note}: {fmt_price(exit_price)}{pct_text}
+📌 سبب الخروج:
+انتهت الجلسة الرسمية والصفقة لم تُحسم (إغلاق يومي)."""
+            )
+
+            close_active_trade(
+                symbol,
+                item,
+                "session_close",
+                exit_price=exit_price
+            )
+
+        except Exception as e:
+            log(f"Session close error {symbol}: {e}")
+
+
 def trade_monitor_loop():
     while True:
         try:
-            monitor_active_trades()
+            if is_regular_market_hours():
+                monitor_active_trades()
+            else:
+                close_trades_at_session_end()
         except Exception as e:
             log(f"Trade monitor loop error: {e}")
 
