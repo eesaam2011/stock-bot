@@ -177,7 +177,14 @@ class AlpacaSIPProtocol:
  @staticmethod
  def auth(k,s):return {"action":"auth","key":k,"secret":s}
  @staticmethod
- def subscribe(symbols):
-  x=list(symbols);return {"action":"subscribe","trades":x,"bars":x,"statuses":["*"]}
+ def subscribe(symbols,trade_symbols=None):
+  # Backwards-compatible default keeps the v1 contract for isolated callers.
+  # v1.1 production passes an explicit bounded trade scope (normally empty).
+  x=list(symbols);t=x if trade_symbols is None else list(trade_symbols)
+  return {"action":"subscribe","trades":t,"bars":x,"statuses":["*"]}
+ @staticmethod
+ def subscribe_trades(symbols):return {"action":"subscribe","trades":list(symbols)}
+ @staticmethod
+ def unsubscribe_trades(symbols):return {"action":"unsubscribe","trades":list(symbols)}
  @staticmethod
  def classify(m):return {"t":"TRADE","q":"QUOTE","b":"BAR","s":"STATUS"}.get(m.get("T"),"OTHER")

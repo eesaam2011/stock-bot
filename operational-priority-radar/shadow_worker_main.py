@@ -32,6 +32,9 @@ class ShadowRuntimeSupervisor:
         self.stop_event=asyncio.Event()
         self.native5_cycles=0
         self.native5_last_stats={}
+        self.rest1m_cycles=0
+        self.rest1m_last_stats={}
+        self.bar_audit_last_stats={}
 
     def _leadership_snapshot(self):
         """Diagnostic only: expose lease identity/generation/TTL; no decision-policy changes."""
@@ -89,6 +92,40 @@ class ShadowRuntimeSupervisor:
             try: await asyncio.wait_for(self.stop_event.wait(),timeout=5.0)
             except asyncio.TimeoutError: pass
 
+    async def rest1m_loop(self):
+        while not self.stop_event.is_set():
+            coordinator=getattr(self,"rest1m_coordinator",None)
+            pipeline=getattr(self,"decision_pipeline",None)
+            if coordinator is not None and pipeline is not None:
+                from datetime import datetime,timezone
+                allow=bool(pipeline.decision_gate())
+                try:
+                    stats=await asyncio.to_thread(
+                        coordinator.poll,datetime.now(timezone.utc),allow)
+                except Exception as exc:
+                    print({"stage":"REST1M_MATURE_CYCLE_ERROR",
+                           "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
+                else:
+                    self.rest1m_cycles+=1;self.rest1m_last_stats=stats
+                    print({"stage":"REST1M_MATURE_CYCLE_OK","cycle":self.rest1m_cycles,
+                           **stats},flush=True)
+            try:await asyncio.wait_for(self.stop_event.wait(),timeout=15.0)
+            except asyncio.TimeoutError:pass
+
+    async def bar_audit_loop(self):
+        while not self.stop_event.is_set():
+            audit=getattr(getattr(self,"decision_pipeline",None),"bar_shadow_audit",None)
+            if audit is not None:
+                from datetime import datetime,timezone
+                try:self.bar_audit_last_stats=await asyncio.to_thread(
+                    audit.compare_due,datetime.now(timezone.utc),100)
+                except Exception as exc:
+                    print({"stage":"REST_BAR_SHADOW_AUDIT_ERROR",
+                           "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
+                else:print({"stage":"REST_BAR_SHADOW_AUDIT",**self.bar_audit_last_stats},flush=True)
+            try:await asyncio.wait_for(self.stop_event.wait(),timeout=300.0)
+            except asyncio.TimeoutError:pass
+
 
     def _redis_count(self, pattern):
         total=0; cursor=0
@@ -126,6 +163,12 @@ class ShadowRuntimeSupervisor:
                        "native5_cycles":self.native5_cycles,
                        "native5_batch_size":500,
                        "native5_last":self.native5_last_stats,
+                       "rest1m_cycles":self.rest1m_cycles,
+                       "rest1m_last":self.rest1m_last_stats,
+                       "bar_shadow_audit":self.bar_audit_last_stats,
+                       "dynamic_trade_scope":(
+                           self.websocket_runtime.trade_scope.snapshot()
+                           if hasattr(self.websocket_runtime,"trade_scope") else None),
                        "sip_receive_processing":(
                            self.websocket_runtime.performance_snapshot()
                            if hasattr(self.websocket_runtime,"performance_snapshot") else None),
@@ -310,6 +353,11 @@ class ShadowRuntimeSupervisor:
                 raise RuntimeError("DECISION_PIPELINE_MISSING_FOR_TRUST_PROOF")
             require_live_trust_proof(self.websocket_runtime,recovery,
                                      pipeline.leadership,connected_epoch)
+            # Populate active/opportunity caches only after canonical recovery.
+            # This requests the bounded trade scope but does not authorize a
+            # trade until its current-epoch subscription ACK arrives.
+            refresh=getattr(pipeline,"refresh_runtime_caches",None)
+            if callable(refresh):refresh()
             trust_state=self.orchestrator.finish_reconciliation(
                 continuity_ok=True,epoch=connected_epoch)
             print({"stage":"SIP_LIVE_TRUSTED",
@@ -318,6 +366,8 @@ class ShadowRuntimeSupervisor:
             child_tasks=[
                 asyncio.create_task(self.outbox_loop()),
                 asyncio.create_task(self.native5_loop()),
+                asyncio.create_task(self.rest1m_loop()),
+                asyncio.create_task(self.bar_audit_loop()),
                 asyncio.create_task(self.telemetry_loop()),
             ]
             await self.stop_event.wait()

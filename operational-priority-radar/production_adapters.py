@@ -94,5 +94,7 @@ class OperationalBaseReady:
   return {"accepted":True,"base_ready":diag["base_ready"],"features":features,"diagnostics":diag,"decision_available_ts":ts}
  def release_symbol(self,symbol):
   self.history.pop(symbol,None)
+ def audit_history(self,symbol):
+  return self._materialize_history(self.history.get(symbol,()))
  def buffered_bars(self):
   return sum(len(v) for v in self.history.values())

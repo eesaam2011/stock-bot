@@ -1,5 +1,6 @@
-import asyncio,json,time
+import asyncio,json,time,threading
 from collections import deque
+from dynamic_trade_scope import DynamicTradeScope,DynamicTradeScopeUnsafe
 
 class WebSocketProtocolError(RuntimeError):pass
 class SIPErrorFrame(WebSocketProtocolError):
@@ -8,7 +9,7 @@ class SIPErrorFrame(WebSocketProtocolError):
   super().__init__(f"ALPACA_WS_ERROR_{code}:{message}")
 
 class WebSocketRuntime:
- def __init__(self,connector,protocol,on_message,on_disconnect,epoch_capture=None,dispatch_queue_max=0,on_subscription_ack=None):
+ def __init__(self,connector,protocol,on_message,on_disconnect,epoch_capture=None,dispatch_queue_max=0,on_subscription_ack=None,dynamic_trade_limit=256,dynamic_trade_mode=False):
   self.connector=connector;self.protocol=protocol;self.on_message=on_message;self.on_disconnect=on_disconnect
   self.epoch_capture=epoch_capture
   self.on_subscription_ack=on_subscription_ack
@@ -18,6 +19,10 @@ class WebSocketRuntime:
   self._queue_depth=0;self._queue_high_water=0;self._queue_overflows=0
   self.stopping=False;self.connected_event=asyncio.Event();self.last_error=None;self.subscription_stats={}
   self.connection_epoch=0;self._epoch_ack_verified=False
+  self._live_ws=None;self._live_loop=None;self._send_lock=None
+  self.dynamic_trade_mode=bool(dynamic_trade_mode)
+  self._trade_flush_lock=threading.RLock();self._trade_flush_scheduled=False
+  self.trade_scope=DynamicTradeScope(dynamic_trade_limit,self._trade_scope_changed)
   # Retain one bounded, payload-free terminal record across teardown/reconnect.
   self.last_epoch_diagnostic=None
   self._rx_started=None;self._received=0;self._handled=0
@@ -42,6 +47,49 @@ class WebSocketRuntime:
  @staticmethod
  def _has_success(msgs,text):
   return any(m.get("T")=="success" and m.get("msg")==text for m in msgs)
+
+ def _trade_scope_changed(self,_desired):
+  loop=self._live_loop
+  if loop is None or not loop.is_running():return
+  with self._trade_flush_lock:
+   if self._trade_flush_scheduled:return
+   self._trade_flush_scheduled=True
+  loop.call_soon_threadsafe(lambda:asyncio.create_task(self._flush_trade_scope()))
+
+ def require_trade_symbol(self,symbol,required=True):
+  return self.trade_scope.require(symbol,required)
+
+ def trade_authorized(self,symbol):
+  if not self.dynamic_trade_mode:return self._epoch_ack_verified
+  return self._epoch_ack_verified and self.trade_scope.authorized(self.connection_epoch,symbol)
+
+ async def _flush_trade_scope(self):
+  try:
+   ws=self._live_ws
+   if ws is None or not self._epoch_ack_verified:return
+   snap=self.trade_scope.snapshot();desired=set(snap["desired"]);acked=set(snap["acked"])
+   add=sorted(desired-acked);remove=sorted(acked-desired)
+   if add:
+    async with self._send_lock:await ws.send(json.dumps(self.protocol.subscribe_trades(add)))
+   if remove:
+    async with self._send_lock:await ws.send(json.dumps(self.protocol.unsubscribe_trades(remove)))
+  finally:
+   with self._trade_flush_lock:self._trade_flush_scheduled=False
+
+ def _subscription_frame(self,msg):
+  if msg.get("T")!="subscription":return False
+  if not self.dynamic_trade_mode:return False
+  req=set(self.subscription_stats.get("bar_symbols") or ())
+  got_bars=set(msg.get("bars") or [])
+  statuses=set(msg.get("statuses") or [])
+  if got_bars!=req or "*" not in statuses:
+   raise WebSocketProtocolError("ALPACA_WS_DYNAMIC_ACK_BASE_SCOPE_CHANGED")
+  got_trades=set(msg.get("trades") or [])
+  self.trade_scope.acknowledge(self.connection_epoch,got_trades)
+  self.subscription_stats.update(trades=len(got_trades),trade_symbols=tuple(sorted(got_trades)))
+  # A desired-scope change can race with this ACK; converge with another delta.
+  if set(self.trade_scope.desired())!=got_trades:self._trade_scope_changed(self.trade_scope.desired())
+  return True
 
  def performance_snapshot(self):
   # Observed receive throughput is not upstream arrival rate. Samples are
@@ -93,6 +141,11 @@ class WebSocketRuntime:
   def enqueue(msg):
    if msg.get("T")=="error":
     raise SIPErrorFrame(msg.get('code'),msg.get('msg'))
+   if self._subscription_frame(msg):
+    self._control_received+=1
+    return
+   if msg.get("T") in {"t","c","x"} and not self.trade_authorized(msg.get("S")):
+    raise WebSocketProtocolError("SIP_TRADE_OUTSIDE_ACKED_DYNAMIC_SCOPE")
    self._received+=1
    self._record_kind(msg)
    if self.epoch_capture:self.epoch_capture.ingest(self.connection_epoch,msg)
@@ -149,6 +202,7 @@ class WebSocketRuntime:
   if self.epoch_capture:self.epoch_capture.invalidate("STARTING_NEW_CONNECTION")
   try:
    async with self.connector(url) as ws:
+    self._live_ws=ws;self._live_loop=asyncio.get_running_loop();self._send_lock=asyncio.Lock()
     welcome=await self._recv_control(ws)
     if not self._has_success(welcome,"connected"):
      raise WebSocketProtocolError("ALPACA_WS_CONNECTED_ACK_MISSING")
@@ -161,7 +215,12 @@ class WebSocketRuntime:
     if any(m.get("T") in {"b","t","s","c","x"} for m in auth):
      raise WebSocketProtocolError("SIP_DATA_BEFORE_SUBSCRIPTION")
     requested=list(symbols)
-    await ws.send(json.dumps(self.protocol.subscribe(requested)))
+    supports_dynamic=(self.dynamic_trade_mode and hasattr(self.protocol,"subscribe_trades")
+                      and hasattr(self.protocol,"unsubscribe_trades"))
+    initial_trades=self.trade_scope.desired() if supports_dynamic else tuple(requested)
+    request=(self.protocol.subscribe(requested,initial_trades) if supports_dynamic
+             else self.protocol.subscribe(requested))
+    await ws.send(json.dumps(request))
     sub_msgs=await self._recv_control(ws)
     sub_index=next((i for i,m in enumerate(sub_msgs) if m.get("T")=="subscription"),None)
     if sub_index is None:raise WebSocketProtocolError("ALPACA_WS_SUBSCRIPTION_ACK_MISSING")
@@ -173,12 +232,16 @@ class WebSocketRuntime:
     initial_messages=sub_msgs[sub_index+1:]
     req=set(requested);got_trades=set(sub.get("trades") or []);got_bars=set(sub.get("bars") or [])
     statuses=set(sub.get("statuses") or [])
-    missing_trades=req-got_trades;missing_bars=req-got_bars
-    if missing_trades or missing_bars or "*" not in statuses:
+    expected_trades=set(initial_trades);missing_bars=req-got_bars
+    if got_trades!=expected_trades or missing_bars or got_bars-req or "*" not in statuses:
      raise WebSocketProtocolError(
-      f"ALPACA_WS_SUBSCRIPTION_INCOMPLETE:trades_missing={len(missing_trades)},bars_missing={len(missing_bars)},statuses_star={'*' in statuses}")
-    self.subscription_stats={"requested":len(req),"trades":len(got_trades),"bars":len(got_bars),"statuses_star":True}
-    self.connection_epoch+=1;self._epoch_ack_verified=True
+      f"ALPACA_WS_SUBSCRIPTION_INCOMPLETE:trades_expected={len(expected_trades)},trades_got={len(got_trades)},bars_missing={len(missing_bars)},statuses_star={'*' in statuses}")
+    self.subscription_stats={"requested":len(req),"trades":len(got_trades),"bars":len(got_bars),"statuses_star":True,"bar_symbols":tuple(sorted(req)),"trade_symbols":tuple(sorted(got_trades))}
+    self.connection_epoch+=1
+    if self.dynamic_trade_mode:
+     self.trade_scope.start_epoch(self.connection_epoch,initial_trades)
+     self.trade_scope.acknowledge(self.connection_epoch,got_trades)
+    self._epoch_ack_verified=True
     if self.epoch_capture:self.epoch_capture.start(self.connection_epoch)
     self._rx_started=time.monotonic();self._received=0;self._handled=0
     self._market_data_received=0;self._control_received=0;self._unknown_received=0
@@ -190,6 +253,9 @@ class WebSocketRuntime:
      await self._receive_queued(ws,initial_messages)
      return
     for msg in initial_messages:
+     if self._subscription_frame(msg):continue
+     if msg.get("T") in {"t","c","x"} and not self.trade_authorized(msg.get("S")):
+      raise WebSocketProtocolError("SIP_TRADE_OUTSIDE_ACKED_DYNAMIC_SCOPE")
      kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
      self._received+=1;started=time.monotonic_ns()
      self._record_kind(msg)
@@ -202,6 +268,10 @@ class WebSocketRuntime:
      if self.stopping:break
      for msg in self._decode(raw):
       if msg.get("T")=="error":raise SIPErrorFrame(msg.get('code'),msg.get('msg'))
+      if self._subscription_frame(msg):
+       self._control_received+=1;continue
+      if msg.get("T") in {"t","c","x"} and not self.trade_authorized(msg.get("S")):
+       raise WebSocketProtocolError("SIP_TRADE_OUTSIDE_ACKED_DYNAMIC_SCOPE")
       kind={"b":"BAR","t":"TRADE","s":"STATUS"}.get(msg.get("T"),"OTHER")
       self._received+=1;start_ns=time.monotonic_ns()
       self._record_kind(msg)
@@ -222,6 +292,8 @@ class WebSocketRuntime:
    # A bounded allowlisted revision diagnostic may contain symbol/trade fields.
    # Authentication payloads and arbitrary unknown fields are never retained.
    self.connected_event.clear()
+   self._live_ws=None;self._live_loop=None;self._send_lock=None
+   self.trade_scope.invalidate()
    before=self.performance_snapshot()
    err=self.last_error or ""
    if "SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED" in err:

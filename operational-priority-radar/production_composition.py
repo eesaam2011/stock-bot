@@ -16,6 +16,8 @@ from active_trade_recovery import ActiveTradeChronologicalReconciler
 from production_halt_status import ProductionStatusTracker
 from production_runtime_state import RedisLeadershipFacade
 from production_pipeline import ProductionDecisionPipeline
+from rest_bar_maturity import MaturedREST1MinCoordinator
+from rest_bar_shadow_audit import RESTBarShadowAudit
 from datetime import datetime,timezone
 from production_universe import build_operational_universe
 
@@ -87,6 +89,7 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         from durable_revision_journal import DurableRevisionJournal
         rec.durable_revision_journal=DurableRevisionJournal(orch.redis,leadership)
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
+    pipeline.bar_shadow_audit=RESTBarShadowAudit(r,rest,session)
     pipeline.status_tracker=getattr(rec,"status_tracker",None)
     capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
     # Empty symbols exist only in the deterministic injection seam above.
@@ -118,7 +121,9 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
             or tagged_epoch!=ws.connection_epoch):
           return  # late to_thread work from a disconnected/old SIP epoch
         allow=pipeline.decision_gate()
-        if kind=="BAR" and symbol and allow:pipeline.on_bar(symbol,msg,received_at,True)
+        # v1.1: streamed bars are not canonical E/B inputs. Mature SIP REST
+        # bars are routed by MaturedREST1MinCoordinator below.
+        if kind=="BAR" and symbol and allow:pipeline.on_bar(symbol,msg,received_at,False)
         elif kind=="TRADE" and symbol and allow:pipeline.on_trade(symbol,msg,received_at,True)
         elif kind=="STATUS":
           # Pre-trust statuses belong to the captured SIP epoch, not the
@@ -158,10 +163,24 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     # Capture overflow and dispatch backlog overflow are fatal disconnects.
     # No drop-oldest behavior is permitted for trades, bars or halt statuses.
     ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect,
-                        epoch_capture=capture,dispatch_queue_max=1024)
+                        epoch_capture=capture,dispatch_queue_max=1024,
+                        dynamic_trade_mode=True,dynamic_trade_limit=256)
+    pipeline.trade_scope_request=ws.require_trade_symbol
+    def process_mature_rest_bar(symbol,bar,received_at):
+      # REST can be in flight across a disconnect. Recheck the same gate while
+      # holding the pipeline lock immediately before a decision-changing write.
+      with pipeline.decision_lock:
+        if not pipeline.decision_gate():return
+        pipeline.on_bar(symbol,bar,received_at,True)
+    rest1m=(MaturedREST1MinCoordinator(
+                rest,syms,process_mature_rest_bar,
+                grace_seconds=int(os.getenv("OPR_REST_BAR_GRACE_SECONDS","90")),
+                batch_size=200)
+            if syms else None)
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
     supervisor.decision_pipeline=pipeline
+    supervisor.rest1m_coordinator=rest1m
     supervisor.sip_drain_coordinator=sip_drain
     # The combined journal atomically advances the original transport receipt
     # and validated semantic summaries.  It still cannot claim reconciliation.

@@ -25,12 +25,18 @@ class ProductionDecisionPipeline:
   self.decision_gate=lambda:False  # Fail closed until the orchestrator binds it.
   self.max_bar_buffer=20;self.entry_trade_buffer_seconds=15
   self.raw_trade_messages_received=0
+  self.trade_scope_request=lambda symbol,required:None
+  self.bar_shadow_audit=None
   # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
   # These caches mirror canonical Redis state and are refreshed after startup recovery.
   self._active_by_symbol={};self._entry_opportunities={}
   # Structure-bar retention is only needed after a symbol has produced E or B.
   # Keeping 20 bars for every market symbol duplicates the broad BASE_READY history.
   self._structure_watch_symbols=set()
+ def _request_trade_scope(self,symbol,required):
+  callback=getattr(self,"trade_scope_request",None)
+  if callable(callback):return callback(symbol,required)
+  return None
  def _current_rss_bytes(self):
   # Linux/Render current resident set size. Diagnostic only; never affects decisions.
   try:
@@ -100,6 +106,7 @@ class ProductionDecisionPipeline:
    for x in self._scan_records(pat,typ):
     if x.get("session")==self.session:watches.add(x["symbol"])
   self._active_by_symbol=active;self._entry_opportunities=opps;self._structure_watch_symbols=watches
+  for symbol in sorted(set(active)|set(opps)):self._request_trade_scope(symbol,True)
   return {"active_trades":len(active),"entry_opportunities":len(opps),"structure_watch_symbols":len(watches)}
  def _retain_structure_bar(self,symbol,bar,received_at):
   # Structure risk needs only timestamp + low; keep a bounded compact record.
@@ -112,13 +119,18 @@ class ProductionDecisionPipeline:
   out=self.br.on_completed_native_1m(symbol,bar,received_at)
   b_now=False
   if out.get("base_ready"):
+   audit_rows=(self.br.audit_history(symbol)
+               if hasattr(self.br,"audit_history") else None)
    existing=self._get(key_base_ready(self.session,symbol))
    if not existing:
     bs=dt(bar["t"]);be=bs+timedelta(minutes=1)
     try:_b_key,b_record=self.bw.persist_first_b(self.session,symbol,bs,be,received_at,max(be,received_at),out["features"],out["diagnostics"])
     except Exception:pass
-    else:
+   else:
      b_now=True
+     if self.bar_shadow_audit is not None and audit_rows:
+      self.bar_shadow_audit.record("BASE_1MIN",symbol,audit_rows,be,
+                                   received_at,True)
      print({"stage":"SHADOW_FIRST_B","symbol":symbol,
             "bar_end_ts":b_record.get("bar_end_ts"),
             "decision_available_ts":b_record.get("decision_available_ts"),
@@ -218,6 +230,9 @@ class ProductionDecisionPipeline:
       else:
        stats["crossings"]+=1
        stats["early_core_persisted"]+=1
+       if self.bar_shadow_audit is not None:
+        self.bar_shadow_audit.record("EARLY_5MIN",symbol,rows,
+                                     crossing.bar_end_ts,now,True)
        self._structure_watch_symbols.add(symbol)
        print({"stage":"SHADOW_FIRST_E","symbol":symbol,
               "score":e_record.get("score"),
@@ -245,6 +260,7 @@ class ProductionDecisionPipeline:
   record=self._get(opportunity_key,"opportunity")
   if record and record.get("state")=="CONFLUENCE_VALID":
    self._entry_opportunities[symbol]=record
+   self._request_trade_scope(symbol,True)
    print({"stage":"SHADOW_CONFLUENCE","symbol":symbol,
           "e_decision_available_ts":e.get("decision_available_ts") if e else None,
           "b_decision_available_ts":b.get("decision_available_ts") if b else None,
@@ -276,6 +292,10 @@ class ProductionDecisionPipeline:
   if self.status_tracker is None or self.status_tracker.current(symbol)!="TRADING":return
   trigger=dt(opp["entry_trigger_ts"])
   ed=evaluate_entry_price(trigger,now,self.trades.get(symbol,[]),symbol in self.halted)
+  if ed.status in {EntryStatus.EXPIRED,EntryStatus.HALT_FINAL}:
+   self._entry_opportunities.pop(symbol,None);self.trades.pop(symbol,None)
+   self._request_trade_scope(symbol,False)
+   return
   if ed.status!=EntryStatus.PRICE_READY:return
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
   first=min(dt(e["decision_available_ts"]),dt(b["decision_available_ts"]))
@@ -293,6 +313,7 @@ class ProductionDecisionPipeline:
   self.lua.atomic_entry(self.worker_id,key_opportunity(self.session,symbol),canonical_json(opp),canonical_json(new),key_trade(trade["trade_id"]),canonical_json(trade),f"operational_priority_radar:v1:outbox:{out['event_id']}",canonical_json(out),token.leader_generation)
   self._entry_opportunities.pop(symbol,None);self.trades.pop(symbol,None);self.bars.pop(symbol,None)
   self._structure_watch_symbols.discard(symbol);self._active_by_symbol[symbol]=trade
+  self._request_trade_scope(symbol,True)
  def _active(self,symbol):
   # Hot path: canonical active state is mirrored in memory after recovery/atomic commits.
   return self._active_by_symbol.get(symbol)
@@ -308,7 +329,9 @@ class ProductionDecisionPipeline:
   new,out=stamp(new),stamp(out)
   self.lua.atomic_trade_event(self.worker_id,key_trade(t["trade_id"]),canonical_json(t),canonical_json(new),f"operational_priority_radar:v1:outbox:{eid}",canonical_json(out),tok.leader_generation)
   if new["state"] in {"ACTIVE_PRE_T1","ACTIVE_POST_T1","HALTED_ACTIVE"}:self._active_by_symbol[t["symbol"]]=new
-  else:self._active_by_symbol.pop(t["symbol"],None)
+  else:
+   self._active_by_symbol.pop(t["symbol"],None)
+   self._request_trade_scope(t["symbol"],False)
  def _state(self,t):return TradeState(t["state"],float(t["entry_alert_price"]),float(t["structural_stop"]),float(t["t1"]),float(t["t2"]),dt(t["monitoring_deadline"]),t.get("pre_halt_state"))
  def _monitor_trade(self,symbol,tr):
   t=self._active(symbol)
