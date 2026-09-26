@@ -32,6 +32,9 @@ class ShadowRuntimeSupervisor:
         self.stop_event=asyncio.Event()
         self.native5_cycles=0
         self.native5_last_stats={}
+        self.rest1m_cycles=0
+        self.rest1m_last_stats={}
+        self.bar_audit_last_stats={}
 
     def _leadership_snapshot(self):
         """Diagnostic only: expose lease identity/generation/TTL; no decision-policy changes."""
@@ -89,6 +92,40 @@ class ShadowRuntimeSupervisor:
             try: await asyncio.wait_for(self.stop_event.wait(),timeout=5.0)
             except asyncio.TimeoutError: pass
 
+    async def rest1m_loop(self):
+        while not self.stop_event.is_set():
+            coordinator=getattr(self,"rest1m_coordinator",None)
+            pipeline=getattr(self,"decision_pipeline",None)
+            if coordinator is not None and pipeline is not None:
+                from datetime import datetime,timezone
+                allow=bool(pipeline.decision_gate())
+                try:
+                    stats=await asyncio.to_thread(
+                        coordinator.poll,datetime.now(timezone.utc),allow)
+                except Exception as exc:
+                    print({"stage":"REST1M_MATURE_CYCLE_ERROR",
+                           "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
+                else:
+                    self.rest1m_cycles+=1;self.rest1m_last_stats=stats
+                    print({"stage":"REST1M_MATURE_CYCLE_OK","cycle":self.rest1m_cycles,
+                           **stats},flush=True)
+            try:await asyncio.wait_for(self.stop_event.wait(),timeout=15.0)
+            except asyncio.TimeoutError:pass
+
+    async def bar_audit_loop(self):
+        while not self.stop_event.is_set():
+            audit=getattr(getattr(self,"decision_pipeline",None),"bar_shadow_audit",None)
+            if audit is not None:
+                from datetime import datetime,timezone
+                try:self.bar_audit_last_stats=await asyncio.to_thread(
+                    audit.compare_due,datetime.now(timezone.utc),100)
+                except Exception as exc:
+                    print({"stage":"REST_BAR_SHADOW_AUDIT_ERROR",
+                           "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
+                else:print({"stage":"REST_BAR_SHADOW_AUDIT",**self.bar_audit_last_stats},flush=True)
+            try:await asyncio.wait_for(self.stop_event.wait(),timeout=300.0)
+            except asyncio.TimeoutError:pass
+
 
     def _redis_count(self, pattern):
         total=0; cursor=0
@@ -126,6 +163,15 @@ class ShadowRuntimeSupervisor:
                        "native5_cycles":self.native5_cycles,
                        "native5_batch_size":500,
                        "native5_last":self.native5_last_stats,
+                       "rest1m_cycles":self.rest1m_cycles,
+                       "rest1m_last":self.rest1m_last_stats,
+                       "bar_shadow_audit":self.bar_audit_last_stats,
+                       "dynamic_trade_scope":(
+                           self.websocket_runtime.trade_scope.snapshot()
+                           if hasattr(self.websocket_runtime,"trade_scope") else None),
+                       "sip_receive_processing":(
+                           self.websocket_runtime.performance_snapshot()
+                           if hasattr(self.websocket_runtime,"performance_snapshot") else None),
                        "operational_session":session,
                        "early_core_events_session":e_session,
                        "base_ready_events_session":b_session,
@@ -187,75 +233,169 @@ class ShadowRuntimeSupervisor:
     async def run(self):
         if not await self._wait_for_leadership():
             return
-
-        if hasattr(self,"decision_pipeline"):
-            print({"stage":"SYNC_LEADER_GENERATION_START"}, flush=True)
-            self.decision_pipeline.leadership.sync_generation()
-            print({"stage":"SYNC_LEADER_GENERATION_OK",
-                   "lease":self._leadership_snapshot()}, flush=True)
-
-        # Keep lease renewal alive throughout long startup recovery.
-        leadership_task=asyncio.create_task(self.leadership_loop())
-        print({"stage":"LEADERSHIP_RENEW_TASK_STARTED",
-               "lease":self._leadership_snapshot()},flush=True)
-
-        print({"stage":"STARTUP_RECOVERY_START"}, flush=True)
-        recovery_result=await asyncio.to_thread(self.orchestrator.begin_recovery)
-        print({"stage":"STARTUP_RECOVERY_RETURNED",
-               "reconciled": recovery_result.get("reconciled",False)
-                   if isinstance(recovery_result,dict) else None,
-               "lease":self._leadership_snapshot()}, flush=True)
-        # Fail closed before stream trust if the lease was lost during recovery.
-        self.decision_pipeline.leadership.require_current() if hasattr(self,"decision_pipeline") else None
-
-        print({"stage":"SIP_WEBSOCKET_TASK_START",
-               "symbols_count":len(self.symbols)}, flush=True)
-        ws_task=asyncio.create_task(self.websocket_runtime.reconnect_loop(
-                self.stream_url,self.key,self.secret,self.symbols))
-
-        # CONNECTED is not trusted. Never wait silently forever during startup.
-        print({"stage":"WAITING_FOR_SIP_CONNECTED","timeout_sec":45}, flush=True)
+        leadership_task=None
+        ws_task=None
+        child_tasks=[]
+        recovery_cancelled=False
         try:
-            await asyncio.wait_for(
-                self.websocket_runtime.connected_event.wait(),
-                timeout=45.0
-            )
-        except asyncio.TimeoutError:
-            print({"stage":"SIP_CONNECTED_TIMEOUT",
-                   "timeout_sec":45,
-                   "new_entries_allowed":False}, flush=True)
-            self.websocket_runtime.stop()
-            ws_task.cancel()
-            await asyncio.gather(ws_task, return_exceptions=True)
-            raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT")
-
-        print({"stage":"SIP_CONNECTED_NOT_YET_TRUSTED"}, flush=True)
-        self.orchestrator.mark_stream_connected()
-        recovery=self.orchestrator.c.recovery
-        while hasattr(recovery,"ready_after_stream") and not recovery.ready_after_stream():
-            if self.stop_event.is_set():break
-            await asyncio.sleep(0.05)
-        if not self.stop_event.is_set():
-            reconciled = recovery.ready_after_stream() if hasattr(recovery,"ready_after_stream") else recovery_result.get("reconciled",False)
-            if not reconciled:
-                raise RuntimeError("POST_STREAM_RECONCILIATION_UNPROVEN")
-            trust_state = self.orchestrator.finish_reconciliation(continuity_ok=True)
+            if hasattr(self,"decision_pipeline"):
+                print({"stage":"SYNC_LEADER_GENERATION_START"},flush=True)
+                self.decision_pipeline.leadership.sync_generation()
+                print({"stage":"SYNC_LEADER_GENERATION_OK",
+                       "lease":self._leadership_snapshot()},flush=True)
+            leadership_task=asyncio.create_task(self.leadership_loop())
+            print({"stage":"LEADERSHIP_RENEW_TASK_STARTED",
+                   "lease":self._leadership_snapshot()},flush=True)
+            # Subscribe first so every event arriving during the REST recovery
+            # window is captured under one ACK epoch. No decisions are allowed:
+            # the orchestrator remains STARTING until recovery completes.
+            print({"stage":"SIP_CAPTURE_BEFORE_RECOVERY",
+                   "symbols_count":len(self.symbols)},flush=True)
+            ws_task=asyncio.create_task(self.websocket_runtime.reconnect_loop(
+                self.stream_url,self.key,self.secret,self.symbols))
+            print({"stage":"WAITING_FOR_SIP_CONNECTED","timeout_sec":45},flush=True)
+            try:
+                await asyncio.wait_for(self.websocket_runtime.connected_event.wait(),
+                                       timeout=getattr(self,"sip_connect_timeout",45.0))
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("SIP_WEBSOCKET_CONNECT_TIMEOUT") from exc
+            connected_epoch=getattr(self.websocket_runtime,"connection_epoch",None)
+            capture=getattr(self.websocket_runtime,"epoch_capture",None)
+            sip_drain=getattr(self,"sip_drain_coordinator",None)
+            # Switch immediately after the verified subscription ACK.  The
+            # websocket keeps appending while exact prefixes are committed
+            # and ACKed; this does not authorize DIRECT processing.
+            if capture is not None and sip_drain is not None:
+                capture.begin_drain(connected_epoch)
+            print({"stage":"SIP_CAPTURING_NOT_TRUSTED",
+                   "epoch":connected_epoch,
+                   "bounded_drain":sip_drain is not None},flush=True)
+            print({"stage":"STARTUP_RECOVERY_START","epoch":connected_epoch},flush=True)
+            # A REST request may run for minutes. Do not wait for its full
+            # timeout if the ACK epoch, capture, or lease becomes invalid.
+            # Cancellation is cooperative: the recovery thread checks its
+            # cancellation event before each batch and canonical commit.
+            recovery_task=asyncio.create_task(
+                asyncio.to_thread(self.orchestrator.begin_recovery))
+            recovery_deadline=asyncio.get_running_loop().time()+getattr(
+                self,"startup_recovery_timeout",900.0)
+            try:
+                while not recovery_task.done():
+                    if self.stop_event.is_set():
+                        raise RuntimeError("STARTUP_STOPPED_DURING_RECOVERY")
+                    if leadership_task.done():
+                        raise RuntimeError("LEADERSHIP_LOST_DURING_RECOVERY")
+                    capture=getattr(self.websocket_runtime,"epoch_capture",None)
+                    if (ws_task.done()
+                        or not self.websocket_runtime.connected_event.is_set()
+                        or getattr(self.websocket_runtime,"connection_epoch",None)!=connected_epoch
+                        or (capture is not None
+                            and getattr(capture,"phase",None)==getattr(capture,"INVALID","INVALID"))):
+                        raise RuntimeError("SIP_CAPTURE_INVALID_DURING_RECOVERY")
+                    if asyncio.get_running_loop().time()>=recovery_deadline:
+                        raise RuntimeError("STARTUP_RECOVERY_TIMEOUT")
+                    await asyncio.wait({recovery_task},timeout=0.1)
+                recovery_result=recovery_task.result()
+            except BaseException:
+                rec=getattr(getattr(self.orchestrator,"c",None),"recovery",None)
+                cancel=getattr(rec,"cancel",None)
+                if callable(cancel):
+                    cancel()
+                    recovery_cancelled=True
+                recovery_task.cancel()
+                await asyncio.gather(recovery_task,return_exceptions=True)
+                raise
+            if (not isinstance(recovery_result,dict)
+                or recovery_result.get("gap_recovered") is not True
+                or recovery_result.get("reconciled") is not True):
+                reason=(recovery_result.get("reason","UNPROVEN")
+                        if isinstance(recovery_result,dict) else "INVALID_RECOVERY_RESULT")
+                raise RuntimeError(f"STARTUP_RECOVERY_UNPROVEN:{reason}")
+            print({"stage":"STARTUP_RECOVERY_RETURNED",
+                   "reconciled":recovery_result.get("reconciled",False)
+                       if isinstance(recovery_result,dict) else None,
+                   "lease":self._leadership_snapshot()},flush=True)
+            # Commit any tail smaller than the regular drain batch.  This is
+            # still only a payload-free transport receipt chain.
+            if sip_drain is not None:
+                sip_drain.drain_available(connected_epoch,max_batches=256)
+            if hasattr(self,"decision_pipeline"):
+                self.decision_pipeline.leadership.require_current()
+            if leadership_task.done():
+                raise RuntimeError("LEADERSHIP_RENEW_TASK_ENDED_DURING_RECOVERY")
+            if (ws_task.done()
+                or not self.websocket_runtime.connected_event.is_set()
+                or getattr(self.websocket_runtime,"connection_epoch",None)!=connected_epoch):
+                raise RuntimeError("SIP_EPOCH_CHANGED_DURING_STARTUP_RECOVERY")
+            self.orchestrator.mark_stream_connected()
+            recovery=self.orchestrator.c.recovery
+            ready=getattr(recovery,"ready_after_stream",None)
+            if not callable(ready):
+                raise RuntimeError("POST_STREAM_RECONCILIATION_PROOF_MISSING")
+            deadline=asyncio.get_running_loop().time()+getattr(
+                self,"post_stream_timeout",60.0)
+            while not ready():
+                if self.stop_event.is_set():
+                    return
+                if (not self.websocket_runtime.connected_event.is_set() or
+                    getattr(self.websocket_runtime,"connection_epoch",None)!=connected_epoch):
+                    raise RuntimeError("SIP_EPOCH_LOST_DURING_RECOVERY")
+                if leadership_task.done() or ws_task.done():
+                    raise RuntimeError("SUPERVISOR_TASK_ENDED_DURING_RECOVERY")
+                if asyncio.get_running_loop().time()>=deadline:
+                    raise RuntimeError("POST_STREAM_RECONCILIATION_TIMEOUT")
+                await asyncio.sleep(0.05)
+            if self.stop_event.is_set():
+                return
+            from trust_gate import require_live_trust_proof
+            pipeline=getattr(self,"decision_pipeline",None)
+            if pipeline is None:
+                raise RuntimeError("DECISION_PIPELINE_MISSING_FOR_TRUST_PROOF")
+            require_live_trust_proof(self.websocket_runtime,recovery,
+                                     pipeline.leadership,connected_epoch)
+            # Populate active/opportunity caches only after canonical recovery.
+            # This requests the bounded trade scope but does not authorize a
+            # trade until its current-epoch subscription ACK arrives.
+            refresh=getattr(pipeline,"refresh_runtime_caches",None)
+            if callable(refresh):refresh()
+            trust_state=self.orchestrator.finish_reconciliation(
+                continuity_ok=True,epoch=connected_epoch)
             print({"stage":"SIP_LIVE_TRUSTED",
-                   "trust_state": getattr(trust_state, "value", str(trust_state)),
-                   "lease":self._leadership_snapshot()}, flush=True)
-        tasks=[
-            ws_task,
-            asyncio.create_task(self.outbox_loop()),
-            asyncio.create_task(self.native5_loop()),
-            leadership_task,
-            asyncio.create_task(self.telemetry_loop()),
-        ]
-        await self.stop_event.wait()
-        self.drain.begin()
-        self.websocket_runtime.stop()
-        for t in tasks:t.cancel()
-        await asyncio.gather(*tasks,return_exceptions=True)
-        self.drain.complete()
+                   "trust_state":getattr(trust_state,"value",str(trust_state)),
+                   "lease":self._leadership_snapshot()},flush=True)
+            child_tasks=[
+                asyncio.create_task(self.outbox_loop()),
+                asyncio.create_task(self.native5_loop()),
+                asyncio.create_task(self.rest1m_loop()),
+                asyncio.create_task(self.bar_audit_loop()),
+                asyncio.create_task(self.telemetry_loop()),
+            ]
+            await self.stop_event.wait()
+        finally:
+            # Also run after startup recovery errors/timeouts, normal EOF or
+            # SIGTERM. Never leave a lease-renewal task alive after failure.
+            self.stop_event.set()
+            self.drain.begin()
+            self.websocket_runtime.stop()
+            rec=getattr(getattr(self.orchestrator,"c",None),"recovery",None)
+            cancel=getattr(rec,"cancel",None)
+            if callable(cancel) and not recovery_cancelled:cancel()
+            tasks=[t for t in (ws_task,leadership_task,*child_tasks) if t is not None]
+            for task in tasks:task.cancel()
+            if tasks:await asyncio.gather(*tasks,return_exceptions=True)
+            # The REST recovery thread may survive wait_for cancellation.
+            # Owner-checked Lua release prevents its late canonical commits.
+            release=getattr(self.orchestrator.redis,"release",None)
+            if callable(release):
+                try:
+                    released=await asyncio.to_thread(release,self.orchestrator.worker_id)
+                    print({"stage":"LEADERSHIP_RELEASE_ON_SHUTDOWN",
+                           "released":released},flush=True)
+                except Exception as exc:
+                    print({"stage":"LEADERSHIP_RELEASE_ERROR",
+                           "error_type":type(exc).__name__,
+                           "error":str(exc)[:200]},flush=True)
+            self.drain.complete()
 
     def request_stop(self):
         self.stop_event.set()

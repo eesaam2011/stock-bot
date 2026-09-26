@@ -1,0 +1,376 @@
+name: OPR review tests (no deploy)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'operational-priority-radar/**'
+      - '.github/workflows/opr-review-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 10
+    env:
+      OPR_REDIS_TEST_URL: redis://127.0.0.1:6379/15
+      OPR_REQUIRE_REAL_REDIS: '1'
+    defaults:
+      run:
+        working-directory: operational-priority-radar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Mandatory real Redis 7 Lua integration tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis test_step3aa_real_redis test_step3ah_real_redis test_step3av_real_redis test_step3ba_real_redis test_step3bb_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-real-output.txt"
+      - name: Verify real Redis 7 integration service
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os,redis
+          url=os.environ["OPR_REDIS_TEST_URL"]
+          assert url=="redis://127.0.0.1:6379/15", "unexpected Redis test URL"
+          client=redis.Redis.from_url(url,decode_responses=True,socket_timeout=2)
+          assert client.ping(), "Redis integration service unreachable"
+          print("REAL_REDIS_7_PING_OK")
+          PY
+          python -m unittest -v test_step2n_real_redis test_step3d_real_redis test_step3h_real_redis test_step3i_real_redis test_step3l_real_redis test_step3u_real_redis test_step3aa_real_redis test_step3ah_real_redis test_step3av_real_redis test_step3ba_real_redis test_step3bb_real_redis 2>&1 | tee "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "Ran 57 tests" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          grep -q "^OK$" "$GITHUB_WORKSPACE/redis-integration-output.txt"
+          printf 'real_redis_integration=passed\\n' > "$GITHUB_WORKSPACE/redis-integration-ok.txt"
+      - name: Unittest (full OPR directory)
+        run: python -m unittest discover -v
+      - name: Pytest (full OPR directory; export exact stdout)
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee "$GITHUB_WORKSPACE/pytest-q-output.txt"
+      - name: Synthetic BASE_READY 5000-symbol minute-boundary benchmark (not a live 407 proof)
+        shell: bash
+        run: |
+          set -o pipefail
+          python benchmark_base_ready_burst.py --symbols 5000 --full-evals 300 | tee "$GITHUB_WORKSPACE/BASE_READY_BURST_BENCHMARK.json"
+          python - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ["GITHUB_WORKSPACE"],"BASE_READY_BURST_BENCHMARK.json")))
+          assert x["symbols_at_same_minute_boundary"]==5000
+          assert not x["real_alpaca_sip_407_reproduced"]
+          assert not x["shadow_deploy_authorized"]
+          assert x["peak_tracemalloc_bytes_resident_subset"]["compact_tuple"]<x["peak_tracemalloc_bytes_resident_subset"]["persistent_dict"]
+          print("BASE_READY_BURST_OFFLINE_BENCHMARK_OK")
+          PY
+      - name: Integrated synthetic SIP 3000 mature symbols + 5000 queue/capture bursts
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          python benchmark_sip_queue_burst.py --symbols 3000 --burst 5000 | tee "$GITHUB_WORKSPACE/SIP_INTEGRATED_STRESS.json"
+          python - <<'PY'
+          import json,os
+          r=json.load(open(os.path.join(os.environ["GITHUB_WORKSPACE"],"SIP_INTEGRATED_STRESS.json")))
+          good,queue,capture,code=r["results"]
+          assert good["received"]==good["handled"]==good["accepted_mature_base_ready"]==3000
+          assert good["dispatch_queue"]["overflows"]==0
+          assert queue["dispatch_queue"]["overflows"]==1
+          assert "SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED" in queue["error"]
+          assert "SIP_CAPTURE_OVERFLOW_FAIL_CLOSED" in capture["error"]
+          assert "ALPACA_WS_ERROR_407" in code["error"]
+          assert good["last_epoch_diagnostic"]["failure_class"]=="STREAM_EOF"
+          assert queue["last_epoch_diagnostic"]["failure_class"]=="DISPATCH_QUEUE_OVERFLOW"
+          assert capture["last_epoch_diagnostic"]["capture_before_teardown"]["invalid_reason"]=="CAPTURE_OVERFLOW"
+          assert code["last_epoch_diagnostic"]["failure_class"]=="SIP_ERROR_FRAME_407"
+          assert all(x["capture"]["phase"]=="INVALID" and x["disconnected"] for x in r["results"])
+          assert not r["merge_or_deploy_authorized"]
+          print("SIP_INTEGRATED_SYNTHETIC_STRESS_OK")
+          PY
+      - name: Step3Q independent bounded-drain SIP cross-check
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          python websocket_burst_stress.py --symbols 300 --cycles 10 > "$GITHUB_WORKSPACE/SIP_REPEATED_MINUTE_STRESS.json" 2> "$GITHUB_WORKSPACE/SIP_REPEATED_MINUTE_RUNTIME_LOG.txt"
+          python - <<'PY'
+          import json,os
+          x=json.load(open(os.path.join(os.environ["GITHUB_WORKSPACE"],"SIP_REPEATED_MINUTE_STRESS.json")))
+          a=x["paced_real_base_ready"]
+          b=x["single_frame_dispatch_overflow"]
+          c=x["paced_capture_limit_overflow"]
+          q=x["paced_continuous_bounded_drain"]
+          d=x["injected_407_disconnect"]
+          assert a["offered_messages"]==3000==a["received"]==a["handled"]
+          assert a["dispatch_queue"]["overflows"]==0
+          assert a["processing_ms"]["BAR"]["p95"] is not None
+          assert b["dispatch_queue"]["high_water"]==1024
+          assert "SIP_DISPATCH_QUEUE_OVERFLOW_FAIL_CLOSED" in b["error"]
+          assert c["received"]==4097  # includes the frame rejected by capture
+          assert "SIP_CAPTURE_OVERFLOW_FAIL_CLOSED" in c["error"]
+          assert q["offered_messages"]==5000==q["received"]==q["handled"]
+          assert q["reconciled_sequences"]==5000
+          assert q["continuous_drain"]["acked_messages"]==5000
+          assert not q["continuous_drain"]["direct_handoff_authorized"]
+          assert "SIP_STREAM_EOF_UNTRUSTED" in q["error"]
+          assert "407 slow client synthetic" in d["error"]
+          assert a["last_epoch_diagnostic"]["failure_class"]=="STREAM_EOF"
+          assert b["last_epoch_diagnostic"]["failure_class"]=="DISPATCH_QUEUE_OVERFLOW"
+          assert c["last_epoch_diagnostic"]["capture_before_teardown"]["invalid_reason"]=="CAPTURE_OVERFLOW"
+          assert d["last_epoch_diagnostic"]["failure_class"]=="OTHER_407_EXCEPTION_NOT_ALPACA_PROOF"
+          assert all(v["forensic_seen_by_disconnect"]==[True] for v in (a,b,c,q,d))
+          assert all(v["disconnects"]==[{"ack_cleared":True,"capture_invalid":True}]
+                     for v in (a,b,c,q,d))
+          assert not x["real_407_causality_proven"]
+          assert not x["shadow_deploy_authorized"]
+          print("SIP_REPEATED_MINUTE_STRESS_5_SCENARIOS_OK")
+          PY
+      - name: Export fail-closed Shadow acceptance report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python operational_acceptance.py --ci-pytest-passed --ci-real-redis-passed --output "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"
+          python - <<'PY'
+          import json,os
+          p=os.path.join(os.environ["GITHUB_WORKSPACE"],"SHADOW_READINESS_REPORT.json")
+          r=json.load(open(p))
+          assert r["status"]=="NOT_AUTHORIZED_FOR_LIVE_SHADOW"
+          assert len(r["outstanding_proofs"])==8
+          assert not r["render_deploy_authorized"]
+          assert r["observed_offline_evidence"]["ci_pytest_passed"]
+          assert r["observed_offline_evidence"]["ci_real_redis_passed"]
+          print("SHADOW_RELEASE_GATE_FAIL_CLOSED_OK")
+          PY
+      - name: Package reviewed source and exact pytest output
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="$RUNNER_TEMP/opr-review-package"
+          mkdir -p "$pkg"
+          git -C "$GITHUB_WORKSPACE" archive --format=tar HEAD operational-priority-radar .github/workflows/opr-review-tests.yml | tar -x -C "$pkg"
+          if test -f "$GITHUB_WORKSPACE/redis-real-output.txt"; then
+            cp "$GITHUB_WORKSPACE/redis-real-output.txt" "$pkg/redis-real-output.txt"
+          else
+            printf 'Mandatory Redis integration step did not run; inspect CI logs.\n' > "$pkg/redis-real-output.txt"
+          fi
+          if test -f "$GITHUB_WORKSPACE/pytest-q-output.txt"; then
+            cp "$GITHUB_WORKSPACE/pytest-q-output.txt" "$pkg/pytest-q-output.txt"
+          else
+            printf 'pytest -q did not run; see workflow job logs.\n' > "$pkg/pytest-q-output.txt"
+          fi
+          {
+            printf 'review_only=true\n'
+            printf 'tested_git_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'github_run=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'pytest_command=pytest -q\n'
+            printf 'real_redis_required=true\n'
+            printf 'redis_test_url=redis://127.0.0.1:6379/15\n'
+            printf 'render_deployed=false\n'
+            printf 'canonical_replay_completed=false\n'
+            printf 'sip_continuity_proven=false\n'
+            printf 'rest_sip_overlap_audit=read_only\n'
+            printf 'integrated_eb_sip_preview=read_only\n'
+            printf 'sip_prefix_snapshot=atomic_copy_no_ack\n'
+            printf 'canonical_eb_replay=not_implemented\n'
+            printf 'rest_pagination_audit=bounded_native_1m_5m\n'
+            printf 'active_trade_pagination=bounded_trades_and_native_1m\n'
+            printf 'active_trade_sip_completeness_proven=false\n'
+            printf 'simultaneous_trade_order=bounded_exact_preflight\n'
+            printf 'partial_recovery_commit_on_ambiguity=forbidden\n'
+            printf 'active_trade_recovery_commit=atomic_final_trade_plus_all_outboxes\n'
+            printf 'real_redis_atomic_recovery_tests=6_required\n'
+            printf 'sip_epoch_sequence=reset_per_ack_epoch\n'
+            printf 'sip_capture_ack_watermark=tracked_and_preview_rejects_prior_ack\n'
+            printf 'sip_payload_event_timestamp=verified_before_overlap\n'
+            printf 'sip_capture_payload=deepcopied_on_ingest\n'
+            printf 'sip_epoch_integrity_regressions=12\n'
+            printf 'session_scoped_eb_audit=opt_in_read_only\n'
+            printf 'session_start=explicit_required_for_opt_in\n'
+            printf 'native5_presession_warmup=frozen_anchors_plus_65m_requested\n'
+            printf 'session_first_observed_is_not_coverage_proof=true\n'
+            printf 'session_rest_sip_overlap=opt_in_read_only_single_batch\n'
+            printf 'session_overlap_requires_external_draining_epoch=true\n'
+            printf 'session_overlap_capture_acknowledged=false\n'
+            printf 'session_overlap_direct_handoff_authorized=false\n'
+            printf 'session_overlap_regression_tests=16\n'
+            printf 'session_overlap_live_407_proven=false\n'
+            printf 'session_canonical_eb_comparison=opt_in_read_only\n'
+            printf 'session_canonical_redis_snapshot_atomic=false\n'
+            printf 'session_canonical_backfill_authorized=false\n'
+            printf 'real_redis_canonical_audit_tests=3_required\n'
+            printf 'canonical_session_comparison=opt_in_read_only\n'
+            printf 'canonical_session_multikey_snapshot_atomic=false\n'
+            printf 'canonical_session_backfill_authorized=false\n'
+            printf 'canonical_session_divergence_blocks_recovery=true\n'
+            printf 'canonical_session_real_redis_tests=3_required\n'
+            printf 'canonical_eb_snapshot=opt_in_atomic_mget_eb_keys_only\n'
+            printf 'canonical_audit_capture_race_guard=before_and_after\n'
+            printf 'canonical_atomic_snapshot_does_not_prove_coverage=true\n'
+            printf 'real_redis_integration_tests=39_required\n'
+            printf 'recovery_eb_commit_permit=full_session_exact_digest_bound\n'
+            printf 'recovery_eb_leadership_fence=before_lua_after_commit\n'
+            printf 'recovery_eb_retroactive_entries=forbidden\n'
+            printf 'recovery_eb_commit_entrypoint=permit_gated_not_yet_wired\n'
+            printf 'recovery_eb_full_session_permit_available=false\n'
+            printf 'recovery_permit_requires_transport_and_semantic_digests=true\n'
+            printf 'semantic_session_reconciliation_evidence_available=false\n'
+            printf 'recovery_eb_full_scope_permit_supports_bounded_commit_batches=true\n'
+            printf 'recovered_signal_to_canonical_eb_batches=bounded_80_deterministic\n'
+            printf 'recovered_signal_conversion_actionable_side_effects=zero\n'
+            printf 'native_session_recovery_batches=bounded_80_exact_partition\n'
+            printf 'native_session_recovery_rest_page_chains=both_terminal_required\n'
+            printf 'native_session_recovery_sip_semantics_reconciled=false\n'
+            printf 'sip_semantic_journal_wired=true\n'
+            printf 'sip_semantic_journal_payload_retained=false\n'
+            printf 'sip_semantic_bar_multiset_digest=commutative_sha256_sum\n'
+            printf 'sip_semantics_validated_before_capture_ack=true\n'
+            printf 'sip_semantics_reconciled=false\n'
+            printf 'live_full_session_semantic_ledger=payload_free_read_only\n'
+            printf 'live_full_session_semantic_validation=true\n'
+            printf 'live_full_session_semantic_evidence_collected=false\n'
+            printf 'full_session_semantic_validation_adjudicator=exact_signed_join\n'
+            printf 'full_session_semantic_validation_is_reconciliation=false\n'
+            printf 'empty_active_trade_scope_double_read=closed_pipeline_lock_and_generation_fenced\n'
+            printf 'empty_trade_status_disposition_nonempty_scope_supported=false\n'
+            printf 'semantic_session_reconciliation=five_signed_evidence_join\n'
+            printf 'semantic_session_coverage_scope=historical_eb_empty_trade_scope_only\n'
+            printf 'recovery_session_finalizer=write_free_full_scope_orchestration\n'
+            printf 'recovery_session_finalizer_rest_batch_max=80\n'
+            printf 'recovery_session_commit=finalization_digest_plus_permit_required\n'
+            printf 'recovery_session_commit_batch_max=80\n'
+            printf 'recovery_session_commit_retroactive_entries=false\n'
+            printf 'sip_rest_session_bar_multiset_reconciliation=exact_digest_bound\n'
+            printf 'sip_rest_bar_reconciliation_requires_explicit_window=true\n'
+            printf 'sip_rest_bar_reconciliation_scope=bars_only\n'
+            printf 'post_rest_auto_capture_drain=opt_in_read_only\n'
+            printf 'post_rest_capture_race_recheck=after_preview_and_before_report\n'
+            printf 'capture_drain_acknowledged=false\n'
+            printf 'capture_direct_handoff_authorized=false\n'
+            printf 'capture_auto_drain_regressions=10\n'
+            printf 'sip_audit_clock=moving_after_rest\n'
+            printf 'stable_preview_retry=opt_in_max_3_append_only\n'
+            printf 'post_rest_sip_coverage_proven=false\n'
+            printf 'sip_preview_retry_regressions=11\n'
+            printf 'fenced_eb_batch_lua=test_only_max_80\n'
+            printf 'fenced_eb_batch_conflict=all_or_none\n'
+            printf 'production_recovery_eb_commit=hard_disabled_pending_coverage\n'
+            printf 'fenced_eb_real_redis_tests=7_required\n'
+            printf 'native_session_slot_audit=opt_in_read_only\n'
+            printf 'native_slot_absence_cause=unknown_not_feed_loss\n'
+            printf 'native_slot_cross_timeframe_mismatch=diagnostic_only\n'
+            printf 'native_slot_regressions=14\n'
+            printf 'native_slot_full_session_coverage_proven=false\n'
+            printf 'native_slot_rest_start=explicit_session_start_fixed\n'
+            printf 'active_trade_chunked_rest_fallback=bounded_15m_max96_350k\n'
+            printf 'live_shadow_acceptance=fail_closed_8_external_proofs\n'
+            printf 'final_consolidated_review=source_plus_pytest_redis_readiness\n'
+            printf 'base_ready_short_history_preflight=under_24_skip_transient_dicts\n'
+            printf 'base_ready_frozen_signal_parity=24_30_45_60_90_bars\n'
+            printf 'base_ready_burst_benchmark=synthetic_5000_symbols_not_live_407_proof\n'
+            printf 'base_ready_persistent_dict_cache=false\n'
+            printf 'synthetic_integrated_sip=3000_mature_plus_5000_queue_capture_bursts\n'
+            printf 'synthetic_sip_queue_max=1024\n'
+            printf 'synthetic_sip_capture_max=4096\n'
+            printf 'synthetic_407_does_not_prove_live_407=true\n'
+            printf 'synthetic_stress_real_upstream_lambda_measured=false\n'
+            printf 'synthetic_stress_regressions=5\n'
+            printf 'repeated_minute_sip_stress=300_symbols_x_10_completed_bars\n'
+            printf 'repeated_minute_independent_stress=4_scenarios\n'
+            printf 'repeated_minute_stress_regressions=5\n'
+            printf 'repeated_minute_live_407_proven=false\n'
+            printf 'sip_terminal_forensic=pre_teardown_payload_free_root_cause\n'
+            printf 'sip_terminal_forensic_regressions=7\n'
+            printf 'sip_terminal_forensic_capture_overflow_reason_preserved=true\n'
+            printf 'sip_continuous_bounded_drain=batch_256_max_digest_bound\n'
+            printf 'sip_drain_generation_fenced=before_and_after_batch_commit\n'
+            printf 'sip_drain_ack=contiguous_after_exact_commit_proof\n'
+            printf 'sip_drain_10000_message_regression=passed_offline\n'
+            printf 'sip_drain_direct_handoff_authorized=false\n'
+            printf 'sip_drain_production_transport_journal_wired=true\n'
+            printf 'sip_transport_journal_payload_retained=false\n'
+            printf 'sip_transport_journal_ttl_days=7\n'
+            printf 'sip_transport_journal_is_session_continuity_proof=false\n'
+            printf 'sip_semantic_market_state_reconciler_wired=false\n'
+            printf 'full_session_runner_max_duration_hours=8\n'
+            printf 'full_session_ack_must_precede_open=true\n'
+            printf 'full_session_early_disconnect_fails_immediately=true\n'
+            printf 'full_session_transport_contract_is_semantic_coverage=false\n'
+            printf 'live_sip_soak_runner=read_only_payload_free_metrics\n'
+            printf 'live_sip_soak_explicit_gate_required=true\n'
+            printf 'live_sip_soak_redis_writes=false\n'
+            printf 'live_sip_soak_direct_handoff_authorized=false\n'
+            printf 'live_sip_soak_real_session_completed=true\n'
+            printf 'live_sip_soak_market_window=2026-09-23T13:25:00Z_to_14:40:02Z\n'
+            printf 'live_sip_soak_symbols_requested=12000\n'
+            printf 'live_sip_soak_subscription_ack_verified=true\n'
+            printf 'live_sip_soak_received_handled_metrics_acked=550546\n'
+            printf 'live_sip_soak_dispatch_overflow=false\n'
+            printf 'live_sip_soak_capture_overflow=false\n'
+            printf 'live_sip_soak_407_frame_observed=false\n'
+            printf 'live_sip_soak_407_permanently_resolved_proven=false\n'
+            printf 'full_session_coverage_proven=false\n'
+            if test -f "$GITHUB_WORKSPACE/redis-integration-ok.txt"; then
+              printf 'real_redis_integration=passed\n'
+            else
+              printf 'real_redis_integration=not_verified\n'
+            fi
+          } > "$pkg/REVIEW_MANIFEST.txt"
+          if test -f "$GITHUB_WORKSPACE/redis-integration-output.txt"; then
+            cp "$GITHUB_WORKSPACE/redis-integration-output.txt" "$pkg/redis-integration-output.txt"
+          fi
+          if test -f "$GITHUB_WORKSPACE/SIP_INTEGRATED_STRESS.json"; then
+            cp "$GITHUB_WORKSPACE/SIP_INTEGRATED_STRESS.json" "$pkg/SIP_INTEGRATED_STRESS.json"
+          fi
+          if test -f "$GITHUB_WORKSPACE/BASE_READY_BURST_BENCHMARK.json"; then
+            cp "$GITHUB_WORKSPACE/BASE_READY_BURST_BENCHMARK.json" "$pkg/BASE_READY_BURST_BENCHMARK.json"
+          fi
+          for evidence in SIP_REPEATED_MINUTE_STRESS.json SIP_REPEATED_MINUTE_RUNTIME_LOG.txt; do
+            if test -f "$GITHUB_WORKSPACE/$evidence"; then
+              cp "$GITHUB_WORKSPACE/$evidence" "$pkg/$evidence"
+            fi
+          done
+          cp "$GITHUB_WORKSPACE/operational-priority-radar/evidence/STEP3S_LIVE_SIP_MARKET_SESSION_EVIDENCE.json" "$pkg/"
+          cp "$GITHUB_WORKSPACE/operational-priority-radar/evidence/STEP3S_LIVE_SIP_MARKET_SESSION_RUNTIME.log" "$pkg/"
+          if test -f "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json"; then
+            cp "$GITHUB_WORKSPACE/SHADOW_READINESS_REPORT.json" "$pkg/SHADOW_READINESS_REPORT.json"
+          fi
+          (cd "$pkg" && zip -qr "$GITHUB_WORKSPACE/opr-review-package.zip" .)
+      - name: Upload review package and pytest text evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opr-step3ah-recovery-session-committer-review-bundle
+          path: |
+            opr-review-package.zip
+            pytest-q-output.txt
+            redis-integration-output.txt
+            redis-real-output.txt
+            SHADOW_READINESS_REPORT.json
+            BASE_READY_BURST_BENCHMARK.json
+            SIP_INTEGRATED_STRESS.json
+            SIP_REPEATED_MINUTE_STRESS.json
+            SIP_REPEATED_MINUTE_RUNTIME_LOG.txt
+            operational-priority-radar/evidence/STEP3S_LIVE_SIP_MARKET_SESSION_EVIDENCE.json
+            operational-priority-radar/evidence/STEP3S_LIVE_SIP_MARKET_SESSION_RUNTIME.log
+          if-no-files-found: error
+          retention-days: 30
+
+# No secrets, Render deploy, push or merge permissions.

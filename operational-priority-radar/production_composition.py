@@ -1,7 +1,11 @@
-import os,uuid
+import os,uuid,asyncio
 from alpaca_production_market import AlpacaCredentials,AlpacaREST,AlpacaSIPProtocol,SIP_STREAM_URL
 from runtime_wiring import RuntimeComponents,RuntimeOrchestrator
 from websocket_runtime import WebSocketRuntime
+from sip_epoch_capture import BoundedEpochCapture
+from sip_drain_coordinator import BoundedSIPDrainCoordinator
+from production_sip_semantic_journal import ProductionSIPSemanticJournal
+from production_sip_transport_journal import ProductionSIPTransportJournal
 from durable_outbox_sender import DurableOutboxSender
 from redis_outbox_store import RedisOutboxStore
 from resource_guard import ResourceGuard
@@ -12,6 +16,8 @@ from active_trade_recovery import ActiveTradeChronologicalReconciler
 from production_halt_status import ProductionStatusTracker
 from production_runtime_state import RedisLeadershipFacade
 from production_pipeline import ProductionDecisionPipeline
+from rest_bar_maturity import MaturedREST1MinCoordinator
+from rest_bar_shadow_audit import RESTBarShadowAudit
 from datetime import datetime,timezone
 from production_universe import build_operational_universe
 
@@ -29,6 +35,7 @@ class ProductionRecoveryBridge:
 
 def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=None,
                            recovery=None, early_core=None, base_ready=None, symbols=None):
+    production_redis=redis_client is None
     if redis_client is None:
         try:
             import redis
@@ -64,7 +71,8 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         if not syms:
             rec=ProductionRecoveryBridge()  # explicit fail-closed until deployment context supplied
         else:
-            trade_reconciler=ActiveTradeChronologicalReconciler(rest,r,worker_id)
+            trade_reconciler=ActiveTradeChronologicalReconciler(
+                rest,r,worker_id,enable_trade_chunk_fallback=True)
             status_tracker=ProductionStatusTracker()
             rec=ProductionStartupRecovery(RedisCanonicalReader(r),rest,trade_reconciler,session,syms,status_tracker=status_tracker)
     guard=ResourceGuard()
@@ -75,20 +83,107 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     comps=RuntimeComponents(r,None,rest,ec,br,sender,guard,rec)
     orch=RuntimeOrchestrator(comps,worker_id)
     leadership=RedisLeadershipFacade(orch.redis,worker_id)
+    if isinstance(rec,ProductionStartupRecovery) and rec.trade_reconciler is not None:
+        rec.trade_reconciler.leadership=leadership
+    if production_redis and isinstance(rec,ProductionStartupRecovery):
+        from durable_revision_journal import DurableRevisionJournal
+        rec.durable_revision_journal=DurableRevisionJournal(orch.redis,leadership)
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
-    async def on_message(msg):
+    pipeline.bar_shadow_audit=RESTBarShadowAudit(r,rest,session)
+    pipeline.status_tracker=getattr(rec,"status_tracker",None)
+    capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
+    # Empty symbols exist only in the deterministic injection seam above.
+    # Real production always has a non-empty universe and therefore uses the
+    # semantic journal before capture ACK.
+    semantic_journal=(ProductionSIPSemanticJournal(
+                          orch.redis,session,syms,
+                          bar_window_start=os.getenv("OPR_SESSION_START_UTC"),
+                          bar_window_end=os.getenv("OPR_SESSION_END_UTC"))
+                      if syms else ProductionSIPTransportJournal(
+                          orch.redis,session))
+    sip_drain=BoundedSIPDrainCoordinator(
+        capture,leadership,semantic_journal.reconcile_batch,batch_size=128)
+    # Capture/ACK are transport prerequisites, not continuity evidence.
+    # Closing the ACK instantly closes the gate, even before disconnect
+    # callback acquires the decision lock.
+    pipeline.decision_gate=lambda: (
+        orch.new_decisions_allowed()
+        and ws.connected_event.is_set()
+        and capture.phase==capture.DIRECT
+        and capture.epoch==ws.connection_epoch)
+    def process_message(msg):
       kind=AlpacaSIPProtocol.classify(msg)
       received_at=datetime.now(timezone.utc);symbol=msg.get("S")
-      allow=orch.new_decisions_allowed()
-      if kind=="BAR" and symbol:pipeline.on_bar(symbol,msg,received_at,allow)
-      elif kind=="TRADE" and symbol:pipeline.on_trade(symbol,msg,received_at,allow)
-      elif kind=="STATUS":
-        rec.on_status(msg);pipeline.on_status(msg)
-      rec.on_stream_message(kind,msg)
+      with pipeline.decision_lock:
+        tagged_epoch=msg.get("_sip_epoch")
+        if tagged_epoch is not None and (
+            not ws.connected_event.is_set()
+            or tagged_epoch!=ws.connection_epoch):
+          return  # late to_thread work from a disconnected/old SIP epoch
+        allow=pipeline.decision_gate()
+        # v1.1: streamed bars are not canonical E/B inputs. Mature SIP REST
+        # bars are routed by MaturedREST1MinCoordinator below.
+        if kind=="BAR" and symbol and allow:pipeline.on_bar(symbol,msg,received_at,False)
+        elif kind=="TRADE" and symbol and allow:pipeline.on_trade(symbol,msg,received_at,True)
+        elif kind=="STATUS":
+          # Pre-trust statuses belong to the captured SIP epoch, not the
+          # authoritative halt state. In particular, a premature TRADING
+          # status must never resume a HALTED_ACTIVE trade or authorize entry.
+          # The chronological recovery coordinator must replay these statuses
+          # before continuity can be proven and DIRECT processing enabled.
+          if allow:
+            rec.on_status(msg)
+            pipeline.on_status(msg)
+        rec.on_stream_message(kind,msg)
+        # During startup recovery this is transport reconciliation only.  A
+        # durable exact receipt permits bounded capture ACK, but never DIRECT.
+        if capture.phase==capture.DRAINING and capture.snapshot()["buffered"]>=sip_drain.batch_size:
+          sip_drain.drain_available(ws.connection_epoch,max_batches=4)
+    async def on_message(msg):
+      # Redis and active-trade REST work must not block the SIP socket reader.
+      # A single bounded queue consumer preserves message arrival order.
+      await asyncio.to_thread(process_message,msg)
     async def on_disconnect():
-      orch.on_disconnect();rec.on_disconnect()
-    ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect)
+      # Synchronize with the threaded native5 E persistence critical section.
+      # The websocket has already cleared its ACK before this callback.
+      with pipeline.decision_lock:
+        orch.on_disconnect();rec.on_disconnect()
+        # Bounded memory-only handoff. Never perform REST under this lock or
+        # allow a later non-revision disconnect to erase unresolved evidence.
+        retain=getattr(rec,"retain_revision_terminal",None)
+        if callable(retain):retain(ws.last_epoch_diagnostic)
+        pipeline.halted.clear()
+        pipeline._entry_opportunities.clear()
+        pipeline.trades.clear()
+      persist=getattr(rec,"persist_revision_terminal",None)
+      if callable(persist):
+        # Offload Redis outside the decision lock and socket event loop.
+        # Failure cancels recovery; reconnect alone cannot clear that failure.
+        await asyncio.to_thread(persist,ws.last_epoch_diagnostic)
+    # Capture overflow and dispatch backlog overflow are fatal disconnects.
+    # No drop-oldest behavior is permitted for trades, bars or halt statuses.
+    ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect,
+                        epoch_capture=capture,dispatch_queue_max=1024,
+                        dynamic_trade_mode=True,dynamic_trade_limit=256)
+    pipeline.trade_scope_request=ws.require_trade_symbol
+    def process_mature_rest_bar(symbol,bar,received_at):
+      # REST can be in flight across a disconnect. Recheck the same gate while
+      # holding the pipeline lock immediately before a decision-changing write.
+      with pipeline.decision_lock:
+        if not pipeline.decision_gate():return
+        pipeline.on_bar(symbol,bar,received_at,True)
+    rest1m=(MaturedREST1MinCoordinator(
+                rest,syms,process_mature_rest_bar,
+                grace_seconds=int(os.getenv("OPR_REST_BAR_GRACE_SECONDS","90")),
+                batch_size=200)
+            if syms else None)
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
     supervisor.decision_pipeline=pipeline
+    supervisor.rest1m_coordinator=rest1m
+    supervisor.sip_drain_coordinator=sip_drain
+    # The combined journal atomically advances the original transport receipt
+    # and validated semantic summaries.  It still cannot claim reconciliation.
+    supervisor.sip_transport_journal=semantic_journal
+    supervisor.sip_semantic_journal=(semantic_journal if syms else None)
     return supervisor

@@ -1,6 +1,6 @@
 from runtime_provenance import stamp
 from datetime import datetime,timedelta,timezone
-import gc,os,time
+import gc,os,time,threading
 from state_store import CanonicalStateStore,key_early_core,key_base_ready,key_opportunity,key_trade,canonical_json,base_record,validate_record
 from early_core_state import EarlyCoreStateWriter
 from base_ready_state import BaseReadyStateWriter
@@ -20,14 +20,23 @@ class ProductionDecisionPipeline:
   self.store=CanonicalStateStore(__import__("production_runtime_state").RedisCanonicalBackend(r))
   self.ew=EarlyCoreStateWriter(self.store,leadership);self.bw=BaseReadyStateWriter(self.store,leadership);self.cw=ConfluenceStateWriter(self.store,leadership)
   self.trades={};self.bars={};self.halted=set();self.last_native5={}
+  self.status_tracker=None  # Bound by production composition; UNKNOWN blocks entries.
+  self.decision_lock=threading.RLock()
+  self.decision_gate=lambda:False  # Fail closed until the orchestrator binds it.
   self.max_bar_buffer=20;self.entry_trade_buffer_seconds=15
   self.raw_trade_messages_received=0
+  self.trade_scope_request=lambda symbol,required:None
+  self.bar_shadow_audit=None
   # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
   # These caches mirror canonical Redis state and are refreshed after startup recovery.
   self._active_by_symbol={};self._entry_opportunities={}
   # Structure-bar retention is only needed after a symbol has produced E or B.
   # Keeping 20 bars for every market symbol duplicates the broad BASE_READY history.
   self._structure_watch_symbols=set()
+ def _request_trade_scope(self,symbol,required):
+  callback=getattr(self,"trade_scope_request",None)
+  if callable(callback):return callback(symbol,required)
+  return None
  def _current_rss_bytes(self):
   # Linux/Render current resident set size. Diagnostic only; never affects decisions.
   try:
@@ -97,6 +106,7 @@ class ProductionDecisionPipeline:
    for x in self._scan_records(pat,typ):
     if x.get("session")==self.session:watches.add(x["symbol"])
   self._active_by_symbol=active;self._entry_opportunities=opps;self._structure_watch_symbols=watches
+  for symbol in sorted(set(active)|set(opps)):self._request_trade_scope(symbol,True)
   return {"active_trades":len(active),"entry_opportunities":len(opps),"structure_watch_symbols":len(watches)}
  def _retain_structure_bar(self,symbol,bar,received_at):
   # Structure risk needs only timestamp + low; keep a bounded compact record.
@@ -109,13 +119,18 @@ class ProductionDecisionPipeline:
   out=self.br.on_completed_native_1m(symbol,bar,received_at)
   b_now=False
   if out.get("base_ready"):
+   audit_rows=(self.br.audit_history(symbol)
+               if hasattr(self.br,"audit_history") else None)
    existing=self._get(key_base_ready(self.session,symbol))
    if not existing:
     bs=dt(bar["t"]);be=bs+timedelta(minutes=1)
     try:_b_key,b_record=self.bw.persist_first_b(self.session,symbol,bs,be,received_at,max(be,received_at),out["features"],out["diagnostics"])
     except Exception:pass
-    else:
+   else:
      b_now=True
+     if self.bar_shadow_audit is not None and audit_rows:
+      self.bar_shadow_audit.record("BASE_1MIN",symbol,audit_rows,be,
+                                   received_at,True)
      print({"stage":"SHADOW_FIRST_B","symbol":symbol,
             "bar_end_ts":b_record.get("bar_end_ts"),
             "decision_available_ts":b_record.get("decision_available_ts"),
@@ -131,10 +146,12 @@ class ProductionDecisionPipeline:
    self._confluence(symbol,received_at)
   if symbol in self._structure_watch_symbols:self._retain_structure_bar(symbol,bar,received_at)
   self._monitor_bar(symbol,bar,received_at)
+ def _decision_gate_open(self):
+  return bool(self.decision_gate())
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
   stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"eligible_rows":0,"invalid_close_bars":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"eligible_above_threshold":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"early_core_crossings_detected":0,"early_core_persisted":0,"early_core_persist_errors":0,"early_core_first_persist_error":None,"batch_size":int(batch_size)}
-  if not allow_decision:return stats
+  if not allow_decision or not self._decision_gate_open():return stats
   # One Redis round-trip per chunk instead of one GET per symbol. This is transport/runtime
   # optimization only; it does not change Early Core eligibility or event semantics.
   pending=[]
@@ -161,6 +178,8 @@ class ProductionDecisionPipeline:
   # Memory-safe streaming: never materialize native 5m rows for the full universe at once.
   # Each REST request remains native Alpaca 5Min and uses the frozen engineering batch size.
   for i in range(0,len(pending),batch_size):
+   if not self._decision_gate_open():
+    stats["aborted_untrusted"]=True;break
    chunk=pending[i:i+batch_size]
    batch_no=(i//batch_size)+1
    batch_t0=time.monotonic()
@@ -171,6 +190,8 @@ class ProductionDecisionPipeline:
    self._memory_probe("native5_after_bars_multi",batch_no=batch_no,chunk_symbols=len(chunk),fetched_rows=fetched_rows,fetch_seconds=fetch_seconds)
    process_t0=time.monotonic()
    for symbol in chunk:
+    if not self._decision_gate_open():
+     stats["aborted_untrusted"]=True;break
     rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
     if rows:stats["symbols_with_rows"]+=1
     if rows:
@@ -191,26 +212,33 @@ class ProductionDecisionPipeline:
       stats["max_score"]=sc;stats["max_score_symbol"]=symbol;stats["gap_to_threshold"]=tele.get("gap_to_threshold")
     crossing=self.ec.evaluate(symbol,rows,now)
     if crossing:
-     # STEP16Z observability only: distinguish detection from canonical E persistence.
-     # No Early Core threshold, crossing rule, state semantics, or alert policy changes.
-     stats["early_core_crossings_detected"]+=1
-     try:
-      _e_key,e_record=self.ew.persist_first_e(crossing)
-     except Exception as exc:
-      stats["early_core_persist_errors"]+=1
-      if stats["early_core_first_persist_error"] is None:
-       stats["early_core_first_persist_error"]={"type":type(exc).__name__,"message":str(exc)[:300],"symbol":symbol}
-      print({"stage":"SHADOW_E_PERSIST_ERROR","symbol":symbol,
-             "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
-     else:
-      stats["crossings"]+=1
-      stats["early_core_persisted"]+=1
-      self._structure_watch_symbols.add(symbol)
-      print({"stage":"SHADOW_FIRST_E","symbol":symbol,
-             "score":e_record.get("score"),
-             "bar_end_ts":e_record.get("bar_end_ts"),
-             "decision_available_ts":e_record.get("decision_available_ts")},flush=True)
-     self._confluence(symbol,now)
+     # A native5 REST cycle runs in a separate thread. The disconnect
+     # callback takes the same lock before invalidating trust, preventing
+     # a pre-disconnect allow_decision snapshot from authorizing late E.
+     with self.decision_lock:
+      if not self._decision_gate_open():
+       stats["aborted_untrusted"]=True;break
+      stats["early_core_crossings_detected"]+=1
+      try:
+       _e_key,e_record=self.ew.persist_first_e(crossing)
+      except Exception as exc:
+       stats["early_core_persist_errors"]+=1
+       if stats["early_core_first_persist_error"] is None:
+        stats["early_core_first_persist_error"]={"type":type(exc).__name__,"message":str(exc)[:300],"symbol":symbol}
+       print({"stage":"SHADOW_E_PERSIST_ERROR","symbol":symbol,
+              "error_type":type(exc).__name__,"error":str(exc)[:300]},flush=True)
+      else:
+       stats["crossings"]+=1
+       stats["early_core_persisted"]+=1
+       if self.bar_shadow_audit is not None:
+        self.bar_shadow_audit.record("EARLY_5MIN",symbol,rows,
+                                     crossing.bar_end_ts,now,True)
+       self._structure_watch_symbols.add(symbol)
+       print({"stage":"SHADOW_FIRST_E","symbol":symbol,
+              "score":e_record.get("score"),
+              "bar_end_ts":e_record.get("bar_end_ts"),
+              "decision_available_ts":e_record.get("decision_available_ts")},flush=True)
+      self._confluence(symbol,now)
    process_seconds=round(time.monotonic()-process_t0,3)
    self._memory_probe("native5_after_processing",batch_no=batch_no,chunk_symbols=len(chunk),fetched_rows=fetched_rows,process_seconds=process_seconds)
    del rows_by_symbol
@@ -223,10 +251,16 @@ class ProductionDecisionPipeline:
  def _confluence(self,symbol,now):
   if symbol in self._entry_opportunities or self._get(key_opportunity(self.session,symbol)):return
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
-  try:_decision,record=self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
+  try:
+   _decision,opportunity_key=self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
   except Exception:return
+  # The canonical writer returns the Redis key, not the record. Read back
+  # the persisted value before caching; never call .get() on a key string.
+  if not opportunity_key:return
+  record=self._get(opportunity_key,"opportunity")
   if record and record.get("state")=="CONFLUENCE_VALID":
    self._entry_opportunities[symbol]=record
+   self._request_trade_scope(symbol,True)
    print({"stage":"SHADOW_CONFLUENCE","symbol":symbol,
           "e_decision_available_ts":e.get("decision_available_ts") if e else None,
           "b_decision_available_ts":b.get("decision_available_ts") if b else None,
@@ -254,8 +288,14 @@ class ProductionDecisionPipeline:
   # Hot path: no Redis GET per SIP trade. Only symbols with a cached valid confluence are evaluated.
   opp=self._entry_opportunities.get(symbol)
   if not opp or opp["state"]!="CONFLUENCE_VALID":return
+  # A previous epoch's last known trading state cannot authorize an entry.
+  if self.status_tracker is None or self.status_tracker.current(symbol)!="TRADING":return
   trigger=dt(opp["entry_trigger_ts"])
   ed=evaluate_entry_price(trigger,now,self.trades.get(symbol,[]),symbol in self.halted)
+  if ed.status in {EntryStatus.EXPIRED,EntryStatus.HALT_FINAL}:
+   self._entry_opportunities.pop(symbol,None);self.trades.pop(symbol,None)
+   self._request_trade_scope(symbol,False)
+   return
   if ed.status!=EntryStatus.PRICE_READY:return
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
   first=min(dt(e["decision_available_ts"]),dt(b["decision_available_ts"]))
@@ -266,9 +306,14 @@ class ProductionDecisionPipeline:
   if risk.status!=RiskStatus.APPROVED:return
   new,trade,out=EntryCommitBuilder(self.leadership).build(opp,risk,ed.entry_alert_price,now)
   new,trade,out=stamp(new),stamp(trade),stamp(out)
-  self.lua.atomic_entry(self.worker_id,key_opportunity(self.session,symbol),canonical_json(opp),canonical_json(new),key_trade(trade["trade_id"]),canonical_json(trade),f"operational_priority_radar:v1:outbox:{out['event_id']}",canonical_json(out))
+  # Re-check leadership after risk evaluation and before the Lua commit.
+  token=self.leadership.require_current()
+  if any(int(r["leader_generation"])!=token.leader_generation for r in (new,trade,out)):
+   raise RuntimeError("ENTRY_GENERATION_CHANGED_DURING_EVALUATION")
+  self.lua.atomic_entry(self.worker_id,key_opportunity(self.session,symbol),canonical_json(opp),canonical_json(new),key_trade(trade["trade_id"]),canonical_json(trade),f"operational_priority_radar:v1:outbox:{out['event_id']}",canonical_json(out),token.leader_generation)
   self._entry_opportunities.pop(symbol,None);self.trades.pop(symbol,None);self.bars.pop(symbol,None)
   self._structure_watch_symbols.discard(symbol);self._active_by_symbol[symbol]=trade
+  self._request_trade_scope(symbol,True)
  def _active(self,symbol):
   # Hot path: canonical active state is mirrored in memory after recovery/atomic commits.
   return self._active_by_symbol.get(symbol)
@@ -282,9 +327,11 @@ class ProductionDecisionPipeline:
   if evt==MonitorEvent.STOP:payload["first_observed_breach_price"]=price
   out.update(event_id=eid,event_type=et,payload=payload,attempt_count=0,leader_generation=tok.leader_generation)
   new,out=stamp(new),stamp(out)
-  self.lua.atomic_trade_event(self.worker_id,key_trade(t["trade_id"]),canonical_json(t),canonical_json(new),f"operational_priority_radar:v1:outbox:{eid}",canonical_json(out))
+  self.lua.atomic_trade_event(self.worker_id,key_trade(t["trade_id"]),canonical_json(t),canonical_json(new),f"operational_priority_radar:v1:outbox:{eid}",canonical_json(out),tok.leader_generation)
   if new["state"] in {"ACTIVE_PRE_T1","ACTIVE_POST_T1","HALTED_ACTIVE"}:self._active_by_symbol[t["symbol"]]=new
-  else:self._active_by_symbol.pop(t["symbol"],None)
+  else:
+   self._active_by_symbol.pop(t["symbol"],None)
+   self._request_trade_scope(t["symbol"],False)
  def _state(self,t):return TradeState(t["state"],float(t["entry_alert_price"]),float(t["structural_stop"]),float(t["t1"]),float(t["t2"]),dt(t["monitoring_deadline"]),t.get("pre_halt_state"))
  def _monitor_trade(self,symbol,tr):
   t=self._active(symbol)
