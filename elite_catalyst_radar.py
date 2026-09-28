@@ -12,7 +12,8 @@
 #   python elite_catalyst_radar.py
 #
 # Architecture:
-#   1) Finnhub news is the primary discovery trigger.
+#   1) Alpaca News WebSocket (Benzinga) is the primary discovery trigger.
+#      Finnhub rotation runs automatically only when the stream is down.
 #   2) Elite Catalyst Radar is the central news producer.
 #   3) Shared news is published to Redis Hash: market_radar:news.
 #   4) Up to 5 recent articles plus central analysis are stored per symbol.
@@ -33,6 +34,13 @@ import time
 import requests
 import threading
 import traceback
+import queue
+import re as _re
+
+try:
+    import websocket  # pip install websocket-client
+except Exception:
+    websocket = None
 import zoneinfo
 import pandas as pd
 
@@ -117,6 +125,22 @@ SNAPSHOT_BATCH_SIZE = 200
 VWAP_FAILURE_CONFIRMATIONS = 2
 VOLUME_DEATH_CONFIRMATIONS = 2
 NEWS_REVALIDATE_BEFORE_ALERT = True
+
+# ---------------- Alpaca News Stream ----------------
+NEWS_STREAM_ENABLED = True
+NEWS_STREAM_URL = "wss://stream.data.alpaca.markets/v1beta1/news"
+NEWS_REST_URL = "https://data.alpaca.markets/v1beta1/news"
+# بعد كم ثانية من تعطل البث يعود دوران Finnhub تلقائيًا
+NEWS_STREAM_FALLBACK_AFTER_SECONDS = 60
+NEWS_STREAM_MAX_ITEMS_PER_SYMBOL = 20
+NEWS_STREAM_BACKFILL_MAX_PAGES = 5
+
+# ---------------- Late News Gate ----------------
+# رفض التنبيه إذا ارتفع السهم بقوة قبل وصول الخبر (الخبر وصل متأخرًا)
+LATE_NEWS_PRE_MOVE_WINDOW_MINUTES = 15
+LATE_NEWS_PRE_MOVE_PCT = 8.0
+# رفض التنبيه إذا ارتفع السهم كثيرًا منذ وصول الخبر (مطاردة)
+LATE_NEWS_MAX_MOVE_SINCE_PCT = 12.0
 REDIS_CLEANUP_INTERVAL = 30 * 60
 STALE_ACTIVE_TRADE_SECONDS = 18 * 60 * 60
 END_OF_DAY_CLOSE_HOUR_NY = 18
@@ -1247,10 +1271,14 @@ def fetch_company_news(symbol):
         return []
 
 
-def analyze_symbol_news(symbol, force_refresh=False):
+def analyze_symbol_news(symbol, force_refresh=False, stream_mode=False):
+    """
+    stream_mode=True: يحلل أخبار البث المخزنة للسهم فقط بدون طلب Finnhub.
+    في الوضع العادي: أخبار Finnhub + أخبار البث معًا (بدون تكرار).
+    """
     now_ts = time.time()
     cached = NEWS_CACHE.get(symbol)
-    if not force_refresh and cached and now_ts - safe_float(cached.get("checked_at")) < NEWS_RECHECK_TTL:
+    if not stream_mode and not force_refresh and cached and now_ts - safe_float(cached.get("checked_at")) < NEWS_RECHECK_TTL:
         shared_cached = redis_hget_json(
             SHARED_NEWS_HASH_KEY,
             symbol,
@@ -1263,7 +1291,8 @@ def analyze_symbol_news(symbol, force_refresh=False):
         ):
             return cached
 
-    items = fetch_company_news(symbol)
+    finnhub_items = [] if stream_mode else fetch_company_news(symbol)
+    items = merge_news_items(symbol, finnhub_items, get_stream_news_items(symbol))
     cutoff = datetime.now(timezone.utc) - timedelta(hours=NEWS_LOOKBACK_HOURS)
     classified = []
     for item in items[:20]:
@@ -2729,6 +2758,14 @@ def final_safety_check(metrics, watch_item):
     if resistance > 0 and last_close < resistance * 0.997:
         return False, "فقد منطقة المقاومة قبل الإرسال", None, None
 
+    late_ok, late_reason, late_data = evaluate_late_news(
+        symbol,
+        watch_item.get("news_timestamp"),
+        price,
+    )
+    if not late_ok:
+        return False, late_reason, None, None
+    refreshed_metrics.update(late_data)
     refreshed_plan, reason = build_trade_plan(refreshed_metrics)
     if not refreshed_plan:
         return False, reason, None, None
@@ -2901,12 +2938,24 @@ def final_deferred_catalyst_check(
             None,
         )
 
+    late_ok, late_reason, late_data = evaluate_late_news(
+        symbol,
+        watch_item.get("news_timestamp"),
+        price,
+    )
+    if not late_ok:
+        return (
+            False,
+            late_reason,
+            None,
+            None,
+        )
+    refreshed_metrics.update(late_data)
     plan, plan_status = (
         build_trade_plan(
             refreshed_metrics
         )
     )
-
     if not plan:
         return (
             False,
@@ -3460,12 +3509,13 @@ def load_news_cache():
         f"Stale removed={len(stale_symbols)}"
     )
     
-def process_news_symbol(symbol):
+def process_news_symbol(symbol, result=None):
     runtime_stats["news_symbols_checked"] += 1
     runtime_stats["last_news_scan"] = now_ksa().strftime("%Y-%m-%d %H:%M:%S")
     if is_symbol_news_blocked(symbol):
         return
-    result = analyze_symbol_news(symbol)
+    if result is None:
+        result = analyze_symbol_news(symbol)
     best = result.get("best", {})
 
     if best.get("serious_negative") or best.get("blocked_by_negative"):
@@ -3645,13 +3695,398 @@ def process_news_symbol(symbol):
                 initial_status=status,
             )
 
+# ==============================================================================
+# Alpaca News Stream (Benzinga) - Primary Discovery
+# ==============================================================================
+
+STREAM_NEWS_BY_SYMBOL: Dict[str, List[dict]] = {}
+STREAM_NEWS_LOCK = threading.Lock()
+STREAM_SEEN_IDS: Dict[str, float] = {}
+STREAM_QUEUE: "queue.Queue[str]" = queue.Queue()
+STREAM_QUEUED_SYMBOLS = set()
+_UNIVERSE_SET_CACHE = {"size": -1, "set": set()}
+
+NEWS_STREAM_STATE = {
+    "healthy": False,
+    "auth_failed": False,
+    "unhealthy_since": time.time(),
+    "fallback_active": False,
+    "last_message_ts": 0.0,
+    # عند التشغيل: تعويض أخبار آخر ساعتين مرة واحدة
+    "backfill_from": time.time() - 2 * 3600,
+}
+
+
+def universe_set():
+    if _UNIVERSE_SET_CACHE["size"] != len(UNIVERSE):
+        _UNIVERSE_SET_CACHE["set"] = set(UNIVERSE)
+        _UNIVERSE_SET_CACHE["size"] = len(UNIVERSE)
+    return _UNIVERSE_SET_CACHE["set"]
+
+
+def headline_key(symbol, headline):
+    text = _re.sub(r"[^a-z0-9 ]+", " ", str(headline or "").lower())
+    return f"{symbol}:{' '.join(text.split())[:160]}"
+
+
+def strip_html(text):
+    text = html.unescape(_re.sub(r"<[^>]+>", " ", str(text or "")))
+    return " ".join(text.split())
+
+
+def parse_rfc3339_to_unix(value):
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return 0
+
+
+def merge_news_items(symbol, primary, secondary):
+    """دمج أخبار مصدرين بدون تكرار (نفس السهم + نفس العنوان بعد التنظيف)."""
+    merged = []
+    seen = set()
+    for item in list(primary or []) + list(secondary or []):
+        key = headline_key(symbol, item.get("headline", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    merged.sort(key=lambda x: safe_int(x.get("datetime")), reverse=True)
+    return merged
+
+
+def get_stream_news_items(symbol):
+    cutoff = time.time() - NEWS_LOOKBACK_HOURS * 3600
+    with STREAM_NEWS_LOCK:
+        items = [
+            item for item in STREAM_NEWS_BY_SYMBOL.get(symbol, [])
+            if safe_int(item.get("datetime")) >= cutoff
+        ]
+        STREAM_NEWS_BY_SYMBOL[symbol] = items
+    return list(items)
+
+
+def news_stream_is_healthy():
+    return bool(NEWS_STREAM_STATE.get("healthy"))
+
+
+def set_news_stream_healthy(healthy, reason=""):
+    was_healthy = NEWS_STREAM_STATE.get("healthy")
+    NEWS_STREAM_STATE["healthy"] = healthy
+    if healthy:
+        NEWS_STREAM_STATE["unhealthy_since"] = 0.0
+    elif was_healthy or not NEWS_STREAM_STATE.get("unhealthy_since"):
+        NEWS_STREAM_STATE["unhealthy_since"] = time.time()
+    runtime_stats["news_stream_healthy"] = healthy
+    if reason:
+        log(f"News stream state: {'HEALTHY' if healthy else 'DOWN'} | {reason}")
+
+
+def handle_stream_news(message, source_label="stream"):
+    """يستقبل خبرًا من البث أو من التعويض ويضعه في طابور المعالجة."""
+    news_id = str(message.get("id") or "")
+    if not news_id:
+        return
+
+    now_ts = time.time()
+
+    # نفس الخبر يصل أكثر من مرة عند تحديثه: نحدّث النص فقط بدون معالجة جديدة
+    is_update = news_id in STREAM_SEEN_IDS
+    STREAM_SEEN_IDS[news_id] = now_ts
+
+    created_ts = parse_rfc3339_to_unix(message.get("created_at"))
+    if created_ts <= 0 or created_ts < now_ts - NEWS_LOOKBACK_HOURS * 3600:
+        return
+
+    symbols = [
+        str(sym).upper()
+        for sym in (message.get("symbols") or [])
+        if str(sym).upper() in universe_set()
+    ]
+    if not symbols:
+        return
+
+    if not is_update:
+        runtime_stats["stream_news_received"] = runtime_stats.get("stream_news_received", 0) + 1
+        runtime_stats["stream_last_latency_sec"] = round(now_ts - created_ts, 3)
+
+    headline = strip_html(message.get("headline"))
+    summary = strip_html(message.get("summary"))[:600]
+
+    for symbol in symbols:
+        item = {
+            "id": f"bz-{news_id}",
+            "headline": headline,
+            "summary": summary,
+            "datetime": created_ts,
+            "source": "Benzinga (Alpaca)",
+            "url": message.get("url", ""),
+            "related": symbol,
+        }
+
+        with STREAM_NEWS_LOCK:
+            items = [
+                x for x in STREAM_NEWS_BY_SYMBOL.get(symbol, [])
+                if x.get("id") != item["id"]
+            ]
+            items.insert(0, item)
+            STREAM_NEWS_BY_SYMBOL[symbol] = items[:NEWS_STREAM_MAX_ITEMS_PER_SYMBOL]
+
+        if is_update:
+            continue
+
+        if symbol not in STREAM_QUEUED_SYMBOLS:
+            STREAM_QUEUED_SYMBOLS.add(symbol)
+            STREAM_QUEUE.put(symbol)
+            log(f"📡 Stream news [{source_label}]: {symbol} | {headline[:110]}")
+
+    # تنظيف ذاكرة المعرفات القديمة
+    if len(STREAM_SEEN_IDS) > 20000:
+        cutoff = now_ts - 24 * 3600
+        for key in [k for k, v in STREAM_SEEN_IDS.items() if v < cutoff]:
+            STREAM_SEEN_IDS.pop(key, None)
+
+
+def stream_news_worker_loop():
+    """يعالج أسهم الأخبار الواردة عبر نفس مسار التصنيف والتنبيه الحالي."""
+    while True:
+        symbol = STREAM_QUEUE.get()
+        STREAM_QUEUED_SYMBOLS.discard(symbol)
+        try:
+            if is_symbol_news_blocked(symbol):
+                continue
+            result = analyze_symbol_news(symbol, stream_mode=True)
+            process_news_symbol(symbol, result=result)
+        except Exception as exc:
+            log(f"Stream worker error {symbol}: {exc}")
+            log(traceback.format_exc())
+
+
+def backfill_stream_news(since_ts):
+    """بعد الانقطاع: جلب أخبار فترة الانقطاع من REST حتى لا يضيع أي خبر."""
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY or "",
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY or "",
+    }
+    start = datetime.fromtimestamp(max(since_ts - 120, time.time() - NEWS_LOOKBACK_HOURS * 3600), timezone.utc)
+    params = {
+        "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "limit": 50,
+        "sort": "desc",
+    }
+    fetched = 0
+    try:
+        for _ in range(NEWS_STREAM_BACKFILL_MAX_PAGES):
+            response = requests.get(NEWS_REST_URL, headers=headers, params=params, timeout=15)
+            if response.status_code != 200:
+                log(f"News backfill error {response.status_code}: {response.text[:200]}")
+                break
+            data = response.json() or {}
+            for article in data.get("news", []) or []:
+                handle_stream_news(article, source_label="backfill")
+                fetched += 1
+            token = data.get("next_page_token")
+            if not token:
+                break
+            params["page_token"] = token
+        if fetched:
+            log(f"News backfill completed: {fetched} articles since {params['start']}")
+    except Exception as exc:
+        log(f"News backfill exception: {exc}")
+
+
+def alpaca_news_stream_loop():
+    if not NEWS_STREAM_ENABLED:
+        log("News stream disabled by config. Finnhub rotation remains primary.")
+        return
+
+    if websocket is None:
+        log("⚠️ websocket-client غير مثبت. أضف websocket-client إلى requirements.txt. Finnhub يعمل كبديل.")
+        send_telegram(
+            f"⚠️ <b>{BOT_NAME_AR}</b>\n\nبث أخبار Alpaca غير مفعّل: مكتبة websocket-client غير مثبتة.\n"
+            f"البوت يعمل بدوران Finnhub كالسابق."
+        )
+        return
+
+    backoff = 5
+
+    while True:
+        disconnected_at = (
+            NEWS_STREAM_STATE.pop("backfill_from", None)
+            or NEWS_STREAM_STATE.get("unhealthy_since")
+            or time.time()
+        )
+
+        def on_open(ws):
+            ws.send(json.dumps({
+                "action": "auth",
+                "key": ALPACA_API_KEY,
+                "secret": ALPACA_SECRET_KEY,
+            }))
+
+        def on_message(ws, raw):
+            nonlocal backoff
+            NEWS_STREAM_STATE["last_message_ts"] = time.time()
+            try:
+                messages = json.loads(raw)
+            except Exception:
+                return
+            if isinstance(messages, dict):
+                messages = [messages]
+            for msg in messages:
+                kind = msg.get("T")
+                if kind == "success" and msg.get("msg") == "authenticated":
+                    ws.send(json.dumps({"action": "subscribe", "news": ["*"]}))
+                elif kind == "subscription":
+                    backoff = 5
+                    NEWS_STREAM_STATE["auth_failed"] = False
+                    set_news_stream_healthy(True, "subscribed news=*")
+                    threading.Thread(
+                        target=backfill_stream_news,
+                        args=(disconnected_at,),
+                        daemon=True,
+                        name="news-backfill",
+                    ).start()
+                elif kind == "error":
+                    code = msg.get("code")
+                    log(f"News stream error: code={code} msg={msg.get('msg')}")
+                    if code in (401, 402, 403, 405, 406, 409):
+                        NEWS_STREAM_STATE["auth_failed"] = True
+                        set_news_stream_healthy(False, f"auth/subscription error {code}")
+                elif kind == "n":
+                    handle_stream_news(msg)
+
+        def on_error(ws, error):
+            log(f"News stream websocket error: {error}")
+
+        def on_close(ws, code, reason):
+            set_news_stream_healthy(False, f"closed code={code} reason={reason}")
+
+        try:
+            ws_app = websocket.WebSocketApp(
+                NEWS_STREAM_URL,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            ws_app.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as exc:
+            log(f"News stream loop exception: {exc}")
+
+        set_news_stream_healthy(False, "reconnecting")
+
+        # خطأ اشتراك/صلاحية: انتظار أطول لتجنب الإغراق بالمحاولات
+        wait = 300 if NEWS_STREAM_STATE.get("auth_failed") else backoff
+        time.sleep(wait)
+        backoff = min(backoff * 2, 60)
+
+
+def update_finnhub_fallback_state():
+    """
+    يرجع True إذا كان يجب تشغيل دوران Finnhub الآن.
+    يرسل تنبيه تيليجرام عند التحول بين البث والبديل.
+    """
+    if not NEWS_STREAM_ENABLED or websocket is None:
+        return True
+
+    healthy = news_stream_is_healthy()
+    unhealthy_since = NEWS_STREAM_STATE.get("unhealthy_since") or time.time()
+    need_fallback = (
+        not healthy
+        and time.time() - unhealthy_since >= NEWS_STREAM_FALLBACK_AFTER_SECONDS
+    )
+
+    if need_fallback and not NEWS_STREAM_STATE["fallback_active"]:
+        NEWS_STREAM_STATE["fallback_active"] = True
+        runtime_stats["finnhub_fallback_active"] = True
+        log("⚠️ News stream down. Finnhub rotation fallback ACTIVATED.")
+        send_telegram(
+            f"⚠️ <b>{BOT_NAME_AR}</b>\n\nبث أخبار Alpaca متوقف.\n"
+            f"تم تفعيل دوران Finnhub كبديل تلقائيًا (أبطأ)."
+        )
+
+    if healthy and NEWS_STREAM_STATE["fallback_active"]:
+        NEWS_STREAM_STATE["fallback_active"] = False
+        runtime_stats["finnhub_fallback_active"] = False
+        log("✅ News stream restored. Finnhub rotation paused.")
+        send_telegram(
+            f"✅ <b>{BOT_NAME_AR}</b>\n\nعاد بث أخبار Alpaca للعمل.\n"
+            f"تم إيقاف دوران Finnhub البديل."
+        )
+
+    return NEWS_STREAM_STATE["fallback_active"]
+
+
+# ==============================================================================
+# Late News Gate
+# ==============================================================================
+
+def evaluate_late_news(symbol, news_ts, price):
+    """
+    يرفض التنبيه إذا:
+    - ارتفع السهم بقوة خلال الدقائق التي سبقت وصول الخبر (الخبر متأخر عن الحركة)
+    - أو ارتفع كثيرًا منذ وصول الخبر (مطاردة)
+    يُطبق فقط على الأخبار التي صدرت أثناء شموع اليوم (لا يمس أخبار الليل والفجوات).
+    """
+    news_ts = safe_int(news_ts)
+    if news_ts <= 0 or price <= 0:
+        return True, "OK", {}
+
+    try:
+        df = get_bars(symbol, TimeFrame.Minute, limit=1000, cache_ttl=15)
+        session = current_ny_session_df(df, completed_only=False)
+        if session is None or session.empty or len(session) < 5:
+            return True, "OK", {}
+
+        news_dt = pd.Timestamp(news_ts, unit="s", tz="UTC").tz_convert(ny_tz)
+        at_news = session[session.index <= news_dt]
+        if at_news.empty:
+            return True, "OK", {}
+
+        price_at_news = safe_float(at_news["close"].iloc[-1])
+        window_start = news_dt - pd.Timedelta(minutes=LATE_NEWS_PRE_MOVE_WINDOW_MINUTES)
+        before = session[session.index <= window_start]
+        base = (
+            safe_float(before["close"].iloc[-1])
+            if not before.empty
+            else safe_float(session["open"].iloc[0])
+        )
+
+        if base <= 0 or price_at_news <= 0:
+            return True, "OK", {}
+
+        pre_move = ((price_at_news - base) / base) * 100
+        since_move = ((price - price_at_news) / price_at_news) * 100
+        data = {
+            "late_news_pre_move_pct": round(pre_move, 2),
+            "late_news_move_since_pct": round(since_move, 2),
+            "price_at_news": price_at_news,
+        }
+
+        if pre_move >= LATE_NEWS_PRE_MOVE_PCT:
+            return False, f"خبر متأخر: السهم ارتفع {pre_move:.1f}% قبل وصول الخبر", data
+
+        if since_move >= LATE_NEWS_MAX_MOVE_SINCE_PCT:
+            return False, f"مطاردة: السهم ارتفع {since_move:.1f}% منذ الخبر", data
+
+        return True, "OK", data
+
+    except Exception as exc:
+        log(f"Late news gate error {symbol}: {exc}")
+        return True, "OK", {}
+
+
 def news_discovery_loop():
     global NEWS_CURSOR
 
     while True:
         try:
             weekend_mode = is_weekend()
-
+            # البث هو المصدر الرئيسي: دوران Finnhub يعمل فقط عند تعطل البث
+            if not update_finnhub_fallback_state():
+                time.sleep(5)
+                continue
             if should_pause_news_for_float_update():
                 log(
                     "Finnhub news discovery paused "
@@ -4588,8 +5023,8 @@ def startup_message():
     send_telegram(f"""📰🚀 <b>{BOT_NAME_AR} بدأ التشغيل</b>
 
 🧩 الوضع: News-Driven Catalyst Radar
-📰 مصدر الاكتشاف: Finnhub News
-⚡ حد الأخبار: {FINNHUB_MAX_REQUESTS_PER_MINUTE} طلب/دقيقة
+📰 مصدر الاكتشاف: Alpaca News WebSocket (Benzinga)
+🛟 البديل التلقائي: Finnhub ({FINNHUB_MAX_REQUESTS_PER_MINUTE} طلب/دقيقة عند تعطل البث)
 👀 فحص قائمة الأخبار: كل {NEWS_WATCH_MONITOR_INTERVAL} ثوانٍ
 📥 سجلات الفلوت: {len(FLOAT_CACHE)}
 📦 Universe: {len(UNIVERSE)}
@@ -4602,7 +5037,7 @@ def startup_message():
 def startup():
     log("======================================")
     log(f"{BOT_NAME} Starting...")
-    log("Primary discovery: Finnhub positive catalysts")
+    log("Primary discovery: Alpaca News WebSocket (Benzinga) | Fallback: Finnhub rotation")
     log("Technical confirmation: Alpaca market data")
     log("======================================")
 
@@ -4630,6 +5065,8 @@ def main_loop():
     global last_redis_cleanup_ts
     startup()
 
+    threading.Thread(target=alpaca_news_stream_loop, daemon=True, name="news-stream").start()
+    threading.Thread(target=stream_news_worker_loop, daemon=True, name="news-stream-worker").start()
     threading.Thread(target=news_discovery_loop, daemon=True, name="news-discovery").start()
     threading.Thread(target=news_watch_loop, daemon=True, name="news-watch").start()
     threading.Thread(
