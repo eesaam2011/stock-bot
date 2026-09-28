@@ -5534,16 +5534,22 @@ def send_elite_alert(
         )
         return False
 
-    # فحص أخير لمطاردة الشمعة بأحدث سعر قبل الإرسال
+    # فحص أخير لمطاردة الشمعة بأحدث سعر حي قبل الإرسال (لا سعر التقييم)
     final_chase_df = get_bars(symbol, TimeFrame.Minute, limit=60, cache_ttl=5)
+    live_snapshot = get_snapshots_batch([symbol]).get(symbol) or {}
+    live_price = safe_float(live_snapshot.get("price")) or safe_float(metrics.get("price"))
     final_chase_ok, final_chase_reason, _ = evaluate_chase(
         final_chase_df,
-        safe_float(metrics.get("price"))
+        live_price
     )
 
     if not final_chase_ok:
         log(f"Finalist rejected {symbol}: {final_chase_reason}")
-        save_rejection(symbol, final_chase_reason, {"price": metrics.get("price")})
+        save_rejection(
+            symbol,
+            final_chase_reason,
+            {"eval_price": metrics.get("price"), "live_price": live_price}
+        )
         return False
 
     # منع تكرار تنبيه الدخول في اليوم نفسه
