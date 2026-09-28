@@ -62,7 +62,9 @@ class BoundedEpochCapture:
     @_locked
     def invalidate(self,reason="DISCONNECT"):
         self._revision_diagnostic=None
-        self._original_trades.clear()
+        # Keep the time-bounded diagnostic index across ACK epochs. A late
+        # revision may refer to a trade seen before reconnect; even a match
+        # remains fail-closed and never proves continuity or authorizes E/B.
         self.phase=self.INVALID;self.epoch=None
         self._items.clear();self._bytes=0;self._acked_upto=0
         self._invalid_reason=reason
@@ -94,7 +96,8 @@ class BoundedEpochCapture:
                 raise EpochCaptureError("SIP_REVISION_RECEIVED_AT_INVALID")
             diagnostic["received_at_utc"]=observed.astimezone(timezone.utc).isoformat()
             diagnostic["original_trade_lookup_performed"]=True
-            diagnostic["original_trade_evidence"]=self._original_trades.inspect(diagnostic["frame"])
+            diagnostic["original_trade_evidence"]=self._original_trades.inspect(
+                diagnostic["frame"], epoch=epoch, received_at=observed)
             from sip_semantic_digest import canonical_sha256
             diagnostic["diagnostic_sha256"]=canonical_sha256(diagnostic)
             self.invalidate("SIP_TRADE_REVISION_UNRECONCILED")
@@ -102,12 +105,18 @@ class BoundedEpochCapture:
             raise EpochCaptureError("SIP_TRADE_REVISION_UNRECONCILED")
         kind=self.TYPES.get(msg.get("T"))
         if kind is None:return None
-        self._original_trades.observe(msg)
-        if self.phase==self.DIRECT:return None  # caller delivers directly after verified handoff
-        ts=self._timestamp(msg)
         captured=received_at or datetime.now(timezone.utc)
         if not isinstance(captured,datetime) or captured.tzinfo is None:
             raise EpochCaptureError("SIP_RECEIVED_AT_INVALID")
+        from sip_original_trade_window import OriginalTradeIndexOverflow
+        try:
+            self._original_trades.observe(msg, epoch=epoch, received_at=captured)
+        except OriginalTradeIndexOverflow as exc:
+            self.invalidate("ORIGINAL_TRADE_INDEX_OVERFLOW")
+            raise EpochCaptureOverflow(
+                "ORIGINAL_TRADE_INDEX_OVERFLOW_FAIL_CLOSED") from exc
+        if self.phase==self.DIRECT:return None  # caller delivers directly after verified handoff
+        ts=self._timestamp(msg)
         captured=captured.astimezone(timezone.utc).isoformat()
         raw=json.dumps(msg,separators=(",",":"),ensure_ascii=False)
         size=len(raw.encode("utf-8"))
