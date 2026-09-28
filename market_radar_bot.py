@@ -3707,6 +3707,9 @@ def evaluate_chase(df, price):
 # ==============================================================================
 
 SETUP_ALERTS_ENABLED = True
+# تنبيهات التجهيز لا تُرسل في تيليجرام: تُسجل وتُتابع بصمت في Redis فقط
+# (غيّرها إلى True لو أردت استقبالها لاحقًا)
+SETUP_ALERTS_SEND_TELEGRAM = False
 SETUP_MIN_PATTERN_SCORE = 75
 SETUP_MAX_RANGE_PCT = 4.0
 # السعر يجب أن يكون تحت نقطة الاختراق وقريبًا منها
@@ -3714,7 +3717,16 @@ SETUP_MAX_DISTANCE_TO_TRIGGER_PCT = 1.5
 SETUP_MIN_RISK_PCT = 0.8
 SETUP_MAX_RISK_PCT = 5.0
 SETUP_MIN_ROOM_R = 1.5
-SETUP_MAX_PER_DAY = 15
+SETUP_MAX_PER_DAY = 50
+
+# تنبيه دخول لحظة اختراق نقطة التجهيز (بدل انتظار كل التأكيدات)
+SETUP_TRIGGER_ALERTS_ENABLED = True
+# إذا اكتُشف الاختراق والسعر أعلى من نقطة الاختراق بأكثر من هذه النسبة = متأخر
+SETUP_TRIGGER_MAX_ABOVE_PCT = 2.0
+# حد أدنى للسكور في هذا المسار (أقل من حد التنبيه العادي لأن التجهيز مؤكد مسبقًا)
+SETUP_TRIGGER_MIN_SCORE = 70
+# تأكيد حجم الاختراق
+SETUP_TRIGGER_MIN_VOLUME_ACCEL = 1.3
 # لا تنبيهات تجهيز في آخر نصف ساعة
 SETUP_END_TIME_NY = (15, 30)
 
@@ -3788,6 +3800,16 @@ def build_setup_plan(symbol, snapshot, pattern_data):
 
     if not daily_ok:
         return None, daily_reason
+
+    # بدون RVOL يومي (سهم جديد أو بيانات ناقصة) لا نعتمد التجهيز
+    if daily_data.get("daily_rvol") is None:
+        return None, "daily RVOL unavailable"
+
+    spread_pct = safe_float(snapshot.get("spread_pct"))
+
+    # الوقف يجب أن يكون أبعد بكثير من السبريد حتى لا يُضرب بالتذبذب العادي
+    if spread_pct > 0 and risk_pct < spread_pct * 3:
+        return None, "risk too small vs spread"
 
     overhead = safe_float(daily_data.get("nearest_overhead"))
 
@@ -3897,9 +3919,12 @@ def maybe_send_setup_alerts(hot_symbols, hot_snapshots):
             continue
 
         redis_hset_json(KEY_SETUP_ALERTS, symbol, plan)
-        send_setup_alert(plan)
+
+        if SETUP_ALERTS_SEND_TELEGRAM:
+            send_setup_alert(plan)
+
         log(
-            f"👀 Setup alert sent: {symbol} | trigger={plan['trigger']} "
+            f"👀 Setup recorded: {symbol} | trigger={plan['trigger']} "
             f"stop={plan['stop']} risk={plan['risk_pct']}%"
         )
 
@@ -3907,6 +3932,95 @@ def maybe_send_setup_alerts(hot_symbols, hot_snapshots):
 
         if len(today_setups) >= SETUP_MAX_PER_DAY:
             return
+
+
+def send_setup_trigger_alert(symbol, setup, snapshot):
+    """
+    يرسل تنبيه دخول عند اختراق نقطة التجهيز.
+    يمر على كل البوابات الأساسية (evaluate_candidate: VWAP وRVOL والسياق اليومي
+    ومطاردة الشمعة) والفحص النهائي، لكن بدون انتظار السكور الكامل وتأكيد
+    جودة الاختراق اللذين يسببان التأخير.
+    يرجع (sent, reason).
+    """
+    if not SETUP_TRIGGER_ALERTS_ENABLED:
+        return False, "disabled"
+
+    if not is_regular_market_hours() or not is_after_alert_start_time():
+        return False, "outside alert hours"
+
+    if already_alerted_today(symbol):
+        return False, "already alerted today"
+
+    price = safe_float(snapshot.get("price"))
+    trigger = safe_float(setup.get("trigger"))
+
+    if price <= 0 or trigger <= 0:
+        return False, "no price"
+
+    above_pct = ((price - trigger) / trigger) * 100
+
+    if above_pct > SETUP_TRIGGER_MAX_ABOVE_PCT:
+        return False, f"late: {above_pct:.2f}% above trigger"
+
+    metrics = evaluate_candidate(
+        symbol,
+        deep_news=True,
+        snapshot=snapshot
+    )
+
+    if not metrics:
+        return False, "failed core gates"
+
+    metrics = apply_pattern_boost(metrics)
+
+    if safe_float(metrics.get("final_score")) < SETUP_TRIGGER_MIN_SCORE:
+        return False, f"score {safe_float(metrics.get('final_score')):.1f} < {SETUP_TRIGGER_MIN_SCORE}"
+
+    if safe_float(metrics.get("volume_accel_ratio")) < SETUP_TRIGGER_MIN_VOLUME_ACCEL:
+        return False, "breakout without volume"
+
+    trade_plan, plan_reason = build_trade_plan(metrics)
+
+    if not trade_plan:
+        return False, f"trade plan: {plan_reason}"
+
+    ok, reason = final_safety_check(metrics, trade_plan)
+
+    if not ok:
+        return False, f"final safety: {reason}"
+
+    message = (
+        f"⚡ <b>اختراق نقطة تجهيز</b> "
+        f"({fmt_price(trigger)}) كان البوت يراقبها\n\n"
+        + build_alert_message(metrics, trade_plan)
+    )
+
+    if not send_telegram(message):
+        return False, "telegram failed"
+
+    save_sent_alert(
+        symbol,
+        {
+            "date": trading_day(),
+            "time": datetime.now(saudi_tz).strftime("%Y-%m-%d %H:%M:%S"),
+            "score": safe_float(metrics.get("final_score")),
+            "entry": safe_float(trade_plan.get("entry")),
+            "source": "setup_trigger",
+        }
+    )
+    save_alert_history(symbol, metrics, trade_plan)
+    activated = activate_trade(symbol, metrics, trade_plan)
+    remove_from_watchlist(symbol)
+    remove_from_finalist_recheck(symbol)
+    runtime_stats["alerts_sent"] = int(runtime_stats.get("alerts_sent", 0)) + 1
+    runtime_stats["setup_trigger_alerts"] = int(runtime_stats.get("setup_trigger_alerts", 0)) + 1
+
+    log(
+        f"⚡ Setup trigger alert sent: {symbol} | trigger={trigger} | "
+        f"entry={fmt_price(trade_plan.get('entry'))} | "
+        f"monitoring={'active' if activated else 'failed'}"
+    )
+    return True, "sent"
 
 
 def update_setup_alert_outcomes():
@@ -3941,7 +4055,16 @@ def update_setup_alert_outcomes():
             if price >= safe_float(item.get("trigger")):
                 item["status"] = "triggered"
                 item["triggered_at"] = now_ny().strftime("%H:%M:%S")
+                item["triggered_price"] = price
                 changed = True
+
+                try:
+                    sent, reason = send_setup_trigger_alert(symbol, item, snapshot)
+                except Exception as e:
+                    sent, reason = False, f"error: {e}"
+
+                item["trigger_alert"] = "sent" if sent else f"skipped: {reason}"
+                log(f"Setup trigger {symbol}: {item['trigger_alert']}")
             elif price <= safe_float(item.get("stop")):
                 item["status"] = "invalidated"
                 changed = True
