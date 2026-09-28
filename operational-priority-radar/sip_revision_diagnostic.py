@@ -23,10 +23,19 @@ def revision_diagnostic(message, *, epoch, last_sequence, acked_upto):
             frame[key] = value
         else:
             invalid.append(key)
-    return {'schema': 'OPR_SIP_REVISION_DIAGNOSTIC_V1',
+    result = {'schema': 'OPR_SIP_REVISION_DIAGNOSTIC_V1',
             'epoch': epoch, 'last_sequence_before_revision': last_sequence,
             'acked_upto_before_revision': acked_upto,
             'frame': frame, 'invalid_or_oversized_fields': invalid,
             'original_trade_lookup_performed': False,
             'revision_reconciled': False, 'capture_ack_authorized': False,
             'direct_handoff_authorized': False}
+    # Alpaca's published v2 stock-stream contract documents only C (cancel)
+    # and E (error) for T=x action. Preserve an observed non-empty value as
+    # evidence, but never silently widen the accepted contract from traffic.
+    if message.get('T') == 'x':
+        action = frame.get('a')
+        result['cancel_error_action'] = action
+        result['cancel_error_action_documented'] = action in ('C', 'E')
+        result['cancel_error_action_contract'] = 'ALPACA_V2_C_OR_E'
+    return result

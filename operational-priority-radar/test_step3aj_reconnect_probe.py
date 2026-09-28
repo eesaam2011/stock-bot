@@ -51,6 +51,52 @@ class FakeSocket:
 
 
 class TestReconnectProbe(unittest.IsolatedAsyncioTestCase):
+    async def test_v11_probe_uses_broad_bars_and_bounded_dynamic_trades(self):
+        class V11Socket(FakeSocket):
+            def __init__(self):
+                super().__init__(1)
+                self.sent=[]
+                self.frames=iter([
+                    json.dumps([{"T":"success","msg":"connected"}]),
+                    json.dumps([{"T":"success","msg":"authenticated"}]),
+                    json.dumps([{"T":"subscription","trades":["AAPL"],
+                                 "bars":["AAPL","MSFT"],"statuses":["*"]}]),
+                ])
+            async def send(self,value): self.sent.append(json.loads(value))
+            async def __anext__(self): await asyncio.Future()
+
+        socket=V11Socket()
+        real_sleep=asyncio.sleep
+        async def short_sleep(seconds):
+            return await real_sleep(.05 if seconds==60 else seconds)
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("live_sip_soak.asyncio.sleep",short_sleep):
+                proof=await run_live_reconnect_probe(
+                    duration_sec=60,max_symbols=2,
+                    output_path=str(Path(folder)/"evidence.json"),
+                    connector=lambda _:socket,symbols_override=["AAPL","MSFT"],
+                    production_v11_scope=True,initial_trade_symbols=1,
+                    env={"OPR_LIVE_SIP_SOAK":"I_UNDERSTAND_READ_ONLY_SIP",
+                         "APCA_API_KEY_ID":"test","APCA_API_SECRET_KEY":"test"})
+        self.assertEqual(socket.sent[1],{"action":"subscribe",
+            "trades":["AAPL"],"bars":["AAPL","MSFT"],"statuses":["*"]})
+        self.assertEqual(proof["subscription_profile"],
+            "OPR_V1_1_BARS_STATUSES_BOUNDED_DYNAMIC_TRADES")
+        self.assertEqual(proof["initial_dynamic_trade_symbols"],1)
+        self.assertEqual(proof["dynamic_trade_scope_limit"],256)
+        self.assertFalse(proof["continuity_proven"])
+
+    async def test_v11_scope_configuration_is_bounded(self):
+        base=dict(duration_sec=60,max_symbols=1,output_path="unused",
+                  symbols_override=["AAPL"],connector=lambda _:None,
+                  env={"OPR_LIVE_SIP_SOAK":"I_UNDERSTAND_READ_ONLY_SIP",
+                       "APCA_API_KEY_ID":"test","APCA_API_SECRET_KEY":"test"})
+        with self.assertRaisesRegex(Exception,"PRODUCTION_V11_SCOPE_INVALID"):
+            await run_live_reconnect_probe(**base,initial_trade_symbols=1)
+        with self.assertRaisesRegex(Exception,"INITIAL_TRADE_SCOPE_EXCEEDS_UNIVERSE"):
+            await run_live_reconnect_probe(**base,production_v11_scope=True,
+                                           initial_trade_symbols=2)
+
     async def test_trade_revisions_invalidate_epoch_without_acking(self):
         for revision in ("x", "c"):
             with self.subTest(revision=revision):

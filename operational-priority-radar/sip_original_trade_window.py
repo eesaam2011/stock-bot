@@ -75,6 +75,17 @@ class OriginalTradeWindow:
         if not isinstance(symbol, str) or type(trade_id) is not int:
             result['reason'] = 'REVISION_ID_INVALID'
             return result
+        # Validate fields whose meaning does not depend on finding the
+        # original first. This prevents an undocumented live action from
+        # being misreported merely as an evicted original-trade record.
+        if revision.get('T') == 'x':
+            action = revision.get('a')
+            result['cancel_error_action'] = action if isinstance(action, str) else None
+            result['cancel_error_action_documented'] = action in ('C', 'E')
+            result['cancel_error_action_contract'] = 'ALPACA_V2_C_OR_E'
+            if action not in ('C', 'E'):
+                result['reason'] = 'CANCEL_ACTION_UNDOCUMENTED'
+                return result
         found = self.items.get((symbol, trade_id))
         if found is None:
             result['reason'] = 'ORIGINAL_NOT_RETAINED'

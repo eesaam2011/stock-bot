@@ -389,7 +389,9 @@ async def run_live_soak(*, duration_sec, max_symbols, output_path,
 async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
                                    env=os.environ, connector=None,
                                    symbols_override=None,
-                                   controlled_disconnect_after_sec=None):
+                                   controlled_disconnect_after_sec=None,
+                                   production_v11_scope=False,
+                                   initial_trade_symbols=0):
     """Read-only reconnection diagnostic; each ACK starts a fresh capture epoch.
 
     A disconnected epoch can never be merged into the next one without a
@@ -400,6 +402,11 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
         raise LiveSIPSoakBlocked("DURATION_MUST_BE_60_TO_28800_SECONDS")
     if type(max_symbols) is not int or not 1 <= max_symbols <= 12000:
         raise LiveSIPSoakBlocked("MAX_SYMBOLS_MUST_BE_1_TO_12000")
+    if (type(production_v11_scope) is not bool
+            or type(initial_trade_symbols) is not int
+            or not 0 <= initial_trade_symbols <= 256
+            or (initial_trade_symbols and not production_v11_scope)):
+        raise LiveSIPSoakBlocked("PRODUCTION_V11_SCOPE_INVALID")
     if controlled_disconnect_after_sec is not None and (
         type(controlled_disconnect_after_sec) is not int
         or not 5 <= controlled_disconnect_after_sec <= 120
@@ -417,6 +424,8 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
         symbols = list(symbols_override)[:max_symbols]
     if not symbols or len(set(symbols)) != len(symbols):
         raise LiveSIPSoakBlocked("OPERATIONAL_UNIVERSE_INVALID")
+    if initial_trade_symbols > len(symbols):
+        raise LiveSIPSoakBlocked("INITIAL_TRADE_SCOPE_EXCEEDS_UNIVERSE")
     capture = BoundedEpochCapture(max_messages=4096, max_bytes=8 * 1024 * 1024)
     epochs = []
     current = None
@@ -499,7 +508,12 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
     runtime = WebSocketRuntime(
         connector, AlpacaSIPProtocol, on_message, on_disconnect,
         epoch_capture=capture, dispatch_queue_max=1024,
-        on_subscription_ack=on_ack)
+        on_subscription_ack=on_ack,
+        dynamic_trade_mode=production_v11_scope,
+        dynamic_trade_limit=256)
+    if production_v11_scope:
+        for symbol in symbols[:initial_trade_symbols]:
+            runtime.require_trade_symbol(symbol, True)
     started = datetime.now(timezone.utc).isoformat()
     worker = asyncio.create_task(runtime.reconnect_loop(
         SIP_STREAM_URL, key, secret, symbols))
@@ -543,6 +557,11 @@ async def run_live_reconnect_probe(*, duration_sec, max_symbols, output_path,
         "controlled_close_attempted": controlled_close_attempted,
         "connection_attempts": connection_attempts if controlled_disconnect_after_sec is not None else None,
         "worker_error": worker_error, "epochs": epochs,
+        "subscription_profile": (
+            "OPR_V1_1_BARS_STATUSES_BOUNDED_DYNAMIC_TRADES"
+            if production_v11_scope else "LEGACY_FULL_UNIVERSE_TRADES_BARS_STATUSES"),
+        "initial_dynamic_trade_symbols": initial_trade_symbols,
+        "dynamic_trade_scope_limit": 256 if production_v11_scope else None,
         "full_session_coverage_proven": False, "continuity_proven": False,
         "direct_handoff_authorized": False, "retroactive_entries_allowed": False,
         "production_leadership_proven": False,
@@ -564,6 +583,8 @@ def main():
     parser.add_argument("--session-end-utc")
     parser.add_argument("--reconnect-probe", action="store_true")
     parser.add_argument("--controlled-disconnect-after-sec", type=int)
+    parser.add_argument("--production-v11-scope", action="store_true")
+    parser.add_argument("--initial-trade-symbols", type=int, default=0)
     args = parser.parse_args()
     if args.reconnect_probe:
         if args.session_start_utc or args.session_end_utc:
@@ -571,7 +592,9 @@ def main():
         evidence = asyncio.run(run_live_reconnect_probe(
             duration_sec=args.duration_sec, max_symbols=args.max_symbols,
             output_path=args.output,
-            controlled_disconnect_after_sec=args.controlled_disconnect_after_sec))
+            controlled_disconnect_after_sec=args.controlled_disconnect_after_sec,
+            production_v11_scope=args.production_v11_scope,
+            initial_trade_symbols=args.initial_trade_symbols))
         print(json.dumps({"schema": evidence["schema"],
                           "subscription_ack_epochs": evidence["subscription_ack_epochs"],
                           "reconnect_ack_observed": evidence["reconnect_ack_observed"],
@@ -580,6 +603,8 @@ def main():
         return
     if args.controlled_disconnect_after_sec is not None:
         parser.error("controlled disconnect requires --reconnect-probe")
+    if args.production_v11_scope or args.initial_trade_symbols:
+        parser.error("production v1.1 scope requires --reconnect-probe")
     evidence = asyncio.run(run_live_soak(
         duration_sec=args.duration_sec,
         max_symbols=args.max_symbols,

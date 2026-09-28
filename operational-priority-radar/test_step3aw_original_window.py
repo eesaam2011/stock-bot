@@ -58,6 +58,16 @@ class TestOriginalWindow(unittest.TestCase):
         window=OriginalTradeWindow();window.observe(trade(S='MSFT'))
         self.assertEqual(window.inspect(cancel())['reason'],'ORIGINAL_NOT_RETAINED')
 
+    def test_undocumented_live_action_precedes_window_miss(self):
+        window=OriginalTradeWindow(max_items=1)
+        window.observe(trade(2))
+        result=window.inspect(cancel(i=1,a='1'))
+        self.assertEqual(result['reason'],'CANCEL_ACTION_UNDOCUMENTED')
+        self.assertEqual(result['cancel_error_action'],'1')
+        self.assertFalse(result['cancel_error_action_documented'])
+        self.assertEqual(result['evicted'],0)
+        self.assertFalse(result['capture_ack_authorized'])
+
     def test_byte_budget_evicts_without_unbounded_growth(self):
         window=OriginalTradeWindow(max_items=100,max_bytes=1024)
         for i in range(1,101):window.observe(trade(i))

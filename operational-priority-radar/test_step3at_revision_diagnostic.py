@@ -36,6 +36,18 @@ class TestRevisionDiagnostic(unittest.TestCase):
         self.assertNotIn('do-not-retain',raw)
         self.assertEqual(diagnostic['invalid_or_oversized_fields'],['S','cc'])
 
+    def test_live_numeric_cancel_action_is_preserved_but_not_authorized(self):
+        capture=BoundedEpochCapture();capture.start(1)
+        message=cancel(a='1')
+        with self.assertRaises(EpochCaptureError):capture.ingest(1,message)
+        diagnostic=capture.snapshot()['revision_diagnostic']
+        self.assertEqual(diagnostic['cancel_error_action'],'1')
+        self.assertFalse(diagnostic['cancel_error_action_documented'])
+        self.assertEqual(diagnostic['cancel_error_action_contract'],'ALPACA_V2_C_OR_E')
+        self.assertEqual(diagnostic['original_trade_evidence']['reason'],
+                         'CANCEL_ACTION_UNDOCUMENTED')
+        self.assertFalse(diagnostic['capture_ack_authorized'])
+
 
 class TestRevisionRuntimeEvidence(unittest.IsolatedAsyncioTestCase):
     async def test_queued_and_inline_failure_count_and_preserve_revision(self):
