@@ -16,6 +16,7 @@
 
 import os
 import json
+import html
 try:
     import orjson
 except Exception:
@@ -3663,6 +3664,304 @@ def volume_cooling_detected(df):
     return peak_recent and not rising
 
 
+# ==============================================================================
+# Opening Gate + Chase Gate
+# ==============================================================================
+
+# لا تنبيهات دخول قبل هذا الوقت (نيويورك): أول دقائق الافتتاح مليئة بالشموع الكاذبة
+ALERT_START_TIME_NY = (9, 40)
+# أقصى ارتفاع مسموح فوق قمة القاعدة (الشموع من 13 إلى 3 دقائق مضت)
+ENTRY_MAX_CHASE_PCT = 3.0
+
+
+def is_after_alert_start_time():
+    ny = now_ny()
+    return (ny.hour, ny.minute) >= ALERT_START_TIME_NY
+
+
+def evaluate_chase(df, price):
+    """
+    يرفض الدخول إذا كان السعر أعلى من قمة القاعدة قبل الحركة بأكثر من
+    ENTRY_MAX_CHASE_PCT (مثل شراء رأس شمعة عمودية).
+    """
+    if df is None or len(df) < 14 or price <= 0:
+        return True, "OK", {}
+
+    base = df.iloc[-13:-3]
+    base_high = safe_float(base["high"].max())
+
+    if base_high <= 0:
+        return True, "OK", {}
+
+    chase_pct = ((price - base_high) / base_high) * 100
+    data = {"base_high": base_high, "chase_pct": round(chase_pct, 2)}
+
+    if chase_pct > ENTRY_MAX_CHASE_PCT:
+        return False, f"مطاردة شمعة: السعر أعلى من القاعدة بـ {chase_pct:.1f}%", data
+
+    return True, "OK", data
+
+
+# ==============================================================================
+# Setup Alerts (تنبيه تجهيز قبل الاختراق)
+# ==============================================================================
+
+SETUP_ALERTS_ENABLED = True
+SETUP_MIN_PATTERN_SCORE = 75
+SETUP_MAX_RANGE_PCT = 4.0
+# السعر يجب أن يكون تحت نقطة الاختراق وقريبًا منها
+SETUP_MAX_DISTANCE_TO_TRIGGER_PCT = 1.5
+SETUP_MIN_RISK_PCT = 0.8
+SETUP_MAX_RISK_PCT = 5.0
+SETUP_MIN_ROOM_R = 1.5
+SETUP_MAX_PER_DAY = 15
+# لا تنبيهات تجهيز في آخر نصف ساعة
+SETUP_END_TIME_NY = (15, 30)
+
+KEY_SETUP_ALERTS = f"{REDIS_PREFIX}:setup_alerts"
+
+
+def get_today_setup_alerts():
+    items = redis_hgetall_json(KEY_SETUP_ALERTS) or {}
+    today = trading_day()
+    return {
+        key: value
+        for key, value in items.items()
+        if isinstance(value, dict) and value.get("date") == today
+    }
+
+
+def build_setup_plan(symbol, snapshot, pattern_data):
+    price = safe_float(snapshot.get("price"))
+    resistance = safe_float(pattern_data.get("resistance"))
+
+    if price <= 0 or resistance <= 0:
+        return None, "no price/resistance"
+
+    if safe_float(pattern_data.get("score")) < SETUP_MIN_PATTERN_SCORE:
+        return None, "pattern score low"
+
+    if safe_float(pattern_data.get("range_pct"), 999) > SETUP_MAX_RANGE_PCT:
+        return None, "range wide"
+
+    trigger = resistance * 1.002
+    distance_pct = ((trigger - price) / price) * 100
+
+    if distance_pct <= 0:
+        return None, "already above trigger"
+
+    if distance_pct > SETUP_MAX_DISTANCE_TO_TRIGGER_PCT:
+        return None, "too far from trigger"
+
+    df = get_bars(symbol, TimeFrame.Minute, limit=100, cache_ttl=10)
+
+    if df is None or df.empty or len(df) < 30:
+        return None, "bars missing"
+
+    vwap = calculate_vwap(df)
+
+    if vwap > 0 and price < vwap:
+        return None, "below VWAP"
+
+    recent_low = safe_float(df.tail(10)["low"].min()) * 0.998
+    stop = recent_low
+
+    if 0 < vwap * 0.995 < trigger:
+        stop = max(stop, vwap * 0.995)
+
+    if stop <= 0 or stop >= trigger:
+        return None, "invalid stop"
+
+    risk = trigger - stop
+    risk_pct = (risk / trigger) * 100
+
+    if risk_pct < SETUP_MIN_RISK_PCT or risk_pct > SETUP_MAX_RISK_PCT:
+        return None, f"risk {risk_pct:.2f}% out of range"
+
+    volume_accel = calculate_volume_acceleration(df)
+    daily_ok, daily_reason, daily_data = evaluate_daily_context(
+        symbol,
+        price,
+        df,
+        safe_float(volume_accel.get("ratio"))
+    )
+
+    if not daily_ok:
+        return None, daily_reason
+
+    overhead = safe_float(daily_data.get("nearest_overhead"))
+
+    if overhead > trigger and (overhead - trigger) / risk < SETUP_MIN_ROOM_R:
+        return None, "daily overhead too close"
+
+    news = get_symbol_news(symbol)
+
+    if news.get("serious_negative"):
+        return None, "serious negative news"
+
+    return {
+        "symbol": symbol,
+        "date": trading_day(),
+        "created_ts": time.time(),
+        "created_at": now_ny().strftime("%H:%M:%S"),
+        "price_at_alert": price,
+        "trigger": round(trigger, 4),
+        "stop": round(stop, 4),
+        "risk_pct": round(risk_pct, 2),
+        "t1": round(trigger + risk * 2, 4),
+        "t2": round(trigger + risk * 3, 4),
+        "pattern_score": safe_float(pattern_data.get("score")),
+        "range_pct": safe_float(pattern_data.get("range_pct")),
+        "daily_rvol": daily_data.get("daily_rvol"),
+        "news_headline": news.get("headline", "") if news.get("positive") else "",
+        "status": "pending",
+    }, "OK"
+
+
+def send_setup_alert(plan):
+    symbol = plan["symbol"]
+    rvol_text = (
+        f"{safe_float(plan.get('daily_rvol')):.1f}x"
+        if plan.get("daily_rvol") is not None
+        else "-"
+    )
+    news_text = (
+        f"\n📰 خبر: {html.escape(plan['news_headline'][:140])}"
+        if plan.get("news_headline")
+        else ""
+    )
+
+    message = f"""👀 <b>Market Radar - تنبيه تجهيز</b>
+
+📈 السهم: <b>{symbol}</b>
+💤 في ضغط تحت مقاومة، ولم يخترق بعد
+
+💰 السعر الحالي: {fmt_price(plan['price_at_alert'])}
+🎯 نقطة الاختراق (Buy Stop): <b>{fmt_price(plan['trigger'])}</b>
+🛑 الوقف: {fmt_price(plan['stop'])} ({plan['risk_pct']:.2f}%)
+✅ الهدف الأول: {fmt_price(plan['t1'])} (2R)
+✅ الهدف الثاني: {fmt_price(plan['t2'])} (3R)
+
+📊 RVOL اليومي: {rvol_text} | نطاق الضغط: {plan['range_pct']:.1f}%{news_text}
+
+⚠️ ليس دخولًا الآن: الدخول فقط إذا اخترق السعر نقطة الاختراق.
+إن لم يخترق، لا تفعل شيئًا."""
+
+    send_telegram(message)
+
+
+def maybe_send_setup_alerts(hot_symbols, hot_snapshots):
+    if not SETUP_ALERTS_ENABLED or not hot_symbols:
+        return
+
+    ny = now_ny()
+
+    if not is_regular_market_hours() or not is_after_alert_start_time():
+        return
+
+    if (ny.hour, ny.minute) >= SETUP_END_TIME_NY:
+        return
+
+    today_setups = get_today_setup_alerts()
+
+    if len(today_setups) >= SETUP_MAX_PER_DAY:
+        return
+
+    patterns = load_pattern_cache()
+
+    for symbol in hot_symbols:
+        if symbol in today_setups or already_alerted_today(symbol):
+            continue
+
+        pattern_data = patterns.get(symbol)
+
+        if (
+            not pattern_data
+            or pattern_data.get("pattern") != "compression"
+            or pattern_data.get("date") != trading_day()
+        ):
+            continue
+
+        snapshot = hot_snapshots.get(symbol)
+
+        if not snapshot:
+            continue
+
+        try:
+            plan, reason = build_setup_plan(symbol, snapshot, pattern_data)
+        except Exception as e:
+            log(f"Setup plan error {symbol}: {e}")
+            continue
+
+        if not plan:
+            continue
+
+        redis_hset_json(KEY_SETUP_ALERTS, symbol, plan)
+        send_setup_alert(plan)
+        log(
+            f"👀 Setup alert sent: {symbol} | trigger={plan['trigger']} "
+            f"stop={plan['stop']} risk={plan['risk_pct']}%"
+        )
+
+        today_setups[symbol] = plan
+
+        if len(today_setups) >= SETUP_MAX_PER_DAY:
+            return
+
+
+def update_setup_alert_outcomes():
+    """
+    تتبع صامت لنتائج تنبيهات التجهيز (للتقييم لاحقًا، بدون رسائل):
+    pending → triggered → t1 / stopped
+    pending → invalidated (كسر الوقف قبل الاختراق)
+    """
+    setups = get_today_setup_alerts()
+    open_setups = {
+        sym: item for sym, item in setups.items()
+        if item.get("status") in ("pending", "triggered")
+    }
+
+    if not open_setups or not is_regular_market_hours():
+        return
+
+    snapshots = get_snapshots_batch(list(open_setups.keys()))
+
+    for symbol, item in open_setups.items():
+        snapshot = snapshots.get(symbol) or {}
+        price = safe_float(snapshot.get("price"))
+
+        if price <= 0:
+            continue
+
+        status = item.get("status")
+        changed = False
+        item["max_price"] = max(safe_float(item.get("max_price")), price)
+
+        if status == "pending":
+            if price >= safe_float(item.get("trigger")):
+                item["status"] = "triggered"
+                item["triggered_at"] = now_ny().strftime("%H:%M:%S")
+                changed = True
+            elif price <= safe_float(item.get("stop")):
+                item["status"] = "invalidated"
+                changed = True
+
+        elif status == "triggered":
+            if price >= safe_float(item.get("t1")):
+                item["status"] = "t1"
+                item["resolved_at"] = now_ny().strftime("%H:%M:%S")
+                changed = True
+            elif price <= safe_float(item.get("stop")):
+                item["status"] = "stopped"
+                item["resolved_at"] = now_ny().strftime("%H:%M:%S")
+                changed = True
+
+        redis_hset_json(KEY_SETUP_ALERTS, symbol, item)
+
+        if changed:
+            log(f"Setup outcome {symbol}: {item['status']}")
+
+
 def score_linear(value, min_value, max_value, max_points):
     value = safe_float(value)
 
@@ -4022,6 +4321,12 @@ def evaluate_candidate(symbol, deep_news=False, snapshot=None, df=None):
 
     if not daily_ok:
         save_rejection(symbol, daily_reason, daily_data)
+        return None
+
+    chase_ok, chase_reason, chase_data = evaluate_chase(df, price)
+
+    if not chase_ok:
+        save_rejection(symbol, chase_reason, chase_data)
         return None
 
     resistance_data = calculate_resistance(df)
@@ -5096,6 +5401,26 @@ def send_elite_alert(
             f"Alert skipped {symbol}: خارج ساعات التداول الرسمية "
             f"(مراقبة فقط، لا يتم إرسال تنبيهات دخول)"
         )
+        return False
+
+    # لا تنبيهات قبل 9:40 نيويورك (تذبذب الافتتاح)
+    if not is_after_alert_start_time():
+        log(
+            f"Alert skipped {symbol}: قبل وقت بدء التنبيهات "
+            f"{ALERT_START_TIME_NY[0]}:{ALERT_START_TIME_NY[1]:02d} نيويورك"
+        )
+        return False
+
+    # فحص أخير لمطاردة الشمعة بأحدث سعر قبل الإرسال
+    final_chase_df = get_bars(symbol, TimeFrame.Minute, limit=60, cache_ttl=5)
+    final_chase_ok, final_chase_reason, _ = evaluate_chase(
+        final_chase_df,
+        safe_float(metrics.get("price"))
+    )
+
+    if not final_chase_ok:
+        log(f"Finalist rejected {symbol}: {final_chase_reason}")
+        save_rejection(symbol, final_chase_reason, {"price": metrics.get("price")})
         return False
 
     # منع تكرار تنبيه الدخول في اليوم نفسه
@@ -6718,6 +7043,12 @@ def scan_once():
             hot_snapshots[symbol] = snapshot
 
     scan_pattern_engine(hot_symbols)
+
+    try:
+        maybe_send_setup_alerts(hot_symbols, hot_snapshots)
+        update_setup_alert_outcomes()
+    except Exception as e:
+        log(f"Setup alerts error: {e}")
 
     bars_map_160 = get_bars_batch(
         hot_symbols,
