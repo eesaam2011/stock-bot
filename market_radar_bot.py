@@ -3984,7 +3984,11 @@ def send_setup_trigger_alert(symbol, setup, snapshot):
     if not trade_plan:
         return False, f"trade plan: {plan_reason}"
 
-    ok, reason = final_safety_check(metrics, trade_plan)
+    ok, reason = final_safety_check(
+        metrics,
+        trade_plan,
+        required_score=SETUP_TRIGGER_MIN_SCORE
+    )
 
     if not ok:
         return False, f"final safety: {reason}"
@@ -5208,7 +5212,11 @@ def analyze_entry_quality(
 # Final Safety Check
 # ==============================================================================
 
-def final_safety_check(metrics, trade_plan):
+def final_safety_check(metrics, trade_plan, required_score=None):
+    """
+    required_score: يسمح لمسار اختراق التجهيز بحده الخاص (70).
+    المسار العادي لا يمرره، فيبقى 86 (93 في آخر ساعة).
+    """
     symbol = metrics["symbol"]
 
     snapshot = get_snapshot(symbol)
@@ -5254,11 +5262,12 @@ def final_safety_check(metrics, trade_plan):
 
     final_score = safe_float(metrics.get("final_score"))
 
-    required_score = (
-        LAST_HOUR_SCORE
-        if is_last_market_hour()
-        else MIN_SCORE
-    )
+    if required_score is None:
+        required_score = (
+            LAST_HOUR_SCORE
+            if is_last_market_hour()
+            else MIN_SCORE
+        )
 
     if final_score < required_score:
         return False, "الدرجة النهائية أقل من المطلوب"
