@@ -10,6 +10,7 @@ from risk_engine import StructureBar,evaluate_structural_risk,RiskStatus
 from entry_commit import EntryCommitBuilder
 from trade_monitor import TradeState,MarketEvent,apply_event,MonitorEvent
 from event_ids import trade_event_id
+from symbol_decision_isolation import SymbolDecisionIsolation
 UTC=timezone.utc
 def dt(x):return x if isinstance(x,datetime) else datetime.fromisoformat(str(x).replace("Z","+00:00"))
 
@@ -27,6 +28,9 @@ class ProductionDecisionPipeline:
   self.raw_trade_messages_received=0
   self.trade_scope_request=lambda symbol,required:None
   self.bar_shadow_audit=None
+  self.symbol_isolation=SymbolDecisionIsolation(session,max_symbols=256)
+  self.trade_symbol_authorized=lambda symbol:False
+  self.rest_bar_grace_seconds=90
   # Hot-path caches: SIP trade flow must never perform Redis scans/GETs per tick.
   # These caches mirror canonical Redis state and are refreshed after startup recovery.
   self._active_by_symbol={};self._entry_opportunities={}
@@ -37,6 +41,38 @@ class ProductionDecisionPipeline:
   callback=getattr(self,"trade_scope_request",None)
   if callable(callback):return callback(symbol,required)
   return None
+ def _symbol_blocked(self,symbol):
+  isolation=getattr(self,"symbol_isolation",None)
+  return bool(isolation is not None and isolation.blocked(symbol))
+ def quarantine_symbol_revision(self,diagnostic,observed_at):
+  frame=(diagnostic or {}).get("frame") or {}
+  symbol=frame.get("S")
+  action=frame.get("a") if frame.get("T")=="x" else None
+  # Only the provider-documented correction/cancel schemas may use symbol
+  # isolation. Unknown actions remain on the legacy whole-epoch fail-closed
+  # path; guessing their meaning would silently widen policy.
+  if (not isinstance(symbol,str) or not symbol
+      or (frame.get("T")=="x" and action not in {"C","E"})
+      or frame.get("T") not in {"c","x"}
+      or not bool(self.trade_symbol_authorized(symbol))):
+   return False
+  record=self.symbol_isolation.block(
+      symbol,"DOCUMENTED_TRADE_REVISION_UNCERTAIN",observed_at,
+      evidence={
+          "revision_kind":frame.get("T"),
+          "action":action,
+          "diagnostic_sha256":diagnostic.get("diagnostic_sha256"),
+          "original_reason":((diagnostic.get("original_trade_evidence") or {})
+                             .get("reason")),
+      })
+  self._entry_opportunities.pop(symbol,None)
+  self.trades.pop(symbol,None)
+  if hasattr(self.br,"release_symbol"):self.br.release_symbol(symbol)
+  if symbol not in self._active_by_symbol:self._request_trade_scope(symbol,False)
+  print({"stage":"SYMBOL_DECISION_ISOLATED","symbol":symbol,
+         "reason":record["reason"],"other_symbols_affected":False,
+         "new_entry_allowed":False},flush=True)
+  return True
  def _current_rss_bytes(self):
   # Linux/Render current resident set size. Diagnostic only; never affects decisions.
   try:
@@ -114,6 +150,7 @@ class ProductionDecisionPipeline:
   h.append((bar.get("t"),bar.get("l"),received_at))
   self.bars[symbol]=h[-self.max_bar_buffer:]
  def on_bar(self,symbol,bar,received_at,allow_decision):
+  if self._symbol_blocked(symbol):allow_decision=False
   if not allow_decision:
    self._monitor_bar(symbol,bar,received_at);return
   out=self.br.on_completed_native_1m(symbol,bar,received_at)
@@ -126,7 +163,7 @@ class ProductionDecisionPipeline:
     bs=dt(bar["t"]);be=bs+timedelta(minutes=1)
     try:_b_key,b_record=self.bw.persist_first_b(self.session,symbol,bs,be,received_at,max(be,received_at),out["features"],out["diagnostics"])
     except Exception:pass
-   else:
+    else:
      b_now=True
      if self.bar_shadow_audit is not None and audit_rows:
       self.bar_shadow_audit.record("BASE_1MIN",symbol,audit_rows,be,
@@ -192,7 +229,15 @@ class ProductionDecisionPipeline:
    for symbol in chunk:
     if not self._decision_gate_open():
      stats["aborted_untrusted"]=True;break
-    rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
+    if self._symbol_blocked(symbol):
+     continue
+    mature_cutoff=now-timedelta(seconds=int(getattr(self,"rest_bar_grace_seconds",90)))
+    rows=[]
+    for r in (rows_by_symbol.get(symbol) or []):
+     try:bar_start=dt(r.get("t"))
+     except Exception:continue
+     if bar_start+timedelta(minutes=5)<=mature_cutoff:
+      rows.append({**r,"_timeframe":"native_5Min"})
     if rows:stats["symbols_with_rows"]+=1
     if rows:
      stats["evaluated_symbols"]+=1
@@ -249,6 +294,7 @@ class ProductionDecisionPipeline:
   self._memory_probe("native5_cycle_after",cycle_seconds=stats["cycle_seconds"],eligible_symbols=len(pending))
   return stats
  def _confluence(self,symbol,now):
+  if self._symbol_blocked(symbol):return
   if symbol in self._entry_opportunities or self._get(key_opportunity(self.session,symbol)):return
   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
   try:
@@ -271,6 +317,7 @@ class ProductionDecisionPipeline:
   price=msg.get("p");ts=msg.get("t")
   if price is None or ts is None:return
   tr=SIPTrade(float(price),dt(ts),received_at,int(msg.get("_seq",0)),True)
+  if self._symbol_blocked(symbol):allow_decision=False
   if allow_decision and symbol in self._entry_opportunities:
    cutoff=received_at-timedelta(seconds=self.entry_trade_buffer_seconds)
    xs=self.trades.setdefault(symbol,[])
@@ -285,6 +332,7 @@ class ProductionDecisionPipeline:
   if code in {"2","H","P"}:self.halted.add(symbol)
   elif code in {"3","Q","T"}:self.halted.discard(symbol)
  def _try_entry(self,symbol,now):
+  if self._symbol_blocked(symbol):return
   # Hot path: no Redis GET per SIP trade. Only symbols with a cached valid confluence are evaluated.
   opp=self._entry_opportunities.get(symbol)
   if not opp or opp["state"]!="CONFLUENCE_VALID":return

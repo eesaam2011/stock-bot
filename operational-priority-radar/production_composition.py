@@ -1,4 +1,4 @@
-import os,uuid,asyncio
+import os,uuid,asyncio,hashlib
 from alpaca_production_market import AlpacaCredentials,AlpacaREST,AlpacaSIPProtocol,SIP_STREAM_URL
 from runtime_wiring import RuntimeComponents,RuntimeOrchestrator
 from websocket_runtime import WebSocketRuntime
@@ -91,7 +91,13 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
     pipeline.bar_shadow_audit=RESTBarShadowAudit(r,rest,session)
     pipeline.status_tracker=getattr(rec,"status_tracker",None)
-    capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024)
+    def isolate_revision(diagnostic):
+        observed=diagnostic.get("received_at_utc")
+        try:received=datetime.fromisoformat(str(observed).replace("Z","+00:00"))
+        except (TypeError,ValueError):return False
+        return pipeline.quarantine_symbol_revision(diagnostic,received)
+    capture=BoundedEpochCapture(max_messages=4096,max_bytes=8*1024*1024,
+                                revision_isolator=isolate_revision)
     # Empty symbols exist only in the deterministic injection seam above.
     # Real production always has a non-empty universe and therefore uses the
     # semantic journal before capture ACK.
@@ -166,16 +172,32 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
                         epoch_capture=capture,dispatch_queue_max=1024,
                         dynamic_trade_mode=True,dynamic_trade_limit=256)
     pipeline.trade_scope_request=ws.require_trade_symbol
+    pipeline.trade_symbol_authorized=ws.trade_authorized
     def process_mature_rest_bar(symbol,bar,received_at):
       # REST can be in flight across a disconnect. Recheck the same gate while
       # holding the pipeline lock immediately before a decision-changing write.
       with pipeline.decision_lock:
         if not pipeline.decision_gate():return
         pipeline.on_bar(symbol,bar,received_at,True)
+    grace_seconds=int(os.getenv("OPR_REST_BAR_GRACE_SECONDS","90"))
+    pipeline.rest_bar_grace_seconds=grace_seconds
+    # A deterministic bounded sample measures 30/60/90/120/180-second REST
+    # maturity without writing five observations for the entire universe.
+    study_limit=int(os.getenv("OPR_REST_MATURITY_STUDY_SYMBOLS","16"))
+    if not 0 <= study_limit <= 64:
+        raise ValueError("OPR_REST_MATURITY_STUDY_SYMBOLS_OUT_OF_RANGE")
+    study_symbols=tuple(sorted(
+        syms,key=lambda x:hashlib.sha256(f"{session}|{x}".encode()).digest()
+    )[:study_limit])
+    def observe_maturity(symbol,rows,eval_ts,checkpoint,observed_at):
+        pipeline.bar_shadow_audit.record_checkpoint(
+            "BASE_1MIN",symbol,rows,eval_ts,observed_at,checkpoint)
     rest1m=(MaturedREST1MinCoordinator(
                 rest,syms,process_mature_rest_bar,
-                grace_seconds=int(os.getenv("OPR_REST_BAR_GRACE_SECONDS","90")),
-                batch_size=200)
+                grace_seconds=grace_seconds,
+                batch_size=200,
+                study_observer=observe_maturity,
+                study_symbols=study_symbols)
             if syms else None)
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)

@@ -169,6 +169,9 @@ class ShadowRuntimeSupervisor:
                        "dynamic_trade_scope":(
                            self.websocket_runtime.trade_scope.snapshot()
                            if hasattr(self.websocket_runtime,"trade_scope") else None),
+                       "symbol_decision_isolation":(
+                           p.symbol_isolation.snapshot()
+                           if hasattr(p,"symbol_isolation") else None),
                        "sip_receive_processing":(
                            self.websocket_runtime.performance_snapshot()
                            if hasattr(self.websocket_runtime,"performance_snapshot") else None),

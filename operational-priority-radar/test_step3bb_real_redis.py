@@ -21,7 +21,7 @@ class REST:
 class TestStep3BBRealRedis(unittest.TestCase):
     def setUp(self):
         self.r=local_test_redis();self.session="2099-09-26"
-        self.pattern=f"operational_priority_radar:v1.1:bar_audit:{self.session}:*"
+        self.pattern=f"operational_priority_radar:v1.2:bar_audit:{self.session}:*"
         keys=list(self.r.scan_iter(match=self.pattern))
         if keys:self.r.delete(*keys)
         self.start=datetime(2026,9,25,13,30,tzinfo=UTC)

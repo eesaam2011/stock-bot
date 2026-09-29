@@ -37,7 +37,8 @@ class BoundedEpochCapture:
     DIRECT="DIRECT"
     INVALID="INVALID"
     TYPES={"b":"BAR","t":"TRADE","s":"STATUS"}
-    def __init__(self,max_messages=4096,max_bytes=8*1024*1024):
+    def __init__(self,max_messages=4096,max_bytes=8*1024*1024,
+                 revision_isolator=None):
         if not (1<=max_messages<=100000 and 1024<=max_bytes<=256*1024*1024):
             raise ValueError("invalid capture limits")
         self._lock=threading.RLock()
@@ -46,6 +47,11 @@ class BoundedEpochCapture:
         self._items=deque();self._bytes=0;self._seq=0;self._acked_upto=0
         self._invalid_reason="NOT_STARTED"
         self._revision_diagnostic=None
+        if revision_isolator is not None and not callable(revision_isolator):
+            raise ValueError("revision_isolator must be callable")
+        self._revision_isolator=revision_isolator
+        self._isolated_revisions=0
+        self._last_isolated_revision=None
         from sip_original_trade_window import OriginalTradeWindow
         self._original_trades=OriginalTradeWindow()
         # Trust gate uses capture.buffer.epoch to tie DIRECT to the ACK epoch.
@@ -100,6 +106,17 @@ class BoundedEpochCapture:
                 diagnostic["frame"], epoch=epoch, received_at=observed)
             from sip_semantic_digest import canonical_sha256
             diagnostic["diagnostic_sha256"]=canonical_sha256(diagnostic)
+            # v1.2 production may isolate a documented revision to its one
+            # dynamically subscribed symbol.  The callback must itself prove
+            # current-epoch trade authorization.  Absence/failure/refusal of
+            # that proof preserves the legacy whole-epoch fail-closed path.
+            if self._revision_isolator is not None:
+                try:isolated=self._revision_isolator(deepcopy(diagnostic)) is True
+                except Exception:isolated=False
+                if isolated:
+                    self._isolated_revisions+=1
+                    self._last_isolated_revision=deepcopy(diagnostic)
+                    return None
             self.invalidate("SIP_TRADE_REVISION_UNRECONCILED")
             self._revision_diagnostic=diagnostic
             raise EpochCaptureError("SIP_TRADE_REVISION_UNRECONCILED")
@@ -206,6 +223,9 @@ class BoundedEpochCapture:
                 "bytes":self._bytes,"last_sequence":self._seq,
                 "acked_upto":self._acked_upto,
                 "invalid_reason":self._invalid_reason}
+        result["isolated_revisions"]=self._isolated_revisions
+        if self._last_isolated_revision is not None:
+            result["last_isolated_revision"]=deepcopy(self._last_isolated_revision)
         if self._revision_diagnostic is not None:
             result['revision_diagnostic']=deepcopy(self._revision_diagnostic)
         return result
