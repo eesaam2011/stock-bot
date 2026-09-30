@@ -32,6 +32,20 @@ def register(app, authorized):
         from flask import send_file
         return send_file(Path(__file__).with_name("ehr_g5_pilot_page.html"), mimetype="text/html")
 
+    @app.get("/mhr/freezec-network-dryrun")
+    def mhr_freezec_network_dryrun():
+        if os.getenv("MHR_FREEZEC_DRYRUN_ENABLED") != "1":
+            return jsonify({"ok": False, "error": "disabled"}), 403
+        expected = os.getenv("MHR_FREEZEC_DRYRUN_TOKEN", "")
+        supplied = request.args.get("token", "")
+        if not expected or supplied != expected:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        try:
+            from mhr_freezec_network_dryrun import run_network_dryrun
+            return jsonify({"ok": True, "result": run_network_dryrun()})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": type(exc).__name__, "message": str(exc)}), 500
+
     @app.get("/ehr-g5/status")
     def ehr_g5_status():
         if not authorized():
