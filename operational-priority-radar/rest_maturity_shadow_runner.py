@@ -21,8 +21,9 @@ UTC = timezone.utc
 CHECKPOINTS = (30, 60, 90, 120, 180)
 
 
-def _env(name):
-    value = os.getenv(name)
+def _env(name, *aliases):
+    value = next((os.getenv(candidate) for candidate in (name,) + aliases
+                  if os.getenv(candidate)), None)
     if not value:
         raise RuntimeError(f"MISSING_{name}")
     return value
@@ -47,7 +48,8 @@ def _redis_from_url(url):
 
 
 def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
-    creds = AlpacaCredentials(_env("ALPACA_API_KEY"), _env("ALPACA_SECRET_KEY"))
+    creds = AlpacaCredentials(_env("ALPACA_API_KEY", "APCA_API_KEY_ID"),
+                              _env("ALPACA_SECRET_KEY", "APCA_API_SECRET_KEY"))
     rest = AlpacaREST(creds)
     r = _redis_from_url(_env("REDIS_URL"))
     if r.ping() is not True:
@@ -91,7 +93,8 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
 
 
 def compare(args, now_fn=lambda: datetime.now(UTC)):
-    creds = AlpacaCredentials(_env("ALPACA_API_KEY"), _env("ALPACA_SECRET_KEY"))
+    creds = AlpacaCredentials(_env("ALPACA_API_KEY", "APCA_API_KEY_ID"),
+                              _env("ALPACA_SECRET_KEY", "APCA_API_SECRET_KEY"))
     rest = AlpacaREST(creds)
     r = _redis_from_url(_env("REDIS_URL"))
     if r.ping() is not True:
