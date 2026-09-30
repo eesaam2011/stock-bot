@@ -12,6 +12,10 @@ UTC=timezone.utc
 
 
 class TestStep3BIRunner(unittest.TestCase):
+    def test_alpaca_env_aliases_are_supported(self):
+        with patch.dict(os.environ,{"APCA_API_KEY_ID":"k"},clear=True):
+            self.assertEqual(runner._env("ALPACA_API_KEY","APCA_API_KEY_ID"),"k")
+
     def test_sample_is_deterministic_and_bounded(self):
         values=[f"S{i}" for i in range(100)]
         self.assertEqual(runner._sample(values,"2026-09-30",16),
