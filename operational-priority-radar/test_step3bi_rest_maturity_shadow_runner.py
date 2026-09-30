@@ -26,23 +26,20 @@ class TestStep3BIRunner(unittest.TestCase):
         class Redis:
             def ping(self): return True
         class Audit:
-            calls=0
             def __init__(self,*a,**k): pass
-            def compare_due(self,*a,**k):
-                self.calls+=1
-                if self.calls==1:
-                    return {"checked":2,"compared":2,"bars_changed":1,
-                            "decision_flipped":0,"by_checkpoint":{
-                                "90":{"compared":2,"bars_changed":1,
-                                      "decision_flipped":0}}}
-                return {"checked":2,"compared":0,"bars_changed":0,
-                        "decision_flipped":0,"by_checkpoint":{}}
-        args=SimpleNamespace(session="2026-09-30",due_hours=18,output="")
+            def compare(self,key,now):
+                return {"status":"COMPARED","bars_changed":key.endswith("1"),
+                        "decision_flipped":False,"checkpoint_seconds":90}
+        args=SimpleNamespace(session="2026-09-30",due_hours=18,output="",
+                             observations="",max_observations=10)
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ,{
             "ALPACA_API_KEY":"k","ALPACA_SECRET_KEY":"s","REDIS_URL":"redis://x"}), \
              patch.object(runner,"_redis_from_url",return_value=Redis()), \
              patch.object(runner,"RESTBarShadowAudit",Audit):
             args.output=os.path.join(d,"evidence.json")
+            args.observations=os.path.join(d,"observations.json")
+            with open(args.observations,"w",encoding="utf-8") as handle:
+                json.dump({"audit_keys":["k1","k2"]},handle)
             body=runner.compare(args,lambda:datetime(2026,10,1,tzinfo=UTC))
             self.assertEqual(body["compared"],2)
             self.assertFalse(body["actionable_alerts_authorized"])
