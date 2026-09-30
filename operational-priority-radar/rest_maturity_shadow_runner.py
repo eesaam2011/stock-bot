@@ -56,9 +56,16 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
         raise RuntimeError("REDIS_PING_FAILED")
     symbols = _sample(build_operational_universe(rest), args.session, args.symbols)
     audit = RESTBarShadowAudit(r, rest, args.session, due_hours=args.due_hours)
-    keys = set()
+    keys = set(); skipped_slots = 0
 
     def record(symbol, rows, eval_ts, checkpoint, observed_at):
+        nonlocal skipped_slots
+        epoch_minute = int(eval_ts.timestamp() // 60)
+        if epoch_minute % args.sample_every_minutes:
+            skipped_slots += 1
+            return
+        if len(keys) >= args.max_observations:
+            raise RuntimeError("REST_MATURITY_OBSERVATION_LIMIT")
         keys.add(audit.record_checkpoint("BASE_1MIN", symbol, rows, eval_ts,
                                          observed_at, checkpoint))
 
@@ -70,6 +77,8 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
             "session":args.session, "symbols":list(symbols),
             "checkpoints":list(CHECKPOINTS), "started_at":now_fn().isoformat(),
             "audit_keys":[], "polls":0, "errors":[],
+            "sample_every_minutes":args.sample_every_minutes,
+            "max_observations":args.max_observations,
             "canonical_writes":0, "alerts_sent":0,
             "actionable_alerts_authorized":False, "finality_proven":False}
     _write(args.output, body)
@@ -79,6 +88,8 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
             coordinator.poll(now, True)
             body["polls"] += 1
             body["audit_keys"] = sorted(keys)
+            body["observations"] = len(keys)
+            body["skipped_slots"] = skipped_slots
             body["last_poll_at"] = now.isoformat()
             _write(args.output, body)
         except Exception as exc:
@@ -100,18 +111,32 @@ def compare(args, now_fn=lambda: datetime.now(UTC)):
     if r.ping() is not True:
         raise RuntimeError("REDIS_PING_FAILED")
     audit = RESTBarShadowAudit(r, rest, args.session, due_hours=args.due_hours)
+    if not args.observations:
+        raise RuntimeError("OBSERVATION_FILE_REQUIRED")
+    with open(args.observations, encoding="utf-8") as handle:
+        observed = json.load(handle)
+    keys = observed.get("audit_keys")
+    if (not isinstance(keys,list) or not keys
+            or len(keys) > args.max_observations
+            or len(keys) != len(set(keys))):
+        raise RuntimeError("OBSERVATION_KEYS_INVALID")
     aggregate = {"checked":0,"compared":0,"bars_changed":0,
                  "decision_flipped":0,"by_checkpoint":{}}
-    while True:
-        result = audit.compare_due(now_fn(), max_items=1000)
-        for name in ("checked","compared","bars_changed","decision_flipped"):
-            aggregate[name] += result[name]
-        for checkpoint, values in result["by_checkpoint"].items():
-            bucket=aggregate["by_checkpoint"].setdefault(
-                checkpoint,{"compared":0,"bars_changed":0,"decision_flipped":0})
-            for name in bucket: bucket[name] += values[name]
-        if result["checked"] < 1000 or result["compared"] == 0:
-            break
+    now = now_fn()
+    for key in keys:
+        result = audit.compare(key, now)
+        aggregate["checked"] += 1
+        if not result or result.get("status") != "COMPARED":
+            continue
+        aggregate["compared"] += 1
+        aggregate["bars_changed"] += int(bool(result.get("bars_changed")))
+        aggregate["decision_flipped"] += int(bool(result.get("decision_flipped")))
+        label = str(result.get("checkpoint_seconds"))
+        bucket=aggregate["by_checkpoint"].setdefault(
+            label,{"compared":0,"bars_changed":0,"decision_flipped":0})
+        bucket["compared"] += 1
+        bucket["bars_changed"] += int(bool(result.get("bars_changed")))
+        bucket["decision_flipped"] += int(bool(result.get("decision_flipped")))
     body = {"schema":"OPR_STEP3BI_REST_MATURITY_V1", "mode":"compare",
             "session":args.session, "compared_at":now_fn().isoformat(), **aggregate,
             "recommended_grace_seconds":None, "finality_proven":False,
@@ -128,6 +153,11 @@ def parser():
     p.add_argument("--symbols", type=int, default=16, choices=range(1,65))
     p.add_argument("--due-hours", type=int, default=18, choices=range(12,49))
     p.add_argument("--interval", type=int, default=15, choices=range(5,61))
+    p.add_argument("--sample-every-minutes", type=int, default=30,
+                   choices=range(5,61,5))
+    p.add_argument("--max-observations", type=int, default=1500,
+                   choices=range(1,5001))
+    p.add_argument("--observations")
     p.add_argument("--end", type=lambda x:datetime.fromisoformat(x.replace("Z","+00:00")))
     return p
 
