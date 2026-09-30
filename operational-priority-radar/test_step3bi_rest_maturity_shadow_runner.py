@@ -30,7 +30,8 @@ class TestStep3BIRunner(unittest.TestCase):
             def compare(self,key,now):
                 return {"status":"COMPARED","bars_changed":key.endswith("1"),
                         "decision_flipped":False,"checkpoint_seconds":90}
-        args=SimpleNamespace(session="2026-09-30",due_hours=18,output="",
+        commit="a"*40
+        args=SimpleNamespace(session="2026-09-30",commit=commit,due_hours=18,output="",
                              observations="",max_observations=10)
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ,{
             "ALPACA_API_KEY":"k","ALPACA_SECRET_KEY":"s","REDIS_URL":"redis://x"}), \
@@ -39,13 +40,27 @@ class TestStep3BIRunner(unittest.TestCase):
             args.output=os.path.join(d,"evidence.json")
             args.observations=os.path.join(d,"observations.json")
             with open(args.observations,"w",encoding="utf-8") as handle:
-                json.dump({"audit_keys":["k1","k2"]},handle)
+                json.dump({"commit":commit,"audit_keys":["k1","k2"]},handle)
             body=runner.compare(args,lambda:datetime(2026,10,1,tzinfo=UTC))
             self.assertEqual(body["compared"],2)
             self.assertFalse(body["actionable_alerts_authorized"])
             self.assertFalse(body["finality_proven"])
             with open(args.output,encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle)["bars_changed"],1)
+
+    def test_compare_rejects_observation_from_other_commit(self):
+        class Redis:
+            def ping(self): return True
+        args=SimpleNamespace(session="2026-09-30",commit="a"*40,due_hours=18,
+                             output="unused",observations="",max_observations=10)
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ,{
+            "ALPACA_API_KEY":"k","ALPACA_SECRET_KEY":"s","REDIS_URL":"redis://x"}), \
+             patch.object(runner,"_redis_from_url",return_value=Redis()):
+            args.observations=os.path.join(d,"observations.json")
+            with open(args.observations,"w",encoding="utf-8") as handle:
+                json.dump({"commit":"b"*40,"audit_keys":["k1"]},handle)
+            with self.assertRaisesRegex(RuntimeError,"OBSERVATION_COMMIT_MISMATCH"):
+                runner.compare(args,lambda:datetime(2026,10,1,tzinfo=UTC))
 
 
 if __name__ == "__main__": unittest.main()

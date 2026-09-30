@@ -74,6 +74,7 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
         study_observer=record, study_symbols=symbols,
         study_checkpoints=CHECKPOINTS)
     body = {"schema":"OPR_STEP3BI_REST_MATURITY_V1", "mode":"observe",
+            "commit":args.commit,
             "session":args.session, "symbols":list(symbols),
             "checkpoints":list(CHECKPOINTS), "started_at":now_fn().isoformat(),
             "audit_keys":[], "polls":0, "errors":[],
@@ -115,6 +116,8 @@ def compare(args, now_fn=lambda: datetime.now(UTC)):
         raise RuntimeError("OBSERVATION_FILE_REQUIRED")
     with open(args.observations, encoding="utf-8") as handle:
         observed = json.load(handle)
+    if observed.get("commit") != args.commit:
+        raise RuntimeError("OBSERVATION_COMMIT_MISMATCH")
     keys = observed.get("audit_keys")
     if (not isinstance(keys,list) or not keys
             or len(keys) > args.max_observations
@@ -138,6 +141,7 @@ def compare(args, now_fn=lambda: datetime.now(UTC)):
         bucket["bars_changed"] += int(bool(result.get("bars_changed")))
         bucket["decision_flipped"] += int(bool(result.get("decision_flipped")))
     body = {"schema":"OPR_STEP3BI_REST_MATURITY_V1", "mode":"compare",
+            "commit":args.commit,
             "session":args.session, "compared_at":now_fn().isoformat(), **aggregate,
             "recommended_grace_seconds":None, "finality_proven":False,
             "actionable_alerts_authorized":False}
@@ -149,6 +153,9 @@ def parser():
     p=argparse.ArgumentParser()
     p.add_argument("mode", choices=("observe","compare"))
     p.add_argument("--session", required=True)
+    p.add_argument("--commit", required=True,
+                   type=lambda x: x if len(x) == 40 and all(c in "0123456789abcdef" for c in x)
+                   else (_ for _ in ()).throw(argparse.ArgumentTypeError("40-char lowercase SHA required")))
     p.add_argument("--output", required=True)
     p.add_argument("--symbols", type=int, default=16, choices=range(1,65))
     p.add_argument("--due-hours", type=int, default=18, choices=range(12,49))
