@@ -1,0 +1,13 @@
+# Step 3AJ — اختبار إعادة الاتصال المنفصل
+
+أظهر تشغيل 24 سبتمبر 2026 اتصالًا واحدًا فقط عبر `run_once()`. انتهى قبل اكتمال جلسة السوق بخطأ WebSocket 1011 (مهلة Pong/Ping)، ولم يُختبر فيه `reconnect_loop()`؛ نجاح حفظ ملف الدليل لا يعني نجاح الجلسة.
+
+يضيف هذا التغيير خيار `--reconnect-probe` إلى `live_sip_soak.py`، ويستدعي `WebSocketRuntime.reconnect_loop()` الحقيقي. يحتفظ بإثبات ACK مستقل لكل حقبة، وعداد تصريف مستقل، والسجل النهائي قبل إبطال الحقبة. يوقف التجربة عند overflow. يصنف 407 الحقيقي فقط إذا جاء من إطار SIP من النوع `error`، ولا يصنف استثناء يذكر النص 407 على أنه إطار.
+
+التجربة للقراءة فقط. أي انقطاع يفتح فجوة تاريخية لم تثبت تسويتها؛ لذلك تبقى `continuity_proven` و`full_session_coverage_proven` و`direct_handoff_authorized` و`retroactive_entries_allowed` و`production_leadership_proven` جميعًا false، حتى بعد ACK جديد. لا تصل الأداة بـRedis أو إنتاج E/B. نجاح الاختبار الاصطناعي لا يثبت التعافي في جلسة Alpaca الفعلية، ولا سبب مهلة Ping.
+
+يسجل الاختبار وقت الانقطاع، ووقت ACK اللاحق، والمدة المقاسة بساعة monotonic بينهما، مع إعادة بدء تسلسل الرسائل من 1 لكل حقبة. هذه حدود نافذة الاسترجاع المرصودة، وليست إثباتًا لاكتمال بيانات السوق المفقودة فيها. مسار `ProductionStartupRecovery` الحالي يعيد `gap_recovered=false` و`continuity_verified=False` صراحةً؛ يحتاج إثبات REST/SIP مستقل قبل أي ترقية للثقة.
+
+التشغيل الميداني يحتاج اعتمادًا محفوظًا في بيئة التنفيذ، والبوابة الموجودة `OPR_LIVE_SIP_SOAK=I_UNDERSTAND_READ_ONLY_SIP`. مثال: `python live_sip_soak.py --reconnect-probe --duration-sec 1800 --max-symbols 12000 --output /tmp/OPR_STEP3AJ_RECONNECT_EVIDENCE.json`. لا تستخدم خيارات session-start/end في هذا الوضع؛ لا يدعي شمول جلسة التداول. يلزم اختبار REST وتسوية فجوة الانقطاع بشكل مستقل قبل الادعاء بالاستمرارية أو تفعيل Shadow.
+
+يمكن إضافة `--controlled-disconnect-after-sec 10` للتجربة المنفصلة فقط: بعد ACK الأول بعشر ثوانٍ تُغلق الأداة **اتصالها هي** برمز WebSocket طبيعي 1000، ثم تراقب `reconnect_loop()` وACK الثاني. الحد 5–120 ثانية، ويجب أن تزيد مدة التجربة 30 ثانية على الأقل عن تأخير القطع. تسجل `controlled_close_attempted` و`connection_attempts` ولا تصف هذا الانقطاع المضبوط بأنه خطأ Alpaca 407 أو مهلة Pong طبيعية. حتى مع ACK الثاني تبقى فجوة الرسائل غير مسوّاة.

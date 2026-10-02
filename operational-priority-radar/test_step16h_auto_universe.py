@@ -17,6 +17,13 @@ class Resp:
 class TestStep16HAutoUniverse(unittest.TestCase):
  def test_filters_only_operational_eligibility(self):
   self.assertEqual(build_operational_universe(Rest()),["AAPL","BRK.B","MSFT"])
+ def test_raw_alpaca_class_field_supported(self):
+  class RawAlpaca:
+   def active_us_equity_assets(self):return [
+    {"symbol":"AAPL","status":"active","class":"us_equity","tradable":True},
+    {"symbol":"BTCUSD","status":"active","class":"crypto","tradable":True},
+    {"symbol":"BAD","status":"inactive","class":"us_equity","tradable":True}]
+  self.assertEqual(build_operational_universe(RawAlpaca()),["AAPL"])
  def test_empty_fails_closed(self):
   class X:
    def active_us_equity_assets(self):return []

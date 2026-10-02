@@ -1,0 +1,83 @@
+{
+  "claims": {
+    "direct_handoff_authorized": false,
+    "full_session_coverage_proven": false,
+    "production_generation_fence_proven": false,
+    "retroactive_entries_allowed": false,
+    "shadow_deploy_authorized": false,
+    "sip_continuity_proven": false,
+    "transport_measurement_only": true
+  },
+  "duration_requested_sec": 4500,
+  "ended_at_utc": "2026-09-23T14:40:02.117713+00:00",
+  "evidence_sha256": "220edd8b11c5a499a429f69967cda216bae76ae6748a5efb5b436b2e057b59e2",
+  "metrics_drain": {
+    "acked_messages": 550546,
+    "batch_size": 256,
+    "direct_handoff_authorized": false,
+    "full_session_coverage_proven": false,
+    "last_batch_sha256": "32f530f4c7e350a9d05f3fcf0ac74348b61e6d94e2f56f983a548267e299068d",
+    "reconciled_batches": 65344,
+    "schema": "OPR_SIP_BOUNDED_DRAIN_V1"
+  },
+  "observations": {
+    "alpaca_error_frame_407_observed": false,
+    "capture_overflow_observed": false,
+    "dispatch_overflow_observed": false,
+    "handled_equals_metrics_acked": true,
+    "received_equals_handled": true,
+    "subscription_ack_verified": true
+  },
+  "payload_free_ledger": {
+    "batches": 65344,
+    "counts": {
+      "BAR": 3987,
+      "STATUS": 367,
+      "TRADE": 546192
+    },
+    "first_sequence": 1,
+    "last_sequence": 550546,
+    "retained_payloads": 0,
+    "retained_symbols": 0
+  },
+  "real_alpaca_sip_endpoint": "wss://stream.data.alpaca.markets/v2/sip",
+  "real_connection_attempted": true,
+  "schema": "OPR_LIVE_SIP_SOAK_EVIDENCE_V1",
+  "started_at_utc": "2026-09-23T13:25:00.988300+00:00",
+  "symbols_requested": 12000,
+  "terminal": {
+    "capture_before_teardown": {
+      "acked_upto": 550546,
+      "buffered": 0,
+      "bytes": 0,
+      "epoch": 1,
+      "invalid_reason": null,
+      "last_sequence": 550546,
+      "phase": "DRAINING"
+    },
+    "continuity_proven": false,
+    "direct_handoff_authorized": false,
+    "dispatch_queue": {
+      "depth": 0,
+      "high_water": 256,
+      "limit": 1024,
+      "overflows": 0
+    },
+    "epoch": 1,
+    "failure_class": "OTHER_OR_CANCELLED",
+    "handled": 550546,
+    "observed_rx_per_sec": 1620.72,
+    "observed_upstream_arrival_rate": false,
+    "processing_ms": {
+      "BAR": {"count": 2048, "max": 4.549, "p50": 0.003, "p95": 0.006, "p99": 0.007},
+      "OTHER": {"count": 0, "max": null, "p50": null, "p95": null, "p99": null},
+      "STATUS": {"count": 367, "max": 0.686, "p50": 0.005, "p95": 0.248, "p99": 0.452},
+      "TRADE": {"count": 2048, "max": 75.657, "p50": 0.003, "p95": 0.006, "p99": 0.685}
+    },
+    "received": 550546,
+    "received_not_confirmed_handled": 0,
+    "schema": "OPR_SIP_EPOCH_TERMINAL_V1",
+    "subscription_ack_verified": true
+  },
+  "terminal_error_type": "ConnectionClosedError"
+}

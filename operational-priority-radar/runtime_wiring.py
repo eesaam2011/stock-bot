@@ -32,18 +32,20 @@ class RuntimeOrchestrator:
   self.trust=transition(self.trust,"GAP_RECOVERED");return r
  def mark_stream_connected(self):
   self.trust=transition(self.trust,"STREAM_CONNECTED");return self.trust.state
- def finish_reconciliation(self,continuity_ok=True):
+ def finish_reconciliation(self,continuity_ok=False,epoch=None):
+  # A boolean supplied by the caller is insufficient: verify the recovery
+  # coordinator's proof for the exact subscribed connection epoch.
   self.trust=transition(self.trust,"RECONCILED")
-  if not continuity_ok:raise RuntimeFailClosed("CONTINUITY_FAILED")
+  verify=getattr(self.c.recovery,"continuity_verified",None)
+  if (not continuity_ok or epoch is None or not callable(verify)
+      or verify(epoch) is not True or
+      not getattr(self.c.recovery,"ready_after_stream",lambda:False)()):
+   raise RuntimeFailClosed("CONTINUITY_UNPROVEN")
   self.trust=transition(self.trust,"CONTINUITY_OK");return self.trust.state
  def startup_recovery(self):
-  self.trust=transition(self.trust,"START_RECOVERY");r=self.c.recovery.run()
-  if not r.get("gap_recovered"):raise RuntimeFailClosed("GAP_RECOVERY_FAILED")
-  self.trust=transition(self.trust,"GAP_RECOVERED");self.c.sip.connect_and_subscribe();self.trust=transition(self.trust,"STREAM_CONNECTED")
-  if not r.get("reconciled"):raise RuntimeFailClosed("RECONCILIATION_FAILED")
-  self.trust=transition(self.trust,"RECONCILED")
-  if not self.c.sip.verify_continuity():raise RuntimeFailClosed("CONTINUITY_FAILED")
-  self.trust=transition(self.trust,"CONTINUITY_OK");return self.trust.state
+  # Legacy one-shot path lacks connection-epoch capture and chronological
+  # replay. Never allow it to bypass the supervised per-epoch trust gate.
+  raise RuntimeFailClosed("LEGACY_STARTUP_RECOVERY_UNSAFE_USE_SUPERVISOR")
  def on_disconnect(self):self.trust=transition(self.trust,"DISCONNECT");return self.trust.state
  def new_decisions_allowed(self):return new_entries_allowed(self.trust) and self.c.resource_guard.new_entries_allowed()
  def route_completed_1m(self,s,b):return self.c.base_ready.on_completed_native_1m(s,b) if self.new_decisions_allowed() else {"accepted":False,"reason":"FAIL_CLOSED"}

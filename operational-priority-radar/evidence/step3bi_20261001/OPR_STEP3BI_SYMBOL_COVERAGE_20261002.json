@@ -1,0 +1,215 @@
+{
+  "schema": "OPR_STEP3BI_SYMBOL_COVERAGE_RECHECK_V1",
+  "historical_source_note": "REST re-fetch performed after session; not a recording of original responses",
+  "source_observe_sha256": "5b16bea159b87f53047d0c6485bac40d45a271424fba90417aa3f54f9faec614",
+  "metadata": {
+    "actionable_alerts_authorized": false,
+    "alerts_sent": 0,
+    "canonical_writes": 0,
+    "checkpoints": [
+      30,
+      60,
+      90,
+      120,
+      180
+    ],
+    "commit": "b28f42315d18b445eca2da314e7767d9371cc9e7",
+    "completed_at": "2026-10-01T20:05:09.014244+00:00",
+    "errors": [],
+    "finality_proven": false,
+    "last_poll_at": "2026-10-01T20:04:53.638741+00:00",
+    "max_observations": 1500,
+    "mode": "observe",
+    "observations": 222,
+    "polls": 1591,
+    "sample_every_minutes": 30,
+    "schema": "OPR_STEP3BI_REST_MATURITY_V1",
+    "session": "OPR_STEP3BI_FULL_SESSION_20261001",
+    "skipped_slots": 6104,
+    "started_at": "2026-10-01T13:10:24.340571+00:00",
+    "symbols": [
+      "SMCAY",
+      "UTL",
+      "DGRS",
+      "SYNX",
+      "TROT",
+      "DIS",
+      "GAINZ",
+      "TDOC",
+      "ASCE",
+      "DDTN",
+      "SCHE",
+      "NAMSW",
+      "PLUS",
+      "GEG",
+      "KEEL",
+      "FC"
+    ]
+  },
+  "retrieved_end": "2026-10-01T20:04:53.638741+00:00",
+  "retrieved_start": "2026-10-01T12:05:24.340571+00:00",
+  "symbols": {
+    "ASCE": {
+      "bars": 189,
+      "sample_bar_times": [
+        "2026-10-01T13:59:00Z",
+        "2026-10-01T14:29:00Z",
+        "2026-10-01T14:59:00Z",
+        "2026-10-01T15:59:00Z",
+        "2026-10-01T17:59:00Z",
+        "2026-10-01T18:29:00Z",
+        "2026-10-01T18:59:00Z",
+        "2026-10-01T19:29:00Z",
+        "2026-10-01T19:59:00Z"
+      ]
+    },
+    "DDTN": {
+      "bars": 5,
+      "sample_bar_times": []
+    },
+    "DGRS": {
+      "bars": 30,
+      "sample_bar_times": [
+        "2026-10-01T16:59:00Z",
+        "2026-10-01T17:29:00Z"
+      ]
+    },
+    "DIS": {
+      "bars": 402,
+      "sample_bar_times": [
+        "2026-10-01T13:59:00Z",
+        "2026-10-01T14:29:00Z",
+        "2026-10-01T14:59:00Z",
+        "2026-10-01T15:29:00Z",
+        "2026-10-01T15:59:00Z",
+        "2026-10-01T16:29:00Z",
+        "2026-10-01T16:59:00Z",
+        "2026-10-01T17:29:00Z",
+        "2026-10-01T17:59:00Z",
+        "2026-10-01T18:29:00Z",
+        "2026-10-01T18:59:00Z",
+        "2026-10-01T19:29:00Z",
+        "2026-10-01T19:59:00Z"
+      ]
+    },
+    "FC": {
+      "bars": 47,
+      "sample_bar_times": [
+        "2026-10-01T14:59:00Z",
+        "2026-10-01T19:59:00Z"
+      ]
+    },
+    "GAINZ": {
+      "bars": 7,
+      "sample_bar_times": []
+    },
+    "GEG": {
+      "bars": 7,
+      "sample_bar_times": [
+        "2026-10-01T19:59:00Z"
+      ]
+    },
+    "KEEL": {
+      "bars": 442,
+      "sample_bar_times": [
+        "2026-10-01T13:29:00Z",
+        "2026-10-01T13:59:00Z",
+        "2026-10-01T14:29:00Z",
+        "2026-10-01T14:59:00Z",
+        "2026-10-01T15:29:00Z",
+        "2026-10-01T15:59:00Z",
+        "2026-10-01T16:29:00Z",
+        "2026-10-01T16:59:00Z",
+        "2026-10-01T17:29:00Z",
+        "2026-10-01T17:59:00Z",
+        "2026-10-01T18:29:00Z",
+        "2026-10-01T18:59:00Z",
+        "2026-10-01T19:29:00Z",
+        "2026-10-01T19:59:00Z"
+      ]
+    },
+    "NAMSW": {
+      "bars": 0,
+      "sample_bar_times": []
+    },
+    "PLUS": {
+      "bars": 148,
+      "sample_bar_times": [
+        "2026-10-01T15:29:00Z",
+        "2026-10-01T17:29:00Z",
+        "2026-10-01T18:59:00Z",
+        "2026-10-01T19:59:00Z"
+      ]
+    },
+    "SCHE": {
+      "bars": 377,
+      "sample_bar_times": [
+        "2026-10-01T13:59:00Z",
+        "2026-10-01T14:29:00Z",
+        "2026-10-01T14:59:00Z",
+        "2026-10-01T15:29:00Z",
+        "2026-10-01T15:59:00Z",
+        "2026-10-01T16:29:00Z",
+        "2026-10-01T16:59:00Z",
+        "2026-10-01T17:29:00Z",
+        "2026-10-01T17:59:00Z",
+        "2026-10-01T18:29:00Z",
+        "2026-10-01T18:59:00Z",
+        "2026-10-01T19:59:00Z"
+      ]
+    },
+    "SMCAY": {
+      "bars": 0,
+      "sample_bar_times": []
+    },
+    "SYNX": {
+      "bars": 9,
+      "sample_bar_times": [
+        "2026-10-01T15:29:00Z"
+      ]
+    },
+    "TDOC": {
+      "bars": 393,
+      "sample_bar_times": [
+        "2026-10-01T13:59:00Z",
+        "2026-10-01T14:29:00Z",
+        "2026-10-01T14:59:00Z",
+        "2026-10-01T15:29:00Z",
+        "2026-10-01T15:59:00Z",
+        "2026-10-01T16:29:00Z",
+        "2026-10-01T16:59:00Z",
+        "2026-10-01T17:29:00Z",
+        "2026-10-01T17:59:00Z",
+        "2026-10-01T18:29:00Z",
+        "2026-10-01T18:59:00Z",
+        "2026-10-01T19:29:00Z",
+        "2026-10-01T19:59:00Z"
+      ]
+    },
+    "TROT": {
+      "bars": 0,
+      "sample_bar_times": []
+    },
+    "UTL": {
+      "bars": 95,
+      "sample_bar_times": [
+        "2026-10-01T15:59:00Z",
+        "2026-10-01T19:29:00Z",
+        "2026-10-01T19:59:00Z"
+      ]
+    }
+  },
+  "cross_check": {
+    "expected_checkpoint_records_30_60_90": 222,
+    "actual_checkpoint_records": 222,
+    "missing": [],
+    "extra": []
+  },
+  "absent_symbols": [
+    "DDTN",
+    "GAINZ",
+    "NAMSW",
+    "SMCAY",
+    "TROT"
+  ]
+}
