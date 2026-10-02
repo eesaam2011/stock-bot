@@ -16,6 +16,7 @@ from alpaca_production_market import AlpacaCredentials, AlpacaREST
 from production_universe import build_operational_universe
 from rest_bar_maturity import MaturedREST1MinCoordinator
 from rest_bar_shadow_audit import RESTBarShadowAudit
+from rest_maturity_coverage import RESTMaturityCoverage, CoverageREST
 
 UTC = timezone.utc
 CHECKPOINTS = (30, 60, 90, 120, 180)
@@ -57,6 +58,8 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
     symbols = _sample(build_operational_universe(rest), args.session, args.symbols)
     audit = RESTBarShadowAudit(r, rest, args.session, due_hours=args.due_hours)
     keys = set(); skipped_slots = 0
+    coverage = RESTMaturityCoverage(symbols, CHECKPOINTS, args.sample_every_minutes)
+    coverage_rest = CoverageREST(rest, coverage)
 
     def record(symbol, rows, eval_ts, checkpoint, observed_at):
         nonlocal skipped_slots
@@ -68,9 +71,10 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
             raise RuntimeError("REST_MATURITY_OBSERVATION_LIMIT")
         keys.add(audit.record_checkpoint("BASE_1MIN", symbol, rows, eval_ts,
                                          observed_at, checkpoint))
+        coverage.recorded(symbol, rows, eval_ts, checkpoint)
 
     coordinator = MaturedREST1MinCoordinator(
-        rest, symbols, lambda *_: None, grace_seconds=90,
+        coverage_rest, symbols, lambda *_: None, grace_seconds=90,
         study_observer=record, study_symbols=symbols,
         study_checkpoints=CHECKPOINTS)
     body = {"schema":"OPR_STEP3BI_REST_MATURITY_V1", "mode":"observe",
@@ -78,6 +82,7 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
             "session":args.session, "symbols":list(symbols),
             "checkpoints":list(CHECKPOINTS), "started_at":now_fn().isoformat(),
             "audit_keys":[], "polls":0, "errors":[],
+            "coverage":coverage.report(),
             "sample_every_minutes":args.sample_every_minutes,
             "max_observations":args.max_observations,
             "canonical_writes":0, "alerts_sent":0,
@@ -86,7 +91,9 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
     while now_fn() < args.end:
         now = now_fn()
         try:
+            coverage_rest.poll_at = now
             coordinator.poll(now, True)
+            body["coverage"] = coverage.report()
             body["polls"] += 1
             body["audit_keys"] = sorted(keys)
             body["observations"] = len(keys)
@@ -94,6 +101,9 @@ def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
             body["last_poll_at"] = now.isoformat()
             _write(args.output, body)
         except Exception as exc:
+            body["coverage"] = coverage.report()
+            body["audit_keys"] = sorted(keys)
+            body["observations"] = len(keys)
             body["errors"].append({"at":now.isoformat(),
                                    "type":type(exc).__name__,"message":str(exc)[:300]})
             _write(args.output, body)

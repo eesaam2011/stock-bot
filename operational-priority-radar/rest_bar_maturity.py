@@ -28,7 +28,8 @@ class MaturedREST1MinCoordinator:
         if study_observer is not None and not callable(study_observer):
             raise ValueError("invalid REST maturity study observer")
         checkpoints=tuple(study_checkpoints)
-        if (any(type(x) is not int or not 30 <= x <= 600 for x in checkpoints)
+        if ((study_observer is not None and study_symbols and not checkpoints)
+                or any(type(x) is not int or not 30 <= x <= 600 for x in checkpoints)
                 or tuple(sorted(set(checkpoints))) != checkpoints
                 or type(observation_lateness_seconds) is not int
                 or not 15 <= observation_lateness_seconds <= 180):
@@ -60,10 +61,16 @@ class MaturedREST1MinCoordinator:
         cutoff = now - self.grace
         fetch_cutoff=(now-timedelta(seconds=self.study_checkpoints[0])
                       if self.study_observer and self.study_symbols else cutoff)
-        # First pass seeds the complete rolling BASE_READY window. Later passes
-        # overlap three minutes so retries and late REST visibility are harmless.
+        # Include the full 1Min bar, the largest checkpoint, and the allowed
+        # REST observation lateness. Preserve the normal three-minute overlap
+        # when no study is active. The due-time gate below still rejects late data.
+        overlap = timedelta(minutes=3)
+        if self.study_observer is not None and self.study_symbols:
+            overlap = max(overlap, timedelta(
+                seconds=60 + max(self.study_checkpoints)
+            ) + self.observation_lateness)
         start = (now - timedelta(minutes=65) if not self._bootstrapped
-                 else now - timedelta(minutes=3))
+                 else now - overlap)
         accepted = duplicates = eligible = 0
         for offset in range(0, len(self.symbols), self.batch_size):
             chunk = self.symbols[offset:offset + self.batch_size]
