@@ -32,8 +32,18 @@ Isolation is not correction settlement or continuity proof.
 For an active symbol, quarantine removes `pipeline.trades[symbol]` and entry
 opportunities while retaining `_active_by_symbol[symbol]` and desired trade
 subscription. The offline test records this exact behavior. It does not prove
-continued T1/T2/STOP monitoring, canonical disposition, durable isolation or
-recovery after restart. A green test is not resolution of this limitation.
+correct T1/T2/STOP decisions after uncertain corrections, canonical disposition,
+durable isolation or recovery after restart. `pipeline.trades` is an entry-price
+buffer, not the active-trade monitor. Real `on_trade` still calls `_monitor_trade`
+after symbol isolation; an offline routing test verifies that call only, not its
+canonical outcomes. A green test is not resolution of this limitation.
+
+The default `ProductionStartupRecovery.run` reports
+`CANONICAL_REPLAY_NOT_IMPLEMENTED` on its fetch-audit completion path, and
+`continuity_verified(epoch)` explicitly returns false. The current factory
+therefore cannot certify executable end-to-end readiness by merely running a
+socket session. This is an existing implementation gate, not a live-session
+failure or a newly introduced regression.
 
 The injected offline factory excludes the production durable revision journal
 branch. Its tests deliberately do not run recovery, semantic draining, the
@@ -46,7 +56,8 @@ authorize DIRECT or decisions.
    record its outstanding deficiency without presenting it as closed.
 2. Define and verify the isolated active trade's explicit terminal/held state,
    canonical persistence, monitoring policy and restart/reconnect recovery.
-   Do not claim that deleting an in-memory monitor safely closes a trade.
+   Entry-buffer removal is not trade closure or correction settlement. Verify
+   whether active monitoring should continue or hold under uncertain revisions.
 3. Review actual production startup recovery, leadership fences, durable
    semantic receipts and bounded capture draining together. Demonstrate an
    authoritative continuity gate; never force LIVE_TRUSTED or DIRECT to obtain

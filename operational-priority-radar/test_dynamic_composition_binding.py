@@ -126,6 +126,20 @@ class DynamicCompositionBindingTests(unittest.TestCase):
         self.assertTrue(self.ws.trade_authorized("AAPL"))
         self.assert_closed()
 
+    def test_isolated_symbol_still_reaches_active_trade_monitor(self):
+        self.check_isolation(revision())
+        # Verify real on_trade routing without invoking canonical commit IO.
+        with patch.object(self.pipeline, "_monitor_trade") as monitor:
+            self.pipeline.on_trade("AAPL", {"p": 11.0, "t": NOW.isoformat()}, NOW, True)
+        monitor.assert_called_once()
+        self.assertEqual(monitor.call_args.args[0], "AAPL")
+        self.assertNotIn("AAPL", self.pipeline.trades)
+        self.assert_closed()
+
+    def test_default_recovery_explicitly_refuses_continuity(self):
+        self.assertFalse(self.runtime.orchestrator.c.recovery.continuity_verified(1))
+        self.assert_closed()
+
     def test_isolation_capacity_exhaustion_invalidates_epoch(self):
         self.pipeline.symbol_isolation.max_symbols = 1
         self.pipeline.symbol_isolation.block("MSFT", "TEST_LIMIT", NOW)
