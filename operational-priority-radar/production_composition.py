@@ -13,7 +13,8 @@ from production_halt_status import ProductionStatusTracker
 from production_runtime_state import RedisLeadershipFacade
 from production_pipeline import ProductionDecisionPipeline
 from datetime import datetime,timezone
-from production_universe import build_operational_universe
+from epoch_subscription_policy import EpochSubscriptionPolicy
+from pathlib import Path
 
 class CompositionUnavailable(RuntimeError):pass
 
@@ -50,18 +51,21 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     br=base_ready or OperationalBaseReady()
     worker_id=os.getenv("WORKER_INSTANCE_ID") or uuid.uuid4().hex
     session=os.getenv("OPR_SESSION") or datetime.now(timezone.utc).date().isoformat()
-    # Production Shadow uses Alpaca active/tradable US-equity universe automatically.
+    # D uses the pinned static scope plus canonical monitoring/recovery needs.
     # `symbols` remains an explicit injection seam for deterministic tests only.
+    policy=None
     if symbols is not None:
         syms=list(symbols)
     elif redis_client is not None or websocket_connector is not None or recovery is not None or early_core is not None or base_ready is not None:
         syms=[]  # deterministic injected/test seam; production path below never uses this branch
     else:
-        syms=build_operational_universe(rest)
+        policy=EpochSubscriptionPolicy(Path(__file__).resolve().parent/"frozen",session)
+        # Resolve again under leadership immediately before startup recovery.
+        syms=list(policy.frozen.static)
     if recovery is not None:
         rec=recovery
     else:
-        if not syms:
+        if not syms and policy is None:
             rec=ProductionRecoveryBridge()  # explicit fail-closed until deployment context supplied
         else:
             trade_reconciler=ActiveTradeChronologicalReconciler(rest,r,worker_id)
@@ -74,6 +78,9 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     sender=DurableOutboxSender(outbox_store,ForbiddenTelegram(),shadow_mode=True)
     comps=RuntimeComponents(r,None,rest,ec,br,sender,guard,rec)
     orch=RuntimeOrchestrator(comps,worker_id)
+    if policy is not None:
+        original_allowed=orch.new_decisions_allowed
+        orch.new_decisions_allowed=lambda: original_allowed() and policy.new_nominations_allowed()
     leadership=RedisLeadershipFacade(orch.redis,worker_id)
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
     async def on_message(msg):
@@ -91,4 +98,21 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
     supervisor.decision_pipeline=pipeline
+    if policy is not None:
+        def prepare_subscription():
+            # No transport update in-place. Reconnects retain this startup scope.
+            if policy.epoch or supervisor.websocket_runtime.connected_event.is_set():
+                raise RuntimeError("SUBSCRIPTION_SCOPE_ALREADY_FROZEN_RESTART_REQUIRED")
+            scope=policy.freeze(r)
+            syms[:]=scope
+            pipeline.symbols=list(scope)
+            if hasattr(rec,"symbols"):rec.symbols=list(scope)
+            print({"stage":"SUBSCRIPTION_EPOCH_PREPARED",**policy.snapshot()},flush=True)
+        def verify_subscription_needs():
+            policy.observe_redis(r)
+            if policy.pending or policy.failure=="CANONICAL_SCOPE_OBSERVATION_FAILED":
+                raise RuntimeError("SUBSCRIPTION_NEEDS_CHANGED_BEFORE_CONNECT")
+        supervisor.verify_subscription_needs=verify_subscription_needs
+        supervisor.prepare_subscription_epoch=prepare_subscription
+        supervisor.subscription_policy=policy
     return supervisor

@@ -101,6 +101,10 @@ class ShadowRuntimeSupervisor:
         while not self.stop_event.is_set():
             p=getattr(self,"decision_pipeline",None)
             if p is not None:
+                policy=getattr(self,"subscription_policy",None)
+                if policy is not None:
+                    await asyncio.to_thread(policy.observe_redis,self.orchestrator.redis.r)
+                    print({"stage":"SUBSCRIPTION_EPOCH_STATUS",**policy.snapshot()},flush=True)
                 bars=sum(len(v) for v in p.bars.values())
                 trades=sum(len(v) for v in p.trades.values())
                 memory_stats=p.memory_stats() if hasattr(p,"memory_stats") else {}
@@ -199,6 +203,9 @@ class ShadowRuntimeSupervisor:
         print({"stage":"LEADERSHIP_RENEW_TASK_STARTED",
                "lease":self._leadership_snapshot()},flush=True)
 
+        if hasattr(self,"prepare_subscription_epoch"):
+            await asyncio.to_thread(self.prepare_subscription_epoch)
+
         print({"stage":"STARTUP_RECOVERY_START"}, flush=True)
         recovery_result=await asyncio.to_thread(self.orchestrator.begin_recovery)
         print({"stage":"STARTUP_RECOVERY_RETURNED",
@@ -207,6 +214,9 @@ class ShadowRuntimeSupervisor:
                "lease":self._leadership_snapshot()}, flush=True)
         # Fail closed before stream trust if the lease was lost during recovery.
         self.decision_pipeline.leadership.require_current() if hasattr(self,"decision_pipeline") else None
+
+        if hasattr(self,"verify_subscription_needs"):
+            await asyncio.to_thread(self.verify_subscription_needs)
 
         print({"stage":"SIP_WEBSOCKET_TASK_START",
                "symbols_count":len(self.symbols)}, flush=True)

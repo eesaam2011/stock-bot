@@ -1,0 +1,2 @@
+"""Reviewed expected file pins; no automatic repinning."""
+PINS = {'DAY_LIST.json': '1a4d91edf048f1f71ac6c5c1331e8ebc36eba057e428884ac0594676d756c5b6', 'ASSETS_RAW.json': '8c5f86385849c3aecbeb54838cd597feaa7f1976430d460acaef69d8abcc0a10', 'ACTIVITY.txt': '319e4857684396441a1666bc06ae4420c8b317c7de1a093b54a5be2aa42ff50e', 'ADR_MANUAL.txt': '6dc4e47e15c7e410970e8e5e59ef4041b93572a7929423e661f03fda84d86ca0', 'NAME_RULES.json': '871e0c6c39abb5ea791258cc5dd88b37319cac997e0ff0917e6e2dbf1fdac8da', 'CALENDAR.json': '307a4c49b68844be6198be2a1aa9da0beb7ead70e2d881029079b18ebf49660a'}
