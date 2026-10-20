@@ -173,9 +173,13 @@ class ProductionDecisionPipeline:
    for symbol in chunk:
     rows=[{**r,"_timeframe":"native_5Min"} for r in (rows_by_symbol.get(symbol) or [])]
     if rows:stats["symbols_with_rows"]+=1
+    fused=False;crossing=None
     if rows:
      stats["evaluated_symbols"]+=1
-     tele=self.ec.telemetry(rows)
+     if hasattr(self.ec,"evaluate_with_telemetry"):
+      tele,crossing=self.ec.evaluate_with_telemetry(symbol,rows,now);fused=True
+     else:
+      tele=self.ec.telemetry(rows)
      stats["eligible_rows"]+=int(tele.get("eligible_rows") or 0)
      stats["invalid_close_bars"]+=int(tele.get("invalid_close_bars") or 0)
      stats["scoreable_bars"]+=int(tele.get("scoreable_bars") or 0)
@@ -189,7 +193,7 @@ class ProductionDecisionPipeline:
      sc=tele.get("max_score")
      if sc is not None and (stats["max_score"] is None or sc>stats["max_score"]):
       stats["max_score"]=sc;stats["max_score_symbol"]=symbol;stats["gap_to_threshold"]=tele.get("gap_to_threshold")
-    crossing=self.ec.evaluate(symbol,rows,now)
+    if not fused:crossing=self.ec.evaluate(symbol,rows,now)
     if crossing:
      # STEP16Z observability only: distinguish detection from canonical E persistence.
      # No Early Core threshold, crossing rule, state semantics, or alert policy changes.

@@ -11,7 +11,7 @@ class EarlyCoreCrossing:
     source_timeframe:str="native_5Min"
 class FrozenEarlyCoreEngine:
     def __init__(self,provider): self.provider=provider
-    def first_crossing(self,symbol,session,start,end,received_at):
+    def first_crossing(self,symbol,session,start,end,received_at,score_at=None):
         rows=self.provider.fetch_native_5min(symbol,session,start,end)
         if rows is None: raise Native5MinUnavailable("EARLY_CORE_DATA_UNAVAILABLE")
         parsed=[]
@@ -23,7 +23,7 @@ class FrozenEarlyCoreEngine:
             if c>0: parsed.append((ts,c))
         parsed.sort()
         for ts,c in parsed:
-            ev=ts+timedelta(minutes=5); sc,den=ctr_score_at(rows,ev)
+            ev=ts+timedelta(minutes=5); sc,den=(score_at or ctr_score_at)(rows,ev)
             if sc is not None and sc>=ARTIFACT["threshold"]:
                 return EarlyCoreCrossing(symbol,session,ts,ev,received_at,max(ev,received_at),sc,den)
         return None

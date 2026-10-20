@@ -51,8 +51,14 @@ def fd_features(rows, cutoff):
 def ctr_score_at(rows, eval_dt, defs=None):
     defs=defs or ARTIFACT["definitions"]
     values={}
+    # Per-score invocation only: same rows + same cutoff => identical features.
+    # Preserve definition iteration and floating-point summation order.
+    anchor_features={}
     for d in defs:
-        f=fd_features(rows, eval_dt-timedelta(minutes=int(d["anchor_minutes"])))
+        anchor=int(d["anchor_minutes"])
+        if anchor not in anchor_features:
+            anchor_features[anchor]=fd_features(rows, eval_dt-timedelta(minutes=anchor))
+        f=anchor_features[anchor]
         if f is not None:
             values.setdefault(str(d["anchor_minutes"]),{})[d["feature"]]=f.get(d["feature"])
     return score_feature_values(values)[:2]

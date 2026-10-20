@@ -1,0 +1,257 @@
+{
+  "version": "IPR-TYPE-MANUAL-20261020-1",
+  "records": [
+    {
+      "symbol": "AHT.PRD",
+      "asset_id": "68ab6a91-f696-4b18-a273-6303c43f5b2c",
+      "name": "Ashford Hospitality Trust, Inc. 8.45% Series D",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "Ashford Hospitality Trust, Inc. 8.45% Series D",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "AHT.PRF",
+      "asset_id": "c016f4da-3079-47b4-9caa-453e7462e9a7",
+      "name": "Ashford Hospitality Trust, Inc.",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "Ashford Hospitality Trust, Inc.",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "ALL.PRH",
+      "asset_id": "9a5b42b3-46ae-40f7-9a79-253d476cced8",
+      "name": "The Allstate Corporation",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "The Allstate Corporation",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "ALL.PRI",
+      "asset_id": "1b332625-ba35-4793-a4f4-257b38882f93",
+      "name": "The Allstate Corporation",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "The Allstate Corporation",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "EP.PRC",
+      "asset_id": "44de81e1-bb5c-44b6-8b16-8b3f3169f913",
+      "name": "El Paso Energy Capital Trust I",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "El Paso Energy Capital Trust I",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "GAM.PRB",
+      "asset_id": "1f9a074b-bb32-462e-8db8-c7dee283ca98",
+      "name": "General American Investors Company, Inc  5.95% Cumul Pfd Stock, Ser B",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "General American Investors Company, Inc  5.95% Cumul Pfd Stock, Ser B",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "GS.PRA",
+      "asset_id": "d31f2cf8-d376-45f0-b7e1-6631ec3004d6",
+      "name": "Goldman Sachs Group, Inc. (The) Depositary shares",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "Goldman Sachs Group, Inc. (The) Depositary shares",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "GS.PRC",
+      "asset_id": "92c07275-bafd-4009-8720-3bcd5988b62a",
+      "name": "Goldman Sachs Group Dep. Shares (1/1000 Int. of Floating Rate Non-Cum. Prfrd. Stk., Ser. C)",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "Goldman Sachs Group Dep. Shares (1/1000 Int. of Floating Rate Non-Cum. Prfrd. Stk., Ser. C)",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "GSL.PRB",
+      "asset_id": "ead735e2-b4ab-46ce-bcba-7cb41e40c747",
+      "name": "GLOBAL SHIP LEASE, INC. 8.75%  SER B",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "GLOBAL SHIP LEASE, INC. 8.75%  SER B",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "MET.PRA",
+      "asset_id": "ce7590bc-b73d-400c-aacb-a5446bd30132",
+      "name": "Metlife, Inc. Floating Rate Non Cuml Series A",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "Metlife, Inc. Floating Rate Non Cuml Series A",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "MS.PRE",
+      "asset_id": "9a374ff3-8add-4f6e-86a7-203439feb66d",
+      "name": "MORGAN STANLEY DEP SHARES EACH REPRESENTING 1/1,000TH OF SHARE OF FIXED TO FLOATING RATE SER E",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "MORGAN STANLEY DEP SHARES EACH REPRESENTING 1/1,000TH OF SHARE OF FIXED TO FLOATING RATE SER E",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "MS.PRF",
+      "asset_id": "8923198f-bbc1-4f39-a639-559a8cb04809",
+      "name": "MORGAN STANLEY SERIES F",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "MORGAN STANLEY SERIES F",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "NEE.PRS",
+      "asset_id": "33d72982-44a7-409b-9357-9690645e0a97",
+      "name": "NextEra Energy, Inc. 7.299% Corporate Units",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "NextEra Energy, Inc. 7.299% Corporate Units",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "NEE.PRT",
+      "asset_id": "b1cb1af7-178e-425a-a814-d2e6b02da1e7",
+      "name": "NextEra Energy, Inc. 7.234% Corporate Units",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "NextEra Energy, Inc. 7.234% Corporate Units",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "NEE.PRV",
+      "asset_id": "e93dcfdd-129d-4a07-9b3d-19530cf28e81",
+      "name": "NextEra Energy, Inc. 7.375% Corporate Units",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "NextEra Energy, Inc. 7.375% Corporate Units",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "SB.PRC",
+      "asset_id": "2f3f7a31-985a-45e2-8cb8-4e884f4d6cee",
+      "name": "SAFE BULKERS, INC. 8.00%  SER C",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "SAFE BULKERS, INC. 8.00%  SER C",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "SB.PRD",
+      "asset_id": "0af3baa1-143c-4793-b888-0bb80606d816",
+      "name": "Safe Bulkers, Inc. 8.00% Series D",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "Safe Bulkers, Inc. 8.00% Series D",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "SCE.PRG",
+      "asset_id": "26d4727b-d37f-4b58-81b5-6bae74fe5d87",
+      "name": "SCE TRUST II 5.10% Trust Preference Securities",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "SCE TRUST II 5.10% Trust Preference Securities",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "SCE.PRL",
+      "asset_id": "dc4c3e7e-c361-49eb-858b-ee140b32e6fd",
+      "name": "SCE TRUST VI 5.00% Trust Preference Securities",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "SCE TRUST VI 5.00% Trust Preference Securities",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "SCE.PRM",
+      "asset_id": "712666c7-b2ad-42c2-a52f-0eb740a11174",
+      "name": "SCE Trust VII 7.50% Trust Preference Securities",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "SCE Trust VII 7.50% Trust Preference Securities",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "SCE.PRN",
+      "asset_id": "547543b0-e29c-4bda-a8b3-e4c0fbab190b",
+      "name": "SCE Trust VIII 6.95% Trust Preference Securities",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "SCE Trust VIII 6.95% Trust Preference Securities",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "SPG.PRJ",
+      "asset_id": "2dd22719-ecf6-4ecf-aa49-ae59c8e7999a",
+      "name": "Simon Property Group, Inc. 8 3/8% Series J",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "Simon Property Group, Inc. 8 3/8% Series J",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "USB.PRH",
+      "asset_id": "cd8505a4-c67b-4845-8ad5-3719c8af26f8",
+      "name": "US Bancorp Depositary Shares (1/1,000 Interest in Ser. B Non-Cum. Prptl. Prfrd. Stock)",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "US Bancorp Depositary Shares (1/1,000 Interest in Ser. B Non-Cum. Prptl. Prfrd. Stock)",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "WFC.PRL",
+      "asset_id": "79744138-60b6-406b-b739-814ab9b4663f",
+      "name": "WELLS FARGO 7.5% NON CUMV PERP CONV",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "WELLS FARGO 7.5% NON CUMV PERP CONV",
+      "name_changed": false,
+      "issuer_inheritance": false
+    },
+    {
+      "symbol": "WFC.PRY",
+      "asset_id": "9bed67f0-3fdb-4cd5-bef7-f35c615660f1",
+      "name": "Wells Fargo & Company",
+      "reason": "TYPE_MANUAL_REVIEWED_EXCEPTION",
+      "authority": "USER_EXPLICIT_25_SYMBOLS_20261020",
+      "previous_name": "Wells Fargo & Company",
+      "name_changed": false,
+      "issuer_inheritance": false
+    }
+  ],
+  "symbol_suffix_classifier": false,
+  "scope": "EXPLICIT_USER_ENUMERATED_ASSET_IDENTITIES_ONLY"
+}

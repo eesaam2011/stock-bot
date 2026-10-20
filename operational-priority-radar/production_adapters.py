@@ -12,21 +12,21 @@ class Native5Provider:
 
 class OperationalEarlyCore:
  def __init__(self,rest):self.engine=FrozenEarlyCoreEngine(Native5Provider(rest))
- def evaluate(self,symbol,rows,received_at):
+ def evaluate(self,symbol,rows,received_at,_score_at=None):
   # Live native-5m rows are evaluated literally through frozen first-crossing engine contract.
   if not rows:return None
   start=datetime.fromisoformat(str(rows[0]["t"]).replace("Z","+00:00"))
   end=datetime.fromisoformat(str(rows[-1]["t"]).replace("Z","+00:00"))+timedelta(minutes=5)
   class P:
    def fetch_native_5min(self,*a):return rows
-  return FrozenEarlyCoreEngine(P()).first_crossing(symbol,received_at.date().isoformat(),start,end,received_at)
+  return FrozenEarlyCoreEngine(P()).first_crossing(symbol,received_at.date().isoformat(),start,end,received_at,score_at=_score_at)
  def required_history_minutes(self):
   # Frozen Early Core contains anchors as far back as 240m. Its deepest return
   # feature (ret_60m) needs 13 native 5m closes before that cutoff.
   max_anchor=max(int(d["anchor_minutes"]) for d in ARTIFACT["definitions"])
   return max_anchor + 13*5
 
- def telemetry(self,rows):
+ def telemetry(self,rows,_score_at=None):
   # Observability only: mirror first_crossing row eligibility (parseable ts + c>0).
   # This never changes crossing, threshold, persistence, or alert decisions.
   threshold=float(ARTIFACT["threshold"]);scores=[];max_den=0.0;score_attempts=0
@@ -43,7 +43,7 @@ class OperationalEarlyCore:
     continue
    try:
     ev=ts+timedelta(minutes=5)
-    sc,den=ctr_score_at(rows,ev)
+    sc,den=(_score_at or ctr_score_at)(rows,ev)
     score_attempts+=1
     max_den=max(max_den,float(den or 0.0))
     if sc is not None:
@@ -63,6 +63,20 @@ class OperationalEarlyCore:
           "near_threshold":bool(max_score is not None and max_score>=threshold*0.90),
           "threshold":threshold,
           "required_history_minutes":self.required_history_minutes()}
+ def evaluate_with_telemetry(self,symbol,rows,received_at):
+  # Cache lives for this symbol evaluation only; no cross-symbol/cycle state.
+  # Reuse score values and failures, while preserving each caller's handling.
+  scores={}
+  def score_once(same_rows,ev):
+   if ev not in scores:
+    try:scores[ev]=(True,ctr_score_at(same_rows,ev))
+    except Exception as exc:scores[ev]=(False,exc)
+   ok,value=scores[ev]
+   if not ok:raise value
+   return value
+  tele=self.telemetry(rows,_score_at=score_once)
+  crossing=self.evaluate(symbol,rows,received_at,_score_at=score_once)
+  return tele,crossing
 
 class OperationalBaseReady:
  _BAR_KEYS=("t","o","h","l","c","v","vw","n")

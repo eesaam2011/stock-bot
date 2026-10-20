@@ -1,5 +1,5 @@
 {
-  "version": "IPR-NAME-RULES-3.0.0-REVIEW",
+  "version": "IPR-NAME-RULES-4.0.0-REVIEW",
   "status": "FROZEN_CANDIDATE_NOT_ACTIVATED",
   "source_field": "name only",
   "issuer_names": [
@@ -391,6 +391,18 @@
           "name": "BlackRock Income Trust Inc."
         }
       ]
+    },
+    {
+      "rule_id": "N12",
+      "type": "PREFERRED",
+      "regex": "\\bPRFRD\\b|\\bTrust\\s+Preference\\s+Securities\\b",
+      "note": "Explicit narrow preferred contexts; Common Stock/Shares suppresses."
+    },
+    {
+      "rule_id": "N13",
+      "type": "PREFERRED",
+      "regex": "^(?=.*\\bNON[\\s-]+CUM(?:ULATIVE|UL|L|V)?\\b)(?=.*(?:\\b(?:SERIES|SER|PERP|PERPETUAL|PRPTL|RATE|STOCK|SHARES|SECURITIES)\\b|\\d[\\d.]*\\s*%)).*$",
+      "note": "Non-cumulative plus explicit financial context; Common Stock/Shares suppresses."
     }
   ],
   "ordered_guard_spec": [
@@ -403,5 +415,7 @@
     "Using remaining matched types: UNIT suppresses N01/N02/N04; ADR suppresses N02; ETF_ETN_FUND suppresses N05.",
     "ETF_ETN_FUND/WARRANT/UNIT suppress N07; then remaining ADR suppresses N04.",
     "Choose first surviving rule for primary display, retain every surviving rule and every suppressed rule with reason. Unknown passes type filter only."
-  ]
+  ],
+  "manual_file": "TYPE_MANUAL.json",
+  "partnership_and_corporate_units_policy": "UNCHANGED_OPERATING_UNIT_EXCEPTION"
 }

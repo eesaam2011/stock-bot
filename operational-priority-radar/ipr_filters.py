@@ -32,7 +32,12 @@ class FrozenFiles:
                 self.calendar=json.loads(self.data['CALENDAR.json'])
                 self.day=json.loads(self.data['DAY_LIST.json'])
                 assert len(self.activity)==656 and len(self.manual)==10
-                assert self.rules['version']=='IPR-NAME-RULES-3.0.0-REVIEW'
+                assert self.rules['version']=='IPR-NAME-RULES-4.0.0-REVIEW'
+                manual_data=json.loads(self.data['TYPE_MANUAL.json'])
+                assert manual_data['version']=='IPR-TYPE-MANUAL-20261020-1'
+                self.type_manual={r['symbol']:r for r in manual_data['records']}
+                assert len(self.type_manual)==25 and len(manual_data['records'])==25
+                assert all(isinstance(r['asset_id'],str) and r['asset_id'] and isinstance(r['name'],str) and r['name'] for r in self.type_manual.values())
                 self.patterns=[(r['rule_id'],r['type'],re.compile(r['regex'],re.I)) for r in self.rules['rules']]
                 dates=self.calendar['sessions'];assert dates==sorted(set(dates))
             except (ValueError,KeyError,AssertionError,re.error):self.errors.append('FROZEN_SCHEMA_INVALID')
@@ -50,7 +55,7 @@ def classify_name(name,patterns):
         if any(x[0]==i for x in hits):suppressed.append((i,reason));hits=[h for h in hits if h[0]!=i]
     if rx(r'\b(?:common|corporate)\s+units?\b') and not rx(r'\b(?:acquisition|SPAC)\b'):remove('N03','OPERATING_UNITS')
     if rx(r'\bcommon\s+(?:stock|shares)\b'):
-        for i in ('N04','N05','N08','N09'):remove(i,'COMMON_STOCK_OR_SHARES')
+        for i in ('N04','N05','N08','N09','N12','N13'):remove(i,'COMMON_STOCK_OR_SHARES')
     if rx(r'^\s*Invesco\s+(?:LTD\.?|Limited|Inc\.?)\s*$'):remove('N08','ISSUER_COMPANY')
     if rx(r'\b(?:Inc\.?|Corp\.?|Corporation|Ltd\.?|Limited)\b') and not rx(r'\b(?:Funds?|ETFs?|ETNs?)\b') and not (rx(r'\bTrust\b') and rx(r'\b(?:Shares|Series|Portfolio)\b')):remove('N08','OPERATING_ISSUER_CONTEXT')
     if rx(r'\b(?:Mortgage|Realty|REIT|Bank|Bancorp|Properties|Property)\b|\breal\s+estate\b'):remove('N11','PROPERTY_OR_BANK')
@@ -129,6 +134,10 @@ class FilterEngine:
         if asset is None:return {'ASSET_STATUS_UNKNOWN'},'TYPE_UNKNOWN',(),()
         if symbol in f.activity:reasons.add('ACTIVITY_DENYLIST_EXACT_MATCH')
         if symbol in f.manual:reasons.add('TYPE_ADR_MANUAL')
+        exception=f.type_manual.get(symbol)
+        if exception:
+            identity_matches=asset.get('id')==exception['asset_id'] and asset.get('name')==exception['name']
+            reasons.add('TYPE_MANUAL_REVIEWED_EXCEPTION' if identity_matches else 'TYPE_MANUAL_IDENTITY_MISMATCH')
         for field,value,reason in [('exchange','OTC','MARKET_OTC'),('status','active','ASSET_INACTIVE'),('tradable',True,'ASSET_NOT_TRADABLE')]:
             v=asset.get(field)
             if v is None or (field=='exchange' and v not in {'NYSE','NASDAQ','ARCA','BATS','AMEX','OTC'}):reasons.add('ASSET_STATUS_UNKNOWN')
