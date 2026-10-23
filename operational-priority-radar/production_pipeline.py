@@ -10,7 +10,12 @@ from risk_engine import StructureBar,evaluate_structural_risk,RiskStatus
 from entry_commit import EntryCommitBuilder
 from trade_monitor import TradeState,MarketEvent,apply_event,MonitorEvent
 from event_ids import trade_event_id
+from confluence_diagnostics import ConfluenceDiagnostics,raise_if_leadership_lost
+from redis_lua_production import LeaseLost
+from leadership import LeadershipError
+from liquidity_telemetry import LiquidityTelemetry
 UTC=timezone.utc
+class ConfluenceEvaluationError(RuntimeError):pass
 def dt(x):return x if isinstance(x,datetime) else datetime.fromisoformat(str(x).replace("Z","+00:00"))
 
 class ProductionDecisionPipeline:
@@ -28,6 +33,8 @@ class ProductionDecisionPipeline:
   # Structure-bar retention is only needed after a symbol has produced E or B.
   # Keeping 20 bars for every market symbol duplicates the broad BASE_READY history.
   self._structure_watch_symbols=set()
+  self.confluence_diagnostics=ConfluenceDiagnostics()
+  self.liquidity_telemetry=LiquidityTelemetry(symbols=self.symbols)
  def _current_rss_bytes(self):
   # Linux/Render current resident set size. Diagnostic only; never affects decisions.
   try:
@@ -55,7 +62,9 @@ class ProductionDecisionPipeline:
      "structure_watch_symbols":len(self._structure_watch_symbols)}
   x.update(extra);print(x,flush=True);return x
  def memory_stats(self):
-  return {"structure_symbols":len(self.bars),
+  return {"confluence_errors":self.confluence_diagnostics.snapshot(),
+          "liquidity_telemetry":self.liquidity_telemetry.snapshot(),
+          "structure_symbols":len(self.bars),
           "structure_bars":sum(len(v) for v in self.bars.values()),
           "base_ready_symbols":len(getattr(self.br,"history",{})),
           "base_ready_bars":self.br.buffered_bars() if hasattr(self.br,"buffered_bars") else None,
@@ -117,6 +126,7 @@ class ProductionDecisionPipeline:
     else:
      b_now=True
      print({"stage":"SHADOW_FIRST_B","symbol":symbol,
+            **self.liquidity_telemetry.first(symbol,"B",b_record.get("event_id")),
             "bar_end_ts":b_record.get("bar_end_ts"),
             "decision_available_ts":b_record.get("decision_available_ts"),
             "opportunity":b_record.get("features",{}).get("opportunity"),
@@ -128,12 +138,13 @@ class ProductionDecisionPipeline:
     self._structure_watch_symbols.add(symbol)
     # BASE_READY is first-event-only for the session; release its 60-bar discovery history.
     if hasattr(self.br,"release_symbol"):self.br.release_symbol(symbol)
-   self._confluence(symbol,received_at)
+   try:self._confluence(symbol,received_at)
+   except ConfluenceEvaluationError as exc:self.confluence_diagnostics.record(str(exc),"on_bar")
   if symbol in self._structure_watch_symbols:self._retain_structure_bar(symbol,bar,received_at)
   self._monitor_bar(symbol,bar,received_at)
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
-  stats={"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"eligible_rows":0,"invalid_close_bars":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"eligible_above_threshold":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"early_core_crossings_detected":0,"early_core_persisted":0,"early_core_persist_errors":0,"early_core_first_persist_error":None,"batch_size":int(batch_size)}
+  stats={"confluence_errors":0,"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"eligible_rows":0,"invalid_close_bars":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"eligible_above_threshold":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"early_core_crossings_detected":0,"early_core_persisted":0,"early_core_persist_errors":0,"early_core_first_persist_error":None,"batch_size":int(batch_size)}
   if not allow_decision:return stats
   # One Redis round-trip per chunk instead of one GET per symbol. This is transport/runtime
   # optimization only; it does not change Early Core eligibility or event semantics.
@@ -201,6 +212,7 @@ class ProductionDecisionPipeline:
      try:
       _e_key,e_record=self.ew.persist_first_e(crossing)
      except Exception as exc:
+      raise_if_leadership_lost(exc)
       stats["early_core_persist_errors"]+=1
       if stats["early_core_first_persist_error"] is None:
        stats["early_core_first_persist_error"]={"type":type(exc).__name__,"message":str(exc)[:300],"symbol":symbol}
@@ -211,10 +223,14 @@ class ProductionDecisionPipeline:
       stats["early_core_persisted"]+=1
       self._structure_watch_symbols.add(symbol)
       print({"stage":"SHADOW_FIRST_E","symbol":symbol,
+             **self.liquidity_telemetry.first(symbol,"E",e_record.get("event_id")),
              "score":e_record.get("score"),
              "bar_end_ts":e_record.get("bar_end_ts"),
              "decision_available_ts":e_record.get("decision_available_ts")},flush=True)
-     self._confluence(symbol,now)
+     try:self._confluence(symbol,now)
+     except ConfluenceEvaluationError as exc:
+      stats["confluence_errors"]+=1
+      self.confluence_diagnostics.record(str(exc),"poll_native5")
    process_seconds=round(time.monotonic()-process_t0,3)
    self._memory_probe("native5_after_processing",batch_no=batch_no,chunk_symbols=len(chunk),fetched_rows=fetched_rows,process_seconds=process_seconds)
    del rows_by_symbol
@@ -225,17 +241,29 @@ class ProductionDecisionPipeline:
   self._memory_probe("native5_cycle_after",cycle_seconds=stats["cycle_seconds"],eligible_symbols=len(pending))
   return stats
  def _confluence(self,symbol,now):
-  if symbol in self._entry_opportunities or self._get(key_opportunity(self.session,symbol)):return
-  e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
-  try:_decision,record=self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
-  except Exception:return
-  if record and record.get("state")=="CONFLUENCE_VALID":
-   self._entry_opportunities[symbol]=record
-   print({"stage":"SHADOW_CONFLUENCE","symbol":symbol,
-          "e_decision_available_ts":e.get("decision_available_ts") if e else None,
-          "b_decision_available_ts":b.get("decision_available_ts") if b else None,
-          "delta_seconds":record.get("delta_seconds"),
-          "entry_trigger_ts":record.get("entry_trigger_ts")},flush=True)
+  try:
+   if symbol in self._entry_opportunities:return
+   existing=self._get(key_opportunity(self.session,symbol),"opportunity")
+   if existing:
+    if existing["state"]=="CONFLUENCE_VALID":self._entry_opportunities[symbol]=existing
+    return
+   e=self._get(key_early_core(self.session,symbol),"early_core");b=self._get(key_base_ready(self.session,symbol),"base_ready")
+   # Writer/create contract remains (decision,key); cache only a validated record.
+   _decision,key=self.cw.evaluate_and_persist(self.session,symbol,e,b,now)
+   record=None if key is None else self.store.read(key,"opportunity")
+   if record and record.get("state")=="CONFLUENCE_VALID":
+    self._entry_opportunities[symbol]=record
+    print({"stage":"SHADOW_CONFLUENCE","symbol":symbol,
+           "e_decision_available_ts":e.get("decision_available_ts") if e else None,
+           "b_decision_available_ts":b.get("decision_available_ts") if b else None,
+           "delta_seconds":record.get("delta_seconds"),
+           "entry_trigger_ts":record.get("entry_trigger_ts")},flush=True)
+  except Exception as exc:
+   try:raise_if_leadership_lost(exc)
+   except (LeaseLost,LeadershipError):
+    self._confluence_lease_lost=True
+    raise
+   raise ConfluenceEvaluationError(type(exc).__name__) from None
  def on_trade(self,symbol,msg,received_at,allow_decision):
   self.raw_trade_messages_received = getattr(self,"raw_trade_messages_received",0) + 1
   price=msg.get("p");ts=msg.get("t")

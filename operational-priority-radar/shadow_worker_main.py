@@ -97,6 +97,17 @@ class ShadowRuntimeSupervisor:
             total += len(keys)
             if int(cursor)==0:return total
 
+    def _telemetry_counts(self,session):
+        # Read-only Redis work must not block the asyncio thread.
+        return (
+            self._redis_count("operational_priority_radar:v1:early_core:*"),
+            self._redis_count("operational_priority_radar:v1:base_ready:*"),
+            self._redis_count("operational_priority_radar:v1:opportunity:*"),
+            self._redis_count(f"operational_priority_radar:v1:early_core:{session}:*"),
+            self._redis_count(f"operational_priority_radar:v1:base_ready:{session}:*"),
+            self._redis_count(f"operational_priority_radar:v1:opportunity:{session}:*"),
+        )
+
     async def telemetry_loop(self):
         while not self.stop_event.is_set():
             p=getattr(self,"decision_pipeline",None)
@@ -110,12 +121,8 @@ class ShadowRuntimeSupervisor:
                 memory_stats=p.memory_stats() if hasattr(p,"memory_stats") else {}
                 try:
                     session=str(p.session)
-                    e_total=self._redis_count("operational_priority_radar:v1:early_core:*")
-                    b_total=self._redis_count("operational_priority_radar:v1:base_ready:*")
-                    opp_total=self._redis_count("operational_priority_radar:v1:opportunity:*")
-                    e_session=self._redis_count(f"operational_priority_radar:v1:early_core:{session}:*")
-                    b_session=self._redis_count(f"operational_priority_radar:v1:base_ready:{session}:*")
-                    opp_session=self._redis_count(f"operational_priority_radar:v1:opportunity:{session}:*")
+                    counts=await asyncio.to_thread(self._telemetry_counts,session)
+                    e_total,b_total,opp_total,e_session,b_session,opp_session=counts
                 except Exception as exc:
                     e_total=b_total=opp_total=None
                     e_session=b_session=opp_session=None
@@ -143,19 +150,19 @@ class ShadowRuntimeSupervisor:
 
     async def leadership_loop(self):
         while not self.stop_event.is_set():
-            before=self._leadership_snapshot()
+            before=await asyncio.to_thread(self._leadership_snapshot)
             try:
-                self.orchestrator.redis.renew(self.orchestrator.worker_id,30)
+                await asyncio.to_thread(self.orchestrator.redis.renew,self.orchestrator.worker_id,30)
             except Exception as exc:
                 print({"stage":"LEADERSHIP_RENEW_FAILED",
                        "error_type":type(exc).__name__,"error":str(exc),
                        "lease_before_renew":before,
-                       "lease_after_failure":self._leadership_snapshot()},flush=True)
+                       "lease_after_failure":await asyncio.to_thread(self._leadership_snapshot)},flush=True)
                 self.stop_event.set()
                 return
             print({"stage":"LEADERSHIP_RENEW_OK",
                    "lease_before_renew":before,
-                   "lease_after_renew":self._leadership_snapshot()},flush=True)
+                   "lease_after_renew":await asyncio.to_thread(self._leadership_snapshot)},flush=True)
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=10.0)
             except asyncio.TimeoutError: pass
 

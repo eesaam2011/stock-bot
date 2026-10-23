@@ -1,6 +1,6 @@
 from runtime_provenance import stamp
 from dataclasses import dataclass
-from state_store import CanonicalStateStore,base_record
+from state_store import CanonicalStateStore,base_record,signal_event_id
 from leadership import LeadershipManager
 from operational_confluence import decide_confluence,ConfluenceStatus
 
@@ -15,8 +15,8 @@ class ConfluenceStateWriter:
         d=decide_confluence(e_ts,b_ts,now)
         if d.status==ConfluenceStatus.WAITING:return d,None
         token=self.leadership.require_current()
-        e_id=None if e_record is None else e_record["event_id"]
-        b_id=None if b_record is None else b_record["event_id"]
+        e_id=None if e_record is None else signal_event_id("early_core",session,symbol)
+        b_id=None if b_record is None else signal_event_id("base_ready",session,symbol)
         event_ts=(d.entry_trigger_ts or d.expiry).isoformat()
         r=base_record("opportunity",session,symbol,d.status.value,event_ts)
         r.update(e_id=e_id,b_id=b_id,delta_seconds=d.delta_seconds,first_event=d.first_event,

@@ -91,6 +91,15 @@ class CanonicalStateStore:
         if not self.backend.compare_and_set(key,canonical_json(expected_record),canonical_json(new_record)):
             raise CanonicalConflict("compare-and-replace conflict")
 
+def signal_event_id(record_type,session,symbol):
+    # One first E/B per symbol/session. No clock or worker identity in this ID.
+    kind={"early_core":"E","base_ready":"B"}[record_type]
+    if not isinstance(session,str) or not isinstance(symbol,str) or not session or not symbol or ':' in session or ':' in symbol:
+        raise SchemaError("invalid signal identity")
+    return f"SIGNAL:{kind}:{session}:{symbol}"
+
 def base_record(record_type,session,symbol,state,now):
-    return {"schema_version":CANONICAL_SCHEMA_VERSION,"record_type":record_type,"session":session,"symbol":symbol,
+    record={"schema_version":CANONICAL_SCHEMA_VERSION,"record_type":record_type,"session":session,"symbol":symbol,
             "state":state,"created_at":now,"updated_at":now}
+    if record_type in {"early_core","base_ready"}:record["event_id"]=signal_event_id(record_type,session,symbol)
+    return record
