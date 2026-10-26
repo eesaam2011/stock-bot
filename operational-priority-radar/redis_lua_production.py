@@ -78,3 +78,24 @@ class ProductionRedisLua:
         if rc==-10:raise LeaseLost()
         if rc<0:raise AtomicConflict(str(rc))
         return True
+
+
+ATOMIC_OPPORTUNITY_TERMINAL_LUA = """
+if redis.call('GET',KEYS[1])~=ARGV[1] then return -10 end
+if redis.call('GET',KEYS[2])~=ARGV[2] then return -10 end
+if redis.call('GET',KEYS[3])~=ARGV[3] then return -20 end
+redis.call('SET',KEYS[3],ARGV[4])
+return 1
+"""
+def _atomic_opportunity_terminal(self,worker_id,generation,key,expected,new):
+    import json
+    from state_store import validate_record
+    before=json.loads(expected);after=json.loads(new)
+    validate_record(before,'opportunity');validate_record(after,'opportunity')
+    if before['state']!='CONFLUENCE_VALID' or after['state'] not in {'ENTRY_REJECTED','ENTRY_EXPIRED'}:raise AtomicConflict('TERMINAL_TRANSITION_INVALID')
+    if (before['session'],before['symbol'])!=(after['session'],after['symbol']):raise AtomicConflict('IDENTITY_CHANGED')
+    rc=int(self.r.eval(ATOMIC_OPPORTUNITY_TERMINAL_LUA,3,self.leader_key,self.generation_key,key,worker_id,str(generation),expected,new))
+    if rc==-10:raise LeaseLost()
+    if rc!=1:raise AtomicConflict(str(rc))
+    return True
+ProductionRedisLua.atomic_opportunity_terminal=_atomic_opportunity_terminal

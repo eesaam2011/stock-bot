@@ -59,6 +59,22 @@ class ShadowRuntimeSupervisor:
             try: await asyncio.wait_for(self.stop_event.wait(), timeout=1.0)
             except asyncio.TimeoutError: pass
 
+    async def entry_expiry_loop(self):
+        from datetime import datetime,timezone
+        while not self.stop_event.is_set():
+            p=getattr(self,'decision_pipeline',None)
+            if p is not None:
+                try:await asyncio.to_thread(p.expire_entry_opportunities,datetime.now(timezone.utc))
+                except Exception as exc:
+                    from confluence_diagnostics import raise_if_leadership_lost
+                    try:raise_if_leadership_lost(exc)
+                    except Exception:
+                        p._confluence_lease_lost=True
+                        raise
+                    print({'stage':'ENTRY_EXPIRY_ERROR','error_type':type(exc).__name__},flush=True)
+            try:await asyncio.wait_for(self.stop_event.wait(),timeout=1.0)
+            except asyncio.TimeoutError:pass
+
     async def native5_loop(self):
         while not self.stop_event.is_set():
             if hasattr(self,"decision_pipeline"):
@@ -72,8 +88,13 @@ class ShadowRuntimeSupervisor:
                         self.decision_pipeline.poll_native5,
                         datetime.now(timezone.utc),allow_decision,500,4)
                 except Exception as exc:
+                    from confluence_diagnostics import raise_if_leadership_lost
+                    try:raise_if_leadership_lost(exc)
+                    except Exception:
+                        self.decision_pipeline._confluence_lease_lost=True
+                        return
                     print({"stage":"NATIVE5_CYCLE_ERROR","cycle":cycle_no,
-                           "error_type":type(exc).__name__,"error":str(exc)},flush=True)
+                           "error_type":type(exc).__name__},flush=True)
                     try: await asyncio.wait_for(self.stop_event.wait(),timeout=5.0)
                     except asyncio.TimeoutError: pass
                     continue
@@ -116,9 +137,9 @@ class ShadowRuntimeSupervisor:
                 if policy is not None:
                     await asyncio.to_thread(policy.observe_redis,self.orchestrator.redis.r)
                     print({"stage":"SUBSCRIPTION_EPOCH_STATUS",**policy.snapshot()},flush=True)
-                bars=sum(len(v) for v in p.bars.values())
-                trades=sum(len(v) for v in p.trades.values())
-                memory_stats=p.memory_stats() if hasattr(p,"memory_stats") else {}
+                memory_stats=await asyncio.to_thread(p.memory_stats) if hasattr(p,"memory_stats") else {}
+                bars=memory_stats.get("structure_bars",0)
+                trades=memory_stats.get("entry_trade_buffer_count",0)
                 try:
                     session=str(p.session)
                     counts=await asyncio.to_thread(self._telemetry_counts,session)
@@ -264,6 +285,7 @@ class ShadowRuntimeSupervisor:
             ws_task,
             asyncio.create_task(self.outbox_loop()),
             asyncio.create_task(self.native5_loop()),
+            asyncio.create_task(self.entry_expiry_loop()),
             leadership_task,
             asyncio.create_task(self.telemetry_loop()),
         ]

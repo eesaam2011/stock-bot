@@ -1,4 +1,4 @@
-import os,uuid
+import os,uuid,asyncio
 from alpaca_production_market import AlpacaCredentials,AlpacaREST,AlpacaSIPProtocol,SIP_STREAM_URL
 from runtime_wiring import RuntimeComponents,RuntimeOrchestrator
 from websocket_runtime import WebSocketRuntime
@@ -87,12 +87,15 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
       kind=AlpacaSIPProtocol.classify(msg)
       received_at=datetime.now(timezone.utc);symbol=msg.get("S")
       allow=orch.new_decisions_allowed()
-      if kind=="BAR" and symbol:pipeline.on_bar(symbol,msg,received_at,allow)
-      elif kind=="TRADE" and symbol:pipeline.on_trade(symbol,msg,received_at,allow)
+      if kind=="BAR" and symbol:await asyncio.to_thread(pipeline.on_bar,symbol,msg,received_at,allow)
+      elif kind=="TRADE" and symbol:await asyncio.to_thread(pipeline.on_trade,symbol,msg,received_at,allow)
       elif kind=="STATUS":
-        rec.on_status(msg);pipeline.on_status(msg)
+        await asyncio.to_thread(rec.on_status,msg);await asyncio.to_thread(pipeline.on_status,msg)
       rec.on_stream_message(kind,msg)
     async def on_disconnect():
+      # Read-only timestamped evidence; original trust/recovery actions stay identical.
+      try:print({"stage":"SHADOW_WEBSOCKET_DISCONNECT","utc":datetime.now(timezone.utc).isoformat(),"error_type":str(ws.last_error or "UNKNOWN").split(":",1)[0]},flush=True)
+      except Exception:pipeline.disconnect_log_errors=getattr(pipeline,"disconnect_log_errors",0)+1
       orch.on_disconnect();rec.on_disconnect()
     ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect)
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
@@ -105,7 +108,7 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
                 raise RuntimeError("SUBSCRIPTION_SCOPE_ALREADY_FROZEN_RESTART_REQUIRED")
             scope=policy.freeze(r)
             syms[:]=scope
-            pipeline.symbols=list(scope)
+            pipeline.symbols=list(scope);pipeline._admitted_symbols=set(scope)
             if hasattr(rec,"symbols"):rec.symbols=list(scope)
             print({"stage":"SUBSCRIPTION_EPOCH_PREPARED",**policy.snapshot()},flush=True)
         def verify_subscription_needs():

@@ -1,5 +1,6 @@
 from datetime import datetime,timedelta,timezone
 from collections import deque
+from signal_admission import PackedHistory
 from early_core_engine import FrozenEarlyCoreEngine
 from early_core_features import ctr_score_at
 from early_core_score import ARTIFACT
@@ -19,7 +20,7 @@ class OperationalEarlyCore:
   end=datetime.fromisoformat(str(rows[-1]["t"]).replace("Z","+00:00"))+timedelta(minutes=5)
   class P:
    def fetch_native_5min(self,*a):return rows
-  return FrozenEarlyCoreEngine(P()).first_crossing(symbol,received_at.date().isoformat(),start,end,received_at,score_at=_score_at)
+  return FrozenEarlyCoreEngine(P()).first_crossing(symbol,received_at.date().isoformat(),start,end,received_at,score_at=_score_at,eligible_end=getattr(self,"eligible_end",None))
  def required_history_minutes(self):
   # Frozen Early Core contains anchors as far back as 240m. Its deepest return
   # feature (ret_60m) needs 13 native 5m closes before that cutoff.
@@ -43,6 +44,8 @@ class OperationalEarlyCore:
     continue
    try:
     ev=ts+timedelta(minutes=5)
+    eligible=getattr(self,"eligible_end",None)
+    if eligible is not None and not eligible(ev):continue
     sc,den=(_score_at or ctr_score_at)(rows,ev)
     score_attempts+=1
     max_den=max(max_den,float(den or 0.0))
@@ -90,10 +93,14 @@ class OperationalBaseReady:
  def _materialize_history(cls,history):
   # Thin compatibility boundary. Dicts exist only for the duration of feature evaluation.
   return [dict(zip(cls._BAR_KEYS,row)) for row in history]
+ def accumulate_only(self,symbol,bar):
+  h=self.history.get(symbol)
+  if h is None:h=PackedHistory(maxlen=60);self.history[symbol]=h
+  h.append(self._compact_bar(bar))
  def on_completed_native_1m(self,symbol,bar,received_at=None):
   h=self.history.get(symbol)
   if h is None:
-   h=deque(maxlen=60);self.history[symbol]=h
+   h=PackedHistory(maxlen=60);self.history[symbol]=h
   h.append(self._compact_bar(bar))
   bar_end=datetime.fromisoformat(str(bar["t"]).replace("Z","+00:00"))+timedelta(minutes=1)
   received_at=received_at or datetime.now(UTC)

@@ -1,4 +1,4 @@
-"""Opt-in local observer. No Redis/socket/file calls, decision gates, or trust writes."""
+"""Opt-in local observer. No Redis/socket/decision/trust writes; optional tiny local resource reads."""
 import asyncio
 import builtins
 from collections import deque
@@ -8,8 +8,9 @@ import threading
 import time
 
 class PassiveMetrics:
-    def __init__(self, clock=time.monotonic, wall=time.time, renew_capacity=256):
+    def __init__(self, clock=time.monotonic, wall=time.time, renew_capacity=256, resource_reader=None):
         self.clock=clock;self.wall=wall;self.lock=threading.Lock()
+        self.resource_reader=resource_reader;self.resource_previous=None;self.resource_samples=0;self.resource_errors=0;self.rss_max=None;self.cpu_max=None;self.resource_gap_max=None;self.window_start_unix=wall()
         now=clock();self.start=now;self.window_start=now;self.next_tick=now+1.0
         self.report_due=now+60.0;self.lag_max=0.0;self.samples=0
         self.last_hb=None;self.hb_gap_max=None;self.hb_late_max=None;self.hb_count=0
@@ -23,6 +24,19 @@ class PassiveMetrics:
         self.lag_max=max(self.lag_max,max(0.0,now-self.next_tick));self.samples+=1
         missed=int(max(0.0,now-self.next_tick)//1.0)
         self.next_tick+=missed+1.0
+        if self.resource_reader is not None:
+            try:
+                rss,cpu=self.resource_reader()
+                self.resource_samples+=1
+                if rss is not None:self.rss_max=max(self.rss_max or 0,rss)
+                if self.resource_previous is not None:
+                    prev_t,prev_cpu=self.resource_previous;gap=now-prev_t
+                    if gap>0:
+                        rate=max(0.0,(cpu-prev_cpu)/gap);self.cpu_max=max(self.cpu_max or 0.0,rate)
+                        self.resource_gap_max=max(self.resource_gap_max or 0.0,gap)
+                self.resource_previous=(now,cpu)
+            except Exception:self.resource_errors+=1
+
 
     def heartbeat(self, now=None):
         now=self.clock() if now is None else now
@@ -83,6 +97,11 @@ class PassiveMetrics:
         self.report_seq+=1
         out={'stage':'PASSIVE_RUNTIME_WINDOW','report_seq':self.report_seq,
              'start_monotonic':self.window_start,'end_monotonic':now,
+             'window_start_unix_utc':self.window_start_unix,'window_end_unix_utc':self.wall(),
+             'worker_rss_sample_max_bytes':self.rss_max,'worker_cpu_interval_max_cpu':self.cpu_max,
+             'resource_sample_count':self.resource_samples,'resource_sample_gap_max_sec':self.resource_gap_max,
+             'resource_sampling_errors':self.resource_errors,
+             'resource_scope':'worker RSS sampled ~1s and process CPU delta/monotonic interval, NOT Render or cgroup; sample max not continuous peak',
              'target_window_sec':60,'actual_window_sec':now-self.window_start,
              'report_lateness_sec':overdue,'crossed_unreported_windows':int(overdue//60),
              'event_loop_max_lag_sec':self.lag_max,'loop_samples':self.samples,
@@ -91,6 +110,7 @@ class PassiveMetrics:
              'heartbeat_pending_lateness_sec':pending_late,'renewals':renew,
              'renewals_inflight':inflight,'renew_records_dropped':dropped,
              'observer_errors_total':self.internal_errors,'reports_dropped_total':self.reports_dropped_total}
+        self.window_start_unix=self.wall();self.resource_samples=0;self.resource_errors=0;self.rss_max=None;self.cpu_max=None;self.resource_gap_max=None
         self.window_start=now;self.report_due+= (int(overdue//60)+1)*60
         self.lag_max=0.0;self.samples=0;self.hb_count=0;self.hb_gap_max=None;self.hb_late_max=None
         return out
@@ -120,6 +140,8 @@ def attach(supervisor, module, metrics):
     One attachment per module; this local adapter is not a production entrypoint.
     """
     if getattr(module,'_passive_attached',False):raise RuntimeError('ALREADY_ATTACHED')
+    from bounded_telemetry import read_worker_resources
+    metrics.resource_reader=read_worker_resources
     redis=supervisor.orchestrator.redis
     had_renew='renew' in vars(redis);original_renew=redis.renew
     had_print='print' in vars(module);original_print=vars(module).get('print',builtins.print)
