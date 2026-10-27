@@ -49,13 +49,33 @@ class WebSocketRuntime:
       f"ALPACA_WS_SUBSCRIPTION_INCOMPLETE:trades_missing={len(missing_trades)},bars_missing={len(missing_bars)},statuses_star={'*' in statuses}")
     self.subscription_stats={"requested":len(req),"trades":len(got_trades),"bars":len(got_bars),"statuses_star":True}
     self.connected_event.set()  # Means authenticated + subscription ACK verified, not merely TCP-open.
-    async for raw in ws:
-     if self.stopping:break
-     for msg in self._decode(raw):
-      if msg.get("T")=="error":raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
-      await self.on_message(msg)
+    dispatcher=getattr(self,"message_dispatcher",None)
+    async def read_stream():
+     async for raw in ws:
+      if self.stopping:break
+      for msg in self._decode(raw):
+       if msg.get("T")=="error":raise WebSocketProtocolError(f"ALPACA_WS_ERROR_{msg.get('code')}:{msg.get('msg')}")
+       await self.on_message(msg)
+    if dispatcher is None:
+     await read_stream()
+    else:
+     await dispatcher.begin()
+     reader=asyncio.create_task(read_stream());failure=asyncio.create_task(dispatcher.wait_failure())
+     try:
+      done,_=await asyncio.wait((reader,failure),return_when=asyncio.FIRST_COMPLETED)
+      if failure in done:raise failure.result()
+      await reader
+     finally:
+      reader.cancel();failure.cancel()
+      await asyncio.gather(reader,failure,return_exceptions=True)
   except Exception as exc:
    self.last_error=f"{type(exc).__name__}:{exc}";self.connected_event.clear();await self.on_disconnect();raise
+  finally:
+   dispatcher=getattr(self,"message_dispatcher",None)
+   if dispatcher is not None:
+    if dispatcher.accepting:
+     self.connected_event.clear();await self.on_disconnect()
+    await dispatcher.end()
 
  async def reconnect_loop(self,*args,base_delay=1,max_delay=30):
   delay=base_delay

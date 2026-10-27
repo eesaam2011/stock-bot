@@ -83,21 +83,19 @@ def compose_shadow_runtime(config, *, redis_client=None, websocket_connector=Non
         orch.new_decisions_allowed=lambda: original_allowed() and policy.new_nominations_allowed()
     leadership=RedisLeadershipFacade(orch.redis,worker_id)
     pipeline=ProductionDecisionPipeline(r,orch.redis,leadership,session,syms,ec,br,rest,worker_id,shadow=True)
+    from ws_ingress import BoundedWSIngress
+    ingress=BoundedWSIngress(pipeline,rec,orch.new_decisions_allowed,on_gap=orch.on_disconnect)
+    pipeline.ws_ingress=ingress
     async def on_message(msg):
       kind=AlpacaSIPProtocol.classify(msg)
-      received_at=datetime.now(timezone.utc);symbol=msg.get("S")
-      allow=orch.new_decisions_allowed()
-      if kind=="BAR" and symbol:await asyncio.to_thread(pipeline.on_bar,symbol,msg,received_at,allow)
-      elif kind=="TRADE" and symbol:await asyncio.to_thread(pipeline.on_trade,symbol,msg,received_at,allow)
-      elif kind=="STATUS":
-        await asyncio.to_thread(rec.on_status,msg);await asyncio.to_thread(pipeline.on_status,msg)
-      rec.on_stream_message(kind,msg)
+      ingress.submit(kind,msg,datetime.now(timezone.utc))
     async def on_disconnect():
       # Read-only timestamped evidence; original trust/recovery actions stay identical.
       try:print({"stage":"SHADOW_WEBSOCKET_DISCONNECT","utc":datetime.now(timezone.utc).isoformat(),"error_type":str(ws.last_error or "UNKNOWN").split(":",1)[0]},flush=True)
       except Exception:pipeline.disconnect_log_errors=getattr(pipeline,"disconnect_log_errors",0)+1
       orch.on_disconnect();rec.on_disconnect()
     ws=WebSocketRuntime(connector,AlpacaSIPProtocol,on_message,on_disconnect)
+    ws.message_dispatcher=ingress
     supervisor=ShadowRuntimeSupervisor(orch,ws,sender,outbox_store,syms,
         config.alpaca_key,config.alpaca_secret,SIP_STREAM_URL)
     supervisor.decision_pipeline=pipeline
