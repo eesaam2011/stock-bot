@@ -3,6 +3,8 @@ CPython threads still share the GIL: this does NOT promise a real-time bound.
 Queue age is measured from decoded callback receipt, not wire/server send time.
 """
 import asyncio,time
+from contextlib import nullcontext
+from contention_probe import TLS
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
@@ -19,7 +21,7 @@ class BoundedWSIngress:
   self.high_water=0;self.max_delay=0.;self.max_complete_delay=0.;self.max_reader_callback=0.;self.failure_count=0
   self.q=None;self.task=None;self.watch=None;self.failure=None;self.accepting=False;self.inflight=None
   self.executor=None;self._logged=False
-  self.delay_stats=MinuteDelayStats();self._start_delay=0.;self._batch_waiting=0;self.batch_size=32
+  self.delay_stats=MinuteDelayStats();self._start_delay=0.;self._batch_waiting=0;self.batch_size=32;self._element_started=None
  async def begin(self):
   if self.task is not None:raise RuntimeError('INGRESS_NOT_DRAINED')
   self.q=asyncio.Queue(maxsize=self.capacity);self.failure=asyncio.get_running_loop().create_future()
@@ -61,7 +63,7 @@ class BoundedWSIngress:
  def _work(self,item):
   kind,msg,received_at,at=item
   # The worker may wait here; the WS reader never does. Recheck permission AFTER lock.
-  with self.p._decision_lock:
+  with (self.p._decision_lock.operation("ingress_"+kind) if hasattr(self.p._decision_lock,"operation") else nullcontext()), self.p._decision_lock:
    delay=time.monotonic()-at;self._start_delay=delay;self.max_delay=max(self.max_delay,delay)
    if not self.accepting:return False
    if delay>self.max_age:raise IngressBacklogError('INGRESS_QUEUE_TOO_OLD')
@@ -80,8 +82,16 @@ class BoundedWSIngress:
   for i,item in enumerate(batch):
    self.inflight=item;self._batch_waiting=len(batch)-i-1;self._start_delay=0.
    if not self.accepting:break
+   t0=time.monotonic();self._element_started=t0;TLS.ingress=True
    try:ok=self._work(item);error=None
    except Exception as exc:ok=False;error=exc
+   finally:
+    TLS.ingress=False
+    probe=getattr(self.p,"contention_probe",None)
+    if probe:
+     probe.record("element",item[0],time.monotonic()-t0)
+     if time.monotonic()-t0>1.:probe.request("ELEMENT_OVER_1_SECOND",item[3])
+    self._element_started=None
    records.append((item,ok,error,self._start_delay,time.monotonic()-item[3]))
    if error is not None:break
   return records
@@ -112,7 +122,13 @@ class BoundedWSIngress:
   while self.accepting:
    await asyncio.sleep(.25)
    # Private asyncio queue belongs to this loop; bounded peek, no copy/walk.
+   probe=getattr(self.p,"contention_probe",None)
+   if probe and self._element_started and time.monotonic()-self._element_started>1.0:
+    probe.request("ELEMENT_OVER_1_SECOND",self.inflight[3] if self.inflight else self._element_started)
    oldest=self.inflight or (self.q._queue[0] if self.q.qsize() else None)
+   if oldest and time.monotonic()-oldest[3]>2.0:
+    probe=getattr(self.p,"contention_probe",None)
+    if probe:probe.request("QUEUE_AGE_OVER_2_SECONDS",oldest[3])
    if oldest and time.monotonic()-oldest[3]>self.max_age:
     self._fail(IngressBacklogError('INGRESS_BACKLOG_TIMEOUT'))
  async def wait_failure(self):

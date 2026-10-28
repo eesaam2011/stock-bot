@@ -19,11 +19,13 @@ from signal_admission import SignalAdmission
 from collections import Counter
 import threading
 from functools import wraps
+from contention_probe import Probe,ObservedRLock,observe_redis,session_budget,observed
 from constants import MAX_ENTRY_TRADE_AGE_SECONDS,ENTRY_PRICE_WAIT_SECONDS
 def synchronized(fn):
  @wraps(fn)
  def wrapped(self,*a,**kw):
-  with self._decision_lock:return fn(self,*a,**kw)
+  with self._decision_lock.operation(fn.__name__):
+   with self._decision_lock:return fn(self,*a,**kw)
  return wrapped
 UTC=timezone.utc
 class ConfluenceEvaluationError(RuntimeError):pass
@@ -31,7 +33,8 @@ def dt(x):return x if isinstance(x,datetime) else datetime.fromisoformat(str(x).
 
 class ProductionDecisionPipeline:
  def __init__(self,r,lua,leadership,session,symbols,early_core,base_ready,rest,worker_id,shadow=True):
-  self._decision_lock=threading.RLock();self._admitted_symbols=set(symbols)
+  self.contention_probe=Probe(session,session_budget(r,session));self._decision_lock=ObservedRLock(self.contention_probe)
+  observe_redis(r,self.contention_probe);self.contention_probe.start(print);self._admitted_symbols=set(symbols)
   self.r=r;self.lua=lua;self.leadership=leadership;self.session=session;self.symbols=list(symbols)
   self.ec=early_core;self.br=base_ready;self.rest=rest;self.worker_id=worker_id;self.shadow=shadow
   self.store=CanonicalStateStore(__import__("production_runtime_state").RedisCanonicalBackend(r))
@@ -80,7 +83,7 @@ class ProductionDecisionPipeline:
   x.update(extra);print(x,flush=True);return x
  def memory_stats(self):
   capture=None;sample_claimed=False
-  with self._decision_lock:
+  with self._decision_lock.operation("memory_stats"), self._decision_lock:
    now=time.monotonic()
    if now>=self._sample_next_due and self._sample_lock.acquire(blocking=False):
     sample_claimed=True;self._sample_next_due=now+900.0
@@ -93,6 +96,9 @@ class ProductionDecisionPipeline:
    try:self._sample_last=estimate_sample(capture)
    except Exception as exc:self._sample_last={"status":"ERROR","error_type":type(exc).__name__}
    finally:self._sample_lock.release()
+  stats["v6_contention"]=self.contention_probe.snapshot()
+  import lock_output
+  stats["v6_output"]=lock_output.ACTIVE.snapshot() if lock_output.ACTIVE else None
   stats["container_memory_sample"]=self._sample_last
   stats["deep_sample_next_due_monotonic"]=self._sample_next_due
   return stats
@@ -215,6 +221,7 @@ class ProductionDecisionPipeline:
     self._confluence_retry.add(symbol);self.confluence_diagnostics.record(str(exc),"on_bar")
   if symbol in self._structure_watch_symbols:self._retain_structure_bar(symbol,bar,received_at)
   self._monitor_bar(symbol,bar,received_at)
+ @observed
  def poll_native5(self,now,allow_decision,batch_size=500,max_workers=4):
   # Engineering-only transport batching. Early Core still receives native Alpaca 5Min rows per symbol.
   stats={"confluence_errors":0,"eligible_symbols":0,"symbols_with_rows":0,"evaluated_symbols":0,"eligible_rows":0,"invalid_close_bars":0,"scoreable_symbols":0,"scoreable_bars":0,"unscoreable_bars":0,"eligible_above_threshold":0,"near_threshold":0,"max_observed_weight":0.0,"max_score":None,"max_score_symbol":None,"gap_to_threshold":None,"threshold":None,"required_history_minutes":None,"crossings":0,"early_core_crossings_detected":0,"early_core_persisted":0,"early_core_persist_errors":0,"early_core_first_persist_error":None,"batch_size":int(batch_size)}
