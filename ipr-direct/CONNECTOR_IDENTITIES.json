@@ -1,0 +1,10 @@
+[
+  {
+    "module": "ipr/connectors.py",
+    "functions_and_class_bodies_identical_to_accepted_connectors": true
+  },
+  {
+    "module": "ipr/original_news_consumer.py",
+    "functions_and_class_bodies_identical_to_accepted_connectors": true
+  }
+]

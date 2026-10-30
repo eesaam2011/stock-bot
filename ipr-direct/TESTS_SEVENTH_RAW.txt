@@ -1,0 +1,84 @@
+test_api_no_order_endpoint (test_direct.Contracts.test_api_no_order_endpoint) ... ok
+test_cached_prep_hash_verified (test_direct.Contracts.test_cached_prep_hash_verified) ... ok
+test_classifier_original_rejections (test_direct.Contracts.test_classifier_original_rejections) ... ok
+test_main_missing_env_before_connection (test_direct.Contracts.test_main_missing_env_before_connection) ... ok
+test_old_leader_no_reservation (test_direct.Delivery.test_old_leader_no_reservation) ... ok
+test_original_recovery_T1_STOP_real_outbox_to_telegram (test_direct.Delivery.test_original_recovery_T1_STOP_real_outbox_to_telegram) ... {"stage": "MESSAGE_DELIVERY", "event_type": "T1", "symbol": "X", "result": "SENT"}
+{"stage": "MESSAGE_DELIVERY", "event_type": "STOP", "symbol": "X", "result": "SENT"}
+ok
+test_same_symbol_different_trade_not_suppressed (test_direct.Delivery.test_same_symbol_different_trade_not_suppressed) ... ok
+test_same_trade_event_once_after_finish (test_direct.Delivery.test_same_trade_event_once_after_finish) ... ok
+test_started_ambiguous_no_retry (test_direct.Delivery.test_started_ambiguous_no_retry) ... ok
+test_composed_real_original_pipeline_no_manual_files (test_direct.MoreIntegration.test_composed_real_original_pipeline_no_manual_files) ... ok
+test_monotonic_ACK (test_direct.MoreIntegration.test_monotonic_ACK) ... ok
+test_rolling_history_reuses_20_known_sessions_without_fetch (test_direct.MoreIntegration.test_rolling_history_reuses_20_known_sessions_without_fetch) ... ok
+test_stream_buffer_rolls_per_symbol_not_global_invalid (test_direct.MoreIntegration.test_stream_buffer_rolls_per_symbol_not_global_invalid) ... ok
+test_750_three_batches_no_HGET_no_write (test_direct.News.test_750_three_batches_no_HGET_no_write) ... ok
+test_cache_strictly_less_than_60 (test_direct.News.test_cache_strictly_less_than_60) ... ok
+test_count_read_only (test_direct.News.test_count_read_only) ... ok
+test_missing_fails_open_zero (test_direct.News.test_missing_fails_open_zero) ... ok
+test_preparation_cache_fails_corruption (test_direct.ParentAndLifecycle.test_preparation_cache_fails_corruption) ... ok
+test_prepare_task_does_not_terminate_runtime_when_ready (test_direct.ParentAndLifecycle.test_prepare_task_does_not_terminate_runtime_when_ready) ... {"stage": "GUARD_BOOT_CLAIMED", "boot": 1, "max_boots": 4, "mode": "TELEGRAM_ALERTS_ONLY"}
+{"stage": "IPR_METRICS", "at": "2026-10-28T14:00:00+00:00", "resource": {}, "ws_ingress": null, "trusted": false, "prep_ready": false, "scan_ok": false}
+{"stage": "IPR_SESSION_SOURCES", "session": "2026-10-28", "float_valid": 0, "float_unknown": 0, "float_load_reason": "CONFIG_MISSING", "news_records": null, "news_read_reason": "CONFIG_MISSING"}
+{"stage": "PREP_FAILED_NEW_ENTRIES_DISABLED", "reason": "KeyError"}
+FAIL
+test_501_pins_explicit_conflict (test_direct.Scores.test_501_pins_explicit_conflict) ... ok
+test_exact_price_bounds (test_direct.Scores.test_exact_price_bounds) ... ok
+test_float_boundaries (test_direct.Scores.test_float_boundaries) ... ok
+test_float_unknown (test_direct.Scores.test_float_unknown) ... ok
+test_log_activity_exact (test_direct.Scores.test_log_activity_exact) ... ok
+test_no_future_stale_or_outside_price (test_direct.Scores.test_no_future_stale_or_outside_price) ... ok
+test_no_pin_dropped_without_snapshot (test_direct.Scores.test_no_pin_dropped_without_snapshot) ... ok
+test_pin_priority_and_500 (test_direct.Scores.test_pin_priority_and_500) ... ok
+test_replacement_exact_five_and_alphabetical (test_direct.Scores.test_replacement_exact_five_and_alphabetical) ... ok
+test_update_clock_120 (test_direct.Scores.test_update_clock_120) ... ok
+test_zero_score_allowed (test_direct.Scores.test_zero_score_allowed) ... ok
+test_bad_ohlcv_rejected (test_direct.Volumes.test_bad_ohlcv_rejected) ... ok
+test_failed_page_rolls_back (test_direct.Volumes.test_failed_page_rolls_back) ... ok
+test_history_20_regular_sums_not_daily_snapshot (test_direct.Volumes.test_history_20_regular_sums_not_daily_snapshot) ... ok
+test_missing_history_symbol_not_filled (test_direct.Volumes.test_missing_history_symbol_not_filled) ... ok
+test_only_RTH_completed (test_direct.Volumes.test_only_RTH_completed) ... ok
+test_replayed_and_revised_minute_not_double_counted (test_direct.Volumes.test_replayed_and_revised_minute_not_double_counted) ... ok
+test_actual_gist_protocol_and_preserved_date (test_sources.FloatTests.test_actual_gist_protocol_and_preserved_date) ... ok
+test_exact_seven_days_valid (test_sources.FloatTests.test_exact_seven_days_valid) ... ok
+test_failed_fetch_clears_old_value (test_sources.FloatTests.test_failed_fetch_clears_old_value) ... ok
+test_missing_config_never_requests (test_sources.FloatTests.test_missing_config_never_requests) ... ok
+test_old_future_missing_unknown (test_sources.FloatTests.test_old_future_missing_unknown) ... ok
+test_truncation_not_silently_used (test_sources.FloatTests.test_truncation_not_silently_used) ... ok
+test_zero_unknown_not_small (test_sources.FloatTests.test_zero_unknown_not_small) ... ok
+test_exact_one_hour_not_stale_original_boundary (test_sources.NewsTests.test_exact_one_hour_not_stale_original_boundary) ... ok
+test_future_record_original_consumer_does_not_reject (test_sources.NewsTests.test_future_record_original_consumer_does_not_reject) ... ok
+test_missing_is_zero_not_exclusion (test_sources.NewsTests.test_missing_is_zero_not_exclusion) ... ok
+test_no_source_config_no_call (test_sources.NewsTests.test_no_source_config_no_call) ... ok
+test_old_articles_removed_by_original_12h_filter (test_sources.NewsTests.test_old_articles_removed_by_original_12h_filter) ... ok
+test_original_negative_flag_retained_without_IPR_gate (test_sources.NewsTests.test_original_negative_flag_retained_without_IPR_gate) ... ok
+test_real_key_HGET_only_and_fresh_positive (test_sources.NewsTests.test_real_key_HGET_only_and_fresh_positive) ... ok
+test_stale_positive_zero_after_hour (test_sources.NewsTests.test_stale_positive_zero_after_hour) ... ok
+test_transport_error_does_not_leak_or_raise (test_sources.NewsTests.test_transport_error_does_not_leak_or_raise) ... ok
+test_weekend_expires_at_not_enforced_by_original_consumer (test_sources.NewsTests.test_weekend_expires_at_not_enforced_by_original_consumer) ... ok
+
+======================================================================
+FAIL: test_prepare_task_does_not_terminate_runtime_when_ready (test_direct.ParentAndLifecycle.test_prepare_task_does_not_terminate_runtime_when_ready)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 188, in test_prepare_task_does_not_terminate_runtime_when_ready
+    asyncio.run(go())
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 187, in go
+    self.assertTrue(stopped.is_set());self.assertEqual(ended,[True]);self.assertTrue(flags['ready'])
+                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 53 tests in 0.409s
+
+FAILED (failures=1)

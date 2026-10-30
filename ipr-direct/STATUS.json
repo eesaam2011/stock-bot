@@ -1,0 +1,42 @@
+{
+  "status": "COMPLETE_IMPLEMENTATION_FOR_USER_DEPLOYMENT",
+  "mode": "DIRECT_TELEGRAM_ALERTS",
+  "approval_file_required": false,
+  "shadow_stage_required": false,
+  "manual_DAILY_calendar_DAY_LIST_required": false,
+  "deployed": false,
+  "live_tested": false,
+  "live_performance": "UNKNOWN",
+  "resource_guarantee": false,
+  "references_byte_identical": 72,
+  "connectors_original_logic_preserved": true,
+  "news_transport": "HMGET_TOP750_BATCH250_CACHE_LT60",
+  "alerts_identity": "TRADE_ID_EVENT_TYPE",
+  "orders_enabled": false,
+  "tests_original": 72,
+  "tests_extracted": 72,
+  "limits": {
+    "memory_mib": 512,
+    "cpu": 0.5,
+    "anon_mib": 410,
+    "TTL": 30,
+    "renew": 10,
+    "queue": 8192,
+    "batch": 32,
+    "max_age": 5.0,
+    "T": 120,
+    "shutdown_tail": 60,
+    "max_boots_per_UTC_day": 4
+  },
+  "remaining_code_blockers": [],
+  "UNKNOWN": [
+    "Alpaca live credentials and schemas/entitlements",
+    "Render Build and actual resources",
+    "real Redis durability/eviction and Lua/server behavior",
+    "Telegram handset receipt",
+    "first cold preparation duration",
+    "coverage of unclear instrument metadata",
+    "missed opportunities outside500",
+    "market latency and alert quantity"
+  ]
+}

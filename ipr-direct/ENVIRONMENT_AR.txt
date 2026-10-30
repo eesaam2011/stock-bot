@@ -1,0 +1,27 @@
+متغيرات البيئة النهائية — لا قيم سرية هنا
+
+أسرار لازمة لعمل الخدمة، يضع المستخدم قيمها بنفسه:
+REDIS_URL
+APCA_API_KEY_ID
+APCA_API_SECRET_KEY
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+
+أسماء إعدادات المصادر الاختيارية المقبولة؛ يضع المستخدم القيم بنفسه:
+GIST_ID
+GITHUB_TOKEN
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+غياب المصادر الاختيارية أو فشلها يعطي UNKNOWN/صفرًا ولا يمنع عمل البوت. هذه متغيرات منفصلة عن REDIS_URL الذي يحفظ حالات IPR. لا تكتب أي قيمة في Git أو الرسائل أو سجل الأخطاء. لا FINNHUB_API_KEY مطلوب لـIPR.
+
+القيم غير السرية:
+APCA_API_BASE_URL=https://paper-api.alpaca.markets
+PYTHON_VERSION=3.12.14
+PYTHONUNBUFFERED=1
+PYTHONDONTWRITEBYTECODE=1
+
+سبب عنوان paper: هو عنوان مراجع assets/calendar الافتراضي؛ بيانات الأسعار/الشموع تبقى من data.alpaca.markets عبر sip، والبث من stream.data.alpaca.markets/v2/sip. لا أي endpoint أوامر على أي حساب. إن كانت المفاتيح لحساب حقيقي وظهر ALPACA_HTTP_401 في مراجع التقويم/الأصول، القيمة الأخرى المسموح بها للمتغير نفسه هي https://api.alpaca.markets؛ المستخدم يختار العنوان المطابق لحسابه دون إرسال المفاتيح. لا يتحول الكود تلقائيًا بين الحسابين. صلاحية الحساب الفعلية UNKNOWN حتى أول اتصال.
+
+هذه قائمة البيئة الكاملة التي يقرأها المسار الجديد. لا تنقل ملفات D_CONFIG أو متغيرات الموافقات أو تواريخ الجلسات اليدوية. لا MODE ولا TEST_ONLY ولا MESSAGES_ONLY ولا متغير رفع موارد. البوت مباشر افتراضيًا، والساعات من التقويم.
+
+قيم التنفيذ الثابتة وليست أسئلة إعداد: scan60ثانية، تحديث القائمة120، cap500، news750 على3دفعات250، cache<60ثانية، وقت HTTPمرجعي20ثانية/Gist10/Upstash20/Telegram5socket، شبكة HTTPAlpaca بتوازي1، قارئ ingress الأصلي، وعامل Telegram واحد. حدود سلامة الأصل لا تتغير. RedisClock refresh كل5ثوانٍ كي يسبق انتهاء إثباته10ثوانٍ، وتجديد القيادة ما زال كل10ثوانٍ.

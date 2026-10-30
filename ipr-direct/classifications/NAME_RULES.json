@@ -1,0 +1,421 @@
+{
+  "version": "IPR-NAME-RULES-4.0.0-REVIEW",
+  "status": "FROZEN_CANDIDATE_NOT_ACTIVATED",
+  "source_field": "name only",
+  "issuer_names": [
+    "ProShares",
+    "iShares",
+    "Direxion",
+    "SPDR",
+    "Vanguard",
+    "Invesco",
+    "WisdomTree",
+    "VanEck",
+    "Grayscale",
+    "Teucrium"
+  ],
+  "no_trust_alone": true,
+  "symbol_shape_not_used": true,
+  "all_applicable_reasons_recorded": true,
+  "rules": [
+    {
+      "rule_id": "N01",
+      "priority": 1,
+      "type": "WARRANT",
+      "reason": "TYPE_WARRANT",
+      "regex": "\\bwarrants?\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "AAC.WS",
+          "name": "Ares Acquisition Corporation III Redeemable warrants, each whole warrant exercisable for one Class A ordinary share at an exercise price of $11.50"
+        },
+        {
+          "symbol": "AACIW",
+          "name": "Armada Acquisition Corp. III Warrant"
+        },
+        {
+          "symbol": "AACOW",
+          "name": "Abony Acquisition Corp. I Warrants"
+        },
+        {
+          "symbol": "AACPW",
+          "name": "Apogee Acquisition Corp Warrant"
+        },
+        {
+          "symbol": "ABLVW",
+          "name": "Able View Global Inc. Warrant"
+        },
+        {
+          "symbol": "ACAAW",
+          "name": "Averin Capital Acquisition Corp. Warrants"
+        }
+      ]
+    },
+    {
+      "rule_id": "N02",
+      "priority": 2,
+      "type": "RIGHT",
+      "reason": "TYPE_RIGHT",
+      "regex": "\\brights?\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "AACPR",
+          "name": "Apogee Acquisition Corp Rights"
+        },
+        {
+          "symbol": "AESPR",
+          "name": "Aeon Acquisition I Corp. Rights"
+        },
+        {
+          "symbol": "AFJKR",
+          "name": "Aimei Health Technology Co., Ltd Right"
+        },
+        {
+          "symbol": "AIIA.RT",
+          "name": "AI Infrastructure Acquisition Corp. Rights, each entitling the holder to receive one-fifth (1/5) of one Class A Ordinary Share"
+        },
+        {
+          "symbol": "ALISR",
+          "name": "Calisa Acquisition Corp Right"
+        },
+        {
+          "symbol": "ALPXR",
+          "name": "Alpex Acquisition Corporation Rights"
+        }
+      ]
+    },
+    {
+      "rule_id": "N03",
+      "priority": 3,
+      "type": "UNIT",
+      "reason": "TYPE_UNIT",
+      "regex": "\\bunits?\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "AAC.U",
+          "name": "Ares Acquisition Corporation III Units, each consisting of one Class A ordinary share and one-tenth of one redeemable warrant"
+        },
+        {
+          "symbol": "AACIU",
+          "name": "Armada Acquisition Corp. III Units"
+        },
+        {
+          "symbol": "AACOU",
+          "name": "Abony Acquisition Corp. I Units"
+        },
+        {
+          "symbol": "AACPU",
+          "name": "Apogee Acquisition Corp Units"
+        },
+        {
+          "symbol": "ACAAU",
+          "name": "Averin Capital Acquisition Corp. Units"
+        },
+        {
+          "symbol": "ACGCU",
+          "name": "ACP Holdings Acquisition Corp. Units"
+        }
+      ]
+    },
+    {
+      "rule_id": "N04",
+      "priority": 4,
+      "type": "PREFERRED",
+      "reason": "TYPE_PREFERRED",
+      "regex": "\\bpreferred\\b|\\bpreference\\s+shares?\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "ABR.PRD",
+          "name": "Arbor Realty Trust, Inc. 6.375% Series D Cumulative Redeemable Preferred Stock, Liquidation Preference $25.00 per Share"
+        },
+        {
+          "symbol": "ABR.PRE",
+          "name": "Arbor Realty Trust, Inc. 6.25% Series E Cumulative Redeemable Preferred Stock"
+        },
+        {
+          "symbol": "ABR.PRF",
+          "name": "Arbor Realty Trust, Inc. 6.25% Series F Fixed-to-Floating Rate Cumulative Redeemable Preferred Stock, Liquidation Preference $25.00 per share"
+        },
+        {
+          "symbol": "ACGLN",
+          "name": "Arch Capital Group Ltd. Depositary Shares, each Representing a 1/1,000th Interest in a 4.550% Non-Cumulative Preferred Share, Series G"
+        },
+        {
+          "symbol": "ACGLO",
+          "name": "Arch Capital Group Ltd. Depositary Shares Each Representing 1/1,000th Interest in a Share of 5.45% Non-Cumulative Preferred Shares, Series F"
+        },
+        {
+          "symbol": "ACP.PRA",
+          "name": "abrdn Income Credit Strategies Fund 5.250% Series A Perpetual Preferred Stock"
+        }
+      ]
+    },
+    {
+      "rule_id": "N05",
+      "priority": 5,
+      "type": "DEBT",
+      "reason": "TYPE_DEBT",
+      "regex": "\\b(?:notes?|bonds?|debentures?)\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "ABXL",
+          "name": "Abacus Global Management, Inc. 9.875% Fixed Rate Senior Notes due 2028"
+        },
+        {
+          "symbol": "ADAMG",
+          "name": "Adamas Trust, Inc. 9.125% Senior Notes Due 2030"
+        },
+        {
+          "symbol": "ADAMH",
+          "name": "Adamas Trust, Inc. 9.875% Senior Notes Due 2030"
+        },
+        {
+          "symbol": "ADAMI",
+          "name": "Adamas Trust, Inc. 9.125% Senior Notes Due 2029"
+        },
+        {
+          "symbol": "ADAMK",
+          "name": "Adamas Trust, Inc. 9.600% Senior Notes Due 2031"
+        },
+        {
+          "symbol": "ADAMO",
+          "name": "Adamas Trust, Inc. 9.250% Senior Notes Due 2031"
+        }
+      ]
+    },
+    {
+      "rule_id": "N06",
+      "priority": 6,
+      "type": "ETF_ETN_FUND",
+      "reason": "TYPE_ETF_ETN_FUND",
+      "regex": "\\b(?:ETFs?|ETNs?|funds?)\\b|\\bexchange[ -]+traded\\s+(?:funds?|notes?)\\b|\\bclosed[ -]+end\\s+funds?\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "AAA",
+          "name": "Alternative Access First Priority CLO Bond ETF"
+        },
+        {
+          "symbol": "AAAA",
+          "name": "Amplius Aggressive Asset Allocation ETF"
+        },
+        {
+          "symbol": "AAAB",
+          "name": "Corgi FTSE Aaa-A Intermediate Corporate Bond ETF"
+        },
+        {
+          "symbol": "AAAC",
+          "name": "Columbia AAA CLO ETF"
+        },
+        {
+          "symbol": "AAAD",
+          "name": "PGIM AAA CLO Aggregate Duration ETF"
+        },
+        {
+          "symbol": "AAAP",
+          "name": "Pacer Funds Trust Pacer Barings CLO Market Flex ETF"
+        }
+      ]
+    },
+    {
+      "rule_id": "N07",
+      "priority": 7,
+      "type": "ADR",
+      "reason": "TYPE_ADR",
+      "regex": "\\b(?:ADRs?|ADS)\\b(?!-)|\\bAmerican\\s+(?:depositary|depository)\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "AACG",
+          "name": "ATA Creativity Global American Depositary Shares"
+        },
+        {
+          "symbol": "AAGIY",
+          "name": "AIA Group, Ltd. Sponsored American Depository Receipt (Hong Kong)"
+        },
+        {
+          "symbol": "AAPG",
+          "name": "Ascentage Pharma Group International American Depository Shares"
+        },
+        {
+          "symbol": "ABVX",
+          "name": "Abivax SA American Depositary Shares"
+        },
+        {
+          "symbol": "ACGBY",
+          "name": "Agricultural Bank of China Unsponsored American Depository Receipt (China)"
+        },
+        {
+          "symbol": "ACKAY",
+          "name": "Arcelik A S Unsponsored ADR (Turkey)"
+        }
+      ]
+    },
+    {
+      "rule_id": "N08",
+      "priority": 8,
+      "type": "ETF_ETN_FUND",
+      "reason": "TYPE_ETF_ETN_FUND",
+      "regex": "\\b(?:ProShares|iShares|Direxion|SPDR|Vanguard|Invesco|WisdomTree|VanEck|Grayscale|Teucrium)\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "AAPD",
+          "name": "Direxion Shares ETF Trust Direxion Daily AAPL Bear 1X ETF"
+        },
+        {
+          "symbol": "AAPU",
+          "name": "Direxion Shares ETF Trust Direxion Daily AAPL Bull 2X ETF"
+        },
+        {
+          "symbol": "AAXJ",
+          "name": "iShares MSCI All Country Asia ex Japan ETF"
+        },
+        {
+          "symbol": "ACQQ",
+          "name": "ProShares Trust ProShares Nasdaq-100 Autocallable Income ETF"
+        },
+        {
+          "symbol": "ACRT",
+          "name": "ProShares Trust ProShares Russell 2000 Autocallable Income ETF"
+        },
+        {
+          "symbol": "ACSP",
+          "name": "ProShares Trust ProShares S&P 500 Autocallable Income ETF"
+        }
+      ]
+    },
+    {
+      "rule_id": "N09",
+      "priority": 9,
+      "type": "ETF_ETN_FUND",
+      "reason": "TYPE_ETF_ETN_FUND",
+      "regex": "\\b(?:Gold(?:\\s+and\\s+Silver)?|Silver|Bitcoin)\\s+Trust\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "CEF",
+          "name": "Sprott Physical Gold and Silver Trust"
+        },
+        {
+          "symbol": "GBTC",
+          "name": "Grayscale Bitcoin Trust ETF"
+        },
+        {
+          "symbol": "GLD",
+          "name": "SPDR Gold Trust, SPDR Gold Shares"
+        },
+        {
+          "symbol": "IAU",
+          "name": "iShares Gold Trust"
+        },
+        {
+          "symbol": "IAUM",
+          "name": "iShares Gold Trust Micro"
+        },
+        {
+          "symbol": "IBIT",
+          "name": "iShares Bitcoin Trust ETF Shares"
+        }
+      ]
+    },
+    {
+      "rule_id": "N10",
+      "priority": 10,
+      "type": "ETF_ETN_FUND",
+      "reason": "TYPE_ETF_ETN_FUND",
+      "regex": "(?=.*\\b(?:Grayscale|21Shares|Bitwise|Osprey|CoinShares)\\b)(?=.*\\b(?:Trust|TR|ETFs?|ETNs?|Funds?)\\b)",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "ARKB",
+          "name": "ARK 21Shares Bitcoin ETF"
+        },
+        {
+          "symbol": "BAVA",
+          "name": "Bitwise Avalanche ETF"
+        },
+        {
+          "symbol": "BCHG",
+          "name": "GRAYSCALE BITCOIN CASH TR BCH Common Stock"
+        },
+        {
+          "symbol": "BCOR",
+          "name": "Grayscale Bitcoin Adopters ETF"
+        },
+        {
+          "symbol": "BHYP",
+          "name": "Bitwise Hyperliquid ETF"
+        },
+        {
+          "symbol": "BITB",
+          "name": "Bitwise Bitcoin ETF"
+        }
+      ]
+    },
+    {
+      "rule_id": "N11",
+      "priority": 11,
+      "type": "ETF_ETN_FUND",
+      "reason": "TYPE_ETF_ETN_FUND",
+      "regex": "\\b(?:Income(?:\\s+Builder)?(?:\\s+Opportunities)?|Opportunities|Micro[- ]Cap)\\s+Trust\\b",
+      "flags": "IGNORECASE",
+      "examples": [
+        {
+          "symbol": "AIPI",
+          "name": "ETF Opportunities Trust REX AI Equity Premium Income ETF"
+        },
+        {
+          "symbol": "AQLG",
+          "name": "ETF Opportunities Trust HCM Large Cap Growth ETF"
+        },
+        {
+          "symbol": "BESO",
+          "name": "ETF Opportunities Trust GSR Crypto Core3 ETF"
+        },
+        {
+          "symbol": "BGT",
+          "name": "BlackRock Floating Rate Income Trust"
+        },
+        {
+          "symbol": "BIT",
+          "name": "BLACKROCK MULTI-SECTOR INCOME TRUST"
+        },
+        {
+          "symbol": "BKT",
+          "name": "BlackRock Income Trust Inc."
+        }
+      ]
+    },
+    {
+      "rule_id": "N12",
+      "type": "PREFERRED",
+      "regex": "\\bPRFRD\\b|\\bTrust\\s+Preference\\s+Securities\\b",
+      "note": "Explicit narrow preferred contexts; Common Stock/Shares suppresses."
+    },
+    {
+      "rule_id": "N13",
+      "type": "PREFERRED",
+      "regex": "^(?=.*\\bNON[\\s-]+CUM(?:ULATIVE|UL|L|V)?\\b)(?=.*(?:\\b(?:SERIES|SER|PERP|PERPETUAL|PRPTL|RATE|STOCK|SHARES|SECURITIES)\\b|\\d[\\d.]*\\s*%)).*$",
+      "note": "Non-cumulative plus explicit financial context; Common Stock/Shares suppresses."
+    }
+  ],
+  "ordered_guard_spec": [
+    "Suppress N03 on Common Units or Corporate Units unless name explicitly contains Acquisition or SPAC. That exception is heuristic, not verified SPAC status; flag for manual review.",
+    "Suppress N04,N05,N08,N09 on Common Stock or Common Shares. N08/N09 have this extra conservative guard to protect issuer operating stock.",
+    "Suppress N08 on exact Invesco LTD/Limited/Inc issuer company name. No symbol override.",
+    "V3 N08: suppress issuer-brand rule on Inc/Corp/Corporation/Ltd/Limited unless Fund/ETF/ETN exists, or Trust together with Shares/Series/Portfolio. Common Stock/Shares guard remains for N08/N09. N10 is separate positive crypto product context, not a blanket removal of Common Stock guard.",
+    "V3 N10: known crypto brand plus explicit Trust/TR/ETF/ETN/Fund; suppress UNIT component rule. Osprey Acquisition and CoinShares operating ordinary shares do not satisfy product context.",
+    "V3 N11: exact Income [Builder] [Opportunities] Trust / Opportunities Trust / Micro-Cap Trust phrases; reject mortgage/realty/REIT/bank/property names and preferred descriptions. No Trust-alone rule.",
+    "Using remaining matched types: UNIT suppresses N01/N02/N04; ADR suppresses N02; ETF_ETN_FUND suppresses N05.",
+    "ETF_ETN_FUND/WARRANT/UNIT suppress N07; then remaining ADR suppresses N04.",
+    "Choose first surviving rule for primary display, retain every surviving rule and every suppressed rule with reason. Unknown passes type filter only."
+  ],
+  "manual_file": "TYPE_MANUAL.json",
+  "partnership_and_corporate_units_policy": "UNCHANGED_OPERATING_UNIT_EXCEPTION"
+}

@@ -1,0 +1,9 @@
+{
+  "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "numpy": "2.3.5",
+  "websockets": "16.0",
+  "redis_py_real_client_tested": false,
+  "network_used_for_tests": false,
+  "pip_install_run": false,
+  "market_resource_limits_tested": false
+}

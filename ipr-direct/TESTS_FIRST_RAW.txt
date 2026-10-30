@@ -1,0 +1,140 @@
+test_api_no_order_endpoint (test_direct.Contracts.test_api_no_order_endpoint) ... ok
+test_cached_prep_hash_verified (test_direct.Contracts.test_cached_prep_hash_verified) ... ok
+test_classifier_original_rejections (test_direct.Contracts.test_classifier_original_rejections) ... ok
+test_main_missing_env_before_connection (test_direct.Contracts.test_main_missing_env_before_connection) ... ok
+test_old_leader_no_reservation (test_direct.Delivery.test_old_leader_no_reservation) ... ERROR
+test_original_recovery_T1_STOP_real_outbox_to_telegram (test_direct.Delivery.test_original_recovery_T1_STOP_real_outbox_to_telegram) ... ERROR
+test_same_symbol_different_trade_not_suppressed (test_direct.Delivery.test_same_symbol_different_trade_not_suppressed) ... ERROR
+test_same_trade_event_once_after_finish (test_direct.Delivery.test_same_trade_event_once_after_finish) ... ERROR
+test_started_ambiguous_no_retry (test_direct.Delivery.test_started_ambiguous_no_retry) ... ERROR
+test_750_three_batches_no_HGET_no_write (test_direct.News.test_750_three_batches_no_HGET_no_write) ... ok
+test_cache_strictly_less_than_60 (test_direct.News.test_cache_strictly_less_than_60) ... ok
+test_count_read_only (test_direct.News.test_count_read_only) ... ok
+test_missing_fails_open_zero (test_direct.News.test_missing_fails_open_zero) ... ok
+test_501_pins_explicit_conflict (test_direct.Scores.test_501_pins_explicit_conflict) ... ok
+test_exact_price_bounds (test_direct.Scores.test_exact_price_bounds) ... ok
+test_float_boundaries (test_direct.Scores.test_float_boundaries) ... ok
+test_float_unknown (test_direct.Scores.test_float_unknown) ... ok
+test_log_activity_exact (test_direct.Scores.test_log_activity_exact) ... ok
+test_no_future_stale_or_outside_price (test_direct.Scores.test_no_future_stale_or_outside_price) ... ok
+test_no_pin_dropped_without_snapshot (test_direct.Scores.test_no_pin_dropped_without_snapshot) ... ok
+test_pin_priority_and_500 (test_direct.Scores.test_pin_priority_and_500) ... ok
+test_replacement_exact_five_and_alphabetical (test_direct.Scores.test_replacement_exact_five_and_alphabetical) ... ok
+test_update_clock_120 (test_direct.Scores.test_update_clock_120) ... ok
+test_zero_score_allowed (test_direct.Scores.test_zero_score_allowed) ... ok
+test_bad_ohlcv_rejected (test_direct.Volumes.test_bad_ohlcv_rejected) ... ok
+test_failed_page_rolls_back (test_direct.Volumes.test_failed_page_rolls_back) ... ok
+test_history_20_regular_sums_not_daily_snapshot (test_direct.Volumes.test_history_20_regular_sums_not_daily_snapshot) ... ok
+test_missing_history_symbol_not_filled (test_direct.Volumes.test_missing_history_symbol_not_filled) ... ok
+test_only_RTH_completed (test_direct.Volumes.test_only_RTH_completed) ... ok
+test_replayed_and_revised_minute_not_double_counted (test_direct.Volumes.test_replayed_and_revised_minute_not_double_counted) ... ok
+
+======================================================================
+ERROR: test_old_leader_no_reservation (test_direct.Delivery.test_old_leader_no_reservation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 110, in test_old_leader_no_reservation
+    r,l,d=self.env();r.set(PREFIX+':canonical:operational_priority_radar:v1:runtime:leader','other')
+          ^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 102, in env
+    raw=LuaRedis();lead=leadership(raw,'w');lead.acquire();return raw,lead,Ledger(raw,lead)
+                        ^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 17, in leadership
+    def leadership(client,worker):return LeadershipManager(LeaseBackend(client),worker)
+                                                           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 8, in __init__
+    self.r=NamespacedRedis(r,PREFIX+':canonical:');self.lua=ProductionRedisLua(self.r)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/dintegration/persistence.py", line 78, in __init__
+    if not prefix.startswith('opr_d_'):raise StateConflict('NAMESPACE_FORBIDDEN')
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dintegration.persistence.StateConflict: NAMESPACE_FORBIDDEN
+
+======================================================================
+ERROR: test_original_recovery_T1_STOP_real_outbox_to_telegram (test_direct.Delivery.test_original_recovery_T1_STOP_real_outbox_to_telegram)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 113, in test_original_recovery_T1_STOP_real_outbox_to_telegram
+    raw,lead,ledger=self.env();r=NamespacedRedis(raw,PREFIX+':canonical:');trade=base_record('trade','2026-10-28','X','ACTIVE_PRE_T1',OP.isoformat())
+                    ^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 102, in env
+    raw=LuaRedis();lead=leadership(raw,'w');lead.acquire();return raw,lead,Ledger(raw,lead)
+                        ^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 17, in leadership
+    def leadership(client,worker):return LeadershipManager(LeaseBackend(client),worker)
+                                                           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 8, in __init__
+    self.r=NamespacedRedis(r,PREFIX+':canonical:');self.lua=ProductionRedisLua(self.r)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/dintegration/persistence.py", line 78, in __init__
+    if not prefix.startswith('opr_d_'):raise StateConflict('NAMESPACE_FORBIDDEN')
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dintegration.persistence.StateConflict: NAMESPACE_FORBIDDEN
+
+======================================================================
+ERROR: test_same_symbol_different_trade_not_suppressed (test_direct.Delivery.test_same_symbol_different_trade_not_suppressed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 106, in test_same_symbol_different_trade_not_suppressed
+    r,l,d=self.env();self.assertEqual(d.start('trade1','T1','a')[1],'ALLOW');self.assertEqual(d.start('trade2','T1','b')[1],'ALLOW')
+          ^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 102, in env
+    raw=LuaRedis();lead=leadership(raw,'w');lead.acquire();return raw,lead,Ledger(raw,lead)
+                        ^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 17, in leadership
+    def leadership(client,worker):return LeadershipManager(LeaseBackend(client),worker)
+                                                           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 8, in __init__
+    self.r=NamespacedRedis(r,PREFIX+':canonical:');self.lua=ProductionRedisLua(self.r)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/dintegration/persistence.py", line 78, in __init__
+    if not prefix.startswith('opr_d_'):raise StateConflict('NAMESPACE_FORBIDDEN')
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dintegration.persistence.StateConflict: NAMESPACE_FORBIDDEN
+
+======================================================================
+ERROR: test_same_trade_event_once_after_finish (test_direct.Delivery.test_same_trade_event_once_after_finish)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 104, in test_same_trade_event_once_after_finish
+    r,l,d=self.env();key,x=d.start('trade1','ENTRY','a');self.assertEqual(x,'ALLOW');d.finish(key,'a','SENT');self.assertEqual(d.start('trade1','ENTRY','b')[1],'SENT')
+          ^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 102, in env
+    raw=LuaRedis();lead=leadership(raw,'w');lead.acquire();return raw,lead,Ledger(raw,lead)
+                        ^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 17, in leadership
+    def leadership(client,worker):return LeadershipManager(LeaseBackend(client),worker)
+                                                           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 8, in __init__
+    self.r=NamespacedRedis(r,PREFIX+':canonical:');self.lua=ProductionRedisLua(self.r)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/dintegration/persistence.py", line 78, in __init__
+    if not prefix.startswith('opr_d_'):raise StateConflict('NAMESPACE_FORBIDDEN')
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dintegration.persistence.StateConflict: NAMESPACE_FORBIDDEN
+
+======================================================================
+ERROR: test_started_ambiguous_no_retry (test_direct.Delivery.test_started_ambiguous_no_retry)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 108, in test_started_ambiguous_no_retry
+    r,l,d=self.env();d.start('trade','STOP','a');self.assertEqual(d.start('trade','STOP','b')[1],'UNKNOWN_FINAL')
+          ^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/tests/test_direct.py", line 102, in env
+    raw=LuaRedis();lead=leadership(raw,'w');lead.acquire();return raw,lead,Ledger(raw,lead)
+                        ^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 17, in leadership
+    def leadership(client,worker):return LeadershipManager(LeaseBackend(client),worker)
+                                                           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/r4a/redis_ports.py", line 8, in __init__
+    self.r=NamespacedRedis(r,PREFIX+':canonical:');self.lua=ProductionRedisLua(self.r)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/12f9ac6422ea/IPR_DIRECT_R1/dintegration/persistence.py", line 78, in __init__
+    if not prefix.startswith('opr_d_'):raise StateConflict('NAMESPACE_FORBIDDEN')
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+dintegration.persistence.StateConflict: NAMESPACE_FORBIDDEN
+
+----------------------------------------------------------------------
+Ran 30 tests in 0.334s
+
+FAILED (errors=5)

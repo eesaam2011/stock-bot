@@ -1,0 +1,22 @@
+[
+  {
+    "file": "TYPE_MANUAL.json",
+    "sha256": "e4bfba91329db3d026672d5d272dcbd83c06e1eb04db6154c82713e48f2bf375",
+    "unchanged": true
+  },
+  {
+    "file": "ADR_MANUAL.txt",
+    "sha256": "6dc4e47e15c7e410970e8e5e59ef4041b93572a7929423e661f03fda84d86ca0",
+    "unchanged": true
+  },
+  {
+    "file": "NAME_RULES.json",
+    "sha256": "e85526e9f56286faf19dff24f1a92305d250358c6c6d516a11a51538dc1dced2",
+    "unchanged": true
+  },
+  {
+    "file": "ACTIVITY.txt",
+    "sha256": "319e4857684396441a1666bc06ae4420c8b317c7de1a093b54a5be2aa42ff50e",
+    "unchanged": true
+  }
+]

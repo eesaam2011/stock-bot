@@ -1,0 +1,37 @@
+test_api_no_order_endpoint (test_direct.Contracts.test_api_no_order_endpoint) ... ok
+test_cached_prep_hash_verified (test_direct.Contracts.test_cached_prep_hash_verified) ... ok
+test_classifier_original_rejections (test_direct.Contracts.test_classifier_original_rejections) ... ok
+test_main_missing_env_before_connection (test_direct.Contracts.test_main_missing_env_before_connection) ... ok
+test_old_leader_no_reservation (test_direct.Delivery.test_old_leader_no_reservation) ... ok
+test_original_recovery_T1_STOP_real_outbox_to_telegram (test_direct.Delivery.test_original_recovery_T1_STOP_real_outbox_to_telegram) ... {"stage": "MESSAGE_DELIVERY", "event_type": "T1", "symbol": "X", "result": "SENT"}
+{"stage": "MESSAGE_DELIVERY", "event_type": "STOP", "symbol": "X", "result": "SENT"}
+ok
+test_same_symbol_different_trade_not_suppressed (test_direct.Delivery.test_same_symbol_different_trade_not_suppressed) ... ok
+test_same_trade_event_once_after_finish (test_direct.Delivery.test_same_trade_event_once_after_finish) ... ok
+test_started_ambiguous_no_retry (test_direct.Delivery.test_started_ambiguous_no_retry) ... ok
+test_750_three_batches_no_HGET_no_write (test_direct.News.test_750_three_batches_no_HGET_no_write) ... ok
+test_cache_strictly_less_than_60 (test_direct.News.test_cache_strictly_less_than_60) ... ok
+test_count_read_only (test_direct.News.test_count_read_only) ... ok
+test_missing_fails_open_zero (test_direct.News.test_missing_fails_open_zero) ... ok
+test_501_pins_explicit_conflict (test_direct.Scores.test_501_pins_explicit_conflict) ... ok
+test_exact_price_bounds (test_direct.Scores.test_exact_price_bounds) ... ok
+test_float_boundaries (test_direct.Scores.test_float_boundaries) ... ok
+test_float_unknown (test_direct.Scores.test_float_unknown) ... ok
+test_log_activity_exact (test_direct.Scores.test_log_activity_exact) ... ok
+test_no_future_stale_or_outside_price (test_direct.Scores.test_no_future_stale_or_outside_price) ... ok
+test_no_pin_dropped_without_snapshot (test_direct.Scores.test_no_pin_dropped_without_snapshot) ... ok
+test_pin_priority_and_500 (test_direct.Scores.test_pin_priority_and_500) ... ok
+test_replacement_exact_five_and_alphabetical (test_direct.Scores.test_replacement_exact_five_and_alphabetical) ... ok
+test_update_clock_120 (test_direct.Scores.test_update_clock_120) ... ok
+test_zero_score_allowed (test_direct.Scores.test_zero_score_allowed) ... ok
+test_bad_ohlcv_rejected (test_direct.Volumes.test_bad_ohlcv_rejected) ... ok
+test_failed_page_rolls_back (test_direct.Volumes.test_failed_page_rolls_back) ... ok
+test_history_20_regular_sums_not_daily_snapshot (test_direct.Volumes.test_history_20_regular_sums_not_daily_snapshot) ... ok
+test_missing_history_symbol_not_filled (test_direct.Volumes.test_missing_history_symbol_not_filled) ... ok
+test_only_RTH_completed (test_direct.Volumes.test_only_RTH_completed) ... ok
+test_replayed_and_revised_minute_not_double_counted (test_direct.Volumes.test_replayed_and_revised_minute_not_double_counted) ... ok
+
+----------------------------------------------------------------------
+Ran 30 tests in 0.202s
+
+OK
