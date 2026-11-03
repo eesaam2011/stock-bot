@@ -44,7 +44,7 @@ class Runtime:
   self.authorize=authorize;self.policy=policy;self.clock=clock;self.wall=wall;self.sample=sample
   self.control=ClockedControl(self.c,clock)
   self.deadline=AckTrustDeadline(clock);self.memory=MemoryBounds();self.stop=asyncio.Event()
-  self.ready=asyncio.Event();self.ws=None;self.auth=False;self.stopping=False;self.reason=None
+  self.ready=asyncio.Event();self.initialized=asyncio.Event();self.ws=None;self.auth=False;self.stopping=False;self.reason=None
   self.observe_stream=observe_stream;self.tasks=[];self.last_renew=None;self.ingress=None
  def revoke(self,reason):
   # Close entry eligibility in memory BEFORE any failing Redis operation.
@@ -153,8 +153,8 @@ class Runtime:
  async def run(self):
   self.revoke('STARTING_UNTRUSTED')
   self.check_session();self.memory.check(self.sample())
-  self.state.restore();self.revoke('RESTORED_UNTRUSTED')
-  self.leader.require_current();self.checkpoint('RUNTIME_START')
+  await asyncio.to_thread(self.state.restore);self.revoke('RESTORED_UNTRUSTED')
+  self.leader.require_current();self.checkpoint('RUNTIME_START');self.initialized.set()
   self.tasks=[asyncio.create_task(f()) for f in (self.connections,self._watch,self._renew)]
   self.tasks.append(asyncio.create_task(self.stop.wait()))
   try:

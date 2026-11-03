@@ -1,0 +1,30 @@
+{
+  "original": {
+    "passed": 120,
+    "total": 120,
+    "seconds": 15.332
+  },
+  "zip_extracted": {
+    "passed": 120,
+    "total": 120,
+    "seconds": 15.372
+  },
+  "inherited_tests": 115,
+  "new_tests": 5,
+  "updated_inherited_expectations": [
+    "batch_cap_101",
+    "scheduler_batch100_rotation",
+    "REJECTION_COOLDOWN_counter"
+  ],
+  "initial_attempt": {
+    "total": 120,
+    "failures": 1,
+    "cause": "old_expected_rejection_reasons_dictionary_before_new_counter_snapshot_update",
+    "raw": "TESTS_R4_INITIAL_ATTEMPT_RAW.txt"
+  },
+  "unshare_rn": "HOST_DENIED",
+  "network_socket_calls": "DENIED_BY_TEST_RUNNER",
+  "live_test": "NOT_RUN",
+  "reference_app_unchanged": 72,
+  "realistic_resource_load": "UNKNOWN"
+}

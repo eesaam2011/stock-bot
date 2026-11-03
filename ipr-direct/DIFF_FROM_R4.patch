@@ -1,0 +1,126 @@
+--- R4/r4b/adapter.py
++++ R5/r4b/adapter.py
+@@ -168,7 +168,6 @@
+      if e['proven']:good[s]=e
+      else:bad[s]=e['reason']
+     if good:
+-     self.bridge.preload({s:one[s] for s in good}) # accumulation only, no historical decision callback
+      if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
+      self.checks()
+      # The existing fenced journal is durable BEFORE any new symbol is eligible.
+@@ -179,6 +178,7 @@
+      # recheck leadership/root without a second transient clock rejection.
+      self.bridge.leadership.require_current()
+      if not self.root_check():raise Blocked('ROOT_OR_CLOCK_UNPROVEN')
++     self.bridge.preload({s:one[s] for s in good}) # accumulation only, no historical decision callback
+      floor=self.wall()
+      for s in good:
+       self.c.attest(s,history=True,continuity=True,reconciled=True,first_trade=False)
+--- R4/tests/test_r5.py
++++ R5/tests/test_r5.py
+@@ -0,0 +1,47 @@
++import unittest,copy
++from unittest.mock import Mock
++from datetime import timedelta
++from dintegration.clock import ClockUnavailable
++from dreview.core import Blocked
++from test_direct import OP,bar
++import test_r4
++
++class R5HistoryCommit(unittest.TestCase):
++ def fixture(self):
++  f=test_r4.R4Tests().deferred()
++  f.history['Y']=[bar(OP-timedelta(minutes=2)),bar(OP-timedelta(minutes=1)),bar(OP)]
++  return f
++ def history(self,f):return {s:list(h) for s,h in f.a.bridge.p.br.history.items()}
++ def test_clock_after_fetch_no_history_change_retry_exact_rows(self):
++  for fail_at in (2,3):
++   with self.subTest(check=fail_at):
++    f=self.fixture();before=copy.deepcopy(self.history(f));epochs=len(f.epochs);n=[0]
++    def checks():
++     n[0]+=1
++     if n[0]==fail_at:raise ClockUnavailable('fixture')
++    f.a.checks=checks
++    self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertEqual(self.history(f),before);self.assertEqual(len(f.epochs),epochs);self.assertTrue(f.a.transport_trusted)
++    self.assertEqual(f.calls[-1]['symbols'],['Y'])
++    f.a.checks=lambda:None;self.assertTrue(f.a.admit_incremental(['Y'],f.now[0]))
++    rows=list(f.a.bridge.p.br.history['Y']);expected=[f.a.bridge.p.br._compact_bar(b) for b in f.history['Y']]
++    self.assertEqual(len(rows),3);self.assertEqual(rows,expected);self.assertEqual(len({r[0] for r in rows}),3)
++    self.assertEqual(list(f.a.bridge.p.br.history['X']),before['X'])
++ def test_journal_failure_before_preload_leaves_all_history_unchanged(self):
++  f=self.fixture();before=copy.deepcopy(self.history(f));f.a.checkpoint.append_epoch=Mock(side_effect=ConnectionError('fixture'))
++  with self.assertRaises(ConnectionError):f.a.admit_incremental(['Y'],f.now[0])
++  self.assertEqual(self.history(f),before);self.assertFalse(f.a.transport_trusted)
++ def test_postjournal_root_failure_before_preload(self):
++  f=self.fixture();before=copy.deepcopy(self.history(f));original=f.a.checkpoint.append_epoch
++  def append(event):original(event);f.a.root_check=lambda:False
++  f.a.checkpoint.append_epoch=append
++  with self.assertRaises(Blocked):f.a.admit_incremental(['Y'],f.now[0])
++  self.assertEqual(self.history(f),before);self.assertFalse(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
++ def test_order_journal_leadership_root_preload_attest(self):
++  f=self.fixture();events=[];append=f.a.checkpoint.append_epoch;preload=f.a.bridge.preload;attest=f.a.c.attest;lead=f.a.bridge.leadership.require_current;root=f.a.root_check
++  f.a.checkpoint.append_epoch=lambda v:(events.append('journal'),append(v))[-1]
++  f.a.bridge.leadership.require_current=lambda:(events.append('leadership'),lead())[-1]
++  f.a.root_check=lambda:(events.append('root'),root())[-1]
++  f.a.bridge.preload=lambda v:(events.append('preload'),preload(v))[-1]
++  f.a.c.attest=lambda *a,**kw:(events.append('attest'),attest(*a,**kw))[-1]
++  self.assertTrue(f.a.admit_incremental(['Y'],f.now[0]))
++  j=events.index('journal');p=events.index('preload');self.assertLess(j,p);self.assertIn('leadership',events[j+1:p]);self.assertIn('root',events[j+1:p]);self.assertLess(p,events.index('attest'))
+--- R4/README_AR.txt
++++ R5/README_AR.txt
+@@ -1,4 +1,3 @@
+-COMPLETE_REVIEW_ONLY — IPR_DIRECT_R4: تصحيح غير متصل للمراجعة فقط، لا نشر.
+-اقرأ R4_REPORT_AR.txt وREST_BUDGET_R4_AR.txt وDIFF_FROM_R3.patch وCHANGED_FILES_R4.json والاختبارات الخام.
+-التغيير الإنتاجي محصور في r4b/runtime.py وr4b/adapter.py. وثائق الإصدارات السابقة تاريخية؛ لم تُعدّل هوية الإصدار الموروثة داخل التشغيل.
+-النشر لم يحدث. موافقة R4 لم تصدر بعد. لا تعديل خدمة ولا ميزانية إقلاع ولا إنشاء أتمتة.
++COMPLETE_REVIEW_ONLY — IPR_DIRECT_R5: إصلاح ترتيب القبول التزايدي فقط، بلا نشر.
++اقرأ R5_REPORT_AR.txt وDIFF_FROM_R4.patch والاختبارات الخام. الملفات الأقدم موروثة للتوثيق التاريخي.
++تنبيه: recover الكامل لم يتغير ويحتوي preload قبل الحفظ الدائم؛ موضح في التقرير، ولم نَدّعِ إصلاحه.
+--- R4/R5_REPORT_AR.txt
++++ R5/R5_REPORT_AR.txt
+@@ -0,0 +1,22 @@
++COMPLETE_REVIEW_ONLY — التعديل المطلوب في القبول التزايدي منفذ؛ لا نشر ولا اتصال خدمات.
++الأساس IPR_DIRECT_R4.zip ببصمة 0df06f835839da8350ef0133e97f7660651d12d56b50856f30f0d283ead3ded4. تحقق ZIP والبصمات الداخلية قبل البناء.
++
++التصحيح الصغير
++تغير موضع سطر preload واحد فقط في r4b/adapter.py داخل admit_incremental.
++الترتيب الآن: current وchecks والأدلة، ثم current وchecks الأخير قبل commit، ثم append_epoch، ثم current، ثم القيادة وroot، ثم preload، ثم attest ثم إزالة المقبولين من recovering. لم نغيّر accumulate_only ولا PackedHistory ولا أي ملف داخل reference_app. لم نُضف استبدالًا عامًا للتاريخ أو إزالة تكرار تغير قواعده.
++ClockUnavailable قبل الكتابة يؤجل كما فيR4، لكن لم يعد يغير history. فشل journal أو root قبل preload لا يغير history ولا يقبل الرمز. journal يسجل دليلًا وليس ثقة محفوظة قابلة للاستعادة؛ عند فشل preload بعد نجاح journal تسحب الثقة كما في الاستثناءات الأصلية. لا ندعي معاملة ذرية بين Redis والذاكرة أو rollback لأخطاء preload الجزئية؛ ذلك UNKNOWN وغير مختبر هنا.
++
++الاختبار
++كل اختبارات R4 الـ120 كما هي بايتيًا، وأضاف R5 أربعة اختبارات. الفحص بعد جلب الدفعة يفشل بالساعة في كل موضع قبل الحفظ: history لجميع الرموز قبل/بعد مطابق، وعدد journal لم يتغير. بعد عودة الساعة يعاد الجلب ويقبل Y بثلاث شموع (أقل من60)، عددها3 وقيم الصفوف وطوابعها مطابقة بلا تكرار، وتاريخ X لم يتغير. اختبارات إضافية لفشل journal وroot بعد journal، وتتبع ترتيب journal ثم القيادة/root ثم preload ثم attest.
++النتائج الخام من الأصل وZIP مفكوك مرفقة. run_tests يمنع socket وDNS؛ unshare -rn رفضه المضيف، لا ادعاء بعزل شبكة على مستوى النظام. لم يُجر اتصال Alpaca أو Redis أو Telegram حقيقي ولا اختبار حمل.
++
++ملاحظة مهمة عن recover الكامل — لم نعدله
++recover يجري checks وtoken/epoch قبل preload بالفعل؛ لذلك ليس فيه تأجيل ClockUnavailable بعد preload نفسه كما كان في القبول التزايدي R4. لكنه ما زال ينفذ preload ثم attest ثم append_epoch ثم فحص token أخير. إذا فشل الحفظ أو حدث إبطال بعد preload يمكن أن يبقى تعديل التاريخ وتُعاد محاولة recover؛ احتمال التكرار هناك قائم. إصلاحه يحتاج معالجة ترتيب نشر proofs والتقرير والكتابة والفشل الجزئي واختبارات خاصة بمسار الاستعادة الكاملة. لا أعتبر نقل سطره آمنًا بلا هذا التحقق، ولذلك تركته كما طلبت. R5 ليس إصلاحًا عامًا لإعادة تحميل التاريخ ولا ادعاءً بزوال هذا الخطر.
++
++الثوابت
++الفاصل1.0 والدفعة100 ومهلة الرفض30 وT120 وميزانية4 وحدود الذاكرة كما هي. reference_app72 مطابق بايتيًا. الملف الإنتاجي الوحيد المعدل r4b/adapter.py. لا نشر ولا تغييرات GitHub/Render/Redis.
++
++UNKNOWN
++أداء السوق الحقيقي والموارد والتأخر والترقيم الفعلي واكتمال TRADE كما فيR4 غير مثبتة. لم نقسها ولم نغيرها.
++
++ملاحظة إعادة التشغيل للاختبارات: أول تشغيل كامل أعطى123/124؛ الفشل في test_new_scheduler_waits_then_real_adapter_proves_inside_T120 الموروث عند assertTrue بعد انتظار80ms ثابت. لم نعدّل هذا الاختبار أو recover الكامل. سبب التأخر الفعلي UNKNOWN؛ ارتباطه بجدولة المضيف احتمال وليس تشخيصًا مثبتًا. المخرج الأول محفوظ، وأعيدت المجموعة دون تغيير الشفرة.
+--- R4/STATUS.json
++++ R5/STATUS.json
+@@ -1,5 +1,5 @@
+ {
+-  "release": "IPR_DIRECT_R4",
++  "release": "IPR_DIRECT_R5",
+   "status": "COMPLETE_REVIEW_ONLY",
+   "production_deployed": false,
+   "real_services_modified": false,
+@@ -17,9 +17,10 @@
+     "source_TRADE_completeness",
+     "R1_3_78_second_lag_exact_cause"
+   ],
+-  "baseline_sha256": "bb124a370dbc5555f7991a6701263f54b7967598efe09e0e44b1b23f415ae207",
++  "baseline_sha256": "0df06f835839da8350ef0133e97f7660651d12d56b50856f30f0d283ead3ded4",
+   "incremental_spacing_seconds": 1,
+   "incremental_max_symbols": 100,
+-  "original_and_extracted_tests": 120,
+-  "incremental_reject_cooldown_seconds": 30
++  "original_and_extracted_tests": 124,
++  "incremental_reject_cooldown_seconds": 30,
++  "known_unchanged_issue": "full recover preload precedes durable journal; possible duplicate history on retry after later failure"
+ }

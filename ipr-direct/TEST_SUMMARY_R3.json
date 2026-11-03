@@ -1,0 +1,21 @@
+{
+  "original": {
+    "tests": 115,
+    "passed": 115,
+    "seconds": 13.543,
+    "raw": "TESTS_R3_ORIGINAL_RAW.txt"
+  },
+  "zip_extracted": {
+    "tests": 115,
+    "passed": 115,
+    "seconds": 13.207,
+    "raw": "TESTS_R3_EXTRACTED_RAW.txt"
+  },
+  "inherited_tests": 98,
+  "new_R3_tests": 17,
+  "network_socket_calls": "DENIED_BY_TEST_RUNNER",
+  "unshare_rn": "HOST_DENIED",
+  "real_services_contacted": false,
+  "load_test": "NOT_RUN",
+  "final_python_matches_tested_zip_python": true
+}

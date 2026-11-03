@@ -1,0 +1,17 @@
+{
+  "original_tests": 98,
+  "original_pass": 98,
+  "zip_extracted_tests": 98,
+  "zip_extracted_pass": 98,
+  "source_byte_identity_with_tested_extraction": true,
+  "reference_files_unchanged": 72,
+  "reference_files_expected": 72,
+  "network_namespace": "DENIED_BY_HOST",
+  "python_network_calls": "BLOCKED_BY_TEST_RUNNER",
+  "actual_event_loop_stall_seconds": 12.104336268000225,
+  "simulated_ACK_to_trust_seconds": 78.85194773636758,
+  "warmup_duration_in_simulation": "ASSUMED_FROM_R1_NOT_MEASURED_R2",
+  "live_tests": "NOT_RUN",
+  "deployment": "NOT_PERFORMED",
+  "budget_reset": "NOT_PERFORMED"
+}

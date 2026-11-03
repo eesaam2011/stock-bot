@@ -1,0 +1,770 @@
+--- /dev/null
++++ b/R2_REPORT_AR.txt
+@@ -0,0 +1,57 @@
++COMPLETE_REVIEW_ONLY — حزمة تصحيح محلية للمراجعة؛ لم تُنشر ولم تُختبر حيًا.
++IPR_DIRECT_R2
++
++المصدر: IPR_DIRECT_R1.zip
++SHA256: 8bd1b0a93e39b57d642650019a14e273db2f447469256d622b6f24f8fdce23ee
++commit المرجعي المنشور سابقًا: 53672b7b8d71ab4fa6f9911d865b644f75afd17d.
++لا Render ولا GitHub ولا Redis حي ولا Alpaca ولا Telegram. جميع اختبارات البيانات مصنوعة محليًا.
++تُراجع هذه الحزمة وملف DIFF_FROM_R1.patch قبل أي قرار مستقل بشأن نشرها.
++
++ما تغيّر، ولماذا:
++1) RECOVERY_PENDING: عدادات الأسباب مأخوذة من report.quarantine، وليس self.quarantine القديمة. العينة أول 5 رموز أبجديًا وأسبابها؛ live_bars عدد الشواهد المكتملة المتاحة عند cutoff بدء المحاولة؛ live_bars_stored عدد الصفوف الحية المخزنة عند طباعة النتيجة. الفارق بينهما متوقع خلال جلب REST. عدد المحجوبين لا يعود صفرًا كاذبًا بسبب قراءة الحقل الخطأ.
++2) CLOCK_PROOF_FAILED: last_success_age_seconds وuncertainty_seconds وrtt_seconds وproof_remaining_seconds وrefresh_error_type وloop_lag_seconds. null يعني غير مقاس/غير متاح، وليس صفرًا. loop lag الحالي يشمل عمر الانتظار الجاري قبل رجوع الحلقة. التعطل أثناء bootstrap قبل بدء قياس loop lag يظل null.
++3) PHASE_TIMING: أزمنة state.restore وread_checkpoint وverify_chain، وload_archive وreplay، وconnection_started وrestore_pins وprepare_needs، سواء نجحت أم فشلت. لا مفاتيح Redis ولا قيم ولا محتوى إطارات. RECOVERY_WARMUP يبين عدد الرموز والنافذتين وزمن الجلب الفعلي مستقبلاً.
++4) IPR_PARENT_EXIT: child_exit_code يبين الرمز الحقيقي الذي أعاده poll (بما فيه رمز إشارة سالب). exit_code السابق باقٍ كقرار الحارس لإعادة التشغيل، ولم يُغيّر بروتوكول الميزانية.
++5) IPR_FATAL: exception_type كاملًا وmessage_redacted_120. تحذف قيم متغيرات الأسرار من الرسالة والروابط وأنماط التوكنات والحقول المسماة سرية قبل أخذ أول 120 حرفًا. لا traceback ولا locals. لا يمكن ضمان اكتشاف سر جديد غير معروف أو محوّر لا يتبع الأنماط؛ UNKNOWN. لا تُدخل أسرارًا في رسائل الاستثناءات.
++
++تصحيح الساعة:
++ClockProof له خيط daemon مستقل اسمه ipr-clock-proof، يبدأ أثناء bootstrap قبل compose/archive/restore. cadence مستهدف 5 ثوانٍ على monotonic، طلب واحد فقط في كل مرة، ولا يعتمد على asyncio أو default executor. RTT طويل أو تعليق العملية كلها/GIL أو توقف جدولة الخيط ليس مضمونًا، ولا تمدد صلاحية الإثبات بسببه. شروط القبول بقيت uncertainty<=1 ثانية ومدة 10 ثوانٍ، وبلا إحياء إثبات قديم عند الفشل. تُنشر قيم الإثبات كلقطة tuple واحدة لتجنب قراءة uncertainty من تجديد وdeadline من آخر. يُوقف الخيط عند فشل bootstrap وعند الخروج؛ Redis socket timeout الأصلي 5 ثوانٍ لم يتغير.
++
++Sender:
++LiveAdapter.checks يميز ClockUnavailable عن فشل root مع بقاء اسم السبب ROOT_OR_CLOCK_UNPROVEN. يفحص القيادة أولًا، ويفحص root قبل استثناء الساعة حتى لا يخفي فشلًا حقيقيًا. عند ClockUnavailable قبل قراءة outbox/START يطبع SENDER_CLOCK_DEFERRED ويرجع؛ الحلقة تبقى حية، ولا START ولا finish ولا UNKNOWN_FINAL. فقد القيادة أو انتهاء الجلسة أو فساد الهوية أو فشل root لا يُبتلع. إذا فشلت الساعة بعد START في مسار التسليم، يبقى السلوك الأصلي UNKNOWN_FINAL وعدم إعادة الإرسال؛ لم نغيّره.
++
++الاستعادة:
++عند أول ACK لقائمة جديدة لا توجد شواهد BAR؛ لا تبدأ REST warmup لمجرد ACK. ما زال T120 يبدأ من ACK كما كان، وليس من أول شاهد. بعد وصول شاهد BAR مكتمل صالح من القارئ يوقظ الجدول المحاولة. لا نحتاج خمس دقائق انتظارًا عامًا؛ شرط native5 المكتمل والتاريخ الأصلي باقٍ. ACK لاحق لرموز ذات شواهد قد يملك أدلة جاهزة، فلا ندعي أن جميع ACK مستحيلة دائمًا.
++warmup يجلب فقط رموز BAR ذات شاهد مكتمل عند cutoff، مضافًا إليها كل حالات O/A/U/R المطلوبة الموجودة في النطاق. لا نسقط حالة مفتوحة لتقليل REST. الرموز المؤجلة تبقى غير موثوقة بسبب NO_COMPLETED_LIVE_BAR_WITNESS. الجلب الأصلي 60 دقيقة native1Min وrequired_history_minutes()=305 دقيقة native5Min لم يُقلص. Native5 ليس تجميع 1Min. نراجع نفس شروط OHLCV/set/epoch/gap، ولا نبدلها بعلم True أو بعدد شموع فقط. استعادة كل الحالات المفتوحة الأصلية بقيت الأعلى أولوية. ما يصل بعد cutoff ينتظر محاولة أخرى؛ لا ENTRY بأثر رجعي.
++
++جدول T120 — هذه محاكاة مفترضة لتوقيت المصدر والجلب، وليست ضمانًا حيًا:
++السيناريو المختبر | بعد ACK بالثانية
++ACK بدون شاهد | 0.000000 : صفر محاولات warmup
++وصول أول BAR مكتمل | 25.100000
++جلب مفترض (نفس زمن R1 المقروء) | 53.75194773636758 ثانية
++نجاح المحرك الحقيقي للإثبات ببيانات مصنوعة | 78.85194773636758
++T120 | 120.000000 : لم يتغير
++الهامش في هذا السيناريو | 41.14805226363242
++
++سيناريو أكثر تحفظًا: انتظار 60 ثانية ثم warmup=53.751948 يترك 6.248052 ثانية فقط لكل تأخر المصدر/الجدولة/Redis/المصالحة. والمحاولة الثانية المقروءة في R1 استغرقت تقريبًا 67.846864 ثانية؛ 60+67.846864=127.846864 قبل أي كلفة إضافية، وهو يتجاوز120. إذًا النجاح داخل120 ممكن، لكنه غير مضمون؛ المحاكاة لا تثبت نجاح جلسة حية.
++المعادلة: wait_BAR + source_delay + warmup + reconciliation/checkpoint + scheduling < 120.
++لا حد موثق لتأخر المصدر أو REST أو الشبكة، لذا لا توجد قيمة منتهية لـT تضمن النجاح دائمًا. لم نرفع T ولم نضع حدًا جديدًا خفيًا. لا نطلب تعديل T الآن لأن الاستحالة داخل120 لم تُثبت، ويفصل RECOVERY_WARMUP القياس في الجولة المقبلة عند اعتمادها. إذا اختير تصميم يتحمل المثال127.846864، فأصغر عدد صحيح يغطيه وحده هو128 ثانية بدون هامش وبدون كلفة إضافية؛ هذا حساب فقط وليس اقتراحًا بتطبيق حد آمن أو تغييرًا منفذًا. يلزم قرارك وقياس الكلفة الباقية لأي قيمة جديدة.
++
++مدة المحاولة بعد تخفيف warmup:
++UNKNOWN حيًا. مرجع R1 المقروء 53.751948 ثانية لمحاولة، ونحو67.846864 للثانية؛ ليست وعودًا لـR2. يخف عدد الرموز فقط عند وجود رموز بلا شاهد، مثل447 من500، ولا يُفترض تحسن نسبي خطي. إذا وصل شاهد لكل500 أو كانت حالات إلزامية تشملها، لن تنخفض كلفة عدد الرموز. نفس عميل Alpaca والقفل والتوازي ولم نرفع حدودًا أو موارد.
++
++العمل المتزامن والحلقة:
++عُرف من قراءة الكود وجود Redis I/O وفك/تحقق JSON/SHA-chain في compose وstate.restore وProofStore.load_archive وrestore_pins وprepare_needs/connection_started. لا يوجد stack أو span في سجل R1 يربط الـ3.7833585157990455 ثانية بأي واحد منها؛ السبب الفعلي UNKNOWN.
++نُقل bootstrap build كاملًا إلى asyncio.to_thread، بما فيه compose وload_archive الأول، ونقل runtime state.restore إلى خيط. أضيف initialized Event لمنع scan/prepare/native/upkeep/Sender من السباق مع restore والختم RUNTIME_START؛ لا تتاح هذه المهام إلا بعد اكتمال التهيئة. أضيفت أزمنة تبين موضع الكلفة بدل نسبتها بالتخمين.
++لم ننقل controller أو connection_started ككل إلى خيط عشوائي: يحمل control_lock ويبدل generation والاشتراكات وpins؛ أعمال case_loop والwriter تعمل على الحلقة نفسها، وقد تتحول هذه الخطوة إلى حجب/سباق إن نُقلت دون بروتوكول ملكية. بقيت هذه الأجزاء متزامنة مع القياس. كذلك بعض leader.require_current وappend_epoch المتزامنة ما زالت على الحلقة. هذا خطر باقٍ صريح، وليس ادعاءً بأن أكبر lag أزيل أو أن كل Redis I/O أصبح غير حاجب.
++
++ثوابت لم تتغير:
++reference_app كاملًا، تصنيف الرموز الأربعة، DISCOVERY_SPEC والأوزان والفلاتر وشروط E/B/confluence/ENTRY/T1/T2/STOP ومتابعة الحالات الأصلية، namespace=ipr_direct:v1، ledger وعدم تكرار الإرسال، ميزانية4، TTL30/renew10،512Mi/410Mi،مهلة60،ingress8192/32/5.0،T120.
++لا ملف موافقة ولا إعدادات إنتاجية جديدة ولا إعادة ضبط لمفاتيح ميزانية الإقلاع.
++
++الاختبارات والحدود:
++أعيدت اختبارات R1، وأضيفت الساعة وSender والجدولة وT120 وأسباب الرفض والـparent والتوقيت والحجب عند البيانات المخالفة. اختبار12.1 ثانية يستخدم time.sleep فعليًا داخل asyncio، وليس تحريك ساعة وهمية؛ خيط الساعة يجدد أثناءه. لكنه لا يحاكي تجميد العملية كلها أو احتجازGIL بلا انقطاع أو Redis بعيدًا.
++الجدولة تختبر EvidenceRuntime.recovery_loop وEvidenceAdapter وStreamProof الفعلية، مع Redis Lua مزيف ومصدر مصطنع. تستعمل زمن53.751948 مُدخلًا في ساعة المحاكاة، فلا تُسجل كزمن REST مقاس فيR2. فحوص المصدر والثقة الحقيقية وAlpaca وRedis وTelegram والموارد512Mi/0.5CPU غير مُجربة.
++unshare -rn رفضه المضيف: Operation not permitted. run_tests.py يمنع socket.connect/connect_ex/create_connection/getaddrinfo داخلPython؛ هذا ليس namespace شبكة من نظام التشغيل.
++الملفات TESTS_R2_ATTEMPT* وTESTS_R2_ORIGINAL_RAW تحفظ محاولات الفحص بما فيها فشل fixture الأب (حقل wall المفقود)، ولا تُخفى. النتائج النهائية فقط في TESTS_R2_ORIGINAL_FINAL_RAW وTESTS_R2_EXTRACTED_FINAL_RAW.
++لم يُشغّل full ولا الخدمة ولا اتصال حي ولا ارسال رسالة.
+--- a/README_AR.txt
++++ b/README_AR.txt
+@@ -1,16 +1,4 @@
+-COMPLETE — حزمة IPR_DIRECT_R1 للتنبيهات المباشرة، جاهزة لتركيب المستخدم ونشره؛ الاتصال الحي والأداء على Render غير مقاسين، ولم أنشرها أو أشغّل خدمة.
+-
+-ما تحصل عليه
+-خدمة واحدة تنشئ نطاقها وتقويمها وتاريخها من Alpaca وتحفظ تجهيزًا مؤرخًا في Redis. لا ملفات DAILY/calendar/DAY_LIST يجهزها المستخدم، ولا StageGate أو ملف موافقة أو inspect_approval أو مرحلة shadow. إرسال ENTRY ثم T1/T2/STOP/POST_T1_EXIT/FINAL مباشرة إلى تيليجرام، بلا طلب أوامر تداول. لا رسالة «تأكيد مراقبة».
+-
+-البدء الوحيد: python -m ipr.main
+-Build: pip install -r requirements.txt
+-البيئة في ENVIRONMENT_AR.txt، والنشر والتراجع في DEPLOY_AND_ROLLBACK_AR.txt، والقياس في FIRST_DAY_AR.txt، والتفاصيل والحدود في IMPLEMENTATION_AR.txt وUNKNOWN_AR.txt. لا إعدادات مخفية يلزم ملؤها غير قيم متغيرات البيئة المذكورة بأسمائها. لا تشغّل entrypoints الأصلية الموجودة داخل reference_app.
+-
+-القرار اليومي تلقائي. يبدأ التجهيز بمجرد وجود جلسة اليوم في التقويم، حتى قبل الافتتاح بساعات. يُعاد تجهيز النطاق يوميًا، والمصفاة ثابتة خلال اليوم. الاكتشاف والمسح لا يعملان إلا داخل ساعات الجلسة النظامية من التقويم؛ المتابعة تبقى مستقلة عن نجاح الاكتشاف. لا يعاد تنبيه ENTRY قديم بعد الاستعادة. لا تُدّعى معرفة حجم الفرص الفائتة خارج القائمة.
+-
+-الأوزان حرفيًا: النشاط30، الاستجابة15، التماسك10، القرب20، الفلوت20، الأخبار5. لا حد جودة؛ الصفر يمكن ترتيبه إذا كانت بياناته صالحة. السعر1–50 شاملًا واللقطة≤60ثانية، وهامش الاستبدال≥5 والتعادل أبجدي؛ BAR حتى500، وTRADE لاتحاد O/A/U/R. تحفظ الحالات أولًا، ولا يُسقط pin لتوفير مكان.
+-
+-لا ضمان نجاح الموارد في السوق. تبقى512Mi/0.5CPU، TTL30/renew10،410anon،tail60،queue8192/batch32/max_age5.0 وT120 و4إقلاعات. لا حارس180؛ كان من أدوات الاختبار. يطبّق كود السلامة الأصلي هذه الحدود. ظروف المصدر قد تمنع الثقة أو تنتهي باستنفاد4إقلاعات. هذا حارس تشغيلي، لا موافقة مراجع.
+-
+-اختبارات هذه النسخة مصنوعة وغير متصلة، ونسخ المحرك المرجعية72 مطابقة للحزمة المقبولة R4-C. وضع ALERTS_ONLY يُضبط في تركيب التطبيق، لا بتعديل معادلات E/B أو المتابعة. بعض أسماء logs الأصلية تبدأ SHADOW_FIRST_E/B لأسباب التوافق التاريخي؛ ليست مرحلة تشغيل معطلة ولا تمنع الرسائل.
++COMPLETE_REVIEW_ONLY — IPR_DIRECT_R2 للمراجعة فقط؛ بلا نشر أو تشغيل خدمة.
++اقرأ R2_REPORT_AR.txt وDIFF_FROM_R1.patch وCHANGED_FILES_R2.json والنتائج الخام.
++كل وثائق R1 الأخرى المحفوظة هي سياق مرجعي، وليست إذنًا جديدًا للنشر.
++لا تغيّر T120 أو ميزانية الإقلاع أو reference_app.
+--- a/STATUS.json
++++ b/STATUS.json
+@@ -1,42 +1,20 @@
+ {
+-  "status": "COMPLETE_IMPLEMENTATION_FOR_USER_DEPLOYMENT",
+-  "mode": "DIRECT_TELEGRAM_ALERTS",
+-  "approval_file_required": false,
+-  "shadow_stage_required": false,
+-  "manual_DAILY_calendar_DAY_LIST_required": false,
+-  "deployed": false,
+-  "live_tested": false,
+-  "live_performance": "UNKNOWN",
+-  "resource_guarantee": false,
+-  "references_byte_identical": 72,
+-  "connectors_original_logic_preserved": true,
+-  "news_transport": "HMGET_TOP750_BATCH250_CACHE_LT60",
+-  "alerts_identity": "TRADE_ID_EVENT_TYPE",
+-  "orders_enabled": false,
+-  "tests_original": 72,
+-  "tests_extracted": 72,
+-  "limits": {
+-    "memory_mib": 512,
+-    "cpu": 0.5,
+-    "anon_mib": 410,
+-    "TTL": 30,
+-    "renew": 10,
+-    "queue": 8192,
+-    "batch": 32,
+-    "max_age": 5.0,
+-    "T": 120,
+-    "shutdown_tail": 60,
+-    "max_boots_per_UTC_day": 4
+-  },
+-  "remaining_code_blockers": [],
+-  "UNKNOWN": [
+-    "Alpaca live credentials and schemas/entitlements",
+-    "Render Build and actual resources",
+-    "real Redis durability/eviction and Lua/server behavior",
+-    "Telegram handset receipt",
+-    "first cold preparation duration",
+-    "coverage of unclear instrument metadata",
+-    "missed opportunities outside500",
+-    "market latency and alert quantity"
++  "release": "IPR_DIRECT_R2",
++  "status": "COMPLETE_REVIEW_ONLY",
++  "production_deployed": false,
++  "real_services_modified": false,
++  "live_validation": "UNKNOWN",
++  "reference_app_modified": false,
++  "T_sec": 120,
++  "max_boots": 4,
++  "realistic_load_test": "NOT_RUN",
++  "network_namespace": "HOST_DENIED",
++  "remaining_unknowns": [
++    "actual_clock_failure_cause_R1",
++    "3.78_second_lag_attribution",
++    "per_symbol_R1_quarantine_reasons",
++    "live_R2_warmup_duration",
++    "T120_success_in_live_session",
++    "remaining_sync_controller_Redis_IO"
+   ]
+ }
+--- a/dintegration/clock.py
++++ b/dintegration/clock.py
+@@ -1,11 +1,40 @@
+-import time
++import time,threading,json
++from dreview.core import Blocked
++class ClockUnavailable(Blocked):pass
+ class ClockProof:
+- """Background refresh at inherited renewal cadence; market callbacks read cache only."""
+- def __init__(self,server_time):self.server_time=server_time;self.uncertainty=None;self.proved_until=0.
++ """Atomic proof; independent refresh worker; validity is still ten seconds."""
++ def __init__(self,server_time,emit=None,loop_lag=None):
++  self.server_time=server_time;self.emit=emit or (lambda row:print(json.dumps(row),flush=True));self.loop_lag=loop_lag or (lambda:None)
++  self._state=(None,0.,None,None,None);self._stop=threading.Event();self._thread=None
++ def snapshot(self):
++  u,until,last,rtt,error=self._state;now=time.monotonic()
++  return {'last_success_age_seconds':None if last is None else now-last,'uncertainty_seconds':u,'rtt_seconds':rtt,'proof_remaining_seconds':max(0.,until-now),'refresh_error_type':error,'loop_lag_seconds':self.loop_lag()}
++ def failed(self):
++  try:self.emit({'stage':'CLOCK_PROOF_FAILED',**self.snapshot()})
++  except Exception:pass # Observability cannot change proof result.
+  def refresh(self):
+-  start=time.time();remote=self.server_time();end=time.time();server=float(remote[0])+float(remote[1])/1000000
+-  self.uncertainty=abs(server-(start+end)/2)+(end-start)/2
+-  ok=self.uncertainty<=1 and end>=start
+-  self.proved_until=time.monotonic()+10 if ok else 0.
++  start=time.time();m=time.monotonic();old=self._state
++  try:
++   remote=self.server_time();end=time.time();rtt=time.monotonic()-m;server=float(remote[0])+float(remote[1])/1000000
++   u=abs(server-(start+end)/2)+(end-start)/2;ok=u<=1 and end>=start
++   now=time.monotonic();self._state=(u,now+10 if ok else 0.,now if ok else old[2],rtt,None)
++  except Exception as e:
++   self._state=(old[0],0.,old[2],time.monotonic()-m,type(e).__module__+'.'+type(e).__qualname__);self.failed();raise
++  if not ok:self.failed()
+   return ok
+- def check(self):return self.uncertainty is not None and self.uncertainty<=1 and time.monotonic()<self.proved_until
++ def check(self):
++  u,until,_,_,_=self._state;ok=u is not None and u<=1 and time.monotonic()<until
++  if not ok:self.failed()
++  return ok
++ def start(self):
++  if self._thread is not None:return
++  def work():
++   while not self._stop.is_set():
++    began=time.monotonic()
++    try:self.refresh()
++    except Exception:pass
++    if self._stop.wait(max(0.,5-(time.monotonic()-began))):break
++  self._thread=threading.Thread(target=work,name='ipr-clock-proof',daemon=True);self._thread.start()
++ def close(self):
++  self._stop.set()
++  if self._thread is not None:self._thread.join(timeout=1.)
+--- a/dintegration/live.py
++++ b/dintegration/live.py
+@@ -12,7 +12,10 @@
+  def transport_trusted(self):return self.__trusted
+  def checks(self):
+   self.bridge.leadership.require_current()
+-  if not self.clock_check() or not self.root_check():raise Blocked('ROOT_OR_CLOCK_UNPROVEN')
++  if not self.root_check():raise Blocked('ROOT_OR_CLOCK_UNPROVEN')
++  if not self.clock_check():
++   from .clock import ClockUnavailable
++   raise ClockUnavailable('ROOT_OR_CLOCK_UNPROVEN')
+  def close_eligibility(self,reason):
+   self.__trusted=False;self.c._set_transport_from_adapter(False,_LIVE_ADAPTER_AUTHORITY);self.failure=reason
+  def revoke(self,reason):
+--- a/dintegration/measure.py
++++ b/dintegration/measure.py
+@@ -19,6 +19,9 @@
+   return {'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':{k:{'count':v['count'],'mean':v['total']/v['count'],'max':v['max']} for k,v in self.spans.items()},'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
+  async def loop_lag(self,stop,period=.1):
+   while not stop.is_set():
+-   start=time.monotonic();await asyncio.sleep(period);self.observe('loop_lag',max(0,time.monotonic()-start-period))
++   start=time.monotonic();self.loop_tick=start;await asyncio.sleep(period);self.loop_last=max(0,time.monotonic()-start-period);self.observe('loop_lag',self.loop_last)
++ def current_loop_lag(self):
++  tick=getattr(self,'loop_tick',None);last=getattr(self,'loop_last',0.)
++  return None if tick is None else max(last,time.monotonic()-tick-.1,0.)
+  def export(self,path):
+   with open(path,'a') as f:f.write(json.dumps(self.sample(),allow_nan=False)+'\n')
+--- a/dintegration/stream_proof.py
++++ b/dintegration/stream_proof.py
+@@ -59,6 +59,14 @@
+   # Successful original recovery removes the negative latch, NOT the need for
+   # a new live BAR witness. Old revised data is never silently certified.
+   with self.lock:self.invalid.pop(symbol,None);self.rows.pop(symbol,None)
++ def stored_count(self,s):
++  with self.lock:return len(self.rows.get(s,[]))
++ def live_count(self,s,now):
++  with self.lock:
++   if not self.valid or s not in self.scope or s in self.invalid:return 0
++   return sum(r['generation']==self.generation and instant(r['received_at'])<=now and instant(r['bar']['t'])+timedelta(minutes=1)<=now for r in self.rows.get(s,[]))
++ def witnessed(self,now):
++  with self.lock:return {s for s in self.scope if self.live_count(s,now)>0}
+  def evidence(self,s,one,now):
+   with self.lock:
+    def fail(r):self.last_reason[s]=r;return {'proven':False,'reason':r,'TRADE_completeness':False}
+--- /dev/null
++++ b/dintegration/timing.py
+@@ -0,0 +1,16 @@
++import time,json,functools
++from contextlib import contextmanager
++@contextmanager
++def phase(name):
++ start=time.monotonic();ok=False
++ try:yield;ok=True
++ finally:
++  try:print(json.dumps({'stage':'PHASE_TIMING','phase':name,'seconds':time.monotonic()-start,'success':ok}),flush=True)
++  except Exception:pass
++def timed(name):
++ def wrap(fn):
++  @functools.wraps(fn)
++  def call(*a,**k):
++   with phase(name):return fn(*a,**k)
++  return call
++ return wrap
+--- a/ipr/diagnostics.py
++++ b/ipr/diagnostics.py
+@@ -4,3 +4,13 @@
+  s=str(exc)
+  prefixes=('CGROUP_','WS_','TAIL_','CONFLUENCE_','CLOCK_','SESSION_','PIN_','NEEDS_','ROOT_','HISTORY_','RTH_','OUTBOX_','ENTRY_','PREP_','NO_US_','ALPACA_','ASSET','CALENDAR_','PAGINATION_','BAR_','REFERENCE_HOST_','RESPONSE_','CHILD_','TELEGRAM_','MISSING_','DELIVERY_')
+  return s if s.startswith(prefixes) and re.fullmatch('[A-Z][A-Z_0-9]{1,99}',s) else type(exc).__name__
++
++def exception_fields(exc):
++ import os
++ message=str(exc)
++ for key,value in os.environ.items():
++  if value and any(k in key.upper() for k in ('TOKEN','SECRET','PASSWORD','KEY','URL','CHAT_ID','GIST_ID')):message=message.replace(value,'[REDACTED]')
++ message=re.sub(r"(?i)(?:https?|rediss?|wss?)://[^\s\"'<>]+",'[REDACTED_URL]',message)
++ message=re.sub(r"(?i)(?:token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+",'[REDACTED_CREDENTIAL]',message)
++ message=re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|[0-9]{6,}:[A-Za-z0-9_-]{20,})\b','[REDACTED_TOKEN]',message)
++ return {'exception_type':type(exc).__module__+'.'+type(exc).__qualname__,'message_redacted_120':message[:120]}
+--- a/ipr/main.py
++++ b/ipr/main.py
+@@ -4,7 +4,7 @@
+ from datetime import datetime,timezone
+ sys.dont_write_bytecode=True
+ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'reference_app'))
+-from .diagnostics import reason
++from .diagnostics import reason,exception_fields
+ from .api import Alpaca
+ from .preparation import prepare_root,load
+ from .runtime import policy_for,run
+@@ -57,5 +57,5 @@
+    parked_day=day
+   return 0
+  except Exception as e:
+-  print(json.dumps({'stage':'IPR_FATAL','reason':reason(e)}),flush=True);return 2
++  print(json.dumps({'stage':'IPR_FATAL','reason':reason(e),**exception_fields(e)}),flush=True);return 2
+ if __name__=='__main__':raise SystemExit(main())
+--- a/ipr/runtime.py
++++ b/ipr/runtime.py
+@@ -27,7 +27,10 @@
+ class DirectEvidence(EvidenceAdapter):
+  def recover(self,now):
+   ok=super().recover(now)
+-  print(json.dumps({'stage':'TRANSPORT_TRUSTED' if ok else 'RECOVERY_PENDING','at':self.wall().isoformat(),'reason':self.report.get('reason'),'good_symbols':len(self.report.get('good',{})),'quarantined_symbols':len(self.quarantine),'TRADE_completeness':'UNKNOWN'}),flush=True)
++  bad=self.report.get('quarantine',{});counts={}
++  for why in bad.values():counts[why]=counts.get(why,0)+1
++  sample=[{'symbol':s,'reason':bad[s],'live_bars':self.proof.live_count(s,now),'live_bars_stored':self.proof.stored_count(s)} for s in sorted(bad)[:5]]
++  print(json.dumps({'quarantine_reason_counts':counts,'quarantine_sample':sample,'stage':'TRANSPORT_TRUSTED' if ok else 'RECOVERY_PENDING','at':self.wall().isoformat(),'reason':self.report.get('reason'),'good_symbols':len(self.report.get('good',{})),'quarantined_symbols':len(bad),'TRADE_completeness':'UNKNOWN'}),flush=True)
+   return ok
+ class DirectRuntime(EvidenceRuntime):
+  def acknowledged(self):
+@@ -52,13 +55,11 @@
+  logger=logging.getLogger('IPR_WS_REDACTED');logger.handlers=[logging.NullHandler()];logger.propagate=False;logger.setLevel(logging.CRITICAL)
+  return await NoRedirect(uri,proxy=None,logger=logger)
+ 
+-def build(bundle,api,redis,env,boot):
++def _build(bundle,api,redis,env,boot,clock,measure):
+  import runtime_provenance
+- runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R1'
++ runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R2'
+  policy=policy_for(bundle);root=Root(bundle['session'],frozenset(bundle['symbols']),policy.frozen_manifest_sha256,True)
+- cls=Classifier(bundle['assets']);clock=ClockProof(redis.time)
+- if not clock.refresh():raise ValueError('CLOCK_UNPROVEN')
+- measure=Measurements();rest=MarketREST(api.get,root,measure);prepared={'ready':False,'history':None,'scan_ok':False}
++ cls=Classifier(bundle['assets']);rest=MarketREST(api.get,root,measure);prepared={'ready':False,'history':None,'scan_ok':False}
+  def authorize():
+   if not policy.time_allows(datetime.now(timezone.utc).timestamp()):raise ValueError('SESSION_CLOSED')
+  def final_filter(s,m,now):
+@@ -81,12 +82,20 @@
+  r.boot_number=base.boot_number
+  return r,prepared,clock,measure
+ 
++def build(bundle,api,redis,env,boot):
++ measure=Measurements();clock=ClockProof(redis.time,loop_lag=measure.current_loop_lag)
++ try:
++  if not clock.refresh():raise ValueError('CLOCK_UNPROVEN')
++  clock.start()
++  return _build(bundle,api,redis,env,boot,clock,measure)
++ except BaseException:clock.close();raise
++
+ async def pause(stop,seconds):
+  try:await asyncio.wait_for(stop.wait(),timeout=max(0.,seconds))
+  except asyncio.TimeoutError:pass
+ 
+ async def run(bundle,api,redis,env,boot):
+- r,state,clock,measure=build(bundle,api,redis,env,boot);p=r.a.bridge.p
++ r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
+  sender=Sender(r,redis,env);floats=FloatReader(env,requests.get);news=BatchNews(env,requests.post);selection=Selection()
+  print(json.dumps({'stage':'GUARD_BOOT_CLAIMED','boot':r.boot_number,'max_boots':4,'mode':'TELEGRAM_ALERTS_ONLY'}),flush=True)
+  async def prepare():
+@@ -152,10 +161,6 @@
+    await asyncio.to_thread(p.expire_entry_opportunities,r.wall());r.notify_cases_changed()
+    if state.get('scan_at') and (r.wall()-state['scan_at']).total_seconds()>60:state['scan_ok']=False
+    await pause(r.stop,1.)
+- async def clock_loop():
+-  while not r.stop.is_set():
+-   if not await asyncio.to_thread(clock.refresh):r.revoke('CLOCK_UNPROVEN')
+-   await pause(r.stop,5.)
+  async def metrics():
+   while not r.stop.is_set():
+    print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok']}),flush=True)
+@@ -163,7 +168,12 @@
+  import signal
+  loop=asyncio.get_running_loop()
+  for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,r.stop.set)
+- tasks=[asyncio.create_task(f()) for f in (r.run,prepare,scan,native,upkeep,clock_loop,metrics,sender.run,lambda:measure.loop_lag(r.stop))]
++ async def after_init(fn):
++  gate=getattr(r,'initialized',None)
++  if gate is not None:await gate.wait()
++  return await fn()
++ tasks=[asyncio.create_task(r.run()),asyncio.create_task(metrics()),asyncio.create_task(measure.loop_lag(r.stop))]
++ tasks.extend(asyncio.create_task(after_init(f)) for f in (prepare,scan,native,upkeep,sender.run))
+  try:
+   done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+   for t in done:t.result()
+@@ -172,3 +182,4 @@
+   for t in tasks:t.cancel()
+   try:await asyncio.wait_for(asyncio.gather(*tasks,return_exceptions=True),timeout=60.)
+   except asyncio.TimeoutError:raise RuntimeError('PARENT_KILL_REQUIRED')
++  finally:getattr(clock,'close',lambda:None)()
+--- a/ipr/sender.py
++++ b/ipr/sender.py
+@@ -6,6 +6,7 @@
+ from state_store import key_trade,validate_record
+ from event_ids import trade_event_id
+ from r4a.durable import PREFIX
++from dintegration.clock import ClockUnavailable
+ START='''
+ if redis.call('GET',KEYS[1])~=ARGV[1] or redis.call('GET',KEYS[2])~=ARGV[2] then return 'NOT_LEADER' end
+ local old=redis.call('HGET',KEYS[3],ARGV[3])
+@@ -46,7 +47,10 @@
+   self.seen.add(identity);self.seen_order.append(identity)
+   if len(self.seen_order)>20000:self.seen.discard(self.seen_order.popleft())
+  def step(self):
+-  r=self.r;r.check_session();r.leader.require_current();r.a.checks()
++  r=self.r;r.check_session();r.leader.require_current()
++  try:r.a.checks()
++  except ClockUnavailable:
++   print(json.dumps({'stage':'SENDER_CLOCK_DEFERRED'}),flush=True);return
+   for event in self.store.pending():
+    kind=event.get('event_type');payload=event.get('payload',{});tid=payload.get('trade_id')
+    if kind not in {'ENTRY','T1','T2','STOP','POST_T1_EXIT','FINAL'} or not isinstance(tid,str):continue
+--- a/r4a/durable.py
++++ b/r4a/durable.py
+@@ -1,3 +1,4 @@
++from dintegration.timing import timed
+ """Fenced, CAS-protected Redis epoch/checkpoint. No SQLite production fallback."""
+ import hashlib,json,re
+ from dintegration.persistence import StateConflict,NamespacedRedis
+@@ -43,21 +44,24 @@
+   self.seq=0;self.previous=None;self.restored=False
+  @property
+  def keys(self):return [self.base+':epoch_seq',self.base+':checkpoint',self.base+':epochs']
++ @timed('state.restore')
+  def restore(self):
+-  v=self.r.eval(READ_LUA,3,*self.keys)
++  from dintegration.timing import phase
++  with phase('state.restore.read_checkpoint'):v=self.r.eval(READ_LUA,3,*self.keys)
+   if not isinstance(v,(list,tuple)):raise StateConflict('BAD_CHECKPOINT_RESPONSE')
+   if not v:self.seq=0;self.previous=None;self.restored=True;return None
+   if len(v)!=2:raise StateConflict('CHECKPOINT_CORRUPT')
+   seq,raw=v;seq=int(seq);raw=raw.decode() if isinstance(raw,bytes) else raw
+   # Full chain verification; no flag from old process is granted as current trust.
+-  previous=None
+-  for i in range(1,seq+1):
+-   b=self.r.hget(self.keys[2],str(i));b=b.decode() if isinstance(b,bytes) else b
+-   if b is None:raise StateConflict('EPOCH_MISSING')
+-   x=json.loads(b);h=x.pop('sha256',None)
+-   if x.get('sequence')!=i or x.get('previous_sha256')!=previous or sha(canonical(x))!=h:raise StateConflict('EPOCH_CHAIN_CORRUPT')
+-   if x.get('session')!=self.session or x.get('root_hash')!=self.root_hash:raise StateConflict('ROOT_OR_SESSION_CONFLICT')
+-   previous=h
++  with phase('state.restore.verify_chain'):
++   previous=None
++   for i in range(1,seq+1):
++    b=self.r.hget(self.keys[2],str(i));b=b.decode() if isinstance(b,bytes) else b
++    if b is None:raise StateConflict('EPOCH_MISSING')
++    x=json.loads(b);h=x.pop('sha256',None)
++    if x.get('sequence')!=i or x.get('previous_sha256')!=previous or sha(canonical(x))!=h:raise StateConflict('EPOCH_CHAIN_CORRUPT')
++    if x.get('session')!=self.session or x.get('root_hash')!=self.root_hash:raise StateConflict('ROOT_OR_SESSION_CONFLICT')
++    previous=h
+   if b!=raw:raise StateConflict('CHECKPOINT_CHANGED_DURING_RESTORE')
+   self.seq=seq;self.previous=previous;self.restored=True
+   return {'checkpoint':json.loads(raw),'transport_trusted':False,'requires_recovery':True}
+--- a/r4a/parent.py
++++ b/r4a/parent.py
+@@ -32,10 +32,11 @@
+     self.reason=reason;self.termination_started=self.clock();self.child.terminate()
+    if self.termination_started is not None and self.clock()-self.termination_started>=60:self.child.kill()
+    self.sleep(.25)
++  child_exit_code=self.child.poll()
+   decision=self.controller.after_worker_exit(self.external_stop)
+   if decision=='RESTART_REQUESTED':
+    # Original 120 sec minimum guard lifetime, not an extension of shutdown tail.
+    if restart_cooldown(self.controller.policy,started,stopped=lambda:self.external_stop,wall=self.wall,sleeper=self.sleep,monotonic=self.clock):
+-    return {'action':'WORKER_EXIT','exit_code':EXIT_RESTART_REQUESTED,'reason':self.reason or 'CHILD_EXIT','boot':self.controller.boot_number}
++    return {'action':'WORKER_EXIT','exit_code':EXIT_RESTART_REQUESTED,'reason':self.reason or 'CHILD_EXIT','boot':self.controller.boot_number,'child_exit_code':child_exit_code}
+    decision='SESSION_CLOSED_OR_EXTERNAL_STOP'
+-  return {'action':'PARK' if not self.external_stop else 'EXTERNAL_STOP','reason':decision,'boot':self.controller.boot_number}
++  return {'action':'PARK' if not self.external_stop else 'EXTERNAL_STOP','reason':decision,'boot':self.controller.boot_number,'child_exit_code':child_exit_code}
+--- a/r4a/runtime.py
++++ b/r4a/runtime.py
+@@ -44,7 +44,7 @@
+   self.authorize=authorize;self.policy=policy;self.clock=clock;self.wall=wall;self.sample=sample
+   self.control=ClockedControl(self.c,clock)
+   self.deadline=AckTrustDeadline(clock);self.memory=MemoryBounds();self.stop=asyncio.Event()
+-  self.ready=asyncio.Event();self.ws=None;self.auth=False;self.stopping=False;self.reason=None
++  self.ready=asyncio.Event();self.initialized=asyncio.Event();self.ws=None;self.auth=False;self.stopping=False;self.reason=None
+   self.observe_stream=observe_stream;self.tasks=[];self.last_renew=None;self.ingress=None
+  def revoke(self,reason):
+   # Close entry eligibility in memory BEFORE any failing Redis operation.
+@@ -153,8 +153,8 @@
+  async def run(self):
+   self.revoke('STARTING_UNTRUSTED')
+   self.check_session();self.memory.check(self.sample())
+-  self.state.restore();self.revoke('RESTORED_UNTRUSTED')
+-  self.leader.require_current();self.checkpoint('RUNTIME_START')
++  await asyncio.to_thread(self.state.restore);self.revoke('RESTORED_UNTRUSTED')
++  self.leader.require_current();self.checkpoint('RUNTIME_START');self.initialized.set()
+   self.tasks=[asyncio.create_task(f()) for f in (self.connections,self._watch,self._renew)]
+   self.tasks.append(asyncio.create_task(self.stop.wait()))
+   try:
+--- a/r4b/adapter.py
++++ b/r4b/adapter.py
+@@ -1,7 +1,8 @@
++from dintegration.timing import timed
+ """Positive transport transition only after observed per-symbol evidence + case barrier.
+ No retrospective ENTRY, no hand-supplied continuity booleans.
+ """
+-import threading,time
++import threading,time,json
+ from datetime import timedelta
+ from dreview.core import _LIVE_ADAPTER_AUTHORITY
+ from dintegration.live import LiveAdapter
+@@ -31,6 +32,7 @@
+   if opportunity is not None and (self.trusted_since is None or instant(opportunity["entry_trigger_ts"])<self.trusted_since):
+    self.admission_reasons[s]="OPPORTUNITY_MISSED_DURING_DATA_GAP";return False
+   return True
++ @timed('connection_started')
+  def connection_started(self):
+   if self.store is not None:
+    self.store.load_archive();self.barrier.persisted_R.update(self.store.pending_R);self.bridge.p._entry_uncertain.update(self.store.pending_U)
+@@ -71,7 +73,12 @@
+     if self.c.needs:self.barrier.persisted_R.update(self.c.needs.R)
+     uncertain=set(self.c.needs.U) if self.c.needs else set()
+     self.bridge.p._entry_uncertain.update(uncertain)
+-   one,five=self.rest.warmup(symbols,now,self.bridge.p.ec.required_history_minutes())
++   warm_symbols=(symbols & self.proof.witnessed(now)) | (symbols & required_pins)
++   warm_start=time.monotonic()
++   try:one,five=self.rest.warmup(warm_symbols,now,self.bridge.p.ec.required_history_minutes())
++   finally:
++    try:print(json.dumps({'stage':'RECOVERY_WARMUP','symbols':len(warm_symbols),'bar_scope':len(symbols),'native1_minutes':60,'native5_minutes':self.bridge.p.ec.required_history_minutes(),'seconds':time.monotonic()-warm_start}),flush=True)
++    except Exception:pass
+    # Canonical case reads and the original expiration timer are serialized with ingress.
+    def epoch_guard():
+     self.checks()
+@@ -88,6 +95,7 @@
+    required_pins=set().union(*(set(cases['inventory'][k]) for k in ('O','A','U','R')))
+    good={};bad={}
+    for s in sorted(symbols):
++    if s not in warm_symbols:bad[s]='NO_COMPLETED_LIVE_BAR_WITNESS';continue
+     if not one.get(s) or not five.get(s):bad[s]='NATIVE_HISTORY_UNAVAILABLE';continue
+     if any(instant(b['t'])+timedelta(minutes=1)>now for b in one[s]):bad[s]='INCOMPLETE_NATIVE_1MIN';continue
+     if any(b.get('_timeframe')!='native_5Min' or instant(b['t'])+timedelta(minutes=5)>now for b in five[s]):bad[s]='INCOMPLETE_OR_NON_NATIVE_5MIN';continue
+--- a/r4b/cases.py
++++ b/r4b/cases.py
+@@ -1,3 +1,4 @@
++from dintegration.timing import timed
+ """Original frozen recovery routing; failures retain cases/pins, never invent outcomes."""
+ import json
+ from gap_recovery import reconcile_opportunity,active_trade_recovery_order
+@@ -13,6 +14,7 @@
+   self.epoch_guard=lambda: self.bridge.leadership.require_current()
+  def records(self):
+   return (self.bridge.records('operational_priority_radar:v1:trade:*','trade'),self.bridge.records('operational_priority_radar:v1:opportunity:*','opportunity'))
++ @timed('restore_pins')
+  def restore_pins(self):
+   p=self.bridge.p;old_U=set(p._entry_uncertain);trades,opps=self.records()
+   active=[r for r in trades if r['state'] in ACTIVE]
+--- a/r4b/runtime.py
++++ b/r4b/runtime.py
+@@ -1,3 +1,4 @@
++from dintegration.timing import timed
+ # COMPLETE: R4-B REV1 review scope; live deployment and R4-C are not authorized.
+ """Opt-in R4-B assembly. No executable production CLI or sender; R4-C untouched."""
+ import asyncio
+@@ -40,6 +41,7 @@
+   applied=self.planner.after_ack()
+   self.case_event.set()
+   if self.c.bar==self.c.desired_bar and self.c.trade==self.c.desired_trade:self.wake.set()
++ @timed('prepare_needs')
+  def prepare_needs(self):
+   # Called after the original controller reconnect reset; an old pending request
+   # cannot receive an ACK on the new socket. Canonical cases remain authoritative.
+@@ -83,8 +85,11 @@
+     await asyncio.sleep(max(0,self.RETRY_SPACING-(self.clock()-self.last_attempt)))
+    # Recheck AFTER await; do not recover an obsolete ACK/connection.
+    if not self.auth or self.c.failed or self.c.inflight:continue
+-   self.check_session();self.attempts+=1;self.last_attempt=self.clock();self.recovery_running=True
+-   try:await asyncio.to_thread(self.a.recover,self.wall())
++   self.check_session()
++   now=self.wall()
++   if not self.proof.witnessed(now):continue
++   self.attempts+=1;self.last_attempt=self.clock();self.recovery_running=True
++   try:await asyncio.to_thread(self.a.recover,now)
+    finally:self.recovery_running=False;self.notify_cases_changed()
+  async def connection(self):
+   try:return await super().connection()
+--- a/r4b/store.py
++++ b/r4b/store.py
+@@ -1,3 +1,4 @@
++from dintegration.timing import timed,phase
+ """Fenced A journal; local locking; explicit add/resolve case facts, not snapshot guesses."""
+ import json,threading
+ CONTROL_FIELDS={'T','S','t','oi','op','os','oc','ci','cp','cs','cc','i','p','s','c','a','o','h','l','v','vw','n','id'}
+@@ -24,19 +25,21 @@
+   if not resolved_R and not resolved_U:return
+   self.state.append_epoch({'kind':'B_CASE_RESOLUTION','case_schema':2,'resolved_R':sorted(resolved_R),'resolved_U':sorted(resolved_U),'proof':self.proof.snapshot()})
+   self.pending_R.difference_update(resolved_R);self.pending_U.difference_update(resolved_U)
++ @timed('load_archive')
+  def load_archive(self):
+   self.state.restore();latest=None;self.pending_R=set();self.pending_U=set();self.last_control=None
+   # Apply case facts in journal order. A delayed/stale witness snapshot cannot
+   # resurrect a resolved correction; a NEW correction has its own explicit add_R.
+-  for n in range(1,self.state.seq+1):
+-   raw=self.state.r.hget(self.state.keys[2],str(n));raw=raw.decode() if isinstance(raw,bytes) else raw
+-   event=json.loads(raw)['epoch']
+-   if not isinstance(event,dict):continue
+-   if event.get('case_schema')!=2:self.pending_R.update(event.get('pending_R',[])) # predecessor audit compatibility
+-   self.pending_R.update(event.get('add_R',[]));self.pending_U.update(event.get('add_U',[]))
+-   self.pending_R.difference_update(event.get('resolved_R',[]));self.pending_U.difference_update(event.get('resolved_U',[]))
+-   if 'control_event' in event:self.last_control=event['control_event']
+-   if 'proof' in event:latest=event['proof']
++  with phase('load_archive.replay'):
++   for n in range(1,self.state.seq+1):
++    raw=self.state.r.hget(self.state.keys[2],str(n));raw=raw.decode() if isinstance(raw,bytes) else raw
++    event=json.loads(raw)['epoch']
++    if not isinstance(event,dict):continue
++    if event.get('case_schema')!=2:self.pending_R.update(event.get('pending_R',[])) # predecessor audit compatibility
++    self.pending_R.update(event.get('add_R',[]));self.pending_U.update(event.get('add_U',[]))
++    self.pending_R.difference_update(event.get('resolved_R',[]));self.pending_U.difference_update(event.get('resolved_U',[]))
++    if 'control_event' in event:self.last_control=event['control_event']
++    if 'proof' in event:latest=event['proof']
+   if latest is not None:
+    invalid=latest.get('invalid',{})
+    latest['invalid']={s:reason for s,reason in invalid.items() if reason not in {'CORRECTION_OR_CANCEL','PERSISTED_UNRESOLVED_CORRECTION'} or s in self.pending_R}
+--- a/tests/test_direct.py
++++ b/tests/test_direct.py
+@@ -140,7 +140,7 @@
+   fake_sample=lambda:{'limit_bytes':512*1024**2,'current_bytes':10*1024**2,'anon_bytes':10*1024**2}
+   with patch('ipr.runtime.cgroup_sample',fake_sample):r,state,clock,measure=build(bundle,NS(get=lambda *a:None),raw,{'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'},'boot')
+   self.assertFalse(r.a.transport_trusted);self.assertFalse(state['ready']);self.assertEqual(r.boot_number,1);self.assertFalse(r.a.bridge.p.shadow)
+-  self.assertEqual(r.a.bridge.p.ec.required_history_minutes(),305)
++  self.assertEqual(r.a.bridge.p.ec.required_history_minutes(),305);clock.close()
+  def test_stream_buffer_rolls_per_symbol_not_global_invalid(self):
+   from dintegration.stream_proof import StreamProof
+   p=StreamProof();p.connected(started=OP);p.set_scope({'X','Y'});rows=[]
+--- /dev/null
++++ b/tests/test_r2.py
+@@ -0,0 +1,155 @@
++import unittest,asyncio,time,threading,json,io,contextlib,os
++from types import SimpleNamespace as NS
++from datetime import timedelta
++from unittest.mock import patch,Mock
++from dintegration.clock import ClockProof,ClockUnavailable
++from dintegration.live import LiveAdapter
++from dintegration.stream_proof import StreamProof
++from dintegration.measure import Measurements
++from ipr.sender import Sender
++from ipr.diagnostics import exception_fields
++from test_direct import OP,bar
++from dreview.core import Root,Controller,Needs,Blocked
++from r4a.guards import AckTrustDeadline,SafetyStop
++from r4b.runtime import EvidenceRuntime
++from r4b.adapter import EvidenceAdapter
++from test_recovery_regression import fixture
++
++class ClockTests(unittest.TestCase):
++ def test_real_12_seconds_event_loop_stall_independent_refresh(self):
++  calls=[]
++  def server():
++   calls.append(time.monotonic());v=time.time();return int(v),int((v%1)*1e6)
++  c=ClockProof(server,emit=lambda x:None);self.assertTrue(c.refresh());c.start()
++  async def go():
++   start=time.monotonic();time.sleep(12.1)
++   self.assertTrue(c.check());self.assertLess(c.snapshot()['last_success_age_seconds'],5.5)
++   self.assertGreaterEqual(len(calls),4)
++   print(json.dumps({'test':'REAL_ASYNCIO_STALL','seconds':time.monotonic()-start,'refresh_calls':len(calls),'last_success_age_seconds':c.snapshot()['last_success_age_seconds']}))
++  try:asyncio.run(go())
++  finally:c.close()
++ def test_expiry_still_ten_and_failure_diagnostics(self):
++  out=[];c=ClockProof(lambda:(100,0),emit=out.append,loop_lag=lambda:12.)
++  with patch('dintegration.clock.time.time',side_effect=[100.,100.]),patch('dintegration.clock.time.monotonic',return_value=5.):self.assertTrue(c.refresh())
++  with patch('dintegration.clock.time.monotonic',return_value=15.):self.assertFalse(c.check())
++  self.assertEqual(out[-1]['loop_lag_seconds'],12.)
++  self.assertEqual(out[-1]['last_success_age_seconds'],10.)
++  self.assertIn('rtt_seconds',out[-1]);self.assertIn('uncertainty_seconds',out[-1])
++ def test_uncertainty_limit_unchanged(self):
++  c=ClockProof(lambda:(100,0),emit=lambda x:None)
++  with patch('dintegration.clock.time.time',side_effect=[100.,102.]):self.assertFalse(c.refresh())
++  self.assertFalse(c.check())
++ def test_redis_failure_false_no_old_proof_revival(self):
++  c=ClockProof(lambda:(_ for _ in ()).throw(ConnectionError('private')),emit=lambda x:None)
++  with self.assertRaises(ConnectionError):c.refresh()
++  self.assertFalse(c.check());self.assertEqual(c.snapshot()['refresh_error_type'],'builtins.ConnectionError')
++ def test_loop_lag_current_includes_still_blocked_window(self):
++  m=Measurements();m.loop_tick=100;m.loop_last=.01
++  with patch('dintegration.measure.time.monotonic',return_value=112.1):self.assertAlmostEqual(m.current_loop_lag(),12.)
++
++class SenderTests(unittest.TestCase):
++ def sender(self,exc=None):
++  s=Sender.__new__(Sender);s.r=NS(check_session=Mock(),leader=NS(require_current=Mock()),a=NS(checks=Mock(side_effect=exc)));s.store=NS(pending=Mock(return_value=[]));s.ledger=NS(start=Mock(),finish=Mock());return s
++ def test_clock_failure_before_START_not_unknown(self):
++  s=self.sender(ClockUnavailable('ROOT_OR_CLOCK_UNPROVEN'));s.step();s.ledger.start.assert_not_called();s.ledger.finish.assert_not_called();s.store.pending.assert_not_called()
++ def test_sender_coroutine_survives_clock_failure(self):
++  s=self.sender(ClockUnavailable('ROOT_OR_CLOCK_UNPROVEN'))
++  async def go():
++   s.r.stop=asyncio.Event();t=asyncio.create_task(s.run());await asyncio.sleep(.05);self.assertFalse(t.done());s.r.stop.set();await t
++  asyncio.run(go());s.ledger.start.assert_not_called()
++ def test_root_real_failure_remains_fatal(self):
++  with self.assertRaises(Blocked):self.sender(Blocked('ROOT_OR_CLOCK_UNPROVEN')).step()
++ def test_leader_loss_remains_fatal(self):
++  s=self.sender(ClockUnavailable('ROOT_OR_CLOCK_UNPROVEN'));s.r.leader.require_current.side_effect=RuntimeError('LEASE_LOST')
++  with self.assertRaisesRegex(RuntimeError,'LEASE_LOST'):s.step()
++ def test_session_close_remains_fatal(self):
++  s=self.sender();s.r.check_session.side_effect=ValueError('SESSION_CLOSED')
++  with self.assertRaises(ValueError):s.step()
++ def test_identity_conflict_remains_fatal(self):
++  s=self.sender(ValueError('OUTBOX_IDENTITY_CONFLICT'))
++  with self.assertRaises(ValueError):s.step()
++ def test_adapter_distinguishes_clock_and_root(self):
++  a=LiveAdapter.__new__(LiveAdapter);a.bridge=NS(leadership=NS(require_current=lambda:None));a.root_check=lambda:True;a.clock_check=lambda:False
++  with self.assertRaises(ClockUnavailable):a.checks()
++  a.root_check=lambda:False
++  with self.assertRaises(Blocked) as e:a.checks()
++  self.assertNotIsInstance(e.exception,ClockUnavailable)
++
++class RecoveryTests(unittest.TestCase):
++ def adapter(self):
++  raw,l,redis,src,b,case=fixture({'X','Y'});proof=case.proof;proof.connected(started=OP+timedelta(seconds=35));proof.set_scope({'X','Y'})
++  c=Controller(Root('2026-10-28',frozenset({'X','Y'}),'a'*64,True));c.reconnect();c.set_desired({'X','Y'},Needs(1));c.plan(0.);self.assertTrue(c.ack(c.connection,['X','Y'],[],.1))
++  now=[OP+timedelta(seconds=35)];epochs=[];state=NS(append_epoch=epochs.append);measure=Measurements()
++  a=EvidenceAdapter(c,b,src,NS(),lambda:True,lambda *a:True,lambda:True,state,measure,proof=proof,barrier=case,wall=lambda:now[0]);a.authenticated=True
++  return a,src,now,epochs
++ def test_first_ACK_no_witness_cannot_prove(self):
++  a,src,now,_=self.adapter();e=a.proof.evidence('X',[bar(OP)],now[0]);self.assertFalse(e['proven']);self.assertEqual(e['reason'],'NO_COMPLETED_LIVE_BAR_WITNESS');self.assertFalse(a.recover(now[0]));self.assertEqual(a.report['reason'],'NO_SYMBOL_CONTINUITY_PROVEN')
++ def test_new_scheduler_waits_then_real_adapter_proves_inside_T120(self):
++  async def go():
++   a,src,now,_=self.adapter();ack=now[0];elapsed=[0.];calls=[];old=src.warmup
++   def warm(symbols,at,required):
++    calls.append((symbols,required));one,five=old(symbols,at,required);elapsed[0]+=53.75194773636758;now[0]+=timedelta(seconds=53.75194773636758);return one,five
++   src.warmup=warm
++   # Exact requested native-history lengths are unchanged; fake source only.
++   r=EvidenceRuntime(a,a.checkpoint,a.bridge.leadership,None,lambda:None,NS(time_allows=lambda t:True),clock=lambda:elapsed[0],wall=lambda:now[0],sample=lambda:{})
++   r.auth=True;r.wake.set();t=asyncio.create_task(r.recovery_loop());await asyncio.sleep(.03);self.assertEqual(r.attempts,0);self.assertFalse(calls)
++   now[0]=OP+timedelta(seconds=60.1);elapsed[0]=25.1;r.received(dict(bar(OP),T='b',S='X'),now[0]);await asyncio.sleep(.08)
++   self.assertTrue(a.transport_trusted);self.assertEqual(r.attempts,1);self.assertEqual(calls[0][0],{'X'});self.assertEqual(calls[0][1],305);self.assertLess(elapsed[0],120)
++   d=AckTrustDeadline(lambda:elapsed[0]);d.armed=0.;d.tick(a.transport_trusted);self.assertIsNone(d.armed)
++   print(json.dumps({'test':'RECOVERY_SCHEDULE_SIMULATION','ACK_to_witness_seconds':25.1,'assumed_warmup_seconds':53.75194773636758,'ACK_to_trust_seconds':elapsed[0],'T120':120,'production_latency':'UNKNOWN'}))
++   r.stop.set();r.wake.set();t.cancel();await asyncio.gather(t,return_exceptions=True)
++  asyncio.run(go())
++ def test_wrong_values_do_not_create_trust(self):
++  a,src,now,_=self.adapter();now[0]=OP+timedelta(seconds=61);x=bar(OP);x['v']=999;a.proof.observe(dict(x,T='b',S='X'),now[0]);self.assertFalse(a.recover(now[0]));self.assertEqual(a.report['quarantine']['X'],'REST_STREAM_BAR_VALUE_MISMATCH')
++ def test_no_minute_required_for_sparse_symbol(self):
++  p=StreamProof();p.connected(started=OP);p.set_scope({'X'});b=bar(OP);now=OP+timedelta(minutes=5);p.observe(dict(b,T='b',S='X'),OP+timedelta(minutes=1));self.assertTrue(p.evidence('X',[b],now)['proven'])
++ def test_mandatory_pin_is_in_warmup_even_without_live_witness(self):
++  a,src,now,_=self.adapter();a.c.needs=NS(trades={'Y'},R=set(),U=set());calls=[];old=src.warmup
++  src.warmup=lambda ss,*args:(calls.append(set(ss)) or old(ss,*args));a.recover(now[0]);self.assertEqual(calls,[{'Y'}])
++ def test_future_receipt_not_in_attempt_asof(self):
++  a,src,now,_=self.adapter();a.proof.observe(dict(bar(OP),T='b',S='X'),OP+timedelta(seconds=61));self.assertFalse(a.proof.witnessed(now[0]))
++ def test_deadline_remains_120_if_no_BAR_arrives(self):
++  at=[0.];d=AckTrustDeadline(lambda:at[0]);d.ack();at[0]=119.999;d.tick(False);at[0]=120.
++  with self.assertRaisesRegex(SafetyStop,'WS_ACK_UNTRUSTED_TIMEOUT'):d.tick(False)
++
++class DiagnosticTests(unittest.TestCase):
++ def test_redaction_before_120_and_full_type(self):
++  secret='fixture-private-value-not-a-real-key'
++  with patch.dict(os.environ,{'TELEGRAM_BOT_TOKEN':secret}):v=exception_fields(ValueError('token='+secret+' https://fixture.invalid/private '+('x'*200)))
++  self.assertNotIn(secret,v['message_redacted_120']);self.assertNotIn('fixture.invalid',v['message_redacted_120']);self.assertLessEqual(len(v['message_redacted_120']),120);self.assertEqual(v['exception_type'],'builtins.ValueError')
++ def test_recovery_quarantine_counts_use_report_not_stale_attribute(self):
++  from ipr.runtime import DirectEvidence
++  a=DirectEvidence.__new__(DirectEvidence);a.report={'reason':'NO_SYMBOL_CONTINUITY_PROVEN','quarantine':{str(i):'NO_COMPLETED_LIVE_BAR_WITNESS' for i in range(8)}};a.quarantine={};a.wall=lambda:OP;a.proof=NS(live_count=lambda *args:0,stored_count=lambda *args:0)
++  with patch('r4b.adapter.EvidenceAdapter.recover',return_value=False),contextlib.redirect_stdout(io.StringIO()) as out:a.recover(OP)
++  q=json.loads(out.getvalue());self.assertEqual(q['quarantined_symbols'],8);self.assertEqual(len(q['quarantine_sample']),5);self.assertEqual(q['quarantine_reason_counts'],{'NO_COMPLETED_LIVE_BAR_WITNESS':8})
++ def test_phase_timing_on_exception(self):
++  from dintegration.timing import phase
++  with contextlib.redirect_stdout(io.StringIO()) as out:
++   with self.assertRaises(ValueError):
++    with phase('fixture'):raise ValueError('not printed')
++  q=json.loads(out.getvalue());self.assertFalse(q['success']);self.assertGreaterEqual(q['seconds'],0)
++
++class ParentAndTimingTests(unittest.TestCase):
++ def test_parent_reports_actual_child_2_separately_from_restart_75(self):
++  from r4a.parent import ProcessGuard
++  g=ProcessGuard.__new__(ProcessGuard);g.controller=NS(boot_id='fixture',boot_number=2,policy=NS(),after_worker_exit=lambda external:'RESTART_REQUESTED');g.clock=lambda:0.;g.wall=lambda:0.;g.authorize=lambda:None;g.sample=lambda:{'limit_bytes':512*1024**2,'current_bytes':1,'anon_bytes':1};g.spawn=lambda *a:NS(poll=lambda:2);g.sleep=lambda *a:None;g.external_stop=False;g.reason=None
++  with patch('r4a.parent.startup_claim',return_value='ALLOW'),patch('r4a.parent.restart_cooldown',return_value=True):q=g.run()
++  self.assertEqual(q['exit_code'],75);self.assertEqual(q['child_exit_code'],2)
++ def test_archive_timing_replay_and_restore_chain_unchanged(self):
++  from r4a.durable import RedisState
++  from r4b.store import ProofStore
++  from lua_redis import LuaRedis
++  from r4a.redis_ports import leadership
++  r=LuaRedis();l=leadership(r,'w');l.acquire();state=RedisState(r,'2026-10-28','a'*64,'w',1)
++  with contextlib.redirect_stdout(io.StringIO()) as out:
++   state.restore();state.append_epoch({'case_schema':2,'add_R':['X']});store=ProofStore(state,StreamProof());store.load_archive()
++  self.assertEqual(store.pending_R,{'X'})
++  phases=[json.loads(x)['phase'] for x in out.getvalue().splitlines()]
++  self.assertIn('state.restore.verify_chain',phases);self.assertIn('load_archive.replay',phases);self.assertIn('load_archive',phases)
++ def test_first_ACK_witness_can_be_older_on_rebalance(self):
++  # The restriction applies to first/new scope evidence, NOT every ACK forever.
++  p=StreamProof();p.connected(started=OP);p.set_scope({'X'});p.observe(dict(bar(OP),T='b',S='X'),OP+timedelta(seconds=60.1));self.assertEqual(p.witnessed(OP+timedelta(seconds=61)),{'X'})
++ def test_failed_clock_does_not_hide_root_mismatch(self):
++  a=LiveAdapter.__new__(LiveAdapter);a.bridge=NS(leadership=NS(require_current=lambda:None));a.root_check=lambda:False;a.clock_check=lambda:False
++  with self.assertRaises(Blocked) as e:a.checks()
++  self.assertNotIsInstance(e.exception,ClockUnavailable)

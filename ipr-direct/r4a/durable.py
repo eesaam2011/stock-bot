@@ -1,3 +1,4 @@
+from dintegration.timing import timed
 """Fenced, CAS-protected Redis epoch/checkpoint. No SQLite production fallback."""
 import hashlib,json,re
 from dintegration.persistence import StateConflict,NamespacedRedis
@@ -43,21 +44,24 @@ class RedisState:
   self.seq=0;self.previous=None;self.restored=False
  @property
  def keys(self):return [self.base+':epoch_seq',self.base+':checkpoint',self.base+':epochs']
+ @timed('state.restore')
  def restore(self):
-  v=self.r.eval(READ_LUA,3,*self.keys)
+  from dintegration.timing import phase
+  with phase('state.restore.read_checkpoint'):v=self.r.eval(READ_LUA,3,*self.keys)
   if not isinstance(v,(list,tuple)):raise StateConflict('BAD_CHECKPOINT_RESPONSE')
   if not v:self.seq=0;self.previous=None;self.restored=True;return None
   if len(v)!=2:raise StateConflict('CHECKPOINT_CORRUPT')
   seq,raw=v;seq=int(seq);raw=raw.decode() if isinstance(raw,bytes) else raw
   # Full chain verification; no flag from old process is granted as current trust.
-  previous=None
-  for i in range(1,seq+1):
-   b=self.r.hget(self.keys[2],str(i));b=b.decode() if isinstance(b,bytes) else b
-   if b is None:raise StateConflict('EPOCH_MISSING')
-   x=json.loads(b);h=x.pop('sha256',None)
-   if x.get('sequence')!=i or x.get('previous_sha256')!=previous or sha(canonical(x))!=h:raise StateConflict('EPOCH_CHAIN_CORRUPT')
-   if x.get('session')!=self.session or x.get('root_hash')!=self.root_hash:raise StateConflict('ROOT_OR_SESSION_CONFLICT')
-   previous=h
+  with phase('state.restore.verify_chain'):
+   previous=None
+   for i in range(1,seq+1):
+    b=self.r.hget(self.keys[2],str(i));b=b.decode() if isinstance(b,bytes) else b
+    if b is None:raise StateConflict('EPOCH_MISSING')
+    x=json.loads(b);h=x.pop('sha256',None)
+    if x.get('sequence')!=i or x.get('previous_sha256')!=previous or sha(canonical(x))!=h:raise StateConflict('EPOCH_CHAIN_CORRUPT')
+    if x.get('session')!=self.session or x.get('root_hash')!=self.root_hash:raise StateConflict('ROOT_OR_SESSION_CONFLICT')
+    previous=h
   if b!=raw:raise StateConflict('CHECKPOINT_CHANGED_DURING_RESTORE')
   self.seq=seq;self.previous=previous;self.restored=True
   return {'checkpoint':json.loads(raw),'transport_trusted':False,'requires_recovery':True}

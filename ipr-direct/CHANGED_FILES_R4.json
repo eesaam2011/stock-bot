@@ -1,0 +1,46 @@
+{
+  "changes": [
+    {
+      "path": "r4b/adapter.py",
+      "R3_sha256": "cb74b883498a8a2d314926d6e94935a10640d12627f899576efa5400af9701dd",
+      "R4_sha256": "12a5662df267cf486eb39dd9d45f51f38aeb00d15fc2bb8ed66a30149aaa9bba"
+    },
+    {
+      "path": "r4b/runtime.py",
+      "R3_sha256": "4ea9f8f1dbcbed87fec6693a4c75f90a7a3899fb1a314b698e9516e4e582cca1",
+      "R4_sha256": "b18a03418d3d29050a9f30942b3cb4fb703f9e98918f2390c807e769b33480d7"
+    },
+    {
+      "path": "tests/test_r3.py",
+      "R3_sha256": "9bec1f37a9421959ea944e17537e8b68dc3334fedd086df6e42abda8fff4bd31",
+      "R4_sha256": "080e8e8f62c662febc2196e52f0a9d17c9ea8a318e741245e3e5c270a62d9ff0"
+    },
+    {
+      "path": "tests/test_r4.py",
+      "R3_sha256": null,
+      "R4_sha256": "516bf4197e7248202b28d270e54289744ea26e238c4fed7b49e202d0c09a77e8"
+    },
+    {
+      "path": "README_AR.txt",
+      "R3_sha256": "87dd2c74bc0654c79e8de386c04d208d2ba7d9e59a26f419a7d355cb138c7dca",
+      "R4_sha256": "3fafa528bc9f2f8aa82918255d22ae59c26baed6d39066727c47db02945a3c0c"
+    },
+    {
+      "path": "STATUS.json",
+      "R3_sha256": "b5034c589e4a9465fb6a76b5fbb91ad921c9d579fabba6d9260902293c6f8bf6",
+      "R4_sha256": "eba2523cf289173400586dc02d83c178bda020b2b9af6000d75efcd1b82a7a47"
+    },
+    {
+      "path": "R4_REPORT_AR.txt",
+      "R3_sha256": null,
+      "R4_sha256": "38c17578f2bfd2898cafe6a2eb9c69296c7bf6c6967facc8caaf0f62e38438db"
+    },
+    {
+      "path": "REST_BUDGET_R4_AR.txt",
+      "R3_sha256": null,
+      "R4_sha256": "d2928846f0a4140c8902ec6b29645684dbd15de9a0504e41af0cd000f8b899eb"
+    }
+  ],
+  "additional_files": "TESTS_R4_*; TEST_SUMMARY_R4.json; SHA256SUMS.txt regenerated",
+  "reference_files_byte_identical": 72
+}

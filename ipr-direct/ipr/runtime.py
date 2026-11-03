@@ -27,7 +27,10 @@ from .sender import Sender
 class DirectEvidence(EvidenceAdapter):
  def recover(self,now):
   ok=super().recover(now)
-  print(json.dumps({'stage':'TRANSPORT_TRUSTED' if ok else 'RECOVERY_PENDING','at':self.wall().isoformat(),'reason':self.report.get('reason'),'good_symbols':len(self.report.get('good',{})),'quarantined_symbols':len(self.quarantine),'TRADE_completeness':'UNKNOWN'}),flush=True)
+  bad=self.report.get('quarantine',{});counts={}
+  for why in bad.values():counts[why]=counts.get(why,0)+1
+  sample=[{'symbol':s,'reason':bad[s],'live_bars':self.proof.live_count(s,now),'live_bars_stored':self.proof.stored_count(s)} for s in sorted(bad)[:5]]
+  print(json.dumps({'quarantine_reason_counts':counts,'quarantine_sample':sample,'stage':'TRANSPORT_TRUSTED' if ok else 'RECOVERY_PENDING','at':self.wall().isoformat(),'reason':self.report.get('reason'),'good_symbols':len(self.report.get('good',{})),'quarantined_symbols':len(bad),'TRADE_completeness':'UNKNOWN'}),flush=True)
   return ok
 class DirectRuntime(EvidenceRuntime):
  def acknowledged(self):
@@ -52,13 +55,11 @@ async def fixed_connect(uri):
  logger=logging.getLogger('IPR_WS_REDACTED');logger.handlers=[logging.NullHandler()];logger.propagate=False;logger.setLevel(logging.CRITICAL)
  return await NoRedirect(uri,proxy=None,logger=logger)
 
-def build(bundle,api,redis,env,boot):
+def _build(bundle,api,redis,env,boot,clock,measure):
  import runtime_provenance
- runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R1'
+ runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R2'
  policy=policy_for(bundle);root=Root(bundle['session'],frozenset(bundle['symbols']),policy.frozen_manifest_sha256,True)
- cls=Classifier(bundle['assets']);clock=ClockProof(redis.time)
- if not clock.refresh():raise ValueError('CLOCK_UNPROVEN')
- measure=Measurements();rest=MarketREST(api.get,root,measure);prepared={'ready':False,'history':None,'scan_ok':False}
+ cls=Classifier(bundle['assets']);rest=MarketREST(api.get,root,measure);prepared={'ready':False,'history':None,'scan_ok':False}
  def authorize():
   if not policy.time_allows(datetime.now(timezone.utc).timestamp()):raise ValueError('SESSION_CLOSED')
  def final_filter(s,m,now):
@@ -81,12 +82,20 @@ def build(bundle,api,redis,env,boot):
  r.boot_number=base.boot_number
  return r,prepared,clock,measure
 
+def build(bundle,api,redis,env,boot):
+ measure=Measurements();clock=ClockProof(redis.time,loop_lag=measure.current_loop_lag)
+ try:
+  if not clock.refresh():raise ValueError('CLOCK_UNPROVEN')
+  clock.start()
+  return _build(bundle,api,redis,env,boot,clock,measure)
+ except BaseException:clock.close();raise
+
 async def pause(stop,seconds):
  try:await asyncio.wait_for(stop.wait(),timeout=max(0.,seconds))
  except asyncio.TimeoutError:pass
 
 async def run(bundle,api,redis,env,boot):
- r,state,clock,measure=build(bundle,api,redis,env,boot);p=r.a.bridge.p
+ r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
  sender=Sender(r,redis,env);floats=FloatReader(env,requests.get);news=BatchNews(env,requests.post);selection=Selection()
  print(json.dumps({'stage':'GUARD_BOOT_CLAIMED','boot':r.boot_number,'max_boots':4,'mode':'TELEGRAM_ALERTS_ONLY'}),flush=True)
  async def prepare():
@@ -152,10 +161,6 @@ async def run(bundle,api,redis,env,boot):
    await asyncio.to_thread(p.expire_entry_opportunities,r.wall());r.notify_cases_changed()
    if state.get('scan_at') and (r.wall()-state['scan_at']).total_seconds()>60:state['scan_ok']=False
    await pause(r.stop,1.)
- async def clock_loop():
-  while not r.stop.is_set():
-   if not await asyncio.to_thread(clock.refresh):r.revoke('CLOCK_UNPROVEN')
-   await pause(r.stop,5.)
  async def metrics():
   while not r.stop.is_set():
    print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok']}),flush=True)
@@ -163,7 +168,12 @@ async def run(bundle,api,redis,env,boot):
  import signal
  loop=asyncio.get_running_loop()
  for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,r.stop.set)
- tasks=[asyncio.create_task(f()) for f in (r.run,prepare,scan,native,upkeep,clock_loop,metrics,sender.run,lambda:measure.loop_lag(r.stop))]
+ async def after_init(fn):
+  gate=getattr(r,'initialized',None)
+  if gate is not None:await gate.wait()
+  return await fn()
+ tasks=[asyncio.create_task(r.run()),asyncio.create_task(metrics()),asyncio.create_task(measure.loop_lag(r.stop))]
+ tasks.extend(asyncio.create_task(after_init(f)) for f in (prepare,scan,native,upkeep,sender.run))
  try:
   done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
   for t in done:t.result()
@@ -172,3 +182,4 @@ async def run(bundle,api,redis,env,boot):
   for t in tasks:t.cancel()
   try:await asyncio.wait_for(asyncio.gather(*tasks,return_exceptions=True),timeout=60.)
   except asyncio.TimeoutError:raise RuntimeError('PARENT_KILL_REQUIRED')
+  finally:getattr(clock,'close',lambda:None)()

@@ -1,0 +1,433 @@
+--- R2/r4b/adapter.py
++++ R3/r4b/adapter.py
+@@ -11,7 +11,7 @@
+ class EvidenceAdapter(LiveAdapter):
+  def __init__(self,*a,proof,barrier,wall,**kw):
+   super().__init__(*a,**kw);self.checkpoint=JournalState(self.checkpoint);self.proof=proof;self.barrier=barrier;self.wall=wall
+-  self.control_lock=threading.RLock();self.quarantine={};self.report={};self.store=None;self.trusted_since=None;self.admission_reasons={};self.cancel_event=threading.Event();self.cancel_event.set();self.entry_floor=None;self.needs_changed=None;self.gap_start=None;self.missed_opportunities=set()
++  self.control_lock=threading.RLock();self.quarantine={};self.report={};self.store=None;self.trusted_since=None;self.admission_reasons={};self.cancel_event=threading.Event();self.cancel_event.set();self.entry_floor=None;self.needs_changed=None;self.gap_start=None;self.missed_opportunities=set();self.symbol_admitted_at={}
+   self.bridge.recovery_control_lock=self.control_lock
+   self.barrier.status_source=getattr(self.recovery,'original',None);self.status_changed=None
+   self.original_filter=self.filter_check;self.filter_check=self._admissible_trade
+@@ -29,7 +29,9 @@
+   opportunity=self.bridge.p._entry_opportunities.get(s)
+   if opportunity is not None and tuple([opportunity['session'],s,opportunity['entry_trigger_ts']]) in self.missed_opportunities:
+    self.admission_reasons[s]='OPPORTUNITY_MISSED_DURING_DATA_GAP';return False
+-  if opportunity is not None and (self.trusted_since is None or instant(opportunity["entry_trigger_ts"])<self.trusted_since):
++  floor=self.trusted_since
++  if floor is not None:floor=max(floor,self.symbol_admitted_at.get(s,floor))
++  if opportunity is not None and (floor is None or instant(opportunity["entry_trigger_ts"])<floor):
+    self.admission_reasons[s]="OPPORTUNITY_MISSED_DURING_DATA_GAP";return False
+   return True
+  @timed('connection_started')
+@@ -61,6 +63,11 @@
+  def _case_shape(self):
+   p=self.bridge.p
+   return (frozenset(p._entry_opportunities),frozenset(p._active_by_symbol),frozenset(p._entry_uncertain),frozenset(self.barrier.persisted_R),frozenset(p._structure_watch_symbols))
++ def _bar_evidence(self,s,one,five,now):
++  if not one.get(s) or not five.get(s):return {'proven':False,'reason':'NATIVE_HISTORY_UNAVAILABLE'}
++  if any(instant(b['t'])+timedelta(minutes=1)>now for b in one[s]):return {'proven':False,'reason':'INCOMPLETE_NATIVE_1MIN'}
++  if any(b.get('_timeframe')!='native_5Min' or instant(b['t'])+timedelta(minutes=5)>now for b in five[s]):return {'proven':False,'reason':'INCOMPLETE_OR_NON_NATIVE_5MIN'}
++  return self.proof.evidence(s,one[s],now)
+  def recover(self,now):
+   self.close_eligibility('RECOVERY_PENDING');start=time.monotonic()
+   try:
+@@ -96,10 +103,7 @@
+    good={};bad={}
+    for s in sorted(symbols):
+     if s not in warm_symbols:bad[s]='NO_COMPLETED_LIVE_BAR_WITNESS';continue
+-    if not one.get(s) or not five.get(s):bad[s]='NATIVE_HISTORY_UNAVAILABLE';continue
+-    if any(instant(b['t'])+timedelta(minutes=1)>now for b in one[s]):bad[s]='INCOMPLETE_NATIVE_1MIN';continue
+-    if any(b.get('_timeframe')!='native_5Min' or instant(b['t'])+timedelta(minutes=5)>now for b in five[s]):bad[s]='INCOMPLETE_OR_NON_NATIVE_5MIN';continue
+-    e=self.proof.evidence(s,one[s],now)
++    e=self._bar_evidence(s,one,five,now)
+     if e['proven']:good[s]=e
+     else:bad[s]=e['reason']
+    if required_pins-set(good):self.report={'reason':'PINNED_SYMBOL_UNPROVEN','symbols':sorted(required_pins-set(good))};return False
+@@ -126,3 +130,63 @@
+     self.close_eligibility('RECOVERY_EVIDENCE_INCOMPLETE')
+     # A persistence failure propagates to scheduler/supervisor. Never swallow Redis outage.
+     self.checkpoint.append_epoch({'kind':'B_RECOVERY_FAILED','proof':self.proof.snapshot(),'report':self.report})
++
++ def admit_incremental(self,candidates,now):
++  start=time.monotonic();fetch_seconds=0.;selected=set(candidates);accepted={};bad={};fatal=None
++  if len(selected)>32:raise ValueError('INCREMENTAL_BATCH_CAP')
++  def current():
++   return (self.transport_trusted and token is self.cancel_event and not token.is_set()
++     and connection==self.c.connection and revision==self.c.revision and generation==self.proof.generation
++     and self.authenticated and not self.c.failed and not self.c.inflight
++     and self.c.bar==self.c.desired_bar and self.c.trade==self.c.desired_trade)
++  try:
++   with self.control_lock:
++    token=self.cancel_event;connection=self.c.connection;revision=self.c.revision;generation=self.proof.generation
++    if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
++    self.checks()
++    selected &= self.recovering & self.c.bar
++   if not selected:return True
++   fetch_start=time.monotonic()
++   try:one,five=self.rest.warmup(selected,now,self.bridge.p.ec.required_history_minutes())
++   except Exception as exc:
++    bad={s:'WARMUP_'+type(exc).__name__ for s in selected};return False
++   finally:fetch_seconds=time.monotonic()-fetch_start
++   with self.bridge.p._decision_lock,self.control_lock:
++    if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
++    self.checks()
++    inv=self.barrier.inventory();pins=set().union(*inv.values());good={}
++    for s in sorted(selected):
++     if s in pins:bad[s]='REQUIRES_FULL_CASE_RECOVERY';continue
++     e=self._bar_evidence(s,one,five,now)
++     if e['proven']:good[s]=e
++     else:bad[s]=e['reason']
++    if good:
++     self.bridge.preload({s:one[s] for s in good}) # accumulation only, no historical decision callback
++     if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
++     self.checks()
++     # The existing fenced journal is durable BEFORE any new symbol is eligible.
++     self.checkpoint.append_epoch({'kind':'B_INCREMENTAL_ADMISSION','connection':connection,'revision':revision,
++       'accepted_symbols':sorted(good),'evidence':good,'proof':self.proof.snapshot(),'transport_trusted':False})
++     if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
++     self.checks();floor=self.wall()
++     for s in good:
++      self.c.attest(s,history=True,continuity=True,reconciled=True,first_trade=False)
++      self.symbol_admitted_at[s]=floor
++     self.recovering.difference_update(good);accepted=good
++    # Keep the preceding global trust and every previously admitted proof untouched.
++    self.quarantine.update(bad)
++    for s in accepted:self.quarantine.pop(s,None)
++    report_good=dict(self.report.get('good',{}));report_good.update(accepted)
++    self.report={**self.report,'good':report_good,'quarantine':dict(self.quarantine)}
++    return bool(accepted)
++  except Exception as exc:
++   # Leadership/clock/persistence errors retain the original fatal/fail-closed boundary.
++   self.close_eligibility('INCREMENTAL_ADMISSION_FATAL');fatal=type(exc).__name__;raise
++  finally:
++   if fatal:bad.update({s:'FATAL_'+fatal for s in selected if s not in accepted})
++   reasons={}
++   for why in bad.values():reasons[why]=reasons.get(why,0)+1
++   try:print(json.dumps({'stage':'INCREMENTAL_ADMISSION','at':self.wall().isoformat(),'requested':len(selected),
++     'accepted':len(accepted),'rejected':len(bad),'rejection_reasons':reasons,'fetch_seconds':fetch_seconds,
++     'seconds':time.monotonic()-start,'transport_trusted':self.transport_trusted,'TRADE_completeness':'UNKNOWN'}),flush=True)
++   except Exception:pass
+--- R2/r4b/runtime.py
++++ R3/r4b/runtime.py
+@@ -18,6 +18,8 @@
+    if ok:self.notify_ack()
+    return ok
+ class EvidenceRuntime(Runtime):
++ INCREMENTAL_SPACING=30.0
++ INCREMENTAL_BATCH=32
+  RETRY_SPACING=1.0 # engineering coalescing, NOT a safety timeout; T120 is unchanged.
+  def __init__(self,adapter,*a,**kw):
+   args=list(a)
+@@ -25,7 +27,7 @@
+   else:kw["state"]=adapter.checkpoint
+   super().__init__(adapter,*args,**kw)
+   self.proof=adapter.proof;self.store=ProofStore(self.state,self.proof);adapter.store=self.store
+-  self.wake=asyncio.Event();self.attempts=0;self.last_attempt=None;self.recovery_running=False
++  self.wake=asyncio.Event();self.attempts=0;self.last_attempt=None;self.recovery_running=False;self.last_incremental=None;self.incremental_cursor=None;self.incremental_attempts=0
+   self.control=LockedControl(ClockedControl(self.c,self.clock),adapter.control_lock,self.acknowledged)
+   self.observe_stream=self.received
+   self.planner=UnionPlanner(self);self.case_event=asyncio.Event();self.loop=None
+@@ -74,22 +76,44 @@
+    self.revoke('INVALID_OR_CONFLICTING_BAR');self.a.barrier.persisted_R.add(msg['S'])
+    self.store.save('INVALID_OR_CONFLICTING_BAR',self.a.barrier.persisted_R,msg)
+    raise SafetyStop('INVALID_OR_CONFLICTING_BAR')
+-  if changed:self.wake.set()
++  if changed and (not self.a.transport_trusted or msg.get('S') in self.a.recovering):self.wake.set()
+  def set_desired(self,*a):
+   with self.a.control_lock:return super().set_desired(*a)
+  async def recovery_loop(self):
+   while not self.stop.is_set():
+    await self.wake.wait();self.wake.clear()
+    if not self.auth or self.c.failed or self.c.inflight:continue
++   if self.a.transport_trusted:
++    # Coalesce deferred symbols only; ordinary BAR/status wake never revokes trust.
++    if not (self.a.recovering & self.proof.witnessed(self.wall())):continue
++    if self.last_incremental is not None:
++     await asyncio.sleep(max(0,self.INCREMENTAL_SPACING-(self.clock()-self.last_incremental)))
++    if not self.auth or self.c.failed or self.c.inflight:continue
++    if not self.a.transport_trusted:
++     self.wake.set();continue # real invalidation returns to the original full path
++    self.check_session();now=self.wall()
++    with self.a.control_lock:
++     pending=sorted(self.a.recovering & self.c.bar & self.proof.witnessed(now))
++    if not pending:continue
++    # Rotation prevents a persistently bad first symbol starving the rest.
++    if self.incremental_cursor is not None:
++     pending=[s for s in pending if s>self.incremental_cursor]+[s for s in pending if s<=self.incremental_cursor]
++    batch=pending[:self.INCREMENTAL_BATCH];self.incremental_cursor=batch[-1]
++    self.last_incremental=self.clock();self.incremental_attempts+=1
++    await asyncio.to_thread(self.a.admit_incremental,batch,now)
++    if self.a.recovering & self.proof.witnessed(self.wall()):self.wake.set()
++    continue
+    if self.last_attempt is not None:
+     await asyncio.sleep(max(0,self.RETRY_SPACING-(self.clock()-self.last_attempt)))
+-   # Recheck AFTER await; do not recover an obsolete ACK/connection.
++   # Recheck AFTER await; a healthy transport must never enter full recovery.
+    if not self.auth or self.c.failed or self.c.inflight:continue
+-   self.check_session()
+-   now=self.wall()
++   if self.a.transport_trusted:continue
++   self.check_session();now=self.wall()
+    if not self.proof.witnessed(now):continue
+    self.attempts+=1;self.last_attempt=self.clock();self.recovery_running=True
+-   try:await asyncio.to_thread(self.a.recover,now)
++   try:
++    ok=await asyncio.to_thread(self.a.recover,now)
++    if ok:self.last_incremental=self.clock()
+    finally:self.recovery_running=False;self.notify_cases_changed()
+  async def connection(self):
+   try:return await super().connection()
+--- R2/tests/test_r3.py
++++ R3/tests/test_r3.py
+@@ -0,0 +1,175 @@
++"""R3 regression: stay trusted after initial recovery; admit deferred symbols only."""
++import asyncio,copy,contextlib,io,json,threading,unittest
++from datetime import timedelta
++from types import SimpleNamespace as NS
++from unittest.mock import Mock
++from test_direct import OP,bar
++from test_recovery_regression import fixture
++from dreview.core import Root,Controller,Needs
++from r4b.adapter import EvidenceAdapter
++from r4b.runtime import EvidenceRuntime
++from dintegration.measure import Measurements
++
++def setup(symbols=('X','Y','Z')):
++ raw,lead,redis,src,bridge,case=fixture(set(symbols));p=case.proof
++ p.connected(started=OP+timedelta(seconds=35));p.set_scope(set(symbols))
++ c=Controller(Root('2026-10-28',frozenset(symbols),'a'*64,True));c.reconnect();c.set_desired(set(symbols),Needs(1));c.plan(0.)
++ assert c.ack(c.connection,list(symbols),[],.1)
++ now=[OP+timedelta(seconds=35)];mono=[0.];epochs=[];history={s:[] for s in symbols};calls=[]
++ a=EvidenceAdapter(c,bridge,src,NS(),lambda:True,lambda *args:True,lambda:True,NS(append_epoch=epochs.append),Measurements(),proof=p,barrier=case,wall=lambda:now[0]);a.authenticated=True
++ def warm(ss,at,minutes):
++  calls.append({'symbols':sorted(ss),'trusted':a.transport_trusted,'minutes':minutes})
++  return ({s:copy.deepcopy([b for b in history[s] if __import__('dintegration.stream_proof',fromlist=['instant']).instant(b['t'])+timedelta(minutes=1)<=at]) for s in ss},
++          {s:[dict(bar(OP-timedelta(minutes=5)),_timeframe='native_5Min')] for s in ss})
++ src.warmup=warm
++ r=EvidenceRuntime(a,a.checkpoint,lead,None,lambda:None,NS(time_allows=lambda t:True),clock=lambda:mono[0],wall=lambda:now[0],sample=lambda:{})
++ r.auth=True
++ return NS(a=a,r=r,src=src,now=now,mono=mono,epochs=epochs,history=history,calls=calls)
++
++def receive(f,s,minute):
++ b=bar(OP+timedelta(minutes=minute));f.history[s].append(copy.deepcopy(b))
++ f.r.received(dict(b,T='b',S=s),f.now[0])
++
++def trusted():
++ f=setup();f.now[0]=OP+timedelta(seconds=61);receive(f,'X',0);receive(f,'Z',0)
++ assert f.a.recover(f.now[0]);f.r.wake.clear();return f
++
++async def until(predicate):
++ for _ in range(300):
++  if predicate():return
++  await asyncio.sleep(.005)
++ raise AssertionError('worker did not reach expected state')
++
++class R3Lifecycle(unittest.TestCase):
++ def test_ACK_witness_trust_20_BARs_incremental_then_correction(self):
++  async def go():
++   f=setup();r=f.r;a=f.a;r.wake.set();task=asyncio.create_task(r.recovery_loop())
++   try:
++    await asyncio.sleep(.02);self.assertEqual(r.attempts,0);self.assertFalse(a.transport_trusted)
++    f.now[0]=OP+timedelta(seconds=61);f.mono[0]=26;receive(f,'X',0);receive(f,'Z',0)
++    await until(lambda:a.transport_trusted);self.assertEqual(r.attempts,1);self.assertEqual(a.recovering,{'Y'})
++    previous=copy.deepcopy(a.c.proofs);first_floor=a.trusted_since;close=Mock(wraps=a.close_eligibility);a.close_eligibility=close
++    for minute in range(1,11):
++     f.now[0]=OP+timedelta(minutes=minute+1,seconds=1);f.mono[0]=26+60*minute
++     receive(f,'X',minute);receive(f,'Z',minute)
++     await asyncio.sleep(.002);self.assertTrue(a.transport_trusted)
++    # Also status/ACK-like wake with no deferred witness must not trigger recovery.
++    r.wake.set();await asyncio.sleep(.02)
++    self.assertEqual(r.attempts,1);self.assertEqual(len(f.calls),1);close.assert_not_called()
++    receive(f,'Y',10);await until(lambda:'Y' not in a.recovering)
++    self.assertTrue(a.transport_trusted);self.assertEqual(r.attempts,1);self.assertEqual(r.incremental_attempts,1)
++    self.assertEqual(f.calls[-1]['symbols'],['Y']);self.assertTrue(f.calls[-1]['trusted']);self.assertEqual(len(f.calls),2)
++    self.assertEqual(a.trusted_since,first_floor)
++    for s in ('X','Z'):self.assertEqual(a.c.proofs[s],previous[s])
++    self.assertTrue(any(x.get('kind')=='B_INCREMENTAL_ADMISSION' for x in f.epochs));close.assert_not_called()
++    a.bridge.p._entry_opportunities['Y']={'session':'2026-10-28','entry_trigger_ts':(f.now[0]-timedelta(seconds=1)).isoformat()}
++    self.assertFalse(a._admissible_trade('Y',{},f.now[0]))
++    a.bridge.p._entry_opportunities.clear()
++    r.received({'T':'c','S':'X'},f.now[0]);self.assertFalse(a.transport_trusted);self.assertIn('X',a.barrier.persisted_R)
++    print(json.dumps({'test':'R3_COMPLETE_LIFECYCLE','normal_BARs_after_trust':20,'full_recoveries':r.attempts,'incremental_batches':r.incremental_attempts,'warmup_symbol_sets':[v['symbols'] for v in f.calls],'trusted_during_incremental_fetch':f.calls[-1]['trusted'],'correction_revoked':not a.transport_trusted}))
++   finally:
++    r.stop.set();task.cancel();await asyncio.gather(task,return_exceptions=True)
++  asyncio.run(go())
++
++class R3Incremental(unittest.TestCase):
++ def deferred(self):
++  f=trusted();f.now[0]+=timedelta(seconds=1);receive(f,'Y',0);f.r.wake.clear();return f
++ def test_exact_OHLCV_mismatch_rejected_without_global_revoke(self):
++  f=self.deferred();f.history['Y'][0]['v']=999
++  with contextlib.redirect_stdout(io.StringIO()) as out:self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]))
++  q=json.loads(out.getvalue());self.assertEqual(q['rejection_reasons'],{'REST_STREAM_BAR_VALUE_MISMATCH':1});self.assertEqual((q['accepted'],q['rejected']),(0,1));self.assertGreaterEqual(q['fetch_seconds'],0)
++  self.assertTrue(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
++ def test_missing_REST_BAR_set_rejected(self):
++  f=self.deferred();f.now[0]=OP+timedelta(minutes=3,seconds=1);f.history['Y'].append(bar(OP+timedelta(minutes=1)))
++  self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertTrue(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
++ def test_no_witness_not_admitted(self):
++  f=trusted();self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertTrue(f.a.transport_trusted)
++ def test_native5_incomplete_rejected(self):
++  f=self.deferred();old=f.src.warmup
++  def bad(*args):
++   one,five=old(*args);five['Y']=[dict(bar(OP),_timeframe='native_5Min')];return one,five
++  f.src.warmup=bad;self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertTrue(f.a.transport_trusted)
++ def test_source_outage_preserves_other_trust_and_deferred_symbol(self):
++  f=self.deferred();f.src.warmup=Mock(side_effect=ConnectionError('fixture'))
++  self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertTrue(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
++ def test_durable_write_before_symbol_attestation(self):
++  f=self.deferred();original=f.a.checkpoint.append_epoch
++  def append(v):
++   if v.get('kind')=='B_INCREMENTAL_ADMISSION':self.assertFalse(f.a.c.proofs['Y']['continuity']);self.assertIn('Y',f.a.recovering)
++   original(v)
++  f.a.checkpoint.append_epoch=append;self.assertTrue(f.a.admit_incremental(['Y'],f.now[0]));self.assertTrue(f.a.c.proofs['Y']['continuity'])
++ def test_journal_failure_fails_closed_without_admission(self):
++  f=self.deferred();f.a.checkpoint.append_epoch=Mock(side_effect=ConnectionError('fixture'))
++  with self.assertRaises(ConnectionError):f.a.admit_incremental(['Y'],f.now[0])
++  self.assertFalse(f.a.transport_trusted);self.assertIn('Y',f.a.recovering);self.assertFalse(f.a.c.proofs['Y']['continuity'])
++ def test_leader_or_clock_failure_remains_fatal(self):
++  f=self.deferred();f.a.checks=Mock(side_effect=RuntimeError('fixture_leader'))
++  with self.assertRaises(RuntimeError):f.a.admit_incremental(['Y'],f.now[0])
++  self.assertFalse(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
++ def test_open_case_needs_original_full_path(self):
++  f=self.deferred();f.a.barrier.persisted_R.add('Y');self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertTrue(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
++ def test_batch_cap_enforced(self):
++  f=self.deferred()
++  with self.assertRaisesRegex(ValueError,'INCREMENTAL_BATCH_CAP'):f.a.admit_incremental([str(i) for i in range(33)],f.now[0])
++  self.assertEqual(len(f.calls),1)
++ def test_concurrent_epoch_change_or_revocation_never_admits(self):
++  for mode in ('epoch','correction','disconnect'):
++   with self.subTest(mode=mode):
++    f=self.deferred();old=f.src.warmup
++    def change(*args):
++     result=old(*args)
++     if mode=='epoch':f.a.c.revision+=1
++     elif mode=='correction':f.r.received({'T':'c','S':'Y'},f.now[0])
++     else:f.r.revoke('DISCONNECTED')
++     return result
++    f.src.warmup=change;self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertIn('Y',f.a.recovering);self.assertFalse(f.a.c.proofs['Y']['continuity'])
++    if mode!='epoch':self.assertFalse(f.a.transport_trusted)
++ def test_real_invalidations_still_revoke(self):
++  for kind in ('error','c','x','u','invalid','gap'):
++   with self.subTest(kind=kind):
++    f=trusted()
++    if kind=='gap':f.r.revoke('INGRESS_FAIL_CLOSED')
++    elif kind=='invalid':
++     with self.assertRaisesRegex(Exception,'INVALID_OR_CONFLICTING_BAR'):f.r.received(dict(bar(OP),T='b',S='X',v=-1),f.now[0])
++    else:f.r.received({'T':kind,'S':'X'},f.now[0])
++    self.assertFalse(f.a.transport_trusted)
++ def test_spacing_coalesces_repeated_deferred_BARs(self):
++  async def go():
++   f=self.deferred();f.r.last_incremental=f.mono[0];task=asyncio.create_task(f.r.recovery_loop());f.r.wake.set()
++   try:
++    await asyncio.sleep(.02);self.assertEqual(f.r.incremental_attempts,0);self.assertEqual(len(f.calls),1);self.assertTrue(f.a.transport_trusted)
++   finally:task.cancel();await asyncio.gather(task,return_exceptions=True)
++  asyncio.run(go())
++ def test_exact_30_second_boundary_allows_admission(self):
++  async def go():
++   f=self.deferred();f.r.last_incremental=0.;f.mono[0]=30.;f.r.wake.set();task=asyncio.create_task(f.r.recovery_loop())
++   try:
++    await until(lambda:'Y' not in f.a.recovering);self.assertTrue(f.a.transport_trusted);self.assertEqual(f.r.incremental_attempts,1);self.assertEqual(f.r.attempts,0)
++   finally:task.cancel();await asyncio.gather(task,return_exceptions=True)
++  asyncio.run(go())
++ def test_correction_while_fetch_thread_blocked_cannot_revive_trust(self):
++  async def go():
++   f=self.deferred();entered=threading.Event();release=threading.Event();old=f.src.warmup
++   def blocked(*args):
++    entered.set()
++    if not release.wait(3):raise AssertionError('fixture release timeout')
++    return old(*args)
++   f.src.warmup=blocked;task=asyncio.create_task(asyncio.to_thread(f.a.admit_incremental,['Y'],f.now[0]))
++   try:
++    await until(entered.is_set);self.assertTrue(f.a.transport_trusted)
++    f.r.received({'T':'c','S':'Y'},f.now[0]);self.assertFalse(f.a.transport_trusted);release.set()
++    self.assertFalse(await task);self.assertFalse(f.a.transport_trusted);self.assertIn('Y',f.a.recovering);self.assertFalse(f.a.c.proofs['Y']['continuity'])
++   finally:release.set();await asyncio.gather(task,return_exceptions=True)
++  asyncio.run(go())
++ def test_scheduler_batch_32_rotates_to_other_symbols(self):
++  async def go():
++   f=setup(tuple('S%02d'%i for i in range(35)));f.now[0]=OP+timedelta(seconds=61)
++   receive(f,'S00',0);self.assertTrue(f.a.recover(f.now[0]));f.r.wake.clear()
++   for s in f.a.recovering:receive(f,s,0)
++   batches=[]
++   def attempt(ss,now):
++    batches.append(list(ss));f.mono[0]+=31
++    if len(batches)==2:f.r.stop.set()
++   f.a.admit_incremental=attempt;f.r.wake.set();await f.r.recovery_loop()
++   self.assertEqual(len(batches[0]),32);self.assertLessEqual(len(batches[1]),32);self.assertIn('S34',batches[1]);self.assertEqual(f.r.attempts,0)
++  asyncio.run(go())
+--- R2/README_AR.txt
++++ R3/README_AR.txt
+@@ -1,4 +1,5 @@
+-COMPLETE_REVIEW_ONLY — IPR_DIRECT_R2 للمراجعة فقط؛ بلا نشر أو تشغيل خدمة.
+-اقرأ R2_REPORT_AR.txt وDIFF_FROM_R1.patch وCHANGED_FILES_R2.json والنتائج الخام.
+-كل وثائق R1 الأخرى المحفوظة هي سياق مرجعي، وليست إذنًا جديدًا للنشر.
+-لا تغيّر T120 أو ميزانية الإقلاع أو reference_app.
++COMPLETE_REVIEW_ONLY — IPR_DIRECT_R3: اكتمل التصحيح والاختبار غير المتصل، بلا نشر.
++اقرأ R3_REPORT_AR.txt وDIFF_FROM_R2.patch وCHANGED_FILES_R3.json والنتائج الخام.
++التغيير الإنتاجي محصور في r4b/runtime.py وr4b/adapter.py؛ باقي الشفرة كما في R2.
++وثائق R1 وR2 المحفوظة تاريخية، وأسماء الإصدار الموروثة داخل سجلات التشغيل لم تتغير تجنبًا لأي تعديل إضافي.
++لا إذن بالنشر مستمد من هذه الحزمة، ولا ملف موافقة جديد.
+--- R2/STATUS.json
++++ R3/STATUS.json
+@@ -1,5 +1,5 @@
+ {
+-  "release": "IPR_DIRECT_R2",
++  "release": "IPR_DIRECT_R3",
+   "status": "COMPLETE_REVIEW_ONLY",
+   "production_deployed": false,
+   "real_services_modified": false,
+@@ -10,11 +10,15 @@
+   "realistic_load_test": "NOT_RUN",
+   "network_namespace": "HOST_DENIED",
+   "remaining_unknowns": [
+-    "actual_clock_failure_cause_R1",
+-    "3.78_second_lag_attribution",
+-    "per_symbol_R1_quarantine_reasons",
+-    "live_R2_warmup_duration",
+-    "T120_success_in_live_session",
+-    "remaining_sync_controller_Redis_IO"
+-  ]
++    "live_R3_warmup_and_incremental_duration",
++    "Alpaca_real_endpoint_and_rate_behavior",
++    "live_T120_initial_trust_success",
++    "real_512Mi_0_5CPU_resource_and_lag",
++    "source_TRADE_completeness",
++    "R1_3_78_second_lag_exact_cause"
++  ],
++  "baseline_sha256": "365987f63b617dda77184289d87ca1ce1e470dec215478536cb54d1bb1a3b8c8",
++  "incremental_spacing_seconds": 30,
++  "incremental_max_symbols": 32,
++  "original_and_extracted_tests": 115
+ }
+--- R2/R3_REPORT_AR.txt
++++ R3/R3_REPORT_AR.txt
+@@ -0,0 +1,28 @@
++COMPLETE_REVIEW_ONLY — التصحيح المطلوب منفذ ومختبر محليًا؛ لم يُنشر ولم يُتصل بأي خدمة.
++
++الأساس
++تحققنا من IPR_DIRECT_R2.zip: SHA256
++365987f63b617dda77184289d87ca1ce1e470dec215478536cb54d1bb1a3b8c8
++ومن بصماته الداخلية قبل النسخ. لا تغيير في reference_app أو T120 أو ميزانية الإقلاع 4 أو حدود الذاكرة أو Alpaca أو شروط E/B/ENTRY والمتابعة.
++
++ما تغير
++1. received لا يوقظ الاستعادة بسبب BAR عادي لرمز مقبول. حتى wake ناتج عن status أو ACK لا يدخل recover الكامل إذا كانت الثقة قائمة.
++2. بعد الثقة، يستهدف المسار التزايدي recovering فقط ممن لديهم شاهد مكتمل. تباعد بدء المحاولات 30 ثانية على الأقل، دفعة بحد أقصى 32 رمزًا، ودوران أبجدي يمنع احتكار أول دفعة عند فشلها المتكرر. الجلب في خيط، بلا توازي إضافي، وبنفس warmup الأصلي ونافذتي 60 و305 دقيقة. لا تغيير لحدود طلبات Alpaca. هذا تباعد هندسي جديد للقبول فقط، لا رفع لحد سلامة.
++3. التحقق مشترك مع recover: التاريخ الأصلي native1/native5، اكتمال الشموع، وStreamProof.evidence نفسه بمقارنة مجموعة الشموع وكل OHLCV بدقة. لا إعادة بناء أو تقريب للشموع. الشاهد المفقود أو اختلاف REST يبقي الرمز مؤجلًا دون سحب ثقة الآخرين.
++4. حفظ B_INCREMENTAL_ADMISSION في journal الأصلي المحمي بالقيادة قبل attest؛ إعادة التحقق من الاتصال وrevision وgeneration وإبطال العملية أثناء الجلب. لا تفعيل عام للثقة داخل المسار التزايدي أبدًا. الفشل في القيادة/الساعة/الحفظ قاتل وfail-closed؛ تعذر المصدر المؤقت يرفض الرموز المحددة فقط.
++5. preload تراكم فقط ولا يستدعي قرارًا تاريخيًا. حد زمني مستقل للرمز المقبول حديثًا يمنع ENTRY بأثر رجعي ولو كانت الثقة العامة أقدم. proofs للرموز المقبولة سابقًا لا تُعدّل. حالة O/A/U/R لا تُقبل عبر اختصار: تتطلب مسار استعادة الحالات الأصلي.
++6. correction/cancel/error والفجوة والفصل وINVALID_OR_CONFLICTING_BAR ما زالت تسحب الثقة بالمسار الأصلي. إذا أُبطلت أثناء الجلب فلا تعود الثقة بنتيجته القديمة.
++7. INCREMENTAL_ADMISSION يسجل requested/accepted/rejected وrejection_reasons وfetch_seconds والمدة الكلية والثقة، دون محتوى اتصال أو أسرار. rejected عدد رموز هذه المحاولة، وليس مجموع recovering.
++
++الاختبار الفعلي
++الاختبارات الـ98 الموروثة نجحت أولًا بعد التصحيح. السيناريو الكامل يختبر ACK بدون شاهد ثم الشاهد والثقة، ثم 20 شمعة على رمزين: استعادة كاملة واحدة فقط. رمز ثالث مؤجل يُقبل بجلبه وحده مع بقاء الثقة أثناء الجلب، وتصحيح لاحق يسحبها. اختبارات إضافية: اختلاف القيم ومجموعة الشموع، native5 غير مكتملة، غياب الشاهد، انقطاع المصدر، فشل journal، القيادة/الساعة، تغيير epoch، correction أثناء خيط جلب محجوب، سقف 32 والدوران، منع التكرار قبل 30 ثانية والسماح عند 30 بالضبط، والحالات المفتوحة وENTRY التاريخي. راجع المخرجات الخام للأعداد والمدة.
++اختبار الأصل والنسخة المفكوكة يستخدم run_tests.py الذي يمنع socket.connect/connect_ex/create_connection/getaddrinfo. محاولة unshare -rn رفضها المضيف: Operation not permitted؛ العزل بنطاق شبكة النظام لم ينجح ولا ندعيه. لم تستخدم الاختبارات خدمات حقيقية.
++
++إعادة التشغيل
++journal سجل تدقيق لا إذن ثقة. الاستعادة الموروثة تبدأ غير موثوقة وتتطلب اتصالًا/ACK/شاهدًا جديدًا؛ لم يتغير هذا المسار. سجل القبول التزايدي يحمل transport_trusted=false عمدًا، ولا يعيد استحياء اتصال قديم.
++
++UNKNOWN وحدود الدليل
++زمن REST الحقيقي للدفعات، معدل قبول الرموز المتأخرة، نجاح أول ثقة داخل T120 في السوق، الموارد على 512Mi و0.5 CPU وتأخر الحلقة: UNKNOWN. لم يُشغّل حمل سوق واقعي ولا اتصال Alpaca أو Redis أو Telegram حقيقي. اكتمال TRADE من المصدر UNKNOWN. لا نعزو 3.78 ثانية لسبب جديد ولا ندعي قياس تحسن حي. يمكن أن يبقى الرمز المؤجل مرفوضًا عند استمرار اختلاف المصدر؛ الثقة العامة لا تعني أهلية كل رمز. أول ثقة لا تزال تخضع لـT120 دون تمديد.
++
++قرارات تنفيذية ضمن طلب المراجع
++اختيار 30 ثانية و32 رمزًا، وترتيب دائري أبجدي، وحفظ الدليل قبل الأهلية، ورفض الفشل الجزئي دون سحب ثقة الأصحاء، وحد منع ENTRY مستقل للرمز الجديد. لا تغييرات في قواعد الإشارة أو التنفيذ. لم يتم نشر أو تشغيل خدمة أو كتابة Redis حقيقي.

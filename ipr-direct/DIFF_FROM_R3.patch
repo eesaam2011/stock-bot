@@ -1,0 +1,286 @@
+--- R3/r4b/adapter.py
++++ R4/r4b/adapter.py
+@@ -8,10 +8,14 @@
+ from dintegration.live import LiveAdapter
+ from dintegration.rest import instant
+ from .store import JournalState
++from dintegration.clock import ClockUnavailable
++from dreview.core import Blocked
+ class EvidenceAdapter(LiveAdapter):
++ INCREMENTAL_BATCH_CAP=100
++ INCREMENTAL_REJECT_COOLDOWN=30.0
+  def __init__(self,*a,proof,barrier,wall,**kw):
+   super().__init__(*a,**kw);self.checkpoint=JournalState(self.checkpoint);self.proof=proof;self.barrier=barrier;self.wall=wall
+-  self.control_lock=threading.RLock();self.quarantine={};self.report={};self.store=None;self.trusted_since=None;self.admission_reasons={};self.cancel_event=threading.Event();self.cancel_event.set();self.entry_floor=None;self.needs_changed=None;self.gap_start=None;self.missed_opportunities=set();self.symbol_admitted_at={}
++  self.control_lock=threading.RLock();self.quarantine={};self.report={};self.store=None;self.trusted_since=None;self.admission_reasons={};self.cancel_event=threading.Event();self.cancel_event.set();self.entry_floor=None;self.needs_changed=None;self.gap_start=None;self.missed_opportunities=set();self.symbol_admitted_at={};self.rejection_until={};self.incremental_clock=time.monotonic
+   self.bridge.recovery_control_lock=self.control_lock
+   self.barrier.status_source=getattr(self.recovery,'original',None);self.status_changed=None
+   self.original_filter=self.filter_check;self.filter_check=self._admissible_trade
+@@ -132,8 +136,8 @@
+     self.checkpoint.append_epoch({'kind':'B_RECOVERY_FAILED','proof':self.proof.snapshot(),'report':self.report})
+ 
+  def admit_incremental(self,candidates,now):
+-  start=time.monotonic();fetch_seconds=0.;selected=set(candidates);accepted={};bad={};fatal=None
+-  if len(selected)>32:raise ValueError('INCREMENTAL_BATCH_CAP')
++  start=time.monotonic();fetch_seconds=0.;selected=set(candidates);accepted={};bad={};fatal=None;clock_deferred=False;cooldown_symbols=0
++  if len(selected)>self.INCREMENTAL_BATCH_CAP:raise ValueError('INCREMENTAL_BATCH_CAP')
+   def current():
+    return (self.transport_trusted and token is self.cancel_event and not token.is_set()
+      and connection==self.c.connection and revision==self.c.revision and generation==self.proof.generation
+@@ -145,6 +149,9 @@
+     if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
+     self.checks()
+     selected &= self.recovering & self.c.bar
++    cooling={s for s in selected if self.rejection_until.get(s,0)>self.incremental_clock()}
++    cooldown_symbols=sum(self.rejection_until.get(s,0)>self.incremental_clock() for s in self.recovering)
++    selected-=cooling
+    if not selected:return True
+    fetch_start=time.monotonic()
+    try:one,five=self.rest.warmup(selected,now,self.bridge.p.ec.required_history_minutes())
+@@ -168,24 +175,36 @@
+      self.checkpoint.append_epoch({'kind':'B_INCREMENTAL_ADMISSION','connection':connection,'revision':revision,
+        'accepted_symbols':sorted(good),'evidence':good,'proof':self.proof.snapshot(),'transport_trusted':False})
+      if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
+-     self.checks();floor=self.wall()
++     # Clock was checked immediately before the durable commit. After it,
++     # recheck leadership/root without a second transient clock rejection.
++     self.bridge.leadership.require_current()
++     if not self.root_check():raise Blocked('ROOT_OR_CLOCK_UNPROVEN')
++     floor=self.wall()
+      for s in good:
+       self.c.attest(s,history=True,continuity=True,reconciled=True,first_trade=False)
+       self.symbol_admitted_at[s]=floor
+      self.recovering.difference_update(good);accepted=good
++     for s in good:self.rejection_until.pop(s,None)
+     # Keep the preceding global trust and every previously admitted proof untouched.
+     self.quarantine.update(bad)
+     for s in accepted:self.quarantine.pop(s,None)
+     report_good=dict(self.report.get('good',{}));report_good.update(accepted)
+     self.report={**self.report,'good':report_good,'quarantine':dict(self.quarantine)}
+     return bool(accepted)
++  except ClockUnavailable:
++   clock_deferred=True
++   print(json.dumps({'stage':'INCREMENTAL_ADMISSION_DEFERRED','reason':'CLOCK_UNAVAILABLE','symbols':len(selected)}),flush=True)
++   return False
+   except Exception as exc:
+-   # Leadership/clock/persistence errors retain the original fatal/fail-closed boundary.
++   # Leadership/root/persistence errors retain the original fatal/fail-closed boundary.
+    self.close_eligibility('INCREMENTAL_ADMISSION_FATAL');fatal=type(exc).__name__;raise
+   finally:
+    if fatal:bad.update({s:'FATAL_'+fatal for s in selected if s not in accepted})
++   if not clock_deferred:
++    for s in bad:self.rejection_until[s]=self.incremental_clock()+self.INCREMENTAL_REJECT_COOLDOWN
+    reasons={}
+    for why in bad.values():reasons[why]=reasons.get(why,0)+1
++   reasons['REJECTION_COOLDOWN']=cooldown_symbols
+    try:print(json.dumps({'stage':'INCREMENTAL_ADMISSION','at':self.wall().isoformat(),'requested':len(selected),
+      'accepted':len(accepted),'rejected':len(bad),'rejection_reasons':reasons,'fetch_seconds':fetch_seconds,
+      'seconds':time.monotonic()-start,'transport_trusted':self.transport_trusted,'TRADE_completeness':'UNKNOWN'}),flush=True)
+--- R3/r4b/runtime.py
++++ R4/r4b/runtime.py
+@@ -18,14 +18,15 @@
+    if ok:self.notify_ack()
+    return ok
+ class EvidenceRuntime(Runtime):
+- INCREMENTAL_SPACING=30.0
+- INCREMENTAL_BATCH=32
++ INCREMENTAL_SPACING=1.0
++ INCREMENTAL_BATCH=100
+  RETRY_SPACING=1.0 # engineering coalescing, NOT a safety timeout; T120 is unchanged.
+  def __init__(self,adapter,*a,**kw):
+   args=list(a)
+   if args:args[0]=adapter.checkpoint
+   else:kw["state"]=adapter.checkpoint
+   super().__init__(adapter,*args,**kw)
++  adapter.incremental_clock=self.clock
+   self.proof=adapter.proof;self.store=ProofStore(self.state,self.proof);adapter.store=self.store
+   self.wake=asyncio.Event();self.attempts=0;self.last_attempt=None;self.recovery_running=False;self.last_incremental=None;self.incremental_cursor=None;self.incremental_attempts=0
+   self.control=LockedControl(ClockedControl(self.c,self.clock),adapter.control_lock,self.acknowledged)
+@@ -93,7 +94,11 @@
+      self.wake.set();continue # real invalidation returns to the original full path
+     self.check_session();now=self.wall()
+     with self.a.control_lock:
+-     pending=sorted(self.a.recovering & self.c.bar & self.proof.witnessed(now))
++     witnessed=self.a.recovering & self.c.bar & self.proof.witnessed(now)
++     pending=sorted(s for s in witnessed if self.a.rejection_until.get(s,0)<=self.clock())
++    if not pending and witnessed:
++     await asyncio.sleep(max(self.INCREMENTAL_SPACING,min(self.a.rejection_until.get(s,0) for s in witnessed)-self.clock()))
++     self.wake.set();continue
+     if not pending:continue
+     # Rotation prevents a persistently bad first symbol starving the rest.
+     if self.incremental_cursor is not None:
+--- R3/tests/test_r3.py
++++ R4/tests/test_r3.py
+@@ -77,7 +77,7 @@
+  def test_exact_OHLCV_mismatch_rejected_without_global_revoke(self):
+   f=self.deferred();f.history['Y'][0]['v']=999
+   with contextlib.redirect_stdout(io.StringIO()) as out:self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]))
+-  q=json.loads(out.getvalue());self.assertEqual(q['rejection_reasons'],{'REST_STREAM_BAR_VALUE_MISMATCH':1});self.assertEqual((q['accepted'],q['rejected']),(0,1));self.assertGreaterEqual(q['fetch_seconds'],0)
++  q=json.loads(out.getvalue());self.assertEqual(q['rejection_reasons'],{'REST_STREAM_BAR_VALUE_MISMATCH':1,'REJECTION_COOLDOWN':0});self.assertEqual((q['accepted'],q['rejected']),(0,1));self.assertGreaterEqual(q['fetch_seconds'],0)
+   self.assertTrue(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
+  def test_missing_REST_BAR_set_rejected(self):
+   f=self.deferred();f.now[0]=OP+timedelta(minutes=3,seconds=1);f.history['Y'].append(bar(OP+timedelta(minutes=1)))
+@@ -110,7 +110,7 @@
+   f=self.deferred();f.a.barrier.persisted_R.add('Y');self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertTrue(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
+  def test_batch_cap_enforced(self):
+   f=self.deferred()
+-  with self.assertRaisesRegex(ValueError,'INCREMENTAL_BATCH_CAP'):f.a.admit_incremental([str(i) for i in range(33)],f.now[0])
++  with self.assertRaisesRegex(ValueError,'INCREMENTAL_BATCH_CAP'):f.a.admit_incremental([str(i) for i in range(101)],f.now[0])
+   self.assertEqual(len(f.calls),1)
+  def test_concurrent_epoch_change_or_revocation_never_admits(self):
+   for mode in ('epoch','correction','disconnect'):
+@@ -161,15 +161,15 @@
+     self.assertFalse(await task);self.assertFalse(f.a.transport_trusted);self.assertIn('Y',f.a.recovering);self.assertFalse(f.a.c.proofs['Y']['continuity'])
+    finally:release.set();await asyncio.gather(task,return_exceptions=True)
+   asyncio.run(go())
+- def test_scheduler_batch_32_rotates_to_other_symbols(self):
++ def test_scheduler_batch_100_rotates_to_other_symbols(self):
+   async def go():
+-   f=setup(tuple('S%02d'%i for i in range(35)));f.now[0]=OP+timedelta(seconds=61)
+-   receive(f,'S00',0);self.assertTrue(f.a.recover(f.now[0]));f.r.wake.clear()
++   f=setup(tuple('S%03d'%i for i in range(135)));f.now[0]=OP+timedelta(seconds=61)
++   receive(f,'S000',0);self.assertTrue(f.a.recover(f.now[0]));f.r.wake.clear()
+    for s in f.a.recovering:receive(f,s,0)
+    batches=[]
+    def attempt(ss,now):
+     batches.append(list(ss));f.mono[0]+=31
+     if len(batches)==2:f.r.stop.set()
+    f.a.admit_incremental=attempt;f.r.wake.set();await f.r.recovery_loop()
+-   self.assertEqual(len(batches[0]),32);self.assertLessEqual(len(batches[1]),32);self.assertIn('S34',batches[1]);self.assertEqual(f.r.attempts,0)
++   self.assertEqual(len(batches[0]),100);self.assertLessEqual(len(batches[1]),100);self.assertIn('S134',batches[1]);self.assertEqual(f.r.attempts,0)
+   asyncio.run(go())
+--- R3/tests/test_r4.py
++++ R4/tests/test_r4.py
+@@ -0,0 +1,63 @@
++import asyncio,contextlib,io,json,unittest
++from unittest.mock import Mock
++from datetime import timedelta
++from dintegration.clock import ClockUnavailable
++import test_r3
++from test_direct import OP
++
++class R4Tests(unittest.TestCase):
++ def deferred(self):
++  f=test_r3.trusted();f.now[0]+=timedelta(seconds=1);test_r3.receive(f,'Y',0);f.r.wake.clear();return f
++ def test_rejection_cooldown_exact_boundary(self):
++  f=self.deferred();f.history['Y'][0]['v']=999
++  self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertEqual(f.a.rejection_until['Y'],30.)
++  initial=len(f.calls);f.mono[0]=29.999
++  with contextlib.redirect_stdout(io.StringIO()) as out:self.assertTrue(f.a.admit_incremental(['Y'],f.now[0]))
++  self.assertEqual(len(f.calls),initial);self.assertEqual(json.loads(out.getvalue())['rejection_reasons']['REJECTION_COOLDOWN'],1);self.assertIn('Y',f.a.recovering)
++  f.mono[0]=30.;f.history['Y'][0]['v']=100
++  self.assertTrue(f.a.admit_incremental(['Y'],f.now[0]));self.assertNotIn('Y',f.a.recovering)
++ def test_clock_at_each_precommit_check_defers_without_journal(self):
++  for fail_at in (1,2,3):
++   with self.subTest(fail_at=fail_at):
++    f=self.deferred();n=[0];before=len(f.epochs)
++    def checks():
++     n[0]+=1
++     if n[0]==fail_at:raise ClockUnavailable('fixture')
++    f.a.checks=checks
++    with contextlib.redirect_stdout(io.StringIO()) as out:self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]))
++    self.assertTrue(f.a.transport_trusted);self.assertEqual(len(f.epochs),before);self.assertIn('Y',f.a.recovering);self.assertNotIn('Y',f.a.rejection_until)
++    self.assertIn('INCREMENTAL_ADMISSION_DEFERRED',out.getvalue());self.assertFalse(f.a.c.proofs['Y']['continuity'])
++    f.a.checks=lambda:None;self.assertTrue(f.a.admit_incremental(['Y'],f.now[0]))
++ def test_leader_still_fatal(self):
++  f=self.deferred();f.a.checks=Mock(side_effect=RuntimeError('LEASE_LOST'))
++  with self.assertRaises(RuntimeError):f.a.admit_incremental(['Y'],f.now[0])
++  self.assertFalse(f.a.transport_trusted)
++ def test_499_deferred_real_adapter_preserves_other_trusted_symbol(self):
++  async def go():
++   f=test_r3.setup(tuple('S%03d'%i for i in range(500)));f.now[0]=OP+timedelta(seconds=61)
++   test_r3.receive(f,'S000',0);self.assertTrue(f.a.recover(f.now[0]));original=dict(f.a.c.proofs['S000']);f.r.wake.clear()
++   for s in list(f.a.recovering):test_r3.receive(f,s,0)
++   original_admit=f.a.admit_incremental
++   def admit(ss,now):
++    result=original_admit(ss,now);self.assertTrue(f.a.transport_trusted);self.assertEqual(f.a.c.proofs['S000'],original);f.mono[0]+=1;return result
++   f.a.admit_incremental=admit;task=asyncio.create_task(f.r.recovery_loop());f.r.wake.set()
++   try:
++    await test_r3.until(lambda:not f.a.recovering);self.assertEqual(f.r.incremental_attempts,5);self.assertEqual([len(c['symbols']) for c in f.calls[1:]],[100,100,100,100,99]);self.assertTrue(f.a.transport_trusted)
++   finally:task.cancel();await asyncio.gather(task,return_exceptions=True)
++  asyncio.run(go())
++ def test_500_deferred_scheduler_five_batches_simulation(self):
++  # Scheduler-only 500 deferred plus independent global-trust sentinel.
++  # Real active BAR scope remains capped at 500, tested separately above.
++  async def go():
++   f=test_r3.setup();ss={'D%03d'%i for i in range(500)};f.a.recovering=ss.copy();f.a.c.bar=ss;f.a.proof.witnessed=lambda now:ss
++   from unittest.mock import PropertyMock,patch
++   sizes=[]
++   def admit(batch,now):
++    self.assertTrue(f.a.transport_trusted);sizes.append(len(batch));f.a.recovering.difference_update(batch);f.mono[0]+=1
++   f.a.admit_incremental=admit
++   with patch.object(type(f.a),'transport_trusted',new_callable=PropertyMock,return_value=True):
++    task=asyncio.create_task(f.r.recovery_loop());f.r.wake.set()
++    try:
++     await test_r3.until(lambda:not f.a.recovering);self.assertEqual(sizes,[100]*5);self.assertEqual(f.r.attempts,0)
++    finally:task.cancel();await asyncio.gather(task,return_exceptions=True)
++  asyncio.run(go())
+--- R3/README_AR.txt
++++ R4/README_AR.txt
+@@ -1,5 +1,4 @@
+-COMPLETE_REVIEW_ONLY — IPR_DIRECT_R3: اكتمل التصحيح والاختبار غير المتصل، بلا نشر.
+-اقرأ R3_REPORT_AR.txt وDIFF_FROM_R2.patch وCHANGED_FILES_R3.json والنتائج الخام.
+-التغيير الإنتاجي محصور في r4b/runtime.py وr4b/adapter.py؛ باقي الشفرة كما في R2.
+-وثائق R1 وR2 المحفوظة تاريخية، وأسماء الإصدار الموروثة داخل سجلات التشغيل لم تتغير تجنبًا لأي تعديل إضافي.
+-لا إذن بالنشر مستمد من هذه الحزمة، ولا ملف موافقة جديد.
++COMPLETE_REVIEW_ONLY — IPR_DIRECT_R4: تصحيح غير متصل للمراجعة فقط، لا نشر.
++اقرأ R4_REPORT_AR.txt وREST_BUDGET_R4_AR.txt وDIFF_FROM_R3.patch وCHANGED_FILES_R4.json والاختبارات الخام.
++التغيير الإنتاجي محصور في r4b/runtime.py وr4b/adapter.py. وثائق الإصدارات السابقة تاريخية؛ لم تُعدّل هوية الإصدار الموروثة داخل التشغيل.
++النشر لم يحدث. موافقة R4 لم تصدر بعد. لا تعديل خدمة ولا ميزانية إقلاع ولا إنشاء أتمتة.
+--- R3/STATUS.json
++++ R4/STATUS.json
+@@ -1,5 +1,5 @@
+ {
+-  "release": "IPR_DIRECT_R3",
++  "release": "IPR_DIRECT_R4",
+   "status": "COMPLETE_REVIEW_ONLY",
+   "production_deployed": false,
+   "real_services_modified": false,
+@@ -17,8 +17,9 @@
+     "source_TRADE_completeness",
+     "R1_3_78_second_lag_exact_cause"
+   ],
+-  "baseline_sha256": "365987f63b617dda77184289d87ca1ce1e470dec215478536cb54d1bb1a3b8c8",
+-  "incremental_spacing_seconds": 30,
+-  "incremental_max_symbols": 32,
+-  "original_and_extracted_tests": 115
++  "baseline_sha256": "bb124a370dbc5555f7991a6701263f54b7967598efe09e0e44b1b23f415ae207",
++  "incremental_spacing_seconds": 1,
++  "incremental_max_symbols": 100,
++  "original_and_extracted_tests": 120,
++  "incremental_reject_cooldown_seconds": 30
+ }
+--- R3/R4_REPORT_AR.txt
++++ R4/R4_REPORT_AR.txt
+@@ -0,0 +1,21 @@
++COMPLETE_REVIEW_ONLY — الحزمة للمراجعة، لا نشر أو تشغيل حي.
++الأساس R3.zip SHA256 bb124a370dbc5555f7991a6701263f54b7967598efe09e0e44b1b23f415ae207 تحقق ZIP والبصمات الداخلية قبل البناء.
++
++التغييرات المطلوبة فقط
++- INCREMENTAL_SPACING=1.0 ثانية؛ INCREMENTAL_BATCH=100؛ INCREMENTAL_BATCH_CAP=100.
++- INCREMENTAL_REJECT_COOLDOWN=30.0 ثابت صنفي قابل للتعديل في EvidenceAdapter. rejection_until لكل رمز بالساعة monotonic نفسها المستخدمة في المتحكم. يُحسب من نهاية الرفض. لا يُحذف الرمز من recovering، ويحافظ الاختيار على التناوب. أثناء المهلة لا يحصل جلب له؛ تنام الحلقة حتى أقرب موعد مؤهل بدل الدوران المشغول. القبول يزيل مهلة الرمز.
++- INCREMENTAL_ADMISSION.rejection_reasons.REJECTION_COOLDOWN يسجل عدد الرموز المؤجلة بمهلة قائمة عند بدء المحاولة، من recovering كله. هذا العدد ليس عدد مرفوضي جلب الدفعة الحالية؛ rejected خاص بهذه المحاولة. السجل يكتب هذا العداد أيضًا إذا استُدعيت الدالة مباشرة بدفعة كلها في المهلة. لا يُطبع سجل كل ثانية أثناء نوم جميع الرموز المرفوضة.
++- ClockUnavailable في أي فحص قبل commit يؤجل فقط: INCREMENTAL_ADMISSION_DEFERRED reason=CLOCK_UNAVAILABLE، دون close_eligibility أو exception أو قبول أو journal جديد أو مهلة رفض 30 ثانية. يعاد في الجولة التالية بفاصل 1 ثانية.
++- فحص الساعة الأخير قبل الكتابة الدائمة مباشرة. بعد نجاح الكتابة يعاد فحص epoch والإبطال والقيادة والجذر، دون إجراء فحص ساعة عابر ثانٍ بعد الكتابة ثم الادعاء بأن لا كتابة حدثت. فشل القيادة/الجذر/كتابة journal يظل قاتلًا. شروط الساعة 10 ثوان وعدم يقين <=1 لم تتغير. قد يحمّل preload الذاكرة ثم يفشل فحص الساعة قبل journal؛ لا يمنح أهلية ولا يستدعي ENTRY.
++- لا تغيير في مسار recover الكامل أو T120 أو ميزانية 4 أو حدود الذاكرة أو ملفات reference_app أو قواعد التداول/التنبيه. لا أوامر تداول.
++
++الاختبارات
++115 اختبارًا موروثًا +5 اختبارات R4. ثلاثة اختبارات توقعات من R3 حُدّثت لتطابق القرار الجديد: cap عند101 بدل33، دفعة100 بدل32 مع تناوب، والحقل المضاف REJECTION_COOLDOWN=0. لم تُحذف اختبارات أو تُخفف شروط الثقة/الإبطال. أول محاولة شغلت نسخة الاختبار القديمة قبل تحديث توقع الحقل وأظهرت فشلًا واحدًا؛ المخرج الخام محفوظ TESTS_R4_INITIAL_ATTEMPT_RAW.txt، ثم أعيدت المجموعة كاملة.
++محاكاة 500 مؤجلة في scheduler: خمس دفعات100، لا استعادة كاملة. هذا اختبار scheduler ببديل ثقة مستقل؛ 500 مؤجلة بالإضافة لرمز موثوق ضمن BAR نفسه غير ممكن لأن سقف BAR=500 لم يتغير. لذلك اختبار منفصل فعلي باستخدام EvidenceAdapter وStreamProof والمحرك المرجعي: رمز موثوق +499 مؤجلة، تقبل في5 دفعات100/100/100/100/99 دون تغيير proof الرمز الآخر أو الثقة العامة. تبقى مقارنة OHLCV الأصلية. اختبار رفض قبل29.999 وعند30، والساعة تفشل عند كل موضع قبل الكتابة ثم يعاد القبول، والقيادة قاتلة. الاختبارات الموروثة تشمل correction أثناء جلب خيطي وفشل Redis المزيف.
++العزل: run_tests يمنع اتصالات socket وDNS برمجيًا. unshare -rn رفضه المضيف؛ لا ندعي عزل نظام شبكة. المخرجات الأصلية ومن ZIP مفكوك مرفقة.
++
++UNKNOWN
++زمن الجلب والقبول الحقيقي، موارد512Mi/0.5CPU، ترقيم Alpaca الفعلي، حمل بقية الطلبات، نجاح الثقة الحية داخل T120، اكتمال TRADE: UNKNOWN. لم يتصل الاختبار بخدمات حقيقية ولا يثبت الأداء الحي. خمس دفعات تعني حدًا أدنى نحو4 ثوان بين بداية الأولى والخامسة بفاصل1؛ تضاف مدد الجلب والتحقق وقد تزيد المدة كثيرًا. لم تُقَس هذه المدة في السوق.
++
++حدود النشر اللاحق المسجلة من المستخدم (ليست إجراءً منفذًا)
++لا Deploy/Restart/Suspend/Resume ولا تغيير مفاتيح الميزانية قبل03:00 الثلاثاء2026-11-03 الرياض =00:00UTC. النشر بعد موافقة المستخدم على R4 فقط؛ يسبقه تحقق قراءة لميزانية اليوم الجديد دون تصفيرها، وآخر موعد14:30 الرياض. Auto-Deploy يبقىOff. لا إعادة تشغيل إذا مات الإقلاع قبل الافتتاح؛ السجل أولًا. لم ننشئ جدولة أو نعد بتنفيذ خلفي غير قائم. اسم مفتاح الميزانية الفعلي عند النشر يؤخذ من الكود/الإعدادات الفعلية، ولم تتم قراءته من Redis في هذه الجولة.
+--- R3/REST_BUDGET_R4_AR.txt
++++ R4/REST_BUDGET_R4_AR.txt
+@@ -0,0 +1,7 @@
++حساب طلبات القبول التزايدي فقط — تقدير من الكود، لا قياس حي
++التباعد1 ثانية بين بدايات الدفعات، الجلب متسلسل بخيط واحد، دفعة<=100 رمز. نافذتان: native1Min60 دقيقة وnative5Min305 دقيقة. rest.bars_multi يجزئ الرموز إلى100، وlimit=10000 صف لكل طلب، ويتبع next_page_token إلى النهاية.
++إذا أعاد المصدر صفحة واحدة لكل نافذة: طلبان/دفعة، حتى60 دفعة في نافذة60 ثانية نصف مفتوحة =120 طلب/دقيقة. عند وجود100 رمز بكثافة شمعة/دقيقة، حد الصفوف الاسمي مع حدود النافذة الشاملة نحو6100 للـ1Min و6200 للـ5Min، دون10000؛ لا يثبت ذلك أن المصدر لن يجزئها إلى صفحات أصغر.
++العدد الصحيح مع pagination في60 دفعة = مجموع(P1_i+P5_i). إذا كان الحد المقاس P صفحة لكل نافذة: <=120P طلب/دقيقة: P=1 =>120، P=2 =>240، P=10 =>1200، P=83 =>9960، P=84 =>10080. لا يجوز افتراضP=1 كحد مضمون.
++الكود لا يحدد حدًا نهائيًا لعدد page tokens المختلفة؛ يكشف تكرار token فقط. لذلك أسوأ عدد طلبات مضمون من الشفرة وحدها UNKNOWN وليس120. حد حساب المستخدم10000/دقيقة ليس ميزانية مخصصة لهذه الحلقة، وتشاركها تهيئة البيانات والمسح وnative5 والاستعادة وغيرها، وقد تحدث أخطاء قبل بلوغ هذه الأرقام. لم نرفع أي محدد طلب قائم ولم نضف تغييرًا على عميل REST.
++500 مؤجلة تقبل من أول مرة:5 دفعات*2=10 طلبات إذاصفحة واحدة، وإجمالي فعلي=sum(P1_i+P5_i) لخمس دفعات. إذا بقيت نفس500 مرفوضة دون تبديل، كل رمز مرة كل30ثانية على الأقل؛ في نافذة60 ثانية نصف مفتوحة حتى1000 محاولة رمز، نحو10 دفعات كاملة/20 طلبًا في التوزيع المتزامن المنتظم. هذا ليس حدًا عامًا للطلبات: قد تتفتت الدفعات إلى رموز قليلة أو تظهر رموز جديدة، ويضاف pagination. السقف العام الاسمي دون pagination يبقى120طلبًا/دقيقة، لا20.
++لا يجري أي طلب حي في إعداد الحزمة، ولم يُستعمل حد10000 لإدعاء ضمان موارد أو نجاح تشغيل.

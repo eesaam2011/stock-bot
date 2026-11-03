@@ -6,6 +6,7 @@ from messages_only import TelegramHTTP,MessageConfig
 from state_store import key_trade,validate_record
 from event_ids import trade_event_id
 from r4a.durable import PREFIX
+from dintegration.clock import ClockUnavailable
 START='''
 if redis.call('GET',KEYS[1])~=ARGV[1] or redis.call('GET',KEYS[2])~=ARGV[2] then return 'NOT_LEADER' end
 local old=redis.call('HGET',KEYS[3],ARGV[3])
@@ -46,7 +47,10 @@ class Sender:
   self.seen.add(identity);self.seen_order.append(identity)
   if len(self.seen_order)>20000:self.seen.discard(self.seen_order.popleft())
  def step(self):
-  r=self.r;r.check_session();r.leader.require_current();r.a.checks()
+  r=self.r;r.check_session();r.leader.require_current()
+  try:r.a.checks()
+  except ClockUnavailable:
+   print(json.dumps({'stage':'SENDER_CLOCK_DEFERRED'}),flush=True);return
   for event in self.store.pending():
    kind=event.get('event_type');payload=event.get('payload',{});tid=payload.get('trade_id')
    if kind not in {'ENTRY','T1','T2','STOP','POST_T1_EXIT','FINAL'} or not isinstance(tid,str):continue

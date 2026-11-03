@@ -1,0 +1,27 @@
+{
+  "original": {
+    "passed": 124,
+    "total": 124,
+    "seconds": 15.959
+  },
+  "zip_extracted": {
+    "passed": 124,
+    "total": 124,
+    "seconds": 16.574
+  },
+  "inherited_tests": 120,
+  "inherited_tests_byte_identical": true,
+  "new_tests": 4,
+  "initial_run": {
+    "passed": 123,
+    "total": 124,
+    "failed_test": "test_new_scheduler_waits_then_real_adapter_proves_inside_T120",
+    "cause": "UNKNOWN; fixed 80ms wait in inherited test",
+    "raw": "TESTS_R5_FIRST_ATTEMPT_RAW.txt"
+  },
+  "reference_files_byte_identical": 72,
+  "unshare_rn": "HOST_DENIED",
+  "socket_and_DNS": "DENIED_BY_TEST_RUNNER",
+  "live_test": "NOT_RUN",
+  "production_change": "one line moved in admit_incremental; full recover unchanged"
+}

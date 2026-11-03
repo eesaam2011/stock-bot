@@ -1,0 +1,33 @@
+{
+  "changes": [
+    {
+      "path": "r4b/adapter.py",
+      "R4_sha256": "12a5662df267cf486eb39dd9d45f51f38aeb00d15fc2bb8ed66a30149aaa9bba",
+      "R5_sha256": "021809d19f45aaed60909f080e11d65281180387458340daea57012d67f1fbcf"
+    },
+    {
+      "path": "tests/test_r5.py",
+      "R4_sha256": null,
+      "R5_sha256": "988f5676f39090688ee4582bbece4e9adbe8534a1fcd6f66428a1a749d08cf9c"
+    },
+    {
+      "path": "README_AR.txt",
+      "R4_sha256": "3fafa528bc9f2f8aa82918255d22ae59c26baed6d39066727c47db02945a3c0c",
+      "R5_sha256": "fca6663c299b65e8958fe23272cf5fc2281e4bafb7c8548d43e0d3573f01e617"
+    },
+    {
+      "path": "R5_REPORT_AR.txt",
+      "R4_sha256": null,
+      "R5_sha256": "20379bde18dbf617a55a6062f7c3bc11577f222ea866ba4c0d80452971a2e951"
+    },
+    {
+      "path": "STATUS.json",
+      "R4_sha256": "eba2523cf289173400586dc02d83c178bda020b2b9af6000d75efcd1b82a7a47",
+      "R5_sha256": "fa64072eda38a4b976106653b49a1e5f8bc48048482f6452f8bcd3e35154d859"
+    }
+  ],
+  "production_change": "one preload line moved within admit_incremental",
+  "reference_app_unchanged": 72,
+  "all_120_inherited_tests_byte_identical": true,
+  "additional_evidence": "TESTS_R5_*; TEST_SUMMARY_R5.json; UNSHARE_R5_RAW.txt; SHA256SUMS.txt regenerated"
+}

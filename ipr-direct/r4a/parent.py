@@ -32,10 +32,11 @@ class ProcessGuard:
     self.reason=reason;self.termination_started=self.clock();self.child.terminate()
    if self.termination_started is not None and self.clock()-self.termination_started>=60:self.child.kill()
    self.sleep(.25)
+  child_exit_code=self.child.poll()
   decision=self.controller.after_worker_exit(self.external_stop)
   if decision=='RESTART_REQUESTED':
    # Original 120 sec minimum guard lifetime, not an extension of shutdown tail.
    if restart_cooldown(self.controller.policy,started,stopped=lambda:self.external_stop,wall=self.wall,sleeper=self.sleep,monotonic=self.clock):
-    return {'action':'WORKER_EXIT','exit_code':EXIT_RESTART_REQUESTED,'reason':self.reason or 'CHILD_EXIT','boot':self.controller.boot_number}
+    return {'action':'WORKER_EXIT','exit_code':EXIT_RESTART_REQUESTED,'reason':self.reason or 'CHILD_EXIT','boot':self.controller.boot_number,'child_exit_code':child_exit_code}
    decision='SESSION_CLOSED_OR_EXTERNAL_STOP'
-  return {'action':'PARK' if not self.external_stop else 'EXTERNAL_STOP','reason':decision,'boot':self.controller.boot_number}
+  return {'action':'PARK' if not self.external_stop else 'EXTERNAL_STOP','reason':decision,'boot':self.controller.boot_number,'child_exit_code':child_exit_code}

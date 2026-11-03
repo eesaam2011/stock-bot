@@ -1,0 +1,10 @@
+{
+  "R2_zip_sha256": "365987f63b617dda77184289d87ca1ce1e470dec215478536cb54d1bb1a3b8c8",
+  "reference_files_byte_identical": 72,
+  "modified_inherited_python_files": [
+    "r4b/adapter.py",
+    "r4b/runtime.py"
+  ],
+  "discovery_and_classification_manifests_byte_identical": true,
+  "T120_and_boot_budget_sources_byte_identical": true
+}

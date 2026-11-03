@@ -1,0 +1,45 @@
+{
+  "production_changed": [
+    "r4b/adapter.py",
+    "r4b/runtime.py"
+  ],
+  "source_and_review_changes": [
+    {
+      "path": "r4b/adapter.py",
+      "kind": "modified",
+      "R2_sha256": "df354477b9af398f7b958a70b1a6db218a4e1f542e434084453cadbf7ad68c50",
+      "R3_sha256": "cb74b883498a8a2d314926d6e94935a10640d12627f899576efa5400af9701dd"
+    },
+    {
+      "path": "r4b/runtime.py",
+      "kind": "modified",
+      "R2_sha256": "995f6010833ce867bd77139390264de482f7d4bc764405bafeea404a69eb5685",
+      "R3_sha256": "4ea9f8f1dbcbed87fec6693a4c75f90a7a3899fb1a314b698e9516e4e582cca1"
+    },
+    {
+      "path": "tests/test_r3.py",
+      "kind": "added",
+      "R2_sha256": null,
+      "R3_sha256": "9bec1f37a9421959ea944e17537e8b68dc3334fedd086df6e42abda8fff4bd31"
+    },
+    {
+      "path": "README_AR.txt",
+      "kind": "modified",
+      "R2_sha256": "2ed854bf0887704dc97304a0e730a1fe2ead8a3088035324521e208fbe628ff8",
+      "R3_sha256": "87dd2c74bc0654c79e8de386c04d208d2ba7d9e59a26f419a7d355cb138c7dca"
+    },
+    {
+      "path": "STATUS.json",
+      "kind": "modified",
+      "R2_sha256": "4db3e0aca9aa29c41697b4e10d06a9c3ac4679e798ba80922f81cd159af0514b",
+      "R3_sha256": "b5034c589e4a9465fb6a76b5fbb91ad921c9d579fabba6d9260902293c6f8bf6"
+    },
+    {
+      "path": "R3_REPORT_AR.txt",
+      "kind": "added",
+      "R2_sha256": null,
+      "R3_sha256": "a2fd6d27abe5aef7539dd1991d1bb90123d694a23003d4ba35b1bc63e9a9246a"
+    }
+  ],
+  "additional_evidence_files": "TESTS_R3_*.txt, UNSHARE_R3_RAW.txt, INTEGRITY_R3.json; manifest regenerated"
+}

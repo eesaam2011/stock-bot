@@ -1,0 +1,112 @@
+{
+  "baseline_zip_sha256": "8bd1b0a93e39b57d642650019a14e273db2f447469256d622b6f24f8fdce23ee",
+  "reference_files_unchanged": 72,
+  "classification_and_discovery_unchanged": true,
+  "changes": [
+    {
+      "path": "R2_REPORT_AR.txt",
+      "old_sha256": null,
+      "new_sha256": "1c5dbcf478f7c81bd3ee8c31622ab2aa1711ee492f910c2cd9ca952c1f9fd0ac"
+    },
+    {
+      "path": "README_AR.txt",
+      "old_sha256": "5bed79d9a6539795879ae1318524abd552062e20ae14a81f80e0e3df8a0448e6",
+      "new_sha256": "2ed854bf0887704dc97304a0e730a1fe2ead8a3088035324521e208fbe628ff8"
+    },
+    {
+      "path": "STATUS.json",
+      "old_sha256": "e46e8a7e6847f5ce2e59b785259180fdbc3dc9e9220992e3502b84809eb783ef",
+      "new_sha256": "4db3e0aca9aa29c41697b4e10d06a9c3ac4679e798ba80922f81cd159af0514b"
+    },
+    {
+      "path": "dintegration/clock.py",
+      "old_sha256": "6ecd69d241df5978fd9111e2f2299a8069992f1e0f7a0c8283364256ff316412",
+      "new_sha256": "c5d405f54adcce6631430a02cfdcdf38a8e6136f1ac17973d4ec094437b60b72"
+    },
+    {
+      "path": "dintegration/live.py",
+      "old_sha256": "db08eecc28d5cbe26898b753d8cad3ba311d06904c2657787e5cc802928b0be1",
+      "new_sha256": "51979e7f36634771380bd0477f4f5bc6123eb07fdafcbf1bf3bf0346420e59ac"
+    },
+    {
+      "path": "dintegration/measure.py",
+      "old_sha256": "c79e8f40b405d612684e9ee2b0b4fab8ec7aa32d848a81b56ef1bb9a955dda6c",
+      "new_sha256": "de0a6df16671e3006f187f6f4c65f490b3810d192579d8a562f4c47e5f940c31"
+    },
+    {
+      "path": "dintegration/stream_proof.py",
+      "old_sha256": "31a6bafa7a715188fdc6525bf7546d07c20be01c67a6d6ca4eea6ff62a48d966",
+      "new_sha256": "011c81f5a5afbdf6205a030e2653c6c1c4e4b4509d43472e4f2a04b998826931"
+    },
+    {
+      "path": "dintegration/timing.py",
+      "old_sha256": null,
+      "new_sha256": "eb1051f586286bfe2cf7879c91408b71bc5e21cd38f8e177f41076e7078acacd"
+    },
+    {
+      "path": "ipr/diagnostics.py",
+      "old_sha256": "2b706cc580f2f8b043f16b63e4c5e4a70908c2b44321f12bc3dcd1db942cb18e",
+      "new_sha256": "96ce0a9091c3421677efea6ad875510d497511655e5d5da131021165e8ca7ed8"
+    },
+    {
+      "path": "ipr/main.py",
+      "old_sha256": "629b94ebc394c4c16a6faea7b653c1dd54a69bb238941a53d38d236629d8eef1",
+      "new_sha256": "6d0b9e1e79196ad8c4f3124bcbe2d07ba92c081cb957df55492a0806e659bead"
+    },
+    {
+      "path": "ipr/runtime.py",
+      "old_sha256": "ec2ed85c73081930d88248264787308b42c862e17cb24241fabc6aa2bdbd5870",
+      "new_sha256": "a55dbc1d8f4159745c9ce3289021a7879f449d30a8623cd96700a56718a7a416"
+    },
+    {
+      "path": "ipr/sender.py",
+      "old_sha256": "00038505b866273f9d59b68bde0cb3fd3c1e8f9195b8a7b75bccebfd5a1bca7a",
+      "new_sha256": "3019a89bbf5cf44ade1b7d0ab6cc10b06f11fa3b2481a28cdd8bb51026d8b88b"
+    },
+    {
+      "path": "r4a/durable.py",
+      "old_sha256": "a054bad0d8d3b46fc63412b8c36b53aa694f9fa38fc9796309004c68d336ecd7",
+      "new_sha256": "1e9970fa1baef4c37afa4d86a9001c55bfa3553af0e8a49a4d1acd40428e8f01"
+    },
+    {
+      "path": "r4a/parent.py",
+      "old_sha256": "5b35d374a729b598d6c5a810a38753863d2b8a4af20cec7600d2e1f4619accba",
+      "new_sha256": "3b44f9e819e1c0f8996bdc278541e0c9fdbdb474d0ad01bbaf8a89a112c43510"
+    },
+    {
+      "path": "r4a/runtime.py",
+      "old_sha256": "dda8a3b07fcc605bca00f9c41563ba5fa628e43426b0b6a7b1c3734d8036da75",
+      "new_sha256": "69f152cc054f6329aefde7005d104a887f4a98b6d86c27022f021cdaabf12900"
+    },
+    {
+      "path": "r4b/adapter.py",
+      "old_sha256": "af3d297aa6784c43c807c9ed6cc0df34306ac0c1f7b44a9f44216c8908774899",
+      "new_sha256": "df354477b9af398f7b958a70b1a6db218a4e1f542e434084453cadbf7ad68c50"
+    },
+    {
+      "path": "r4b/cases.py",
+      "old_sha256": "ae9f6c3fa2a7c6bcfcf50a8b02925ba853f452cef5731df690d5ae0f64da5163",
+      "new_sha256": "c827088360b9072439bcdd0499970a1213f2cbbaa2ed76056442db5a30ca9d30"
+    },
+    {
+      "path": "r4b/runtime.py",
+      "old_sha256": "930f15eff6d72113ef07d091f9a427a028c75d80e66483ff57d767caa975fe1b",
+      "new_sha256": "995f6010833ce867bd77139390264de482f7d4bc764405bafeea404a69eb5685"
+    },
+    {
+      "path": "r4b/store.py",
+      "old_sha256": "45c6b1af3a29ccc066fbd3ac618c7fa5f74d13d6fe2affdaff9d7fb6fee58f0f",
+      "new_sha256": "c4f27a6bcfc9e8b2dfa63b2fe3dec674511755bf1c2fe407f288b54d752f111b"
+    },
+    {
+      "path": "tests/test_direct.py",
+      "old_sha256": "94f24c8e8d2c97b7e8eb19c65c179bbf4bcc3666cc1f8f793a3401cfd8c84a63",
+      "new_sha256": "438554de4c11442b6067d357b97fc6aeffdb9252d099cb40fb6fca8cb345d3ad"
+    },
+    {
+      "path": "tests/test_r2.py",
+      "old_sha256": null,
+      "new_sha256": "3bffc3e5b16c31ee69ed4206630fad3d5ab94f5899dce06227c07a9713f982d3"
+    }
+  ]
+}

@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime,timezone
 sys.dont_write_bytecode=True
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'reference_app'))
-from .diagnostics import reason
+from .diagnostics import reason,exception_fields
 from .api import Alpaca
 from .preparation import prepare_root,load
 from .runtime import policy_for,run
@@ -57,5 +57,5 @@ def main():
    parked_day=day
   return 0
  except Exception as e:
-  print(json.dumps({'stage':'IPR_FATAL','reason':reason(e)}),flush=True);return 2
+  print(json.dumps({'stage':'IPR_FATAL','reason':reason(e),**exception_fields(e)}),flush=True);return 2
 if __name__=='__main__':raise SystemExit(main())

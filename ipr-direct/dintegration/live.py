@@ -12,7 +12,10 @@ class LiveAdapter:
  def transport_trusted(self):return self.__trusted
  def checks(self):
   self.bridge.leadership.require_current()
-  if not self.clock_check() or not self.root_check():raise Blocked('ROOT_OR_CLOCK_UNPROVEN')
+  if not self.root_check():raise Blocked('ROOT_OR_CLOCK_UNPROVEN')
+  if not self.clock_check():
+   from .clock import ClockUnavailable
+   raise ClockUnavailable('ROOT_OR_CLOCK_UNPROVEN')
  def close_eligibility(self,reason):
   self.__trusted=False;self.c._set_transport_from_adapter(False,_LIVE_ADAPTER_AUTHORITY);self.failure=reason
  def revoke(self,reason):

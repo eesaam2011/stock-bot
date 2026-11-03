@@ -59,6 +59,14 @@ class StreamProof:
   # Successful original recovery removes the negative latch, NOT the need for
   # a new live BAR witness. Old revised data is never silently certified.
   with self.lock:self.invalid.pop(symbol,None);self.rows.pop(symbol,None)
+ def stored_count(self,s):
+  with self.lock:return len(self.rows.get(s,[]))
+ def live_count(self,s,now):
+  with self.lock:
+   if not self.valid or s not in self.scope or s in self.invalid:return 0
+   return sum(r['generation']==self.generation and instant(r['received_at'])<=now and instant(r['bar']['t'])+timedelta(minutes=1)<=now for r in self.rows.get(s,[]))
+ def witnessed(self,now):
+  with self.lock:return {s for s in self.scope if self.live_count(s,now)>0}
  def evidence(self,s,one,now):
   with self.lock:
    def fail(r):self.last_reason[s]=r;return {'proven':False,'reason':r,'TRADE_completeness':False}

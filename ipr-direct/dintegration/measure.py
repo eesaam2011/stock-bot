@@ -19,6 +19,9 @@ class Measurements:
   return {'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':{k:{'count':v['count'],'mean':v['total']/v['count'],'max':v['max']} for k,v in self.spans.items()},'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
  async def loop_lag(self,stop,period=.1):
   while not stop.is_set():
-   start=time.monotonic();await asyncio.sleep(period);self.observe('loop_lag',max(0,time.monotonic()-start-period))
+   start=time.monotonic();self.loop_tick=start;await asyncio.sleep(period);self.loop_last=max(0,time.monotonic()-start-period);self.observe('loop_lag',self.loop_last)
+ def current_loop_lag(self):
+  tick=getattr(self,'loop_tick',None);last=getattr(self,'loop_last',0.)
+  return None if tick is None else max(last,time.monotonic()-tick-.1,0.)
  def export(self,path):
   with open(path,'a') as f:f.write(json.dumps(self.sample(),allow_nan=False)+'\n')

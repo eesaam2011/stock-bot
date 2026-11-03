@@ -1,3 +1,4 @@
+from dintegration.timing import timed
 """Original frozen recovery routing; failures retain cases/pins, never invent outcomes."""
 import json
 from gap_recovery import reconcile_opportunity,active_trade_recovery_order
@@ -13,6 +14,7 @@ class CaseBarrier:
   self.epoch_guard=lambda: self.bridge.leadership.require_current()
  def records(self):
   return (self.bridge.records('operational_priority_radar:v1:trade:*','trade'),self.bridge.records('operational_priority_radar:v1:opportunity:*','opportunity'))
+ @timed('restore_pins')
  def restore_pins(self):
   p=self.bridge.p;old_U=set(p._entry_uncertain);trades,opps=self.records()
   active=[r for r in trades if r['state'] in ACTIVE]

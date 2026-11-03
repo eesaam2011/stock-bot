@@ -140,7 +140,7 @@ class MoreIntegration(unittest.TestCase):
   fake_sample=lambda:{'limit_bytes':512*1024**2,'current_bytes':10*1024**2,'anon_bytes':10*1024**2}
   with patch('ipr.runtime.cgroup_sample',fake_sample):r,state,clock,measure=build(bundle,NS(get=lambda *a:None),raw,{'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'},'boot')
   self.assertFalse(r.a.transport_trusted);self.assertFalse(state['ready']);self.assertEqual(r.boot_number,1);self.assertFalse(r.a.bridge.p.shadow)
-  self.assertEqual(r.a.bridge.p.ec.required_history_minutes(),305)
+  self.assertEqual(r.a.bridge.p.ec.required_history_minutes(),305);clock.close()
  def test_stream_buffer_rolls_per_symbol_not_global_invalid(self):
   from dintegration.stream_proof import StreamProof
   p=StreamProof();p.connected(started=OP);p.set_scope({'X','Y'});rows=[]
