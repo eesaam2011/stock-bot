@@ -24,19 +24,37 @@ def base_score(symbol,snapshot,history,volume,now,op,floats):
  return {'symbol':symbol,'score95':round(sum(parts.values()),12),'parts':parts,'rvol_linear_approx':ratio,'snapshot_ts':t.isoformat()}
 
 class Selection:
- def __init__(self):self.current=set();self.last=None
- def update(self,scores,pins,now):
+ def __init__(self):
+  self.current=set();self.last=None;self.window_start=None;self.used=0;self.pending=set();self.deferred_minutes={}
+ def update(self,scores,pins,now,blocked=False,utc_minute=None):
+  from .turnover import OPTIONAL_REPLACEMENTS,OPTIONAL_WINDOW_SECONDS
   pins=set(pins)
   if len(pins)>500:raise ValueError('PIN_CAP_CONFLICT_NO_DROP')
   available=500-len(pins)
-  if self.last is not None and now-self.last<120:
-   keep=sorted(self.current-pins,key=lambda s:(-scores.get(s,{'score':-1})['score'],s))[:available]
-   self.current=pins|set(keep);return sorted(self.current)
-  chosen=set(sorted((self.current&scores.keys())-pins,key=lambda s:(-scores[s]['score'],s))[:available])
-  for s in sorted(scores,key=lambda s:(-scores[s]['score'],s)):
-   if s in pins or s in chosen:continue
-   if len(chosen)<available:chosen.add(s);continue
-   if not chosen:break
-   worst=sorted(chosen,key=lambda s:(-scores[s]['score'],s))[-1]
-   if scores[s]['score']>=scores[worst]['score']+5:chosen.remove(worst);chosen.add(s)
-  self.current=pins|chosen;self.last=now;return sorted(self.current)
+  # Missing/invalid current scores cannot stay eligible for new entry. Pins persist.
+  valid=(self.current & scores.keys())-pins
+  chosen=set(sorted(valid,key=lambda s:(-scores[s]['score'],s))[:available])
+  if self.window_start is None or now-self.window_start>=OPTIONAL_WINDOW_SECONDS:
+   self.window_start=now;self.used=0
+  due=self.last is None or now-self.last>=120 or bool(self.pending)
+  self.pending=set();deferred=0
+  if not blocked and due:
+   for symbol in sorted(scores,key=lambda s:(-scores[s]['score'],s)):
+    if symbol in pins or symbol in chosen:continue
+    if len(chosen)<available:chosen.add(symbol);continue
+    if not chosen:break
+    worst=sorted(chosen,key=lambda s:(-scores[s]['score'],s))[-1]
+    if scores[symbol]['score']<scores[worst]['score']+5:continue
+    if self.used>=OPTIONAL_REPLACEMENTS:
+     self.pending.add(symbol);deferred+=1;continue
+    chosen.remove(worst);chosen.add(symbol);self.used+=1
+   self.last=now
+  elif blocked:
+   # Do not consume the valve or lose a pending overflow during ACK/recovery.
+   self.pending={symbol for symbol in scores if symbol not in chosen|pins}
+  self.current=pins|chosen
+  minute=utc_minute or str(int(now//60));self.deferred_minutes[minute]=deferred
+  while len(self.deferred_minutes)>6:self.deferred_minutes.pop(next(iter(self.deferred_minutes)))
+  return sorted(self.current)
+ def metrics(self):
+  return {'optional_replacements_in_window':self.used,'deferred_optional_replacements_by_minute':dict(self.deferred_minutes),'scope':'latest scan deferred count per minute; not cumulative repeated deferrals of unique symbols'}

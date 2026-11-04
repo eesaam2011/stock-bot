@@ -8,7 +8,7 @@ from .diagnostics import reason,exception_fields
 from .api import Alpaca
 from .preparation import prepare_root,load
 from .runtime import policy_for,run
-from r4a.parent import ProcessGuard
+from r4a.direct_parent import DirectProcessGuard as ProcessGuard
 from r4a.child_boundary import arm_parent_death
 from r4a.guards import cgroup_sample
 
@@ -28,7 +28,8 @@ def main():
   import redis
   from redis.retry import Retry
   from redis.backoff import NoBackoff
-  client=redis.Redis.from_url(env['REDIS_URL'],decode_responses=True,socket_timeout=5,socket_connect_timeout=5,retry_on_timeout=False,retry=Retry(NoBackoff(),0));api=Alpaca(env)
+  from .observability import RedisTelemetry
+  client=RedisTelemetry(redis.Redis.from_url(env['REDIS_URL'],decode_responses=True,socket_timeout=5,socket_connect_timeout=5,retry_on_timeout=False,retry=Retry(NoBackoff(),0)));api=Alpaca(env)
   if args.child:
    bundle=load(client,'root:'+args.session)
    if not bundle:raise ValueError('PREP_ROOT_MISSING')

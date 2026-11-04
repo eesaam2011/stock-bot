@@ -5,7 +5,11 @@ class ClockProof:
  """Atomic proof; independent refresh worker; validity is still ten seconds."""
  def __init__(self,server_time,emit=None,loop_lag=None):
   self.server_time=server_time;self.emit=emit or (lambda row:print(json.dumps(row),flush=True));self.loop_lag=loop_lag or (lambda:None)
+  self.refresh_started=None;self.refresh_finished=None;self.refresh_thread=None;self.refresh_seconds=None
   self._state=(None,0.,None,None,None);self._stop=threading.Event();self._thread=None
+ def heartbeat_snapshot(self):
+  now=time.monotonic()
+  return {'thread_id':self.refresh_thread,'last_start_monotonic':self.refresh_started,'last_end_monotonic':self.refresh_finished,'last_attempt_seconds':self.refresh_seconds,'age_since_start_seconds':None if self.refresh_started is None else now-self.refresh_started,'in_progress':self.refresh_started is not None and (self.refresh_finished is None or self.refresh_finished<self.refresh_started)}
  def snapshot(self):
   u,until,last,rtt,error=self._state;now=time.monotonic()
   return {'last_success_age_seconds':None if last is None else now-last,'uncertainty_seconds':u,'rtt_seconds':rtt,'proof_remaining_seconds':max(0.,until-now),'refresh_error_type':error,'loop_lag_seconds':self.loop_lag()}
@@ -14,14 +18,24 @@ class ClockProof:
   except Exception:pass # Observability cannot change proof result.
  def refresh(self):
   start=time.time();m=time.monotonic();old=self._state
+  self.refresh_started=m;self.refresh_thread=threading.get_ident()
+  try:self.emit({'stage':'CLOCK_REFRESH_BEGIN','monotonic':m,'thread_id':self.refresh_thread})
+  except Exception:pass
   try:
-   remote=self.server_time();end=time.time();rtt=time.monotonic()-m;server=float(remote[0])+float(remote[1])/1000000
+   from ipr.observability import observed_phase
+   with observed_phase('clock.refresh'):remote=self.server_time()
+   end=time.time();rtt=time.monotonic()-m;server=float(remote[0])+float(remote[1])/1000000
    u=abs(server-(start+end)/2)+(end-start)/2;ok=u<=1 and end>=start
    now=time.monotonic();self._state=(u,now+10 if ok else 0.,now if ok else old[2],rtt,None)
   except Exception as e:
-   self._state=(old[0],0.,old[2],time.monotonic()-m,type(e).__module__+'.'+type(e).__qualname__);self.failed();raise
+   self._state=(old[0],0.,old[2],time.monotonic()-m,type(e).__module__+'.'+type(e).__qualname__);self.failed();self._refresh_end(m,False);raise
   if not ok:self.failed()
+  self._refresh_end(m,ok)
   return ok
+ def _refresh_end(self,start,ok):
+  self.refresh_finished=time.monotonic();self.refresh_seconds=self.refresh_finished-start
+  try:self.emit({'stage':'CLOCK_REFRESH_END','monotonic':self.refresh_finished,'duration_seconds':self.refresh_seconds,'success':ok,'thread_id':self.refresh_thread})
+  except Exception:pass
  def check(self):
   u,until,_,_,_=self._state;ok=u is not None and u<=1 and time.monotonic()<until
   if not ok:self.failed()

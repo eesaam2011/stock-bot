@@ -1,0 +1,1141 @@
+--- a/dintegration/bridge.py
++++ b/dintegration/bridge.py
+@@ -1,7 +1,8 @@
+ """Caller-side integration with byte-identical original decision modules."""
+ from pathlib import Path
+ from datetime import datetime,timezone
+-import sys,json
++import sys,json,threading
++from contextlib import contextmanager
+ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'reference_app'))
+ from production_pipeline import ProductionDecisionPipeline
+ from production_adapters import OperationalEarlyCore,OperationalBaseReady
+@@ -10,7 +11,7 @@
+ from dreview.core import Needs
+ class OriginalBridge:
+  def __init__(self,r,lua,leadership,session,root_symbols,rest,worker,session_policy):
+-  self.r=r;self.leadership=leadership;self.rest=rest;self.needs_revision=0
++  self.r=r;self.leadership=leadership;self.rest=rest;self.needs_revision=0;self._preload_local=threading.local()
+   self.p=ProductionDecisionPipeline(r,lua,leadership,session,sorted(root_symbols),OperationalEarlyCore(rest),OperationalBaseReady(),rest,worker,shadow=False)
+   self.p.signal_gate=SignalAdmission(session,session_policy)
+  def records(self,pattern,typ):return self.p._scan_records(pattern,typ)
+@@ -23,9 +24,45 @@
+  def needs(self,recovery_symbols=()):
+   self.leadership.require_current();self.needs_revision+=1
+   return Needs(self.needs_revision,bar=frozenset(),O=frozenset(self.p._entry_opportunities),A=frozenset(self.p._active_by_symbol),U=frozenset(self.p._entry_uncertain),R=frozenset(recovery_symbols))
++ @contextmanager
++ def staged_preload(self):
++  from production_adapters import OperationalBaseReady
++  from signal_admission import PackedHistory
++  target=OperationalBaseReady();self._preload_local.target=target;self._preload_local.baselines={}
++  try:yield target.history
++  finally:self._preload_local.target=None
+  def preload(self,one):
++  target=getattr(self._preload_local,'target',None)
++  if target is None:target=self.p.br
++  else:
++   from signal_admission import PackedHistory
++   for s in one:
++    old=self.p.br.history.get(s)
++    self._preload_local.baselines[s]=(old,tuple(old.rows) if old is not None else None)
++    if old is not None:
++     clone=PackedHistory(maxlen=60)
++     import pickle
++     for raw in self._preload_local.baselines[s][1]:clone.append(pickle.loads(raw))
++     target.history[s]=clone
+   for s,rows in one.items():
+-   for b in rows:self.p.br.accumulate_only(s,b)
++   for b in rows:target.accumulate_only(s,b)
++ def publish_preload(self,staged):
++  for s,(old,raw_rows) in self._preload_local.baselines.items():
++   current=self.p.br.history.get(s)
++   if current is not old or (current is not None and tuple(current.rows)!=raw_rows):raise ValueError('HISTORY_CHANGED_DURING_PRELOAD')
++  self.p.br.history.update(staged)
++ def discard_preload_stage(self):self._preload_local.baselines={}
++ def release_unused_history(self,controller,recovering,recovery_symbols=()):
++  # Only the BASE_READY buffer is discarded; canonical records/outbox are untouched.
++  # Serialize with original BAR/native readers. Preserve every open/uncertain case.
++  with self.p._decision_lock:
++   keep=set(controller.bar)|set(controller.desired_bar)|set(recovering)|set(recovery_symbols)
++   keep.update(self.p._entry_opportunities);keep.update(self.p._active_by_symbol);keep.update(self.p._entry_uncertain)
++   if controller.needs:keep.update(controller.needs.pins)
++   if controller.inflight:keep.update(controller.inflight['after_bar'])
++   released=set(self.p.br.history)-keep
++   for s in released:self.p.br.release_symbol(s)
++   return released
+  def native_cycle(self,symbols,now,allowed):
+   self.leadership.require_current();old=self.p.symbols;self.p.symbols=sorted(symbols)
+   try:return self.p.poll_native5(now,allowed)
+--- a/dintegration/clock.py
++++ b/dintegration/clock.py
+@@ -5,7 +5,11 @@
+  """Atomic proof; independent refresh worker; validity is still ten seconds."""
+  def __init__(self,server_time,emit=None,loop_lag=None):
+   self.server_time=server_time;self.emit=emit or (lambda row:print(json.dumps(row),flush=True));self.loop_lag=loop_lag or (lambda:None)
++  self.refresh_started=None;self.refresh_finished=None;self.refresh_thread=None;self.refresh_seconds=None
+   self._state=(None,0.,None,None,None);self._stop=threading.Event();self._thread=None
++ def heartbeat_snapshot(self):
++  now=time.monotonic()
++  return {'thread_id':self.refresh_thread,'last_start_monotonic':self.refresh_started,'last_end_monotonic':self.refresh_finished,'last_attempt_seconds':self.refresh_seconds,'age_since_start_seconds':None if self.refresh_started is None else now-self.refresh_started,'in_progress':self.refresh_started is not None and (self.refresh_finished is None or self.refresh_finished<self.refresh_started)}
+  def snapshot(self):
+   u,until,last,rtt,error=self._state;now=time.monotonic()
+   return {'last_success_age_seconds':None if last is None else now-last,'uncertainty_seconds':u,'rtt_seconds':rtt,'proof_remaining_seconds':max(0.,until-now),'refresh_error_type':error,'loop_lag_seconds':self.loop_lag()}
+@@ -14,14 +18,24 @@
+   except Exception:pass # Observability cannot change proof result.
+  def refresh(self):
+   start=time.time();m=time.monotonic();old=self._state
++  self.refresh_started=m;self.refresh_thread=threading.get_ident()
++  try:self.emit({'stage':'CLOCK_REFRESH_BEGIN','monotonic':m,'thread_id':self.refresh_thread})
++  except Exception:pass
+   try:
+-   remote=self.server_time();end=time.time();rtt=time.monotonic()-m;server=float(remote[0])+float(remote[1])/1000000
++   from ipr.observability import observed_phase
++   with observed_phase('clock.refresh'):remote=self.server_time()
++   end=time.time();rtt=time.monotonic()-m;server=float(remote[0])+float(remote[1])/1000000
+    u=abs(server-(start+end)/2)+(end-start)/2;ok=u<=1 and end>=start
+    now=time.monotonic();self._state=(u,now+10 if ok else 0.,now if ok else old[2],rtt,None)
+   except Exception as e:
+-   self._state=(old[0],0.,old[2],time.monotonic()-m,type(e).__module__+'.'+type(e).__qualname__);self.failed();raise
++   self._state=(old[0],0.,old[2],time.monotonic()-m,type(e).__module__+'.'+type(e).__qualname__);self.failed();self._refresh_end(m,False);raise
+   if not ok:self.failed()
++  self._refresh_end(m,ok)
+   return ok
++ def _refresh_end(self,start,ok):
++  self.refresh_finished=time.monotonic();self.refresh_seconds=self.refresh_finished-start
++  try:self.emit({'stage':'CLOCK_REFRESH_END','monotonic':self.refresh_finished,'duration_seconds':self.refresh_seconds,'success':ok,'thread_id':self.refresh_thread})
++  except Exception:pass
+  def check(self):
+   u,until,_,_,_=self._state;ok=u is not None and u<=1 and time.monotonic()<until
+   if not ok:self.failed()
+--- a/dintegration/measure.py
++++ b/dintegration/measure.py
+@@ -18,10 +18,12 @@
+   except OSError:pass
+   cores=(cpu-self.last_cpu)/(now-self.last_wall) if self.last_wall is not None and now>self.last_wall else None;self.last_cpu=cpu;self.last_wall=now
+   with self.guard:span_copy={k:{'count':v['count'],'mean':v['total']/v['count'],'max':v['max']} for k,v in self.spans.items()}
+-  return {'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
++  from ipr.observability import OBS
++  return {'R7_diagnostics':OBS.snapshot(),'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
+  async def loop_lag(self,stop,period=.1):
+   while not stop.is_set():
+-   start=time.monotonic();self.loop_tick=start;await asyncio.sleep(period);self.loop_last=max(0,time.monotonic()-start-period);self.observe('loop_lag',self.loop_last)
++   from ipr.observability import OBS
++   OBS.tick_loop();start=time.monotonic();self.loop_tick=start;await asyncio.sleep(period);self.loop_last=max(0,time.monotonic()-start-period);self.observe('loop_lag',self.loop_last)
+  def current_loop_lag(self):
+   tick=getattr(self,'loop_tick',None);last=getattr(self,'loop_last',0.)
+   return None if tick is None else max(last,time.monotonic()-tick-.1,0.)
+--- a/dintegration/stream_proof.py
++++ b/dintegration/stream_proof.py
+@@ -24,6 +24,8 @@
+    ss=set(symbols)
+    if len(ss)>self.MAX_SYMBOLS:raise ValueError('EVIDENCE_SYMBOL_CAP')
+    self.scope=ss
++   self.invalid={s:v for s,v in self.invalid.items() if s in ss}
++   self.last_reason={s:v for s,v in self.last_reason.items() if s in ss}
+    for s in list(self.rows):
+     if s not in ss:self.rows.pop(s);self.invalid.pop(s,None)
+  def invalidate(self,symbol=None,reason='DISCONNECT'):
+--- a/dreview/core.py
++++ b/dreview/core.py
+@@ -1,4 +1,7 @@
+ from dataclasses import dataclass,field
++from collections import deque
++import threading
++from contextlib import contextmanager
+ import hashlib,json,math
+ from pathlib import Path
+ SPEC_SHA='ac787471d49c742051f3a2d10b2064f467c51d46d7b3fbc3fa5d05b4d5bb1a4a'
+@@ -51,7 +54,7 @@
+  def __init__(self,root,control_timeout=10):
+   root.check()
+   if control_timeout!=10:raise Blocked('CONTROL_LIMIT_CHANGED')
+-  self.root=root;self.connection=0;self.revision=0;self.needs_revision=-1;self.bar=set();self.trade=set();self.desired_bar=set();self.desired_trade=set();self.inflight=None;self.failed=True;self._transport_trusted=False;self.proofs={};self.needs=None;self.journal=[]
++  self.root=root;self.connection=0;self.revision=0;self.needs_revision=-1;self.bar=set();self.trade=set();self.desired_bar=set();self.desired_trade=set();self.inflight=None;self.failed=True;self._transport_trusted=False;self.proofs={};self.needs=None;self.journal=deque(maxlen=128);self.audit_sequence=0;self._evidence_local=threading.local()
+  @property
+  def transport_trusted(self):return self._transport_trusted
+  def _set_transport_from_adapter(self,value,authority):
+@@ -106,16 +109,25 @@
+  def attest(self,s,*,history,continuity,reconciled,first_trade=False):
+   if s not in self.bar or self.failed:raise Blocked('NO_CONFIRMED_BAR')
+   # Evidence flags must be supplied by audited adapters; this component cannot verify market truth.
+-  self.proofs[s]={'connection':self.connection,'history':history is True,'continuity':continuity is True,'reconciled':reconciled is True,'first_trade':first_trade is True}
+-  self._log('symbol_evidence')
++  proof={'connection':self.connection,'history':history is True,'continuity':continuity is True,'reconciled':reconciled is True,'first_trade':first_trade is True}
++  target=getattr(self._evidence_local,'target',None)
++  if target is not None:target[s]=proof;return
++  self.proofs[s]=proof
++  self._log('symbol_evidence',symbol=s,proof=proof)
+  def can_entry(self,s):
+   p=self.proofs.get(s,{})
+   return bool(not self.failed and self.transport_trusted and self.needs and s in self.needs.O and s in self.bar and s in self.trade and p.get('connection')==self.connection and all(p.get(k) for k in ['history','continuity','reconciled','first_trade']))
+  def epoch(self):
+   return {'schema':'D_REVIEW_EPOCH_V1','session':self.root.session,'root_hash':self.root.identity(),'selector_spec_sha256':SPEC_SHA,'connection_generation':self.connection,'revision':self.revision,'needs_revision':self.needs_revision,'desired_bar':sorted(self.desired_bar),'confirmed_bar':sorted(self.bar),'desired_trade':sorted(self.desired_trade),'confirmed_trade':sorted(self.trade),'desired_bar_sha256':digest(sorted(self.desired_bar)),'confirmed_bar_sha256':digest(sorted(self.bar)),'desired_trade_sha256':digest(sorted(self.desired_trade)),'confirmed_trade_sha256':digest(sorted(self.trade)),'inflight':None if not self.inflight else {k:sorted(v) if isinstance(v,set) else v for k,v in self.inflight.items()},'transport_trusted':self.transport_trusted,'control_failed':self.failed,'symbol_evidence':json.loads(json.dumps(self.proofs)),'evidence_authority':'external audited adapters required; booleans alone not production trust'}
+ 
+- def _log(self,kind,now=None):
+-  entry={'sequence':len(self.journal)+1,'event':kind,'observed_time':now,'previous_sha256':self.journal[-1]['sha256'] if self.journal else None,'epoch':self.epoch()}
++ @contextmanager
++ def stage_evidence(self):
++  target={};self._evidence_local.target=target
++  try:yield target
++  finally:self._evidence_local.target=None
++ def _log(self,kind,now=None,**delta):
++  self.audit_sequence+=1
++  entry={'schema':'D_CONTROLLER_AUDIT_V2','sequence':self.audit_sequence,'event':kind,'observed_time':now,'connection':self.connection,'revision':self.revision,'previous_sha256':self.journal[-1]['sha256'] if self.journal else None,**delta}
+   entry['sha256']=digest(entry);self.journal.append(entry)
+  def journal_jsonl(self):
+   return ''.join(json.dumps(x,sort_keys=True,allow_nan=False)+'\n' for x in self.journal)
+--- a/ipr/api.py
++++ b/ipr/api.py
+@@ -35,7 +35,8 @@
+      if r.status!=200:raise APIError('HTTP_NOT_200')
+      raw=r.read(32*1024*1024+1)
+      if len(raw)>32*1024*1024:raise APIError('RESPONSE_TOO_LARGE')
+-     return json.loads(raw)
++     from .observability import observed_phase
++     with observed_phase('rest.JSON'):return json.loads(raw)
+   except APIError:raise
+   except urllib.error.HTTPError as exc:raise APIError('ALPACA_HTTP_'+str(exc.code)) from None
+   except Exception:raise APIError('ALPACA_READ_FAILED') from None
+--- a/ipr/main.py
++++ b/ipr/main.py
+@@ -28,7 +28,8 @@
+   import redis
+   from redis.retry import Retry
+   from redis.backoff import NoBackoff
+-  client=redis.Redis.from_url(env['REDIS_URL'],decode_responses=True,socket_timeout=5,socket_connect_timeout=5,retry_on_timeout=False,retry=Retry(NoBackoff(),0));api=Alpaca(env)
++  from .observability import RedisTelemetry
++  client=RedisTelemetry(redis.Redis.from_url(env['REDIS_URL'],decode_responses=True,socket_timeout=5,socket_connect_timeout=5,retry_on_timeout=False,retry=Retry(NoBackoff(),0)));api=Alpaca(env)
+   if args.child:
+    bundle=load(client,'root:'+args.session)
+    if not bundle:raise ValueError('PREP_ROOT_MISSING')
+--- a/ipr/observability.py
++++ b/ipr/observability.py
+@@ -0,0 +1,90 @@
++"""Bounded diagnostics only. Never stores keys, values, credentials, or frame locals."""
++import contextlib,math,threading,time
++from collections import deque
++
++BINS=(.0001,.0005,.001,.002,.005,.01,.02,.05,.1,.25,.5,1.,2.,5.,10.,30.)
++class Diagnostics:
++ def __init__(self):
++  self.lock=threading.Lock();self.local=threading.local();self.phases={};self.phase_stats={};self.redis={};self.clock=None
++  self.loop_heartbeat=None;self.loop_thread=None;self.max_pause=0.;self.pauses=deque(maxlen=8)
++ @contextlib.contextmanager
++ def phase(self,name):
++  tid=threading.get_ident();start=time.monotonic();old=getattr(self.local,'operation',None)
++  self.local.operation=(old+'>'+name) if old else name
++  with self.lock:prior=self.phases.get(tid);self.phases[tid]=(name,start)
++  try:yield
++  finally:
++   with self.lock:
++    if prior is None:self.phases.pop(tid,None)
++    else:self.phases[tid]=prior
++    key=name if name in self.phase_stats or len(self.phase_stats)<96 else 'overflow'
++    d=self.phase_stats.setdefault(key,{'count':0,'total_seconds':0.,'max_seconds':0.})
++    elapsed=time.monotonic()-start;d['count']+=1;d['total_seconds']+=elapsed;d['max_seconds']=max(d['max_seconds'],elapsed);d['last_seconds']=elapsed
++   self.local.operation=old
++ def record_redis(self,command,seconds):
++  name=getattr(self.local,'operation',None)
++  if name is None:
++   from contention_probe import TLS
++   name=getattr(TLS,'operation',None) or 'unlabelled'
++  key=(command,name)
++  with self.lock:
++   if key not in self.redis and len(self.redis)>=96:key=('OTHER','overflow')
++   d=self.redis.setdefault(key,{'count':0,'sum':0.,'max':0.,'bins':[0]*(len(BINS)+1)})
++   d['count']+=1;d['sum']+=seconds;d['max']=max(d['max'],seconds)
++   d['bins'][next((i for i,b in enumerate(BINS) if seconds<=b),len(BINS))]+=1
++ def tick_loop(self):self.loop_heartbeat=time.monotonic();self.loop_thread=threading.get_ident()
++ def snapshot(self):
++  now=time.monotonic()
++  with self.lock:
++   redis=[]
++   for (cmd,op),d in sorted(self.redis.items()):
++    target=math.ceil(.95*d['count']);total=0;p95=None
++    for i,n in enumerate(d['bins']):
++     total+=n
++     if total>=target:p95=BINS[i] if i<len(BINS) else d['max'];break
++    redis.append({'command':cmd,'operation':op,'count':d['count'],'mean_seconds':d['sum']/d['count'],'p95_upper_seconds':p95,'max_seconds':d['max']})
++   phases=[{'thread_id':t,'phase':v[0],'elapsed_seconds':now-v[1]} for t,v in self.phases.items()]
++   pauses=list(self.pauses)
++   phase_stats={key:{**v,'mean_seconds':v['total_seconds']/v['count']} for key,v in self.phase_stats.items()}
++  return {'REDIS_RTT':redis,'redis_scope':'Client command elapsed including connection-pool/client wait, excluding application decision/journal lock wait; not pure network RTT. p95 histogram upper bound. No keys/values.',
++    'loop_heartbeat_age_seconds':None if self.loop_heartbeat is None else now-self.loop_heartbeat,'loop_thread_id':self.loop_thread,
++    'clock_thread':None if self.clock is None else self.clock.heartbeat_snapshot(),'active_phases':phases,'phase_durations':phase_stats,'largest_pause_observed_seconds':self.max_pause,
++    'pause_observations':pauses,'phase_is_proven_cause':False}
++OBS=Diagnostics()
++def observed_phase(name):return OBS.phase(name)
++
++class RedisTelemetry:
++ """One measurement per invoked client command; no argument retention."""
++ COMMANDS={'get','set','mget','eval','evalsha','hget','hset','hlen','hmget','scan','exists','time','ttl','incr','delete','ping'}
++ def __init__(self,raw,diagnostics=OBS):self.raw=raw;self.diagnostics=diagnostics
++ def __getattr__(self,name):
++  original=getattr(self.raw,name)
++  if name not in self.COMMANDS:return original
++  def measured(*a,**kw):
++   start=time.monotonic()
++   try:return original(*a,**kw)
++   finally:self.diagnostics.record_redis(name.upper(),time.monotonic()-start)
++  return measured
++
++class PauseObserver:
++ """Observer can itself be delayed by GIL/throttling; correlation is not attribution."""
++ def __init__(self,probe,emit,diagnostics=OBS):self.probe=probe;self.emit=emit;self.d=diagnostics;self.stop=threading.Event();self.thread=None
++ def start(self):
++  def watch():
++   fired=False
++   while not self.stop.wait(.1):
++    tick=self.d.loop_heartbeat
++    if tick is None:continue
++    age=time.monotonic()-tick;self.d.max_pause=max(self.d.max_pause,age)
++    if age<=.5:fired=False;continue
++    if fired:continue
++    fired=True;s=self.d.snapshot()
++    row={'stage':'LOOP_PAUSE_OBSERVED','loop_heartbeat_age_seconds':age,'active_phases':s['active_phases'],'clock_thread':s['clock_thread'],'cause':'UNPROVEN'}
++    with self.d.lock:self.d.pauses.append(row)
++    try:self.emit(row)
++    except Exception:pass
++    if self.probe is not None:self.probe.request('LOOP_HEARTBEAT_OVER_0_5_SECONDS',token=('r7-loop',tick))
++  self.thread=threading.Thread(target=watch,name='ipr-pause-observer',daemon=True);self.thread.start()
++ def close(self):
++  self.stop.set()
++  if self.thread:self.thread.join(timeout=1)
+--- a/ipr/ranking.py
++++ b/ipr/ranking.py
+@@ -24,19 +24,37 @@
+  return {'symbol':symbol,'score95':round(sum(parts.values()),12),'parts':parts,'rvol_linear_approx':ratio,'snapshot_ts':t.isoformat()}
+ 
+ class Selection:
+- def __init__(self):self.current=set();self.last=None
+- def update(self,scores,pins,now):
++ def __init__(self):
++  self.current=set();self.last=None;self.window_start=None;self.used=0;self.pending=set();self.deferred_minutes={}
++ def update(self,scores,pins,now,blocked=False,utc_minute=None):
++  from .turnover import OPTIONAL_REPLACEMENTS,OPTIONAL_WINDOW_SECONDS
+   pins=set(pins)
+   if len(pins)>500:raise ValueError('PIN_CAP_CONFLICT_NO_DROP')
+   available=500-len(pins)
+-  if self.last is not None and now-self.last<120:
+-   keep=sorted(self.current-pins,key=lambda s:(-scores.get(s,{'score':-1})['score'],s))[:available]
+-   self.current=pins|set(keep);return sorted(self.current)
+-  chosen=set(sorted((self.current&scores.keys())-pins,key=lambda s:(-scores[s]['score'],s))[:available])
+-  for s in sorted(scores,key=lambda s:(-scores[s]['score'],s)):
+-   if s in pins or s in chosen:continue
+-   if len(chosen)<available:chosen.add(s);continue
+-   if not chosen:break
+-   worst=sorted(chosen,key=lambda s:(-scores[s]['score'],s))[-1]
+-   if scores[s]['score']>=scores[worst]['score']+5:chosen.remove(worst);chosen.add(s)
+-  self.current=pins|chosen;self.last=now;return sorted(self.current)
++  # Missing/invalid current scores cannot stay eligible for new entry. Pins persist.
++  valid=(self.current & scores.keys())-pins
++  chosen=set(sorted(valid,key=lambda s:(-scores[s]['score'],s))[:available])
++  if self.window_start is None or now-self.window_start>=OPTIONAL_WINDOW_SECONDS:
++   self.window_start=now;self.used=0
++  due=self.last is None or now-self.last>=120 or bool(self.pending)
++  self.pending=set();deferred=0
++  if not blocked and due:
++   for symbol in sorted(scores,key=lambda s:(-scores[s]['score'],s)):
++    if symbol in pins or symbol in chosen:continue
++    if len(chosen)<available:chosen.add(symbol);continue
++    if not chosen:break
++    worst=sorted(chosen,key=lambda s:(-scores[s]['score'],s))[-1]
++    if scores[symbol]['score']<scores[worst]['score']+5:continue
++    if self.used>=OPTIONAL_REPLACEMENTS:
++     self.pending.add(symbol);deferred+=1;continue
++    chosen.remove(worst);chosen.add(symbol);self.used+=1
++   self.last=now
++  elif blocked:
++   # Do not consume the valve or lose a pending overflow during ACK/recovery.
++   self.pending={symbol for symbol in scores if symbol not in chosen|pins}
++  self.current=pins|chosen
++  minute=utc_minute or str(int(now//60));self.deferred_minutes[minute]=deferred
++  while len(self.deferred_minutes)>6:self.deferred_minutes.pop(next(iter(self.deferred_minutes)))
++  return sorted(self.current)
++ def metrics(self):
++  return {'optional_replacements_in_window':self.used,'deferred_optional_replacements_by_minute':dict(self.deferred_minutes),'scope':'latest scan deferred count per minute; not cumulative repeated deferrals of unique symbols'}
+--- a/ipr/runtime.py
++++ b/ipr/runtime.py
+@@ -57,7 +57,7 @@
+ 
+ def _build(bundle,api,redis,env,boot,clock,measure):
+  import runtime_provenance
+- runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R2'
++ runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R7'
+  policy=policy_for(bundle);root=Root(bundle['session'],frozenset(bundle['symbols']),policy.frozen_manifest_sha256,True)
+  cls=Classifier(bundle['assets']);rest=MarketREST(api.get,root,measure);prepared={'ready':False,'history':None,'scan_ok':False}
+  def authorize():
+@@ -89,6 +89,8 @@
+  r.ingress_factory=partial(ObservedIngress,diagnostics=r.wave)
+  api.before_request=r.heavy_window.before_request
+  api.request_allowed=r.heavy_window.request_allowed
++ from .observability import OBS
++ OBS.clock=clock
+  r.boot_number=base.boot_number
+  return r,prepared,clock,measure
+ 
+@@ -106,6 +108,8 @@
+ 
+ async def run(bundle,api,redis,env,boot):
+  r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
++ from .observability import PauseObserver
++ observer=PauseObserver(getattr(p,'contention_probe',None),lambda row:print(json.dumps(row),flush=True));observer.start()
+  sender=Sender(r,redis,env);floats=FloatReader(env,requests.get);news=BatchNews(env,requests.post);selection=Selection()
+  print(json.dumps({'stage':'GUARD_BOOT_CLAIMED','boot':r.boot_number,'max_boots':4,'mode':'TELEGRAM_ALERTS_ONLY'}),flush=True)
+  async def prepare():
+@@ -150,8 +154,9 @@
+       if (end-volumes.watermark).total_seconds()>60:raise ValueError('RTH_VOLUME_STALE')
+       scores={s:v for s,v in scores.items() if 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60}
+       with p._decision_lock:needs=r.a.bridge.needs(recovery_symbols=r.a.barrier.persisted_R)
+-      target=selection.update(scores,needs.pins,time.monotonic())
+-      with r.a.control_lock:r.planner.propose(needs,set(target))
++      blocked=bool(r.c.desired_bar) and (bool(r.c.inflight) or r.recovery_running or bool(r.a.recovering) or not r.a.transport_trusted)
++      target=selection.update(scores,needs.pins,time.monotonic(),blocked=blocked,utc_minute=end.replace(second=0,microsecond=0).isoformat())
++      r.planner.propose(needs,set(target))
+       save(redis,'scan:'+bundle['session'],{'at':end.isoformat(),'selected':target,'root_symbols':len(bundle['eligible']),'scores':{s:scores[s] for s in target if s in scores},'rth_watermark':volumes.watermark.isoformat(),'linear_approximation':True})
+       state['scan_ok']=True;state['scan_at']=r.wall()
+       print(json.dumps({'stage':'IPR_SCAN','at':end.isoformat(),'ranked':len(scores),'BAR_desired':len(target),'news_candidates':len(top),'api_requests':api.requests,'duration_seconds':time.monotonic()-start}),flush=True)
+@@ -175,7 +180,7 @@
+    await pause(r.stop,1.)
+  async def metrics():
+   while not r.stop.is_set():
+-   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok']}),flush=True)
++   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics()}),flush=True)
+    await pause(r.stop,60.)
+  import signal
+  loop=asyncio.get_running_loop()
+@@ -194,4 +199,4 @@
+   for t in tasks:t.cancel()
+   try:await asyncio.wait_for(asyncio.gather(*tasks,return_exceptions=True),timeout=60.)
+   except asyncio.TimeoutError:raise RuntimeError('PARENT_KILL_REQUIRED')
+-  finally:getattr(clock,'close',lambda:None)()
++  finally:observer.close();getattr(clock,'close',lambda:None)()
+--- a/ipr/turnover.py
++++ b/ipr/turnover.py
+@@ -0,0 +1,3 @@
++"""R7 optional replacement safety valve. Not an alert/safety deadline."""
++OPTIONAL_REPLACEMENTS=100
++OPTIONAL_WINDOW_SECONDS=60.0
+--- a/r4a/decision_metrics.py
++++ b/r4a/decision_metrics.py
+@@ -16,7 +16,10 @@
+    with operation(self.raw,name):yield
+   finally:self.local.operation=old
+  def acquire(self,blocking=True,timeout=-1):
+-  ok=self.raw.acquire(blocking,timeout)
++  start=time.monotonic();ok=self.raw.acquire(blocking,timeout)
++  wait=time.monotonic()-start
++  with self.guard:
++   name='lock_wait:'+getattr(self.local,'operation','unlabelled');r=self.stats.setdefault(name,{'count':0,'total_seconds':0.,'max_seconds':0.});r['count']+=1;r['total_seconds']+=wait;r['max_seconds']=max(r['max_seconds'],wait)
+   if ok:
+    if not hasattr(self.local,'frames'):self.local.frames=[]
+    self.local.frames.append((getattr(self.local,'operation','unlabelled'),time.monotonic()))
+--- a/r4a/redis_ports.py
++++ b/r4a/redis_ports.py
+@@ -1,5 +1,5 @@
+ """Original leadership semantics, isolated physical Redis namespace."""
+-from leadership import LeadershipManager
++from leadership import LeadershipManager,NotLeader,StaleLeaderGeneration
+ from redis_lua_production import ProductionRedisLua
+ from dintegration.persistence import NamespacedRedis
+ from .durable import PREFIX
+@@ -11,7 +11,19 @@
+  def compare_and_renew(self,worker,ttl):
+   self.lua.renew(worker,ttl);return True
+  def compare_and_delete(self,worker):return self.lua.release(worker)
++ def current_identity(self):
++  owner,generation=self.r.mget([self.lua.leader_key,self.lua.generation_key])
++  return (owner.decode() if isinstance(owner,bytes) else owner,int(generation or 0))
+  def current_owner(self):
+   v=self.r.get(self.lua.leader_key);return v.decode() if isinstance(v,bytes) else v
+  def current_generation(self):return int(self.r.get(self.lua.generation_key) or 0)
+-def leadership(client,worker):return LeadershipManager(LeaseBackend(client),worker)
++class AtomicLeadershipManager(LeadershipManager):
++ def require_current(self):
++  if self.token is None:raise NotLeader('no leadership token')
++  owner,generation=self.backend.current_identity()
++  if owner!=self.worker_instance_id:
++   self.token=None;raise NotLeader('lease ownership lost')
++  if generation!=self.token.leader_generation:raise StaleLeaderGeneration('stale fencing generation')
++  return self.token
++
++def leadership(client,worker):return AtomicLeadershipManager(LeaseBackend(client),worker)
+--- a/r4a/runtime.py
++++ b/r4a/runtime.py
+@@ -50,7 +50,11 @@
+   # Close entry eligibility in memory BEFORE any failing Redis operation.
+   self.a.close_eligibility(reason)
+  def checkpoint(self,reason):
+-  self.state.append_epoch({'reason':reason,'controller':self.c.epoch()})
++  lock=getattr(self.a,'control_lock',None)
++  if lock is None:epoch=self.c.epoch()
++  else:
++   with lock:epoch=self.c.epoch()
++  self.state.append_epoch({'reason':reason,'controller':epoch})
+  def check_session(self):
+   self.authorize()
+   if not self.policy.time_allows(self.wall().timestamp()):raise SafetyStop('SESSION_CLOSED')
+@@ -61,13 +65,13 @@
+   self.checkpoint('DESIRED_UPDATED')
+  async def _writer(self):
+   while not self.stop.is_set():
+-   self.check_session();self.control.tick()
++   self.check_session();await asyncio.to_thread(self.control.tick)
+    if self.c.failed:raise SafetyStop('CONTROL_FAILED')
+    if self.auth:
+-    p=self.control.plan()
++    p=await asyncio.to_thread(self.control.plan)
+     if p:
+      # Record intent before send; crash/timeout => reconnect and re-ACK, never restore inflight trust.
+-     self.checkpoint('CONTROL_INTENT')
++     await asyncio.to_thread(self.checkpoint,'CONTROL_INTENT')
+      wire=dict(p)
+      if p['action']=='subscribe':wire['statuses']=['*']
+      # Unsubscribe only the named BAR/TRADE deltas; keep the status channel.
+@@ -87,8 +91,8 @@
+      continue
+     if kind=='subscription':
+      if not self.auth or set(msg.get('statuses',[]))!={'*'}:raise SafetyStop('UNPROVEN_ACK')
+-     if not self.control.ack(self.c.connection,msg.get('bars',[]),msg.get('trades',[])):raise SafetyStop('ACK_REJECTED')
+-     self.deadline.ack();self.checkpoint('ACK_CONFIRMED');self.ready.set();continue
++     if not await asyncio.to_thread(self.control.ack,self.c.connection,msg.get('bars',[]),msg.get('trades',[])):raise SafetyStop('ACK_REJECTED')
++     self.deadline.ack();await asyncio.to_thread(self.checkpoint,'ACK_CONFIRMED');self.ready.set();continue
+     if kind=='error':raise SafetyStop('SOURCE_ERROR')
+     if not self.auth:raise SafetyStop('UNAUTHENTICATED_DATA')
+     if self.observe_stream is not None:self.observe_stream(msg,received)
+@@ -119,9 +123,9 @@
+    self.revoke('RECOVERY_EPOCH_CHANGED');return False
+   return ok
+  async def connection(self):
+-  self.check_session();self.leader.require_current()
+-  self.revoke('CONNECTING');self.a.connection_started();self.auth=False;self.ready.clear()
+-  self.checkpoint('CONNECTION_STARTED')
++  self.check_session();await asyncio.to_thread(self.leader.require_current)
++  self.revoke('CONNECTING');await asyncio.to_thread(self.a.connection_started);self.auth=False;self.ready.clear()
++  await asyncio.to_thread(self.checkpoint,'CONNECTION_STARTED')
+   self.ingress=getattr(self,"ingress_factory",BoundedWSIngress)(PipelinePort(self.a),RecoveryPort(self.a),lambda:self.a.transport_trusted,
+     capacity=8192,max_age_seconds=5.0,on_gap=lambda:self.revoke('INGRESS_FAIL_CLOSED'))
+   assert self.ingress.batch_size==32
+@@ -148,13 +152,13 @@
+    except (SafetyStop,ValueError,TypeError):raise
+    except Exception:
+     # Network disconnect can reconnect; durable checkpoint error cannot be suppressed.
+-    self.revoke('CONNECTION_FAILED');self.checkpoint('CONNECTION_FAILED')
++    self.revoke('CONNECTION_FAILED');await asyncio.to_thread(self.checkpoint,'CONNECTION_FAILED')
+    await asyncio.sleep(delay);delay=min(30,delay*2)
+  async def run(self):
+   self.revoke('STARTING_UNTRUSTED')
+   self.check_session();self.memory.check(self.sample())
+   await asyncio.to_thread(self.state.restore);self.revoke('RESTORED_UNTRUSTED')
+-  self.leader.require_current();self.checkpoint('RUNTIME_START');self.initialized.set()
++  await asyncio.to_thread(self.leader.require_current);await asyncio.to_thread(self.checkpoint,'RUNTIME_START');self.initialized.set()
+   self.tasks=[asyncio.create_task(f()) for f in (self.connections,self._watch,self._renew)]
+   self.tasks.append(asyncio.create_task(self.stop.wait()))
+   try:
+--- a/r4b/adapter.py
++++ b/r4b/adapter.py
+@@ -11,6 +11,7 @@
+ from dintegration.clock import ClockUnavailable
+ from dreview.core import Blocked
+ from r4a.decision_metrics import operation
++from ipr.observability import observed_phase
+ class EvidenceAdapter(LiveAdapter):
+  INCREMENTAL_BATCH_CAP=100
+  INCREMENTAL_REJECT_COOLDOWN=30.0
+@@ -45,13 +46,12 @@
+    self.store.load_archive();self.barrier.persisted_R.update(self.store.pending_R);self.bridge.p._entry_uncertain.update(self.store.pending_U)
+    if self.proof.archived:
+     self.barrier.persisted_R.update(self.proof.archived.get('invalid',{}))
+-  with self.control_lock:
+-   inv=self.barrier.restore_pins()
+-   pins=set().union(*inv.values())
+-   super().connection_started()
+-   if getattr(self,'prepare_needs',None) is not None:self.prepare_needs()
+-   if not pins<=self.c.desired_bar:raise ValueError('CANONICAL_PINS_REQUIRE_SELECTOR_REPLAN')
+-   self.proof.connected(started=self.wall());self.proof.set_scope(set());self.quarantine={}
++  inv=self.barrier.restore_pins()
++  pins=set().union(*inv.values())
++  super().connection_started()
++  if getattr(self,'prepare_needs',None) is not None:self.prepare_needs()
++  if not pins<=self.c.desired_bar:raise ValueError('CANONICAL_PINS_REQUIRE_SELECTOR_REPLAN')
++  self.proof.connected(started=self.wall());self.proof.set_scope(set());self.quarantine={}
+  def on_message(self,msg,received):
+   if msg.get('T') in {'b','t'}:
+    with self.control_lock:
+@@ -78,7 +78,8 @@
+   try:
+    with self.control_lock:
+     self.cancel_event=threading.Event();token=self.cancel_event
+-    self.checks()
++   self.checks()
++   with self.control_lock:
+     if not self.authenticated or self.c.failed or self.c.inflight or self.c.bar!=self.c.desired_bar or self.c.trade!=self.c.desired_trade:raise ValueError('ACK_AUTH_INCOMPLETE')
+     connection,revision=self.c.connection,self.c.revision;symbols=set(self.c.bar)
+     required_pins=set(self.c.needs.trades) if self.c.needs else set()
+@@ -87,7 +88,8 @@
+     self.bridge.p._entry_uncertain.update(uncertain)
+    warm_symbols=(symbols & self.proof.witnessed(now)) | (symbols & required_pins)
+    warm_start=time.monotonic()
+-   try:one,five=self.rest.warmup(warm_symbols,now,self.bridge.p.ec.required_history_minutes())
++   try:
++    with observed_phase('recover.fetch'):one,five=self.rest.warmup(warm_symbols,now,self.bridge.p.ec.required_history_minutes())
+    finally:
+     try:print(json.dumps({'stage':'RECOVERY_WARMUP','symbols':len(warm_symbols),'bar_scope':len(symbols),'native1_minutes':60,'native5_minutes':self.bridge.p.ec.required_history_minutes(),'seconds':time.monotonic()-warm_start}),flush=True)
+     except Exception:pass
+@@ -106,30 +108,51 @@
+    if self.store is not None:self.store.resolve(cases.get('resolved_R',[]),cases.get('resolved_U',[]))
+    required_pins=set().union(*(set(cases['inventory'][k]) for k in ('O','A','U','R')))
+    good={};bad={}
+-   for s in sorted(symbols):
+-    if s not in warm_symbols:bad[s]='NO_COMPLETED_LIVE_BAR_WITNESS';continue
+-    e=self._bar_evidence(s,one,five,now)
+-    if e['proven']:good[s]=e
+-    else:bad[s]=e['reason']
++   with observed_phase('recover.evidence'):
++    for i,s in enumerate(sorted(symbols)):
++     if i%16==0:time.sleep(0)
++     if s not in warm_symbols:bad[s]='NO_COMPLETED_LIVE_BAR_WITNESS';continue
++     e=self._bar_evidence(s,one,five,now)
++     if e['proven']:good[s]=e
++     else:bad[s]=e['reason']
+    if required_pins-set(good):self.report={'reason':'PINNED_SYMBOL_UNPROVEN','symbols':sorted(required_pins-set(good))};return False
+    if not good:self.report={'reason':'NO_SYMBOL_CONTINUITY_PROVEN','quarantine':bad};return False
+-   with operation(self.bridge.p._decision_lock,'full_recovery_commit'),self.bridge.p._decision_lock,self.control_lock:
+-    self.checks()
+-    if token is not self.cancel_event or token.is_set():raise ValueError('RECOVERY_CANCELLED')
+-    if connection!=self.c.connection or revision!=self.c.revision or symbols!=self.c.bar or self.c.inflight or self.c.failed:raise ValueError('RECOVERY_EPOCH_CHANGED')
+-    # No historical event is fed into on_trade/on_bar as a fresh decision event.
++   def current():
++    return (token is self.cancel_event and not token.is_set() and connection==self.c.connection
++      and revision==self.c.revision and symbols==self.c.bar and not self.c.inflight and not self.c.failed)
++   if not current():raise ValueError('RECOVERY_EPOCH_CHANGED')
++   self.checks()
++   report={'reason':'BAR_TRANSPORT_EVIDENCE_READY','good':good,'quarantine':bad,'cases':cases,'TRADE_completeness':False}
++   with observed_phase('recover.persist'):
++    self.checkpoint.append_epoch({'kind':'B_EVIDENCE_READY','connection':connection,'revision':revision,'proof':self.proof.snapshot(),'report':report,'transport_trusted':False})
++   self.checks()
++   if not current():raise ValueError('RECOVERY_EPOCH_CHANGED')
++   with observed_phase('recover.preload'),self.bridge.staged_preload() as staged_history:
+     self.bridge.preload({s:one[s] for s in good})
+-    for s in symbols:
++   with observed_phase('recover.attest'),self.c.stage_evidence() as staged_proofs:
++    for i,s in enumerate(sorted(symbols)):
+      self.c.attest(s,history=s in good,continuity=s in good,reconciled=s in good,first_trade=False)
+-    self.quarantine=bad;self.report={'reason':'BAR_TRANSPORT_EVIDENCE_READY','good':good,'quarantine':bad,'cases':cases,'TRADE_completeness':False}
+-    # Durable evidence first, then in-memory eligibility. Redis restore always starts False.
+-    self.checkpoint.append_epoch({'kind':'B_EVIDENCE_READY','connection':connection,'revision':revision,'proof':self.proof.snapshot(),'report':self.report,'transport_trusted':False})
+-    if token is not self.cancel_event or token.is_set():raise ValueError('RECOVERY_CANCELLED')
+-    self.entry_floor=self.entry_floor or self.wall();self.trusted_since=self.entry_floor;self.gap_start=None;self._LiveAdapter__trusted=True;self.c._set_transport_from_adapter(True,_LIVE_ADAPTER_AUTHORITY)
+-    self.recovering=set(bad);self.last=now;return True
++     if i%16==0:time.sleep(0) # yield GIL between bounded chunks; not a trust shortcut
++   self.checks()
++   # Only pointer/dict publication is serialized; no preload, attest or Redis here.
++   with observed_phase('recover.commit_lock_wait'):
++    self.bridge.p._decision_lock.acquire()
++   try:
++    with self.control_lock,observed_phase('recover.commit'):
++     if not current():raise ValueError('RECOVERY_EPOCH_CHANGED')
++     if not self.clock_check():raise ClockUnavailable('ROOT_OR_CLOCK_UNPROVEN')
++     self.bridge.publish_preload(staged_history);self.c.proofs.update(staged_proofs)
++     self.c._log('evidence_batch',symbols=len(staged_proofs))
++     self.quarantine=bad;self.report=report
++     self.entry_floor=self.entry_floor or self.wall();self.trusted_since=self.entry_floor;self.gap_start=None
++     self._LiveAdapter__trusted=True;self.c._set_transport_from_adapter(True,_LIVE_ADAPTER_AUTHORITY)
++     self.recovering=set(bad);self.last=now;return True
++   finally:self.bridge.p._decision_lock.release()
++
+   except Exception as exc:
+    self.report={'reason':str(exc) if isinstance(exc,ValueError) else type(exc).__name__};return False
+   finally:
++   self.bridge.discard_preload_stage()
+    self.measure.observe('recovery',time.monotonic()-start)
+    if not self.transport_trusted:
+     self.close_eligibility('RECOVERY_EVIDENCE_INCOMPLETE')
+@@ -148,50 +171,65 @@
+    with self.control_lock:
+     token=self.cancel_event;connection=self.c.connection;revision=self.c.revision;generation=self.proof.generation
+     if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
+-    self.checks()
++   self.checks()
++   with self.control_lock:
+     selected &= self.recovering & self.c.bar
+     cooling={s for s in selected if self.rejection_until.get(s,0)>self.incremental_clock()}
+     cooldown_symbols=sum(self.rejection_until.get(s,0)>self.incremental_clock() for s in self.recovering)
+     selected-=cooling
+    if not selected:return True
+    fetch_start=time.monotonic()
+-   try:one,five=self.rest.warmup(selected,now,self.bridge.p.ec.required_history_minutes())
++   try:
++    with observed_phase('incremental.fetch'):one,five=self.rest.warmup(selected,now,self.bridge.p.ec.required_history_minutes())
+    except Exception as exc:
+     bad={s:'WARMUP_'+type(exc).__name__ for s in selected};return False
+    finally:fetch_seconds=time.monotonic()-fetch_start
+-   with operation(self.bridge.p._decision_lock,'incremental_admission'),self.bridge.p._decision_lock,self.control_lock:
+-    if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
+-    self.checks()
+-    inv=self.barrier.inventory();pins=set().union(*inv.values());good={}
++   if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
++   self.checks()
++   with self.control_lock:inv=self.barrier.inventory();pins=set().union(*inv.values())
++   good={}
++   with observed_phase('incremental.evidence'):
+     for s in sorted(selected):
+      if s in pins:bad[s]='REQUIRES_FULL_CASE_RECOVERY';continue
+      e=self._bar_evidence(s,one,five,now)
+      if e['proven']:good[s]=e
+      else:bad[s]=e['reason']
+-    if good:
+-     if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
+-     self.checks()
+-     # The existing fenced journal is durable BEFORE any new symbol is eligible.
++   if good:
++    if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
++    self.checks()
++    with observed_phase('incremental.persist'):
+      self.checkpoint.append_epoch({'kind':'B_INCREMENTAL_ADMISSION','connection':connection,'revision':revision,
+        'accepted_symbols':sorted(good),'evidence':good,'proof':self.proof.snapshot(),'transport_trusted':False})
+-     if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
+-     # Clock was checked immediately before the durable commit. After it,
+-     # recheck leadership/root without a second transient clock rejection.
+-     self.bridge.leadership.require_current()
+-     if not self.root_check():raise Blocked('ROOT_OR_CLOCK_UNPROVEN')
+-     self.bridge.preload({s:one[s] for s in good}) # accumulation only, no historical decision callback
+-     floor=self.wall()
+-     for s in good:
++    if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
++    self.bridge.leadership.require_current()
++    if not self.root_check():raise Blocked('ROOT_OR_CLOCK_UNPROVEN')
++    with observed_phase('incremental.preload'),self.bridge.staged_preload() as staged_history:
++     self.bridge.preload({s:one[s] for s in good})
++    floor=self.wall()
++    with observed_phase('incremental.attest'),self.c.stage_evidence() as staged_proofs:
++     for i,s in enumerate(good):
+       self.c.attest(s,history=True,continuity=True,reconciled=True,first_trade=False)
+-      self.symbol_admitted_at[s]=floor
+-     self.recovering.difference_update(good);accepted=good
+-     for s in good:self.rejection_until.pop(s,None)
+-    # Keep the preceding global trust and every previously admitted proof untouched.
++      if i%16==0:time.sleep(0)
++    self.checks()
++    with observed_phase('incremental.commit_lock_wait'):
++     self.bridge.p._decision_lock.acquire()
++    try:
++     with self.control_lock,observed_phase('incremental.commit'):
++      if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
++      if not self.clock_check():raise ClockUnavailable('ROOT_OR_CLOCK_UNPROVEN')
++      self.bridge.publish_preload(staged_history);self.c.proofs.update(staged_proofs)
++      self.c._log('evidence_batch',symbols=len(staged_proofs))
++      self.symbol_admitted_at.update({s:floor for s in good})
++      self.recovering.difference_update(good);accepted=good
++      for s in good:self.rejection_until.pop(s,None)
++    finally:self.bridge.p._decision_lock.release()
++   with self.control_lock:
+     self.quarantine.update(bad)
+     for s in accepted:self.quarantine.pop(s,None)
+     report_good=dict(self.report.get('good',{}));report_good.update(accepted)
+     self.report={**self.report,'good':report_good,'quarantine':dict(self.quarantine)}
+-    return bool(accepted)
++   return bool(accepted)
++
+   except ClockUnavailable:
+    clock_deferred=True
+    print(json.dumps({'stage':'INCREMENTAL_ADMISSION_DEFERRED','reason':'CLOCK_UNAVAILABLE','symbols':len(selected)}),flush=True)
+@@ -200,6 +238,7 @@
+    # Leadership/root/persistence errors retain the original fatal/fail-closed boundary.
+    self.close_eligibility('INCREMENTAL_ADMISSION_FATAL');fatal=type(exc).__name__;raise
+   finally:
++   self.bridge.discard_preload_stage()
+    if fatal:bad.update({s:'FATAL_'+fatal for s in selected if s not in accepted})
+    if not clock_deferred:
+     for s in bad:self.rejection_until[s]=self.incremental_clock()+self.INCREMENTAL_REJECT_COOLDOWN
+--- a/r4b/replan.py
++++ b/r4b/replan.py
+@@ -21,13 +21,20 @@
+   if c.inflight and (not needs.pins<=c.inflight['after_bar'] or not needs.trades<=c.inflight['after_trade']):
+    # Keep the already-sent plan immutable. Its ACK is consumed, then this target is
+    # applied before another ordinary recovery. Never ignore a newly arriving need.
+-   r.revoke('NEEDS_DURING_PENDING_CONTROL');self.pending=(target,needs)
+-   r.state.append_epoch({'kind':'B_NEEDS_PENDING','bar':sorted(target),'O':sorted(needs.O),'A':sorted(needs.A),'U':sorted(needs.U),'R':sorted(needs.R),'add_U':sorted(needs.U)})
+-   self.last={'status':'WAIT_PENDING_ACK_THEN_RECOVER','bar':sorted(target)};return self.last
++   trade_only=(target==c.desired_bar and not (needs.U or needs.R))
++   if not trade_only:r.revoke('NEEDS_DURING_PENDING_CONTROL')
++   self.pending=(target,needs)
++   try:r.state.append_epoch({'kind':'B_NEEDS_PENDING','bar':sorted(target),'O':sorted(needs.O),'A':sorted(needs.A),'U':sorted(needs.U),'R':sorted(needs.R),'add_U':sorted(needs.U)})
++   except Exception:
++    r.revoke('NEEDS_PENDING_PERSIST_FAILED');raise
++   self.last={'status':'WAIT_PENDING_ACK_THEN_REPLAN' if trade_only else 'WAIT_PENDING_ACK_THEN_RECOVER','bar':sorted(target)};return self.last
+   same_channels=target==c.desired_bar and set(needs.trades)==c.desired_trade
+   if same_channels and not (needs.U or needs.R):
+    # O -> A retains exactly the same channel set; do not create an artificial gap.
+-   with r.a.control_lock:c.set_desired(target,needs);r.checkpoint('NEEDS_CHANGED_SAME_CHANNELS')
++   with r.a.control_lock:c.set_desired(target,needs)
++   try:r.checkpoint('NEEDS_CHANGED_SAME_CHANNELS')
++   except Exception:
++    r.revoke('NEEDS_CHECKPOINT_PERSIST_FAILED');raise
+   else:r.set_desired(target,needs)
+   self.pending=None;self.last={'status':'APPLIED','bar':sorted(target),'requires_recovery':not same_channels};return self.last
+  def after_ack(self):
+--- a/r4b/runtime.py
++++ b/r4b/runtime.py
+@@ -1,7 +1,7 @@
+ from dintegration.timing import timed
+ # COMPLETE: R4-B REV1 review scope; live deployment and R4-C are not authorized.
+ """Opt-in R4-B assembly. No executable production CLI or sender; R4-C untouched."""
+-import asyncio
++import asyncio,threading
+ from r4a.runtime import Runtime
+ from r4a.clocked import ClockedControl
+ from .store import ProofStore
+@@ -15,8 +15,8 @@
+  def ack(self,*args):
+   with self.lock:
+    ok=self.base.ack(*args)
+-   if ok:self.notify_ack()
+-   return ok
++  if ok:self.notify_ack()
++  return ok
+ class EvidenceRuntime(Runtime):
+  INCREMENTAL_SPACING=1.0
+  INCREMENTAL_BATCH=100
+@@ -40,10 +40,12 @@
+    finally:self.notify_cases_changed()
+   self.a.bridge.native_cycle=native_with_notification
+  def acknowledged(self):
++  if self.loop is not None and getattr(self,'_loop_thread',threading.get_ident())!=threading.get_ident():
++   self.loop.call_soon_threadsafe(self.acknowledged);return
+   self.proof.set_scope(self.c.bar)
+-  applied=self.planner.after_ack()
++  self.a.recovering.intersection_update(self.c.bar|self.c.desired_bar)
+   self.case_event.set()
+-  if self.c.bar==self.c.desired_bar and self.c.trade==self.c.desired_trade:self.wake.set()
++  if self.planner.pending is None and self.c.bar==self.c.desired_bar and self.c.trade==self.c.desired_trade:self.wake.set()
+  @timed('prepare_needs')
+  def prepare_needs(self):
+   # Called after the original controller reconnect reset; an old pending request
+@@ -64,7 +66,12 @@
+     with self.a.bridge.p._decision_lock:
+      return self.a.bridge.needs(recovery_symbols=self.a.barrier.persisted_R)
+    needs=await asyncio.to_thread(read_needs)
+-   with self.a.control_lock:result=self.planner.propose(needs)
++   def replan():
++    self.planner.after_ack()
++    result=self.planner.propose(needs)
++    self.a.bridge.release_unused_history(self.c,self.a.recovering,self.a.barrier.persisted_R)
++    return result
++   result=await asyncio.to_thread(replan)
+    if result['status']=='APPLIED' and not self.a.transport_trusted and self.auth and not self.c.inflight and self.c.bar==self.c.desired_bar and self.c.trade==self.c.desired_trade:self.wake.set()
+  def received(self,msg,received):
+   if msg.get('T') in {'c','x','u','error'}:self.revoke('SOURCE_REVISION_OR_ERROR')
+@@ -78,8 +85,27 @@
+    self.store.save('INVALID_OR_CONFLICTING_BAR',self.a.barrier.persisted_R,msg)
+    raise SafetyStop('INVALID_OR_CONFLICTING_BAR')
+   if changed and (not self.a.transport_trusted or msg.get('S') in self.a.recovering):self.wake.set()
+- def set_desired(self,*a):
+-  with self.a.control_lock:return super().set_desired(*a)
++ def set_desired(self,bar,needs):
++  self.check_session();self.leader.require_current()
++  with self.a.control_lock:
++   healthy=self.a.transport_trusted and not self.c.failed and not (needs.U or needs.R) and not ((set(bar)-self.c.bar)&set(needs.trades))
++   incoming=set(bar)-self.c.bar
++   if not healthy:self.revoke('SUBSCRIPTION_CHANGE_REQUIRES_RECOVERY')
++   self.c.set_desired(bar,needs)
++   for symbol in set(needs.trades)-self.c.trade:
++    if symbol in self.c.proofs:self.c.proofs[symbol]={**self.c.proofs[symbol],'first_trade':False}
++   keep=set(bar)
++   self.a.quarantine={s:v for s,v in self.a.quarantine.items() if s in keep}
++   self.a.report={**self.a.report,'good':{s:v for s,v in self.a.report.get('good',{}).items() if s in keep},'quarantine':dict(self.a.quarantine)}
++   self.a.symbol_admitted_at={s:v for s,v in self.a.symbol_admitted_at.items() if s in keep}
++   self.a.rejection_until={s:v for s,v in self.a.rejection_until.items() if s in keep}
++   if healthy:
++    self.a.recovering.intersection_update(set(bar));self.a.recovering.update(incoming)
++    for symbol in incoming:self.a.symbol_admitted_at.pop(symbol,None)
++  # Redis persistence is never performed holding control/decision RLock.
++  try:self.checkpoint('DESIRED_UPDATED')
++  except Exception:
++   self.revoke('DESIRED_PERSIST_FAILED');raise
+  async def recovery_loop(self):
+   while not self.stop.is_set():
+    await self.wake.wait();self.wake.clear()
+@@ -131,7 +157,7 @@
+    self.proof.invalidate();self.wake.clear()
+    self.store.save('CONNECTION_ENDED_UNTRUSTED',self.a.barrier.persisted_R)
+  async def connections(self):
+-  self.loop=asyncio.get_running_loop()
++  self.loop=asyncio.get_running_loop();self._loop_thread=threading.get_ident()
+   tasks=[asyncio.create_task(super().connections()),asyncio.create_task(self.recovery_loop()),asyncio.create_task(self.case_loop())]
+   try:
+    done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+--- a/r4b/store.py
++++ b/r4b/store.py
+@@ -5,11 +5,15 @@
+ class JournalState:
+  def __init__(self,state):
+   self.raw=state.raw if isinstance(state,JournalState) else state
+-  if not hasattr(self.raw,'_r4b_lock'):self.raw._r4b_lock=threading.RLock()
++  if not hasattr(self.raw,'_r4b_lock'):self.raw._r4b_lock=threading.Lock()
+   self.lock=self.raw._r4b_lock
+  def __getattr__(self,key):return getattr(self.raw,key)
+  def append_epoch(self,event):
+-  with self.lock:return self.raw.append_epoch(event)
++  from ipr.observability import observed_phase
++  with observed_phase('journal.lock_wait'):self.lock.acquire()
++  try:
++   with observed_phase('journal.persist'):return self.raw.append_epoch(event)
++  finally:self.lock.release()
+  def restore(self):
+   with self.lock:return self.raw.restore()
+ class ProofStore:
+--- a/tests/lua_redis.py
++++ b/tests/lua_redis.py
+@@ -97,7 +97,9 @@
+  def set(self,k,v,nx=False,ex=None):
+   args=['SET',k,str(v)]+(['NX'] if nx else [])+(['EX',ex] if ex else [])
+   r=self.eval('return redis.call('+','.join(lua(x) for x in args)+')',0);return bool(r)
+- def mget(self,keys):return [self.get(k) for k in keys]
++ def mget(self,keys):
++  code='return {'+','.join("redis.call('GET',KEYS[%d])"%(i+1) for i in range(len(keys)))+'}'
++  return [None if v is False else v for v in self.eval(code,len(keys),*keys)]
+  def scan(self,cursor=0,match='*',count=500):
+   with self.lock:
+    keys=sorted(set(self.state['values'])|set(self.state['hashes']))
+--- a/tests/test_r7.py
++++ b/tests/test_r7.py
+@@ -0,0 +1,238 @@
++import asyncio,contextlib,copy,gc,hashlib,io,json,threading,time,tracemalloc,unittest
++from datetime import timedelta
++from types import SimpleNamespace as NS
++from unittest.mock import Mock,patch
++from test_direct import OP,bar
++import test_r3
++from dreview.core import Root,Controller,Needs
++from r4a.durable import RedisState,PREFIX,canonical,sha
++from r4a.redis_ports import leadership
++from dintegration.persistence import StateConflict
++from dintegration.stream_proof import StreamProof
++from r4b.store import ProofStore,JournalState
++from lua_redis import LuaRedis
++from ipr.ranking import Selection
++from ipr.observability import Diagnostics,RedisTelemetry,observed_phase,OBS,PauseObserver
++
++class RecoveryPerformance(unittest.TestCase):
++ def test_500_symbol_recover_loop_pause_and_1500_attest_memory(self):
++  async def run():
++   f=test_r3.setup(tuple('S%03d'%i for i in range(500)));f.now[0]=OP+timedelta(seconds=61)
++   for symbol in sorted(f.history):
++    test_r3.receive(f,symbol,0)
++    f.history[symbol]=[bar(OP-timedelta(minutes=i)) for i in reversed(range(60))]
++   original=f.src.warmup
++   def realistic(*args):
++    one,five=original(*args)
++    # 60 native 1m and 61 native 5m per symbol, JSON parse included, no live API.
++    five={s:[dict(bar(OP-timedelta(minutes=5*(i+1))),_timeframe='native_5Min') for i in reversed(range(61))] for s in one}
++    raw=json.dumps([one,five]);time.sleep(.03)
++    return tuple(json.loads(raw))
++   f.src.warmup=realistic
++   real_preload=f.a.bridge.preload;real_attest=f.a.c.attest;real_append=f.a.checkpoint.append_epoch
++   def unlocked():
++    self.assertFalse(f.a.control_lock._is_owned());self.assertFalse(f.a.bridge.p._decision_lock._is_owned())
++   def preload(v):unlocked();return real_preload(v)
++   def attest(*a,**kw):unlocked();return real_attest(*a,**kw)
++   def append(v):unlocked();time.sleep(.02);return real_append(v)
++   f.a.bridge.preload=preload;f.a.c.attest=attest;f.a.checkpoint.append_epoch=append
++   delays=[];stop=False
++   async def ticker():
++    while not stop:
++     at=time.monotonic();await asyncio.sleep(.005);delays.append(max(0,time.monotonic()-at-.005))
++   tick=asyncio.create_task(ticker());await asyncio.sleep(.01)
++   start=time.monotonic()
++   try:self.assertTrue(await asyncio.to_thread(f.a.recover,f.now[0]))
++   finally:stop=True;await tick
++   elapsed=time.monotonic()-start
++   self.assertEqual(len(f.a.bridge.p.br.history),500);self.assertEqual(len(f.a.c.proofs),500)
++   self.assertTrue(all(len(h)==60 for h in f.a.bridge.p.br.history.values()))
++   self.assertLess(max(delays),.5)
++   c=f.a.c;c.attest=real_attest
++   tracemalloc.start();gc.collect();base=tracemalloc.get_traced_memory()[0];memory=[]
++   with patch.object(c,'epoch',side_effect=AssertionError('ATTEST_MUST_NOT_COPY_EPOCH')):
++    for n in range(1500):
++     c.attest('S%03d'%(n%500),history=True,continuity=True,reconciled=True)
++     if n in (499,999,1499):gc.collect();memory.append(tracemalloc.get_traced_memory()[0]-base)
++   tracemalloc.stop()
++   self.assertEqual(len(c.journal),128);self.assertLess(max(memory),1024*1024)
++   self.assertLess(memory[-1]-memory[0],256*1024)
++   result={'test':'R7_RECOVER_500_AND_ATTEST_1500','symbols':500,'native1_rows_per_symbol':60,'native5_rows_per_symbol':61,'recover_seconds':elapsed,'heartbeat_samples':len(delays),'max_loop_pause_seconds':max(delays),'pause_limit_seconds':.5,'journal_entries':len(c.journal),'tracemalloc_delta_after_500_1000_1500':memory,'scope':'Synthetic real adapter/StreamProof/PackedHistory/Controller; no network or 0.5CPU cgroup claim'}
++   print(json.dumps(result))
++  asyncio.run(run())
++ def test_correction_during_staged_preload_discards_private_history(self):
++  f=test_r3.R3Incremental().deferred() if hasattr(test_r3,'R3Incremental') else None
++  before={s:list(v) for s,v in f.a.bridge.p.br.history.items()};old=f.a.bridge.preload
++  def preload(v):old(v);f.r.received({'T':'c','S':'Y'},f.now[0])
++  f.a.bridge.preload=preload
++  self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]))
++  self.assertEqual({s:list(v) for s,v in f.a.bridge.p.br.history.items()},before)
++  self.assertFalse(f.a.transport_trusted);self.assertIn('Y',f.a.recovering)
++ def test_clock_late_failure_no_published_history(self):
++  from dintegration.clock import ClockUnavailable
++  f=test_r3.R3Incremental().deferred();before={s:list(v) for s,v in f.a.bridge.p.br.history.items()};old=f.a.bridge.preload
++  def preload(v):old(v);f.a.checks=Mock(side_effect=ClockUnavailable('fixture'))
++  f.a.bridge.preload=preload
++  self.assertFalse(f.a.admit_incremental(['Y'],f.now[0]));self.assertTrue(f.a.transport_trusted)
++  self.assertEqual({s:list(v) for s,v in f.a.bridge.p.br.history.items()},before)
++
++class LegacyArchive(unittest.TestCase):
++ def test_old_full_epoch_chain_and_archive_read_unchanged(self):
++  r=LuaRedis();lead=leadership(r,'w');lead.acquire();root=Root('2026-10-28',frozenset({'X'}),'a'*64,True)
++  state=RedisState(r,root.session,root.identity(),'w',1);state.restore()
++  proof=StreamProof();proof.connected('old',OP);proof.set_scope({'X'});proof.observe({'T':'b','S':'X',**bar(OP)},OP+timedelta(seconds=61))
++  old=Controller(root);old.reconnect();old.set_desired({'X'},Needs(1));old.plan(0);old.ack(old.connection,['X'],[],.1);old.attest('X',history=True,continuity=True,reconciled=True)
++  old_controller=old.epoch() # Complete legacy D_REVIEW_EPOCH_V1 payload, unchanged schema.
++  # Literal legacy format: full controller epoch + full proof. No migration/writeback.
++  state.append_epoch({'reason':'ACK_CONFIRMED','controller':old_controller})
++  state.append_epoch({'kind':'B_STREAM_WITNESS','case_schema':2,'proof':proof.snapshot(),'add_R':['X'],'add_U':['X']})
++  state.append_epoch({'kind':'B_CASE_RESOLUTION','case_schema':2,'proof':proof.snapshot(),'resolved_R':['X'],'resolved_U':['X']})
++  before=copy.deepcopy(r.state)
++  restarted=RedisState(r,root.session,root.identity(),'w',1);out=restarted.restore()
++  self.assertEqual(out['checkpoint']['epoch']['kind'],'B_CASE_RESOLUTION');self.assertFalse(out['transport_trusted'])
++  restored=StreamProof();store=ProofStore(JournalState(restarted),restored);self.assertTrue(store.load_archive())
++  self.assertEqual(store.pending_R,set());self.assertEqual(store.pending_U,set());self.assertFalse(restored.valid)
++  self.assertEqual(restored.archived,proof.snapshot());self.assertEqual(r.state,before)
++ def test_old_chain_corruption_is_still_rejected(self):
++  r=LuaRedis();lead=leadership(r,'w');lead.acquire();s=RedisState(r,'2026-10-28','a'*64,'w',1);s.restore();s.append_epoch({'legacy':True})
++  k=s.keys[2];r.state['hashes'][k]['1']=r.state['hashes'][k]['1'].replace('true','false')
++  with self.assertRaises(StateConflict):s.restore()
++
++class SubscriptionIsolation(unittest.TestCase):
++ def test_desired_persistence_failure_closes_previously_healthy_transport(self):
++  f=test_r3.trusted();f.r.state.append_epoch=Mock(side_effect=ConnectionError('fixture'))
++  with self.assertRaises(ConnectionError):f.r.set_desired(f.r.c.bar,Needs(2,O=frozenset({'X'})))
++  self.assertFalse(f.a.transport_trusted)
++ def test_added_TRADE_requires_fresh_first_trade(self):
++  f=test_r3.trusted();f.a.c.proofs['X']['first_trade']=True
++  f.r.set_desired(f.r.c.bar,Needs(2,O=frozenset({'X'})))
++  self.assertFalse(f.a.c.proofs['X']['first_trade']);self.assertTrue(f.a.transport_trusted)
++ def test_trade_need_while_ACK_pending_replans_without_global_recovery(self):
++  f=test_r3.trusted();r=f.r;c=r.c;count=len(f.calls)
++  r.planner.propose(Needs(2,O=frozenset({'X'})))
++  self.assertEqual(r.control.plan()['trades'],['X'])
++  result=r.planner.propose(Needs(3,O=frozenset({'X','Z'})))
++  self.assertEqual(result['status'],'WAIT_PENDING_ACK_THEN_REPLAN');self.assertTrue(f.a.transport_trusted)
++  self.assertTrue(r.control.ack(c.connection,sorted(c.bar),['X']))
++  r.planner.after_ack();self.assertTrue(f.a.transport_trusted)
++  self.assertEqual(r.control.plan()['trades'],['Z'])
++  self.assertTrue(r.control.ack(c.connection,sorted(c.bar),['X','Z']))
++  self.assertTrue(f.a.transport_trusted);self.assertEqual(len(f.calls),count)
++ def test_Bar_delta_prunes_only_departed_diagnostic_maps(self):
++  f=test_r3.trusted();f.a.quarantine['removed']='OLD';f.a.report['good']['removed']={};f.a.rejection_until['removed']=99
++  f.r.set_desired(f.r.c.bar,Needs(2))
++  self.assertNotIn('removed',f.a.quarantine);self.assertNotIn('removed',f.a.report['good']);self.assertNotIn('removed',f.a.rejection_until)
++ def test_trade_only_keeps_trust_and_no_bar_warmup(self):
++  async def run():
++   f=test_r3.trusted();count=len(f.calls);r=f.r;before=copy.deepcopy(f.a.c.proofs)
++   for rev,trades in [(2,{'X'}),(3,set())]:
++    r.set_desired(r.c.bar,Needs(rev,O=frozenset(trades)))
++    self.assertTrue(f.a.transport_trusted)
++    plan=r.control.plan();self.assertEqual(plan['bars'],[])
++    self.assertTrue(r.control.ack(r.c.connection,sorted(r.c.bar),sorted(trades)))
++    task=asyncio.create_task(r.recovery_loop());r.wake.set();await asyncio.sleep(.03);task.cancel();await asyncio.gather(task,return_exceptions=True)
++    self.assertTrue(f.a.transport_trusted);self.assertEqual(len(f.calls),count);self.assertEqual(r.attempts,0)
++    self.assertEqual(f.a.c.proofs,before)
++  asyncio.run(run())
++ def test_BAR_delta_admits_only_new_symbol_preserves_existing_history(self):
++  f=test_r3.trusted();r=f.r;c=r.c;c.root=Root(c.root.session,c.root.symbols|{'W'},'a'*64,True);f.history['W']=[bar(OP)]
++  before=copy.deepcopy(list(f.a.bridge.p.br.history['X']));oldcalls=len(f.calls)
++  r.set_desired({'X','Z','W'},Needs(2));self.assertTrue(f.a.transport_trusted)
++  p=r.control.plan();self.assertEqual(p['bars'],['Y']);self.assertEqual(p['action'],'unsubscribe')
++  self.assertTrue(r.control.ack(c.connection,['X','Z'],[]))
++  p=r.control.plan();self.assertEqual(p['bars'],['W']);self.assertEqual(p['action'],'subscribe')
++  self.assertTrue(r.control.ack(c.connection,['W','X','Z'],[]))
++  f.a.proof.observe({'T':'b','S':'W',**bar(OP)},f.now[0])
++  self.assertTrue(f.a.admit_incremental(['W'],f.now[0]));self.assertTrue(f.a.transport_trusted)
++  self.assertEqual(len(f.calls),oldcalls+1);self.assertEqual(f.calls[-1]['symbols'],['W']);self.assertEqual(list(f.a.bridge.p.br.history['X']),before)
++ def test_real_U_still_closes_trust(self):
++  f=test_r3.trusted();f.r.set_desired(f.r.c.bar,Needs(2,U=frozenset({'X'})));self.assertFalse(f.a.transport_trusted)
++ def test_20_post_trust_BARs_no_recovery(self):
++  # Reuse the entire accepted R3 ACK->trust->20 BAR->incremental->correction scenario.
++  test_r3.R3Lifecycle().test_ACK_witness_trust_20_BARs_incremental_then_correction()
++
++class Turnover(unittest.TestCase):
++ def test_133_replacements_100_then_33_after_sixty_invalid_immediate(self):
++  s=Selection();old={'L%03d'%i for i in range(500)};s.current=old.copy()
++  scores={x:{'score':10} for x in old};new={'N%03d'%i for i in range(133)};scores.update({x:{'score':20} for x in new})
++  a=set(s.update(scores,set(),0));self.assertEqual(len(a&new),100);self.assertEqual(s.used,100)
++  a=set(s.update(scores,set(),59.999));self.assertEqual(len(a&new),100)
++  a=set(s.update(scores,set(),60));self.assertEqual(len(a&new),133);self.assertEqual(len(a),500)
++  invalid=next(iter(a&old));scores.pop(invalid);a=set(s.update(scores,set(),61));self.assertNotIn(invalid,a)
++ def test_ACK_or_recovery_blocks_optional_but_not_invalid_removal(self):
++  s=Selection();s.current={'A','BAD'};s.last=None
++  out=s.update({'A':{'score':1},'B':{'score':99}},set(),1,blocked=True)
++  self.assertEqual(out,['A']);self.assertEqual(s.used,0)
++ def test_pin_never_removed_for_missing_score_and_five_point_tie(self):
++  s=Selection();s.current={'A'};pins={'P%03d'%i for i in range(499)}
++  a=s.update({'A':{'score':10},'B':{'score':15},'C':{'score':15}},pins,0)
++  self.assertIn('B',a);self.assertNotIn('C',a);self.assertTrue(pins<=set(a))
++ def test_turnover_constants_single_source(self):
++  from ipr.turnover import OPTIONAL_REPLACEMENTS,OPTIONAL_WINDOW_SECONDS
++  self.assertEqual((OPTIONAL_REPLACEMENTS,OPTIONAL_WINDOW_SECONDS),(100,60.))
++
++class AtomicLeaseAndTelemetry(unittest.TestCase):
++ def test_ordinary_BAR_path_uses_two_MGET_not_four_GET(self):
++  f=test_r3.trusted();d=Diagnostics();raw=f.a.bridge.r.r;client=RedisTelemetry(raw,d)
++  f.a.bridge.r.r=client;f.a.bridge.leadership.backend.r.r=client
++  f.a.bridge.p.signal_gate.schedule={'session':'2026-10-28','open_utc':OP.isoformat(),'close_utc':(OP+timedelta(minutes=390)).isoformat()}
++  now=OP+timedelta(seconds=121)
++  self.assertTrue(f.a.on_message({'T':'b','S':'X',**bar(OP+timedelta(minutes=1))},now))
++  counts={}
++  for row in d.snapshot()['REDIS_RTT']:counts[row['command']]=counts.get(row['command'],0)+row['count']
++  self.assertEqual(counts,{'MGET':2})
++ def test_one_MGET_no_cache_per_verification(self):
++  r=LuaRedis();lead=leadership(r,'w');lead.acquire();orig=r.mget;r.mget=Mock(wraps=orig)
++  lead.require_current();lead.require_current();self.assertEqual(r.mget.call_count,2)
++ def test_fence_rejects_loss_between_MGET_and_journal_write(self):
++  r=LuaRedis();lead=leadership(r,'w');lead.acquire();s=RedisState(r,'2026-10-28','a'*64,'w',1);s.restore()
++  lead.require_current();lead.release();leadership(r,'other').acquire()
++  with self.assertRaisesRegex(StateConflict,'FENCE_LOST'):s.append_epoch({'must':'not commit'})
++  self.assertEqual(s.seq,0);self.assertIsNone(r.get(s.keys[0]))
++ def test_metrics_no_keys_values_and_lock_wait_not_RTT(self):
++  d=Diagnostics();r=RedisTelemetry(NS(get=lambda k:time.sleep(.005)),d)
++  with d.phase('recover.fetch'):r.get('NEVER_LOG_THIS_KEY')
++  out=d.snapshot();self.assertNotIn('NEVER_LOG_THIS_KEY',json.dumps(out));self.assertEqual(out['REDIS_RTT'][0]['command'],'GET');self.assertEqual(out['REDIS_RTT'][0]['count'],1)
++  self.assertEqual(out['REDIS_RTT'][0]['operation'],'recover.fetch');self.assertGreaterEqual(out['REDIS_RTT'][0]['mean_seconds'],.005)
++ def test_clock_attempt_start_end_heartbeat_failure_and_success(self):
++  from dintegration.clock import ClockProof
++  rows=[];c=ClockProof(lambda:(int(time.time()),int(time.time()%1*1e6)),emit=rows.append)
++  c.refresh();self.assertEqual([x['stage'] for x in rows],['CLOCK_REFRESH_BEGIN','CLOCK_REFRESH_END']);self.assertFalse(c.heartbeat_snapshot()['in_progress'])
++  c.server_time=Mock(side_effect=ConnectionError('DO_NOT_PRINT_VALUE'))
++  with self.assertRaises(ConnectionError):c.refresh()
++  self.assertEqual(rows[-1]['stage'],'CLOCK_REFRESH_END');self.assertFalse(rows[-1]['success']);self.assertNotIn('DO_NOT_PRINT_VALUE',json.dumps(rows))
++ def test_pause_correlated_phases_not_cause_and_budgeted_probe(self):
++  d=Diagnostics();d.loop_heartbeat=time.monotonic()-1;probe=NS(request=Mock());rows=[];w=PauseObserver(probe,rows.append,d);w.start()
++  try:time.sleep(.25)
++  finally:w.close()
++  self.assertEqual(len(rows),1);self.assertEqual(rows[0]['cause'],'UNPROVEN');self.assertEqual(probe.request.call_count,1)
++
++class HistoryCleanup(unittest.TestCase):
++ def test_scope_prunes_stale_invalid_without_dropping_live_invalid(self):
++  p=StreamProof();p.connected('test',OP);p.set_scope({'X','Y'});p.invalidate('X','CORRECTION_OR_CANCEL');p.invalidate('Y','INVALID_BAR')
++  p.set_scope({'Y'});self.assertEqual(p.invalid,{'Y':'INVALID_BAR'});self.assertTrue(p.valid)
++ def test_only_unused_history_removed_all_cases_and_inflight_retained(self):
++  f=test_r3.trusted();b=f.a.bridge;p=b.p
++  for name in ['unused','A','O','U','R','pending']:
++   p.br.accumulate_only(name,bar(OP))
++  p._active_by_symbol['A']={};p._entry_opportunities['O']={};p._entry_uncertain.add('U');f.a.barrier.persisted_R.add('R')
++  f.a.c.inflight={'after_bar':{'pending'}}
++  before=copy.deepcopy(b.r.r.state)
++  removed=b.release_unused_history(f.a.c,f.a.recovering,f.a.barrier.persisted_R)
++  self.assertEqual(removed,{'unused'});self.assertEqual(b.r.r.state,before)
++  self.assertTrue({'A','O','U','R','pending'}<=p.br.history.keys())
++
++class UnchangedSafety(unittest.TestCase):
++ def test_frozen_and_R6_safety_files_byte_identical(self):
++  from pathlib import Path
++  root=Path(__file__).resolve().parents[1]
++  expected=json.loads((root/'BASELINE_R6_IDENTITIES.json').read_text())
++  self.assertEqual(len([p for p in expected if p.startswith('reference_app/')]),72)
++  for path,h in expected.items():self.assertEqual(hashlib.sha256((root/path).read_bytes()).hexdigest(),h,path)
++ def test_incremental_limits_and_global_deadline_unchanged(self):
++  from r4b.runtime import EvidenceRuntime
++  from r4b.adapter import EvidenceAdapter
++  from restart_budget import UNTRUSTED_AFTER_ACK_SEC
++  from r4a.lease_wait import QUIET_SECONDS
++  self.assertEqual((EvidenceRuntime.INCREMENTAL_SPACING,EvidenceRuntime.INCREMENTAL_BATCH,EvidenceAdapter.INCREMENTAL_BATCH_CAP,EvidenceAdapter.INCREMENTAL_REJECT_COOLDOWN),(1.,100,100,30.))
++  self.assertEqual(UNTRUSTED_AFTER_ACK_SEC,120);self.assertEqual(QUIET_SECONDS,35.)

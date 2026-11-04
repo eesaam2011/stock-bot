@@ -1,0 +1,26 @@
+{
+  "baseline": {
+    "tests": 124,
+    "seconds": 14.347,
+    "result": "PASS"
+  },
+  "original": {
+    "tests": 155,
+    "seconds": 15.105,
+    "result": "PASS"
+  },
+  "extracted": {
+    "tests": 155,
+    "seconds": 14.881,
+    "result": "PASS"
+  },
+  "new_tests": 31,
+  "reference_manifest_matched": 72,
+  "reference_baseline_ZIP_matched": 72,
+  "test_image_sha256": "54c7c5753348fc2e1f0cfcc20861304c32a0f21023087fbdb44de410619a670e",
+  "test_image_code_matches_final_source": true,
+  "unshare_result": "DENIED: write failed /proc/self/uid_map: Operation not permitted",
+  "application_socket_and_DNS_blocked": true,
+  "benchmark_scope": "local no-op fake pipeline; not real market or 0.5 CPU test",
+  "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]"
+}

@@ -5,11 +5,15 @@ CONTROL_FIELDS={'T','S','t','oi','op','os','oc','ci','cp','cs','cc','i','p','s',
 class JournalState:
  def __init__(self,state):
   self.raw=state.raw if isinstance(state,JournalState) else state
-  if not hasattr(self.raw,'_r4b_lock'):self.raw._r4b_lock=threading.RLock()
+  if not hasattr(self.raw,'_r4b_lock'):self.raw._r4b_lock=threading.Lock()
   self.lock=self.raw._r4b_lock
  def __getattr__(self,key):return getattr(self.raw,key)
  def append_epoch(self,event):
-  with self.lock:return self.raw.append_epoch(event)
+  from ipr.observability import observed_phase
+  with observed_phase('journal.lock_wait'):self.lock.acquire()
+  try:
+   with observed_phase('journal.persist'):return self.raw.append_epoch(event)
+  finally:self.lock.release()
  def restore(self):
   with self.lock:return self.raw.restore()
 class ProofStore:

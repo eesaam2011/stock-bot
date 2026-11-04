@@ -1,6 +1,7 @@
 """Fixed read-only Alpaca endpoints. No order/account mutation interface."""
 import json,urllib.request,urllib.parse,urllib.error,threading
 from datetime import datetime,timezone
+from contextlib import contextmanager
 class APIError(RuntimeError):pass
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*a,**k):return None
@@ -12,17 +13,30 @@ class Alpaca:
   if not self.key or not self.secret:raise APIError('ALPACA_CREDENTIALS_MISSING')
   self.opener=opener or urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect()).open
   self.lock=threading.Lock();self.requests=0
+ @contextmanager
+ def serialized_request(self):
+  while True:
+   hook=getattr(self,'before_request',None)
+   if hook is not None:hook() # wait OUTSIDE the shared API serialization lock
+   self.lock.acquire()
+   try:
+    allowed=getattr(self,'request_allowed',None)
+    if allowed is not None and not allowed():continue # window crossed while waiting for lock
+    yield
+    return
+   finally:self.lock.release()
  def call(self,host,path,params):
   if (host,path) not in {('paper-api.alpaca.markets','/v2/assets'),('paper-api.alpaca.markets','/v2/calendar'),('api.alpaca.markets','/v2/assets'),('api.alpaca.markets','/v2/calendar'),('data.alpaca.markets','/v2/stocks/bars'),('data.alpaca.markets','/v2/stocks/trades'),('data.alpaca.markets','/v2/stocks/snapshots')}:raise APIError('ENDPOINT_FORBIDDEN')
   req=urllib.request.Request('https://'+host+path+'?'+urllib.parse.urlencode(params),headers={'APCA-API-KEY-ID':self.key,'APCA-API-SECRET-KEY':self.secret},method='GET')
   try:
-   with self.lock:
+   with self.serialized_request():
     self.requests+=1
     with self.opener(req,timeout=20) as r:
      if r.status!=200:raise APIError('HTTP_NOT_200')
      raw=r.read(32*1024*1024+1)
      if len(raw)>32*1024*1024:raise APIError('RESPONSE_TOO_LARGE')
-     return json.loads(raw)
+     from .observability import observed_phase
+     with observed_phase('rest.JSON'):return json.loads(raw)
   except APIError:raise
   except urllib.error.HTTPError as exc:raise APIError('ALPACA_HTTP_'+str(exc.code)) from None
   except Exception:raise APIError('ALPACA_READ_FAILED') from None

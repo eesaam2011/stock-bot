@@ -1,0 +1,16 @@
+{
+  "start_utc": "2026-11-03T14:50:00Z",
+  "end_utc": "2026-11-03T15:30:00Z",
+  "start_riyadh": "2026-11-03T17:50:00+03:00",
+  "end_riyadh": "2026-11-03T18:30:00+03:00",
+  "read_started_utc": "2026-11-03T15:33:36Z",
+  "read_was_late": true,
+  "log_pages": 1,
+  "log_unique_records": 0,
+  "hasMore_final": false,
+  "coverage": "all pages returned by Render; no independent guarantee that upstream logged every event",
+  "context_separate_from_window": true,
+  "commit": "17251b1bf5f1acbd03bf761f58226801441b2aff",
+  "service_mutations": 0,
+  "Redis_reads_or_writes": 0
+}

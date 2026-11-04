@@ -1,0 +1,17 @@
+{
+  "query_start_utc": "2026-11-03T14:25:00Z",
+  "query_end_utc": "2026-11-03T14:50:00Z",
+  "read_started_utc": "2026-11-03T14:54:42Z",
+  "read_was_late": true,
+  "pages": 3,
+  "unique_records": 285,
+  "hasMore_final": false,
+  "complete_as_returned_by_Render": true,
+  "server_retention_completeness": "NOT_INDEPENDENTLY_PROVEN",
+  "redacted_messages": 0,
+  "first_record": "2026-11-03T14:25:19.580871324Z",
+  "last_record": "2026-11-03T14:47:01.750592781Z",
+  "commit": "17251b1bf5f1acbd03bf761f58226801441b2aff",
+  "service_changes": 0,
+  "redis_reads_or_writes": 0
+}

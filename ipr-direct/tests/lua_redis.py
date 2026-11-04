@@ -97,7 +97,9 @@ class LuaRedis:
  def set(self,k,v,nx=False,ex=None):
   args=['SET',k,str(v)]+(['NX'] if nx else [])+(['EX',ex] if ex else [])
   r=self.eval('return redis.call('+','.join(lua(x) for x in args)+')',0);return bool(r)
- def mget(self,keys):return [self.get(k) for k in keys]
+ def mget(self,keys):
+  code='return {'+','.join("redis.call('GET',KEYS[%d])"%(i+1) for i in range(len(keys)))+'}'
+  return [None if v is False else v for v in self.eval(code,len(keys),*keys)]
  def scan(self,cursor=0,match='*',count=500):
   with self.lock:
    keys=sorted(set(self.state['values'])|set(self.state['hashes']))

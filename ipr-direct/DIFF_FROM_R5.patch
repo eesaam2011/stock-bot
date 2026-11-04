@@ -1,0 +1,930 @@
+--- /dev/null
++++ b/benchmark_r6_diagnostics.py
+@@ -0,0 +1,35 @@
++"""Local diagnostic overhead only. No network, no market load, no CPU quota claim."""
++import sys,time,threading,json,statistics
++from datetime import datetime,timezone
++from pathlib import Path
++root=Path(__file__).resolve().parent;sys.path[:0]=[str(root),str(root/'reference_app')];sys.dont_write_bytecode=True
++from types import SimpleNamespace as NS
++from ipr.wave import HeavyWindow,WaveDiagnostics
++from r4a.ingress_observed import ObservedIngress
++from ws_ingress import BoundedWSIngress
++from dintegration.measure import Measurements
++from r4a.decision_metrics import MeasuredDecisionLock
++from contextlib import nullcontext
++
++def trial(observed,n=5000):
++ at=datetime.now(timezone.utc);measure=Measurements();lock=threading.RLock()
++ if observed:lock=MeasuredDecisionLock(lock)
++ p=NS(_decision_lock=lock,_entry_opportunities={},_active_by_symbol={},contention_probe=None,on_bar=lambda *a:None)
++ rec=NS(on_stream_message=lambda *a:None)
++ a=NS(c=NS(bar={'X'}),recovering=set(),bridge=NS(p=p))
++ d=WaveDiagnostics(a,measure,HeavyWindow(lambda:at))
++ ingress=ObservedIngress(p,rec,lambda:True,diagnostics=d) if observed else BoundedWSIngress(p,rec,lambda:True)
++ ingress.accepting=True
++ start=time.perf_counter();cpu=time.process_time()
++ for i in range(n):
++  item=('BAR',{'S':'X'},at,time.monotonic())
++  if observed:d.received('BAR',at)
++  ingress._work(item)
++ elapsed=time.perf_counter()-start;cpu=time.process_time()-cpu
++ return {'bars':n,'elapsed_seconds':elapsed,'cpu_seconds':cpu,'elapsed_us_per_BAR':elapsed/n*1e6}
++
++if __name__=='__main__':
++ pairs=[]
++ for i in range(7):
++  baseline=trial(False);candidate=trial(True);pairs.append({'baseline':baseline,'R6':candidate,'added_us_per_BAR':candidate['elapsed_us_per_BAR']-baseline['elapsed_us_per_BAR']})
++ print(json.dumps({'scope':'fake no-op decision path, local machine, no 0.5CPU constraint; NOT production load or stability proof','trials':pairs,'median_added_us_per_BAR':statistics.median(x['added_us_per_BAR'] for x in pairs)},indent=2))
+--- a/dintegration/measure.py
++++ b/dintegration/measure.py
+@@ -1,10 +1,11 @@
+-import os,time,json,asyncio,resource
++import os,time,json,asyncio,resource,threading
+ from collections import defaultdict
+ class Measurements:
+- def __init__(self):self.spans=defaultdict(lambda:{'count':0,'total':0.,'max':0.});self.last_cpu=None;self.last_wall=None
++ def __init__(self):self.guard=threading.RLock();self.spans=defaultdict(lambda:{'count':0,'total':0.,'max':0.});self.last_cpu=None;self.last_wall=None
+  def observe(self,name,seconds):
+   if seconds<0:raise ValueError('CLOCK_REVERSED')
+-  d=self.spans[name];d['count']+=1;d['total']+=seconds;d['max']=max(d['max'],seconds)
++  with self.guard:
++   d=self.spans[name];d['count']+=1;d['total']+=seconds;d['max']=max(d['max'],seconds)
+  def sample(self):
+   now=time.monotonic();cpu=time.process_time();rss=None;cg=None;throttling=None
+   try:
+@@ -16,7 +17,8 @@
+   try:throttling=open('/sys/fs/cgroup/cpu.stat').read()
+   except OSError:pass
+   cores=(cpu-self.last_cpu)/(now-self.last_wall) if self.last_wall is not None and now>self.last_wall else None;self.last_cpu=cpu;self.last_wall=now
+-  return {'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':{k:{'count':v['count'],'mean':v['total']/v['count'],'max':v['max']} for k,v in self.spans.items()},'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
++  with self.guard:span_copy={k:{'count':v['count'],'mean':v['total']/v['count'],'max':v['max']} for k,v in self.spans.items()}
++  return {'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
+  async def loop_lag(self,stop,period=.1):
+   while not stop.is_set():
+    start=time.monotonic();self.loop_tick=start;await asyncio.sleep(period);self.loop_last=max(0,time.monotonic()-start-period);self.observe('loop_lag',self.loop_last)
+--- a/ipr/api.py
++++ b/ipr/api.py
+@@ -1,6 +1,7 @@
+ """Fixed read-only Alpaca endpoints. No order/account mutation interface."""
+ import json,urllib.request,urllib.parse,urllib.error,threading
+ from datetime import datetime,timezone
++from contextlib import contextmanager
+ class APIError(RuntimeError):pass
+ class NoRedirect(urllib.request.HTTPRedirectHandler):
+  def redirect_request(self,*a,**k):return None
+@@ -12,11 +13,23 @@
+   if not self.key or not self.secret:raise APIError('ALPACA_CREDENTIALS_MISSING')
+   self.opener=opener or urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect()).open
+   self.lock=threading.Lock();self.requests=0
++ @contextmanager
++ def serialized_request(self):
++  while True:
++   hook=getattr(self,'before_request',None)
++   if hook is not None:hook() # wait OUTSIDE the shared API serialization lock
++   self.lock.acquire()
++   try:
++    allowed=getattr(self,'request_allowed',None)
++    if allowed is not None and not allowed():continue # window crossed while waiting for lock
++    yield
++    return
++   finally:self.lock.release()
+  def call(self,host,path,params):
+   if (host,path) not in {('paper-api.alpaca.markets','/v2/assets'),('paper-api.alpaca.markets','/v2/calendar'),('api.alpaca.markets','/v2/assets'),('api.alpaca.markets','/v2/calendar'),('data.alpaca.markets','/v2/stocks/bars'),('data.alpaca.markets','/v2/stocks/trades'),('data.alpaca.markets','/v2/stocks/snapshots')}:raise APIError('ENDPOINT_FORBIDDEN')
+   req=urllib.request.Request('https://'+host+path+'?'+urllib.parse.urlencode(params),headers={'APCA-API-KEY-ID':self.key,'APCA-API-SECRET-KEY':self.secret},method='GET')
+   try:
+-   with self.lock:
++   with self.serialized_request():
+     self.requests+=1
+     with self.opener(req,timeout=20) as r:
+      if r.status!=200:raise APIError('HTTP_NOT_200')
+--- a/ipr/main.py
++++ b/ipr/main.py
+@@ -8,7 +8,7 @@
+ from .api import Alpaca
+ from .preparation import prepare_root,load
+ from .runtime import policy_for,run
+-from r4a.parent import ProcessGuard
++from r4a.direct_parent import DirectProcessGuard as ProcessGuard
+ from r4a.child_boundary import arm_parent_death
+ from r4a.guards import cgroup_sample
+ 
+--- a/ipr/runtime.py
++++ b/ipr/runtime.py
+@@ -71,7 +71,7 @@
+   def __init__(self):self.original=ProductionStatusTracker()
+   def on_status(self,m):return self.original.ingest(m)
+  market=bundle['market'];schedule={'session':bundle['session'],'open_utc':market['open'],'close_utc':market['close']} if market else None
+- base=compose(redis=redis,root=root,worker=uuid.uuid4().hex,boot_id=boot,policy=policy,session_policy=schedule,rest=rest,recovery_factory=lambda b:Status(),clock_check=clock.check,filter_check=final_filter,root_check=lambda:True,measure=measure,socket_open=SocketTransport(authorize,lambda:(env['APCA_API_KEY_ID'],env['APCA_API_SECRET_KEY']),connect=fixed_connect).open,authorize=authorize,sample=cgroup_sample)
++ base=compose(redis=redis,root=root,worker=uuid.uuid4().hex,boot_id=boot,policy=policy,session_policy=schedule,rest=rest,recovery_factory=lambda b:Status(),clock_check=clock.check,filter_check=final_filter,root_check=lambda:True,measure=measure,socket_open=SocketTransport(authorize,lambda:(env['APCA_API_KEY_ID'],env['APCA_API_SECRET_KEY']),connect=fixed_connect).open,authorize=authorize,sample=cgroup_sample,lease_before_budget=True)
+  proof=StreamProof();barrier=CaseBarrier(base.a.bridge,proof)
+  a=DirectEvidence(base.c,base.a.bridge,rest,base.a.recovery,base.a.clock_check,base.a.filter_check,base.a.root_check,base.state,measure,proof=proof,barrier=barrier,wall=base.wall)
+  r=DirectRuntime(a,base.state,base.leader,base.socket_open,authorize,policy,clock=base.clock,wall=base.wall,sample=base.sample)
+@@ -79,6 +79,16 @@
+  if base.state.seq==0:
+   u,rec=carried(redis,bundle['session']);a.checkpoint.append_epoch({'kind':'DIRECT_CARRIED_CASES','case_schema':2,'add_U':sorted(u),'add_R':sorted(rec)})
+   a.bridge.p._entry_uncertain.update(u);barrier.persisted_R.update(rec)
++ from functools import partial
++ from .wave import HeavyWindow,WaveDiagnostics
++ from r4a.ingress_observed import ObservedIngress
++ from r4a.decision_metrics import MeasuredDecisionLock
++ a.bridge.p._decision_lock=MeasuredDecisionLock(a.bridge.p._decision_lock)
++ r.heavy_window=HeavyWindow(r.wall,lambda:r.stop.is_set())
++ r.wave=WaveDiagnostics(a,measure,r.heavy_window)
++ r.ingress_factory=partial(ObservedIngress,diagnostics=r.wave)
++ api.before_request=r.heavy_window.before_request
++ api.request_allowed=r.heavy_window.request_allowed
+  r.boot_number=base.boot_number
+  return r,prepared,clock,measure
+ 
+@@ -145,7 +155,9 @@
+       save(redis,'scan:'+bundle['session'],{'at':end.isoformat(),'selected':target,'root_symbols':len(bundle['eligible']),'scores':{s:scores[s] for s in target if s in scores},'rth_watermark':volumes.watermark.isoformat(),'linear_approximation':True})
+       state['scan_ok']=True;state['scan_at']=r.wall()
+       print(json.dumps({'stage':'IPR_SCAN','at':end.isoformat(),'ranked':len(scores),'BAR_desired':len(target),'news_candidates':len(top),'api_requests':api.requests,'duration_seconds':time.monotonic()-start}),flush=True)
+-     await asyncio.to_thread(work)
++     def gated_work():
++      with r.heavy_window.operation('scan_rest'):return work()
++     await asyncio.to_thread(gated_work)
+     except Exception as e:
+      state['scan_ok']=False;print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True)
+    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
+--- /dev/null
++++ b/ipr/wave.py
+@@ -0,0 +1,73 @@
++"""Bounded local diagnostics and UTC minute admission gate; no I/O in snapshots."""
++import math,time,threading
++from collections import OrderedDict
++from contextlib import contextmanager
++class HeavyWindow:
++ def __init__(self,wall,stop=lambda:False,sleep=time.sleep):
++  self.wall=wall;self.stop=stop;self.sleep=sleep;self.local=threading.local();self.lock=threading.Lock();self.active={}
++ def blocked(self):
++  now=self.wall();s=now.second+now.microsecond/1e6
++  return s>=55 or s<10
++ def wait(self):
++  while self.blocked():
++   if self.stop():raise RuntimeError('HEAVY_WORK_STOPPED')
++   self.sleep(.1)
++  if self.stop():raise RuntimeError('HEAVY_WORK_STOPPED')
++ @contextmanager
++ def operation(self,name):
++  self.wait();old=getattr(self.local,'name',None);self.local.name=name
++  with self.lock:self.active[name]=self.active.get(name,0)+1
++  try:yield
++  finally:
++   with self.lock:self.active[name]-=1
++   self.local.name=old
++ def request_allowed(self):
++  return getattr(self.local,'name',None) not in {'scan_rest','incremental'} or not self.blocked()
++ def before_request(self):
++  if getattr(self.local,'name',None) in {'scan_rest','incremental'}:self.wait()
++ def snapshot(self):
++  with self.lock:return {k:bool(self.active.get(k,0)) for k in ('scan_rest','incremental')}
++
++class WaveDiagnostics:
++ MINUTES=6
++ SAMPLES=8192
++ def __init__(self,adapter,measure,heavy,clock=time.monotonic):
++  self.adapter=adapter;self.measure=measure;self.heavy=heavy;self.clock=clock;self.lock=threading.Lock();self.minutes=OrderedDict()
++ def admitted(self):return len(self.adapter.c.bar-self.adapter.recovering)
++ def _row(self,at):
++  key=at.replace(second=0,microsecond=0).isoformat()
++  if key not in self.minutes:
++   self.minutes[key]={'received_BAR':0,'processed_BAR':0,'failed_BAR':0,'times':[], 'timing_overflow':0,'duration_count':0,'duration_sum':0.,'duration_max':0.,
++                      'accepted_symbols_at_first_receipt':self.admitted(),'active_at_first_receipt':self.heavy.snapshot()}
++   while len(self.minutes)>self.MINUTES:self.minutes.popitem(last=False)
++  return self.minutes[key]
++ def received(self,item,at):
++  if item!='BAR':return
++  with self.lock:self._row(at)['received_BAR']+=1
++ def finished(self,at,seconds,ok):
++  with self.lock:
++   r=self._row(at);r['processed_BAR' if ok else 'failed_BAR']+=1
++   r['duration_count']+=1;r['duration_sum']+=seconds;r['duration_max']=max(r['duration_max'],seconds)
++   if len(r['times'])<self.SAMPLES:r['times'].append(seconds)
++   else:r['timing_overflow']+=1
++ def snapshot(self,ingress):
++  with self.lock:
++   rows={}
++   for at,r in self.minutes.items():
++    values=sorted(r['times']);n=len(values)
++    rows[at]={k:v for k,v in r.items() if k not in {'times','duration_sum','duration_max','duration_count'}}
++    rows[at]['BAR_processing_seconds']={'count':r['duration_count'],'mean':r['duration_sum']/r['duration_count'] if r['duration_count'] else None,
++      'p95_nearest_rank':values[math.ceil(.95*n)-1] if n and not r['timing_overflow'] else None,
++      'max':r['duration_max'] if r['duration_count'] else None,'includes_decision_lock_wait':True}
++  oldest=ingress.inflight or (ingress.q._queue[0] if ingress.q is not None and ingress.q.qsize() else None)
++  probe=getattr(self.adapter.bridge.p,'contention_probe',None)
++  stats=probe.snapshot() if probe else None
++  with self.measure.guard:spans={k:dict(v) for k,v in self.measure.spans.items()}
++  current=self.measure.current_loop_lag()
++  return {'receipt_minutes':rows,'accepted_symbols_now':self.admitted(),
++    'active_now':self.heavy.snapshot(),'queue_length':(ingress.q.qsize() if ingress.q is not None else 0)+ingress._batch_waiting,
++    'oldest_age_seconds':max(0,self.clock()-oldest[3]) if oldest else 0.,
++    'inflight_BAR_elapsed_seconds':max(0,self.clock()-ingress._element_started) if ingress._element_started is not None and ingress.inflight and ingress.inflight[0]=='BAR' else None,
++    'decision_lock':stats,'decision_lock_hold_by_operation':getattr(self.adapter.bridge.p._decision_lock,'snapshot',lambda:None)(),'loop_lag_current_seconds':current,
++    'loop_lag_max_observed_seconds':max(spans.get('loop_lag',{}).get('max',0.),current or 0.),
++    'scope':'six receipt-minute buckets, <=8192 BAR timing samples/bucket; elapsed includes lock wait; NOT CPU or wire time'}
+--- /dev/null
++++ b/r4a/decision_metrics.py
+@@ -0,0 +1,34 @@
++"""Observational proxy; the ORIGINAL RLock still provides all serialization."""
++import threading,time
++from contextlib import contextmanager,nullcontext
++
++def operation(lock,name):
++ return lock.operation(name) if hasattr(lock,'operation') else nullcontext()
++
++class MeasuredDecisionLock:
++ def __init__(self,raw):
++  self.raw=raw;self.local=threading.local();self.guard=threading.Lock();self.stats={}
++ def __getattr__(self,key):return getattr(self.raw,key)
++ @contextmanager
++ def operation(self,name):
++  old=getattr(self.local,'operation','unlabelled');self.local.operation=name
++  try:
++   with operation(self.raw,name):yield
++  finally:self.local.operation=old
++ def acquire(self,blocking=True,timeout=-1):
++  ok=self.raw.acquire(blocking,timeout)
++  if ok:
++   if not hasattr(self.local,'frames'):self.local.frames=[]
++   self.local.frames.append((getattr(self.local,'operation','unlabelled'),time.monotonic()))
++  return ok
++ def release(self):
++  name,at=self.local.frames.pop();elapsed=time.monotonic()-at
++  self.raw.release()
++  with self.guard:
++   if name not in self.stats and len(self.stats)>=96:name='overflow'
++   r=self.stats.setdefault(name,{'count':0,'total_seconds':0.,'max_seconds':0.})
++   r['count']+=1;r['total_seconds']+=elapsed;r['max_seconds']=max(r['max_seconds'],elapsed)
++ def __enter__(self):self.acquire();return self
++ def __exit__(self,*exc):self.release()
++ def snapshot(self):
++  with self.guard:return {k:{**v,'mean_seconds':v['total_seconds']/v['count']} for k,v in self.stats.items()}
+--- /dev/null
++++ b/r4a/direct_parent.py
+@@ -0,0 +1,52 @@
++"""R6 direct parent: lease wait before child; child atomically acquires before claim.
++Original ProcessGuard remains the monitor, restart policy and 120s cooldown.
++"""
++from .parent import ProcessGuard
++from .lease_wait import wait_for_lease
++from .durable import PREFIX
++from shadow_guard_main import startup_claim
++
++class DirectProcessGuard(ProcessGuard):
++ def __init__(self,redis,*args,**kw):
++  super().__init__(redis,*args,**kw);self.redis=redis
++ def _read_boot(self):
++  value=self.redis.hget(PREFIX+':budget:'+self.controller.policy.key,'boot:'+self.controller.boot_id)
++  return None if value is None else int(value)
++ def run(self):
++  self.authorize()
++  key=PREFIX+':budget:'+self.controller.policy.key
++  # Read-only early ceiling. The original atomic Lua remains the final authority.
++  boots=self.redis.hget(key,'boots')
++  if boots is not None:
++   if not 0<=int(boots)<=4:raise ValueError('BUDGET_RESPONSE_INVALID')
++   if int(boots)==4:return {'action':'PARK','reason':'BUDGET_EXHAUSTED','spawned':False}
++  if not wait_for_lease(self.redis,self.authorize,stopped=lambda:self.external_stop,clock=self.clock,sleep=self.sleep):
++   return {'action':'EXTERNAL_STOP','spawned':False}
++  # Suppress ONLY the parent's pre-spawn claim. The child makes the same original
++  # idempotent claim AFTER acquiring the canonical lease. Monitor code is reused.
++  original_spawn=self.spawn
++  original_preflight=self.controller.preflight
++  def checked_spawn(*args):
++   try:return original_spawn(*args)
++   except Exception:
++    # OS/spawn failures were counted by R5's pre-spawn claim too. Keep that
++    # ceiling without moving the normal claim ahead of atomic leadership.
++    self.controller.preflight=original_preflight
++    startup_claim(self.controller,sleeper=self.sleep,monotonic=self.clock)
++    raise
++  self.spawn=checked_spawn
++  self.controller.preflight=lambda:'ALLOW'
++  original_after=self.controller.after_worker_exit
++  def after(external=False):
++   if external:return original_after(True)
++   self.controller.boot_number=self._read_boot()
++   if self.controller.boot_number is None:
++    # A real pre-claim startup failure still consumes one boot. NotLeader cannot
++    # reach here: acquisition waits in the child and never claims on that path.
++    self.controller.preflight=original_preflight
++    status=startup_claim(self.controller,sleeper=self.sleep,monotonic=self.clock)
++    if status!='ALLOW':return status
++   return original_after(False)
++  self.controller.after_worker_exit=after
++  try:return super().run()
++  finally:self.controller.preflight=original_preflight;self.controller.after_worker_exit=original_after;self.spawn=original_spawn
+--- /dev/null
++++ b/r4a/ingress_observed.py
+@@ -0,0 +1,29 @@
++"""Instrumentation around the unchanged original safety implementation."""
++import time
++from ws_ingress import BoundedWSIngress
++class ObservedIngress(BoundedWSIngress):
++ def __init__(self,*a,diagnostics,**kw):
++  self.diagnostics=diagnostics;self.failure_diagnostics=None
++  logger=kw.pop('logger',print)
++  def observed_logger(row,**opts):
++   logger({**row,'wave':self.failure_diagnostics,'ws_ingress':self.snapshot()},**opts)
++  super().__init__(*a,logger=observed_logger,**kw)
++ def submit(self,kind,msg,received_at):
++  self.diagnostics.received(kind,received_at)
++  return super().submit(kind,msg,received_at)
++ def _work(self,item):
++  start=time.monotonic();ok=False
++  try:
++   ok=super()._work(item);return ok
++  finally:
++   if item[0]=='BAR':self.diagnostics.finished(item[2],time.monotonic()-start,ok)
++ def _fail(self,exc):
++  if self.failure is not None and not self.failure.done():
++   try:self.failure_diagnostics=self.diagnostics.snapshot(self)
++   except Exception as error:self.failure_diagnostics={'diagnostics_error_type':type(error).__name__}
++  return super()._fail(exc)
++ def snapshot(self):
++  result=super().snapshot()
++  try:result['wave']=self.diagnostics.snapshot(self)
++  except Exception as error:result['wave']={'diagnostics_error_type':type(error).__name__}
++  return result
+--- /dev/null
++++ b/r4a/lease_wait.py
+@@ -0,0 +1,32 @@
++"""Read the ORIGINAL lease; never delete, renew, refund or guess its expiry."""
++import json,time
++LEADER_KEY='ipr_direct:v1:canonical:operational_priority_radar:v1:runtime:leader'
++QUIET_SECONDS=35.0
++
++def wait_for_lease(redis,authorize,*,stopped=lambda:False,clock=time.monotonic,sleep=time.sleep,emit=None):
++ emit=emit or (lambda x:print(json.dumps(x),flush=True))
++ began=clock();free_since=None;last_log=None
++ while True:
++  if stopped():return False
++  authorize()
++  owner=redis.get(LEADER_KEY) # Redis errors propagate; unavailable is NOT free.
++  now=clock()
++  if owner is not None:free_since=None
++  elif free_since is None:free_since=now
++  free=0. if free_since is None else now-free_since
++  if last_log is None or now-last_log>=5 or free>=QUIET_SECONDS:
++   emit({'stage':'GUARD_WAIT_FOR_LEASE','waited_seconds':now-began,'observed_free_seconds':free,
++         'required_free_seconds':QUIET_SECONDS,'lease_occupied':owner is not None,'budget_claimed':False})
++   last_log=now
++  if free>=QUIET_SECONDS:return True
++  sleep(min(1.,QUIET_SECONDS-free) if free_since is not None else 1.)
++
++def acquire_without_budget(lead,redis,authorize,**ports):
++ from leadership import NotLeader
++ while True:
++  authorize()
++  try:lead.acquire();return
++  except NotLeader:
++   # A different deploy won the read/acquire race. Original atomic NX acquisition
++   # is authoritative. No boot has been claimed; wait again rather than refund.
++   if not wait_for_lease(redis,authorize,**ports):raise RuntimeError('LEASE_WAIT_STOPPED')
+--- a/r4a/runtime.py
++++ b/r4a/runtime.py
+@@ -122,7 +122,7 @@
+   self.check_session();self.leader.require_current()
+   self.revoke('CONNECTING');self.a.connection_started();self.auth=False;self.ready.clear()
+   self.checkpoint('CONNECTION_STARTED')
+-  self.ingress=BoundedWSIngress(PipelinePort(self.a),RecoveryPort(self.a),lambda:self.a.transport_trusted,
++  self.ingress=getattr(self,"ingress_factory",BoundedWSIngress)(PipelinePort(self.a),RecoveryPort(self.a),lambda:self.a.transport_trusted,
+     capacity=8192,max_age_seconds=5.0,on_gap=lambda:self.revoke('INGRESS_FAIL_CLOSED'))
+   assert self.ingress.batch_size==32
+   tasks=[];self.ws=None
+@@ -180,7 +180,7 @@
+   return Runtime(adapter,state,leadership,socket_open,authorize,policy,**ports)
+ 
+ 
+-def compose(*,redis,root,worker,boot_id,policy,session_policy,rest,recovery_factory,clock_check,filter_check,root_check,measure,socket_open,authorize,sample,clock=time.monotonic,wall=lambda:datetime.now(timezone.utc),observe_stream=None):
++def compose(*,redis,root,worker,boot_id,policy,session_policy,rest,recovery_factory,clock_check,filter_check,root_check,measure,socket_open,authorize,sample,clock=time.monotonic,wall=lambda:datetime.now(timezone.utc),observe_stream=None,lease_before_budget=False):
+  """Construct originals in isolated namespace only AFTER all pre-I/O gates.
+  Data/recovery ports are R4-B inputs, not default stubs. No token/env reader here.
+  """
+@@ -193,9 +193,17 @@
+  if not policy.time_allows(wall().timestamp()) or root.session!=policy.session:raise SafetyStop('SESSION_ROOT_MISMATCH')
+  if root_check() is not True or clock_check() is not True:raise SafetyStop('ROOT_OR_CLOCK_UNPROVEN')
+  MemoryBounds().check(sample())
+- status,number=SessionBudget(redis).claim(policy,boot_id)
+- if status not in {'ALLOW','INITIALIZED_BY_FIRST_CLAIM'} or not 1<=number<=4:raise SafetyStop('BOOT_CLAIM_DENIED')
+- lead=leadership(redis,worker);lead.acquire()
++ lead=leadership(redis,worker)
++ if lease_before_budget:
++  from .lease_wait import acquire_without_budget
++  acquire_without_budget(lead,redis,authorize)
++ try:
++  status,number=SessionBudget(redis).claim(policy,boot_id)
++  if status not in {'ALLOW','INITIALIZED_BY_FIRST_CLAIM'} or not 1<=number<=4:raise SafetyStop('BOOT_CLAIM_DENIED')
++ except BaseException:
++  if lease_before_budget:lead.release()
++  raise
++ if not lease_before_budget:lead.acquire()
+  canonical=NamespacedRedis(redis,PREFIX+':canonical:');lua=ProductionRedisLua(canonical)
+  bridge=OriginalBridge(canonical,lua,lead,policy.session,root.symbols,rest,worker,session_policy)
+  state=RedisState(redis,policy.session,root.identity(),worker,lead.require_current().leader_generation)
+--- a/r4b/adapter.py
++++ b/r4b/adapter.py
+@@ -10,6 +10,7 @@
+ from .store import JournalState
+ from dintegration.clock import ClockUnavailable
+ from dreview.core import Blocked
++from r4a.decision_metrics import operation
+ class EvidenceAdapter(LiveAdapter):
+  INCREMENTAL_BATCH_CAP=100
+  INCREMENTAL_REJECT_COOLDOWN=30.0
+@@ -96,7 +97,7 @@
+     if token is not self.cancel_event or token.is_set():raise ValueError('RECOVERY_CANCELLED')
+     if connection!=self.c.connection or revision!=self.c.revision or self.c.inflight or self.c.failed:raise ValueError('RECOVERY_EPOCH_CHANGED')
+    self.barrier.epoch_guard=epoch_guard
+-   with self.bridge.p._decision_lock:
++   with operation(self.bridge.p._decision_lock,'case_recovery'),self.bridge.p._decision_lock:
+     cases=self.barrier.run(now,self.gap_start or self.proof.started)
+    if not cases['reconciled']:
+     self.report={'reason':'OPEN_CASE_CONTINUITY_UNPROVEN','cases':cases};return False
+@@ -112,7 +113,7 @@
+     else:bad[s]=e['reason']
+    if required_pins-set(good):self.report={'reason':'PINNED_SYMBOL_UNPROVEN','symbols':sorted(required_pins-set(good))};return False
+    if not good:self.report={'reason':'NO_SYMBOL_CONTINUITY_PROVEN','quarantine':bad};return False
+-   with self.bridge.p._decision_lock,self.control_lock:
++   with operation(self.bridge.p._decision_lock,'full_recovery_commit'),self.bridge.p._decision_lock,self.control_lock:
+     self.checks()
+     if token is not self.cancel_event or token.is_set():raise ValueError('RECOVERY_CANCELLED')
+     if connection!=self.c.connection or revision!=self.c.revision or symbols!=self.c.bar or self.c.inflight or self.c.failed:raise ValueError('RECOVERY_EPOCH_CHANGED')
+@@ -158,7 +159,7 @@
+    except Exception as exc:
+     bad={s:'WARMUP_'+type(exc).__name__ for s in selected};return False
+    finally:fetch_seconds=time.monotonic()-fetch_start
+-   with self.bridge.p._decision_lock,self.control_lock:
++   with operation(self.bridge.p._decision_lock,'incremental_admission'),self.bridge.p._decision_lock,self.control_lock:
+     if not current():bad={s:'INCREMENTAL_CONTEXT_CHANGED' for s in selected};return False
+     self.checks()
+     inv=self.barrier.inventory();pins=set().union(*inv.values());good={}
+--- a/r4b/runtime.py
++++ b/r4b/runtime.py
+@@ -105,7 +105,12 @@
+      pending=[s for s in pending if s>self.incremental_cursor]+[s for s in pending if s<=self.incremental_cursor]
+     batch=pending[:self.INCREMENTAL_BATCH];self.incremental_cursor=batch[-1]
+     self.last_incremental=self.clock();self.incremental_attempts+=1
+-    await asyncio.to_thread(self.a.admit_incremental,batch,now)
++    def incremental_work():
++     gate=getattr(self,'heavy_window',None)
++     if gate is None:return self.a.admit_incremental(batch,now)
++     with gate.operation('incremental'):
++      return self.a.admit_incremental(batch,self.wall()) # evidence as-of actual attempt, after gate wait
++    await asyncio.to_thread(incremental_work)
+     if self.a.recovering & self.proof.witnessed(self.wall()):self.wake.set()
+     continue
+    if self.last_attempt is not None:
+--- /dev/null
++++ b/tests/test_r6.py
+@@ -0,0 +1,252 @@
++import asyncio,contextlib,io,json,threading,time,unittest
++from datetime import timedelta
++from types import SimpleNamespace as NS
++from unittest.mock import patch,Mock
++from lua_redis import LuaRedis
++from test_direct import OP
++from r4a.lease_wait import wait_for_lease,acquire_without_budget,LEADER_KEY
++from r4a.direct_parent import DirectProcessGuard
++from r4a.redis_ports import leadership
++from r4a.durable import PREFIX,SessionBudget
++from restart_budget import SessionPolicy
++from leadership import NotLeader
++from ipr.wave import HeavyWindow,WaveDiagnostics
++from dintegration.measure import Measurements
++from r4a.ingress_observed import ObservedIngress
++from ws_ingress import BoundedWSIngress,IngressBacklogError
++
++class SimTime:
++ def __init__(self):self.at=0.;self.callback=lambda:None
++ def clock(self):return self.at
++ def sleep(self,s):self.at=round(self.at+s,6);self.callback()
++
++class LeaseTests(unittest.TestCase):
++ def test_crash_replacement_six_seconds_later_no_claim_until_free_35(self):
++  r=LuaRedis(now=OP.timestamp());old=leadership(r,'old');old.acquire();r.now+=6
++  t=SimTime();start=r.now;out=[]
++  t.callback=lambda:setattr(r,'now',start+t.at)
++  self.assertTrue(wait_for_lease(r,lambda:None,clock=t.clock,sleep=t.sleep,emit=out.append))
++  self.assertGreaterEqual(t.at,59) # remaining TTL24 + confirmed free35
++  self.assertIsNone(r.hget(PREFIX+':budget:unused','boots'))
++  self.assertFalse(any(x['budget_claimed'] for x in out));self.assertEqual(out[-1]['observed_free_seconds'],35)
++ def test_overlap_old_runs_sixty_no_budget_is_burned(self):
++  r=LuaRedis(now=OP.timestamp());old=leadership(r,'old');old.acquire();t=SimTime();start=r.now;released=[False]
++  def step():
++   r.now=start+t.at
++   if t.at<60 and int(t.at)%10==0:old.renew()
++   if t.at>=60 and not released[0]:old.release();released[0]=True
++  t.callback=step
++  with contextlib.redirect_stdout(io.StringIO()):wait_for_lease(r,lambda:None,clock=t.clock,sleep=t.sleep)
++  self.assertEqual(t.at,95);new=leadership(r,'new');acquire_without_budget(new,r,lambda:None)
++  p=SessionPolicy(OP.date().isoformat(),OP.date().isoformat()+'T00:00:00Z',OP.date().isoformat()+'T23:59:59Z')
++  self.assertEqual(SessionBudget(r).claim(p,'new'),('INITIALIZED_BY_FIRST_CLAIM',1))
++ def test_free_timer_resets_if_other_worker_claims(self):
++  t=SimTime();r=NS(get=lambda k:'occupied' if 10<=t.at<20 else None)
++  wait_for_lease(r,lambda:None,clock=t.clock,sleep=t.sleep,emit=lambda x:None)
++  self.assertEqual(t.at,55)
++ def test_redis_failure_is_not_free(self):
++  with self.assertRaises(ConnectionError):wait_for_lease(NS(get=Mock(side_effect=ConnectionError())),lambda:None,emit=lambda x:None)
++ def test_stop_during_wait_does_not_claim(self):
++  t=SimTime();r=NS(get=lambda k:'old')
++  self.assertFalse(wait_for_lease(r,lambda:None,stopped=lambda:t.at>=2,clock=t.clock,sleep=t.sleep,emit=lambda x:None))
++ def test_read_acquire_race_rewaits_without_budget(self):
++  t=SimTime();r=NS(get=lambda k:None);lead=NS(acquire=Mock(side_effect=[NotLeader('race'),None]))
++  acquire_without_budget(lead,r,lambda:None,clock=t.clock,sleep=t.sleep,emit=lambda x:None)
++  self.assertEqual(t.at,35);self.assertEqual(lead.acquire.call_count,2)
++ def test_real_loss_remains_fatal_not_reacquired(self):
++  r=LuaRedis();a=leadership(r,'a');a.acquire();r.now+=31;b=leadership(r,'b');b.acquire()
++  with self.assertRaises(NotLeader):a.require_current()
++  self.assertEqual(b.backend.current_owner(),'b')
++ def guard(self,claim=True,fault=False,boots=0):
++  r=LuaRedis(now=OP.timestamp());t=SimTime();start=r.now;t.callback=lambda:setattr(r,'now',start+t.at)
++  day=OP.date().isoformat();p=SessionPolicy(day,day+'T00:00:00Z',day+'T23:59:59Z');events=[]
++  for i in range(boots):SessionBudget(r).claim(p,'old'+str(i))
++  def spawn(boot,n):
++   self.assertIsNone(n);events.append((t.at,r.hget(PREFIX+':budget:'+p.key,'boots')))
++   if claim:
++    lead=leadership(r,'child');acquire_without_budget(lead,r,lambda:None)
++    self.assertEqual(SessionBudget(r).claim(p,boot)[1],boots+1)
++   return NS(poll=lambda:2 if fault else 0)
++  g=DirectProcessGuard(r,p,lambda:None,spawn,lambda:{'limit_bytes':512*1024**2,'current_bytes':1,'anon_bytes':1},clock=t.clock,wall=lambda:r.now,sleep=t.sleep,boot_id='fixture')
++  return g,r,t,events,p
++ def test_direct_parent_claims_only_inside_child_after_wait(self):
++  g,r,t,e,p=self.guard()
++  with contextlib.redirect_stdout(io.StringIO()):q=g.run()
++  self.assertEqual(e,[(35.,None)]);self.assertEqual(q['boot'],1);self.assertEqual(q['action'],'WORKER_EXIT');self.assertEqual(q['child_exit_code'],0)
++  self.assertEqual(r.hget(PREFIX+':budget:'+p.key,'boots'),'1')
++ def test_real_preclaim_fault_still_consumes_one(self):
++  g,r,t,e,p=self.guard(claim=False,fault=True)
++  with contextlib.redirect_stdout(io.StringIO()):q=g.run()
++  self.assertEqual(q['boot'],1);self.assertEqual(q['child_exit_code'],2);self.assertEqual(r.hget(PREFIX+':budget:'+p.key,'boots'),'1')
++ def test_real_OS_spawn_failure_is_still_counted(self):
++  g,r,t,e,p=self.guard(claim=False,fault=True);g.spawn=Mock(side_effect=OSError('fixture'))
++  with contextlib.redirect_stdout(io.StringIO()),self.assertRaises(OSError):g.run()
++  self.assertEqual(r.hget(PREFIX+':budget:'+p.key,'boots'),'1')
++ def test_four_real_failures_still_park_no_fifth(self):
++  g,r,t,e,p=self.guard(boots=4)
++  self.assertEqual(g.run()['reason'],'BUDGET_EXHAUSTED');self.assertFalse(e);self.assertEqual(t.at,0)
++ def test_compose_direct_atomic_lease_precedes_original_budget(self):
++  # Actual compose code, injected original components; stop at bridge construction.
++  from r4a.runtime import compose
++  from dreview.core import Root
++  r=LuaRedis(now=OP.timestamp());day=OP.date().isoformat();p=SessionPolicy(day,day+'T00:00:00Z',day+'T23:59:59Z');events=[]
++  from r4a.redis_ports import leadership as make
++  def factory(raw,w):
++   lead=make(raw,w);old=lead.acquire
++   lead.acquire=lambda:(events.append('acquire'),old())[-1];return lead
++  original=SessionBudget.claim
++  def claim(*args):events.append('claim');return original(*args)
++  with patch('r4a.redis_ports.leadership',side_effect=factory),patch.object(SessionBudget,'claim',claim),patch('dintegration.bridge.OriginalBridge',side_effect=RuntimeError('STOP_AFTER_CLAIM')):
++   with self.assertRaisesRegex(RuntimeError,'STOP_AFTER_CLAIM'):
++    compose(redis=r,root=Root(day,frozenset({'X'}),'a'*64,True),worker='child',boot_id='b',policy=p,session_policy={},rest=None,recovery_factory=None,clock_check=lambda:True,root_check=lambda:True,filter_check=None,measure=None,socket_open=None,authorize=lambda:None,sample=lambda:{'limit_bytes':512*1024**2,'current_bytes':1,'anon_bytes':1},wall=lambda:OP,lease_before_budget=True)
++  self.assertEqual(events,['acquire','claim'])
++
++class WindowTests(unittest.TestCase):
++ def gate(self,second):
++  t=SimTime();t.at=second
++  g=HeavyWindow(lambda:OP+timedelta(seconds=t.at),sleep=t.sleep)
++  return t,g
++ def test_exact_window_boundaries(self):
++  for second,blocked in [(0,True),(9.999,True),(10,False),(54.999,False),(55,True),(59.999,True)]:
++   _,g=self.gate(second);self.assertEqual(g.blocked(),blocked)
++ def test_incremental_and_scan_start_after_wave(self):
++  for kind in ('scan_rest','incremental'):
++   for second in (0,5,55,59):
++    t,g=self.gate(second)
++    with g.operation(kind):
++     self.assertFalse(g.blocked());self.assertTrue(g.snapshot()[kind]);self.assertGreaterEqual(t.at,10 if second<10 else 70)
++    self.assertFalse(g.snapshot()[kind])
++ def test_each_pagination_request_gated_after_waiting_api_lock(self):
++  t,g=self.gate(54.);calls=[]
++  with g.operation('scan_rest'):
++   g.before_request();calls.append(t.at);t.at=55;g.before_request();calls.append(t.at)
++  self.assertEqual(calls[0],54);self.assertGreaterEqual(calls[1],70)
++ def test_ordinary_requests_not_globally_delayed(self):
++  t,g=self.gate(0);g.before_request();self.assertEqual(t.at,0)
++ def test_shutdown_unblocks_wait(self):
++  t,g=self.gate(0);g.stop=lambda:t.at>=1
++  with self.assertRaisesRegex(RuntimeError,'HEAVY_WORK_STOPPED'):
++   with g.operation('incremental'):self.fail('must not enter')
++ def test_api_gate_wait_is_outside_serialization_lock_then_rechecked(self):
++  from ipr.api import Alpaca
++  events=[]
++  class Response:
++   status=200
++   def __enter__(self):return self
++   def __exit__(self,*a):pass
++   def read(self,*a):events.append('read');return b'{}'
++  api=Alpaca({'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'},opener=lambda *a,**k:(events.append('open'),Response())[-1])
++  def before():
++   self.assertFalse(api.lock.locked());events.append('gate')
++  api.before_request=before
++  api.request_allowed=Mock(side_effect=[False,True])
++  api.get('/v2/stocks/snapshots',{});self.assertEqual(events,['gate','gate','open','read']);self.assertFalse(api.lock.locked())
++ def test_runtime_incremental_uses_guard_in_real_loop(self):
++  # The inherited scheduler executes our scope on its off-loop worker.
++  from r4b.runtime import EvidenceRuntime
++  from test_r4 import R4Tests
++  async def go():
++   f=R4Tests().deferred();r=EvidenceRuntime(f.a,f.a.checkpoint,f.a.bridge.leadership,None,lambda:None,NS(time_allows=lambda t:True),wall=lambda:f.now[0],sample=lambda:{})
++   entries=[]
++   class Gate:
++    @contextlib.contextmanager
++    def operation(self,name):entries.append(name);yield
++   r.heavy_window=Gate();r.auth=True
++   f.a.proof.observe({'T':'b','S':'Y',**f.history['Y'][-1]},f.now[0]);r.wake.set()
++   task=asyncio.create_task(r.recovery_loop());await asyncio.sleep(.1);task.cancel();await asyncio.gather(task,return_exceptions=True)
++   self.assertIn('incremental',entries);self.assertTrue(f.a.transport_trusted)
++  asyncio.run(go())
++
++class DiagnosticTests(unittest.TestCase):
++ def fixture(self,logger=lambda *a,**kw:None):
++  a=NS(c=NS(bar={'X','Y'}),recovering={'Y'},bridge=NS(p=NS(contention_probe=None,_decision_lock=threading.RLock())))
++  m=Measurements();g=HeavyWindow(lambda:OP+timedelta(seconds=20));d=WaveDiagnostics(a,m,g)
++  p=NS(_decision_lock=threading.RLock(),_entry_opportunities={},_active_by_symbol={},contention_probe=None,on_bar=lambda *a:None)
++  return ObservedIngress(p,NS(on_stream_message=lambda *a:None),lambda:True,diagnostics=d,logger=logger),d,m
++ def test_exact_nearest_rank_counts_and_duration(self):
++  ingress,d,m=self.fixture();d.received('BAR',OP);d.received('BAR',OP)
++  for n in range(1,21):d.finished(OP,n/1000,True)
++  q=d.snapshot(ingress);row=next(iter(q['receipt_minutes'].values()))
++  self.assertEqual(row['received_BAR'],2);self.assertEqual(row['processed_BAR'],20);self.assertEqual(row['accepted_symbols_at_first_receipt'],1)
++  self.assertEqual(row['BAR_processing_seconds']['p95_nearest_rank'],.019);self.assertAlmostEqual(row['BAR_processing_seconds']['mean'],.0105)
++ def test_bounds_evict_only_old_diagnostics_no_trust_changes(self):
++  ingress,d,m=self.fixture()
++  for n in range(9):d.received('BAR',OP+timedelta(minutes=n))
++  self.assertEqual(len(d.minutes),6);self.assertEqual(d.admitted(),1)
++ def test_sample_overflow_explicit_no_fake_percentile(self):
++  ingress,d,m=self.fixture();d.SAMPLES=2
++  for i in range(3):d.finished(OP,.1,True)
++  r=next(iter(d.snapshot(ingress)['receipt_minutes'].values()));self.assertEqual(r['timing_overflow'],1);self.assertIsNone(r['BAR_processing_seconds']['p95_nearest_rank'])
++ def test_original_queue_too_old_still_fails_at_five_not_extended(self):
++  async def go():
++   out=[];ingress,d,m=self.fixture(logger=lambda row,**kw:out.append(row));await ingress.begin()
++   item=('BAR',{'S':'X'},OP,time.monotonic()-5.01)
++   with self.assertRaisesRegex(IngressBacklogError,'INGRESS_QUEUE_TOO_OLD'):ingress._work(item)
++   ingress._fail(IngressBacklogError('INGRESS_QUEUE_TOO_OLD'))
++   self.assertEqual(out[-1]['stage'],'WS_INGRESS_FAIL_CLOSED');self.assertIn('wave',out[-1]);self.assertEqual(out[-1]['ws_ingress']['max_age_seconds'],5.)
++   self.assertFalse(ingress.accepting);await ingress.end()
++  asyncio.run(go())
++ def test_backlog_original_watchdog_and_failure_snapshot_before_revoke(self):
++  async def go():
++   out=[];ingress,d,m=self.fixture(logger=lambda row,**kw:out.append(row));await ingress.begin()
++   ingress.on_gap=lambda:d.adapter.recovering.update({'X','Y'})
++   ingress.inflight=('BAR',{'S':'X'},OP,time.monotonic()-5.1)
++   await asyncio.sleep(.3)
++   self.assertTrue(ingress.failure.done());self.assertEqual(out[-1]['reason'],'INGRESS_BACKLOG_TIMEOUT');self.assertEqual(out[-1]['wave']['accepted_symbols_now'],1)
++   ingress.inflight=None;await ingress.end()
++  asyncio.run(go())
++ def test_original_submit_process_and_metrics(self):
++  async def go():
++   ingress,d,m=self.fixture();await ingress.begin();ingress.submit('BAR',{'S':'X'},OP)
++   await asyncio.wait_for(ingress.q.join(),1)
++   s=ingress.snapshot();self.assertEqual(s['received']['BAR'],1);self.assertEqual(s['processed']['BAR'],1)
++   row=next(iter(s['wave']['receipt_minutes'].values()));self.assertEqual(row['processed_BAR'],1);await ingress.end()
++  asyncio.run(go())
++ def test_inflight_and_loop_current_not_just_last_tick(self):
++  ingress,d,m=self.fixture();ingress.inflight=('BAR',{},OP,time.monotonic()-3);ingress._element_started=time.monotonic()-2;m.loop_tick=time.monotonic()-4
++  q=d.snapshot(ingress);self.assertGreater(q['oldest_age_seconds'],2.9);self.assertGreater(q['inflight_BAR_elapsed_seconds'],1.9);self.assertGreater(q['loop_lag_max_observed_seconds'],3.8)
++ def test_stats_thread_safe(self):
++  m=Measurements();threads=[threading.Thread(target=lambda:[m.observe('x',.1) for _ in range(500)]) for _ in range(4)]
++  for t in threads:t.start()
++  for t in threads:t.join()
++  self.assertEqual(m.sample()['spans']['x']['count'],2000)
++
++class LockMetricsTests(unittest.TestCase):
++ def test_original_reentrant_serialization_and_named_hold_preserved(self):
++  from r4a.decision_metrics import MeasuredDecisionLock
++  from contention_probe import ObservedRLock,Probe
++  raw=ObservedRLock(Probe('fixture'));lock=MeasuredDecisionLock(raw)
++  with lock.operation('incremental_admission'),lock:
++   self.assertTrue(raw._is_owned())
++   with lock.operation('on_bar'),lock:self.assertTrue(raw._is_owned())
++  q=lock.snapshot();self.assertEqual(q['incremental_admission']['count'],1);self.assertEqual(q['on_bar']['count'],1);self.assertFalse(raw._is_owned())
++ def test_other_thread_cannot_enter_original_lock(self):
++  from r4a.decision_metrics import MeasuredDecisionLock
++  lock=MeasuredDecisionLock(threading.RLock());results=[]
++  with lock:
++   t=threading.Thread(target=lambda:results.append(lock.acquire(False)));t.start();t.join()
++  self.assertEqual(results,[False])
++
++class DirectOverlapIntegration(unittest.TestCase):
++ def exercise(self,old_alive):
++  r=LuaRedis(now=OP.timestamp());old=leadership(r,'old');old.acquire();t=SimTime();base=r.now;done=[False];counts=[]
++  day=OP.date().isoformat();p=SessionPolicy(day,day+'T00:00:00Z',day+'T23:59:59Z')
++  def sleep(seconds):
++   t.at=round(t.at+seconds,6);r.now=base+t.at
++   counts.append(r.hget(PREFIX+':budget:'+p.key,'boots'))
++   if old_alive:
++    if t.at<60 and int(t.at)%10==0:old.renew()
++    if t.at>=60 and not done[0]:old.release();done[0]=True
++  starts=[]
++  def spawn(boot,number):
++   starts.append(t.at);self.assertIsNone(number);self.assertIsNone(r.get(LEADER_KEY))
++   lead=leadership(r,'new');acquire_without_budget(lead,r,lambda:None)
++   SessionBudget(r).claim(p,boot)
++   return NS(poll=lambda:2)
++  g=DirectProcessGuard(r,p,lambda:None,spawn,lambda:{'limit_bytes':512*1024**2,'current_bytes':1,'anon_bytes':1},clock=t.clock,wall=lambda:r.now,sleep=sleep,boot_id='new')
++  if not old_alive:r.now+=6;base=r.now
++  with contextlib.redirect_stdout(io.StringIO()):result=g.run()
++  self.assertEqual(starts,[95. if old_alive else 59.]);self.assertTrue(all(c is None for c in counts[:int(starts[0])]))
++  self.assertEqual(result['boot'],1);self.assertEqual(r.hget(PREFIX+':budget:'+p.key,'boots'),'1')
++ def test_parent_deploy_with_sixty_second_old_instance(self):self.exercise(True)
++ def test_parent_replacement_six_seconds_after_crash(self):self.exercise(False)
+--- /dev/null
++++ b/COST_AND_STARTUP_R6_AR.txt
+@@ -0,0 +1,44 @@
++COMPLETE — تحليل محلي للسجلات والشفرة؛ القيم غير المقاسة UNKNOWN، ولا ترقية مقترحة.
++
++المصدر والحدود
++evidence/SOURCE_HASHES.json يحوي بصمات جميع ملفات القراءات المحلية. نافذة OPEN فيها285 معرفًا فريدًا وثلاث صفحات، hasMore النهائيfalse؛ هذه تغطية ما أعادته Render وليست إثبات عدم فقد السجل من المصدر. FOLLOW الخام فارغ؛ لا نستنتج منه أن الإقلاع عاد أو استمر. PREOPEN يحوي سطورًا منتقاة وقراءة metrics، لا كامل733 سطرًا ضمن هذا المجلد. المقاطع الخام المتعلقة بالتحليل محفوظة بمعرفاتها وطوابعها في evidence/R5_SOURCE_EXCERPTS_RAW.jsonl.
++مرجع R5 ZIP: 0bfca8d04969e472001b1c815c88c52fb63047ee8cc5ec2fb3512efd01ee877a.
++OPEN raw SHA256: 8aa26d7a5507789b5070d271a1cf6026cc700c03ca41a707c9b529b78c735647.
++
++1. المقروء فعلًا
++14:34:20 UTC:456 BAR مستلمة ومعالجة، أقصى عمر بدء0.25438594s، وأقصى إكمال BAR في دقيقة الاستلام0.25439716s. cpu_cores_interval≈0.06384 على نافذة العينة، وليس على زمن معالجة كل BAR.
++14:40:34:430 BAR، أقصى بدء0.24640557s وأقصى إكمال BAR0.24641990s. 14:45:17:392 BAR، أقصى بدء1.44121466s وأقصى إكمال BAR1.44123739s.
++هذه دقائق إنشاء الشاهد/الثقة الأولى. ليس معلومًا من هذه المجاميع كم BAR مرّ بكل حسابات B أو كان قد انتهى كرمز غير موثوق؛ لا يصح تقدير كلفة القرار من قسمة التأخير على كل الرسائل.
++الإغلاق14:35:05.114998 UTC (17:35:05.114998 الرياض) BACKLOG_TIMEOUT؛14:41:05.118011 QUEUE_TOO_OLD؛14:46:05.719939 BACKLOG_TIMEOUT.
++عدد الرموز المقبولة قبل الموجات وفق الثقة والقبول التزايدي:348 و429 و305 من500، وليس بالضرورة عدد الشموع المستلمة/المعالجة في موجة الفشل نفسها. R5 لا تطبع snapshot طابور وتوقيت معالجة عند الفشل؛ عدد الشموع التي أُنجزت من الموجة الفاشلة وتكلفة كل واحدة UNKNOWN.
++
++2. ما تكشفه الستاك بالفعل
++أول V6_CONTENTION_STACKS عند14:35:02.583653447:25 خيطًا، صاحب القرار ingress_BAR ومدة الحيازة عند اللقطة0.001425459s. في V6_CONTENTION_THREAD التالي لنفس التفريغ:
++ws_ingress._work -> PipelinePort.on_bar -> EvidenceAdapter.on_message -> LiveAdapter.on_message -> checks -> LeadershipManager.require_current -> LeaseBackend.current_owner -> Redis GET -> SSL read.
++أي أن خيط القرار كان ينتظر Redis، لا حساب CPU ظاهرًا في تلك اللقطة. خيط آخر في admit_incremental -> rest.warmup -> Alpaca.call -> HTTPS read، وخيط المسح عند snapshots -> Alpaca.call. العد المحلي للخيوط الخاملة في هذا التفريغ19. هذه لقطة واحدة، لا قياس توزيع وقت كل الخيوط ولا إثبات أن REST وحده سبب الإغلاق.
++المسار المعتاد للرمز المقبول: LiveAdapter.checks يفحص owner ثمgeneration بطلبيGET؛ ثم OriginalBridge.event يستدعي require_current نفسه ثانية قبل المحرك، بطلبيGET آخرين. أربع رحلات Redis متسلسلة على الأقل لكل BAR مقبولة، داخل القفل الخارجي للـingress والتحكم. قد تضيف الكتابة/المراقبة/القرارات رحلات أخرى. لم نُلغِ أيًا من هذه الفحوص في R6.
++الاستنتاج المدعوم: انتظار الشبكة المتسلسل مرشح مباشر مثبت بلقطة لخيط BAR. فرضية CPU/GIL وحده لا تفسر الأدلة كسبب وحيد. مقدار مساهمة Redis مقابلCPU وبقية القفل UNKNOWN.
++
++3. تقدير الكلفة وما يمكن حسابه
++زمن CPU الفعلي/BAR في الموجة الفاشلة:UNKNOWN. متوسط wall-processing الفعلي/BAR:UNKNOWN. لا توجد عينات خدمة لكل BAR أو عدد كامل للمُنجز عند الفشل، والـCPU بالدقيقة لا يعزل الموجة.
++المتاح حساب شرط السعة، وليس ادعاء قياس الكلفة:
++- لإنهاء500 شمعة تسلسليًا خلال أقل من5s: متوسط زمن الخدمة مع كل الانتظار أقل من10ms/BAR، مع هامش للطابور والبث والمتابعة.
++- على0.5CPU وخمس ثوانٍ: ميزانيةCPU الإجمالية2.5 CPU-second، أي أقل من5ms CPU/BAR إذا خُصص كل المعالج للموجة وحدها. الأعمال الأخرى تخفض ذلك.
++- إذا كانت الكلفةCPU الصافية c مللي ثانية/BAR، فالحد النظري للأنوية C>500*c/(1000*5)=0.1*c؛ مثال5ms يحتاج>0.5 نواة قبل أي هامش. هذه معادلة شرطية، لا توصية موارد ولا قيمةc مقاسة.
++- مع أربعةGET متسلسلة لكلBAR، يجب أن يكون متوسط round-trip أقل من2.5ms للطلب حتى قبل تكلفة CPU وأي Redis إضافي. لا تعالج زيادة المعالج انتظارI/O التسلسلي.
++- حساسية توضيحية فقط: إذا افترضنا RTT=120ms لكلGET، يصبح الحد الأدنى480ms/BAR و240s لكل500. مدة~120ms المقروءة لقراءة checkpoint هي Lua مختلفة وليست قياسGET؛ لا يجوز اعتماد240s كتقدير حي. RTT الحقيقي لتلكGETs UNKNOWN.
++- قسمة5s على348/429/305 تعطي14.37/11.66/16.39ms، لكنها حدود خدمة لازمة لتلك الأحجام لو كانت موجة فورية تسلسلية، وليست كلفة مقاسة. لا نُسوّي الرموز المقبولة مع عددBAR في الطابور.
++لذلك عدد المعالجات اللازم فعليًا UNKNOWN؛ لا يوجد دليل يدعم ترقية CPU كحل، والموارد تبقى كما طلب المستخدم.
++
++4. نمو الاستعادة وتأخر الحلقة
++تصحيح التسمية حسب السجل: مجموعات PHASE_TIMING بعد14:37 تخص البناء الذي سجّل GUARD_BOOT_CLAIMED boot3 عند14:37:34، وبعد14:42 تخصboot4. لا توجد مجموعة ناجحة مماثلة لـboot2؛ انتهىNotLeader قبل البناء.
++state.restore.verify_chain≈3.5125s ثم5.3431s (نسبة1.52)، وload_archive≈7.1345s ثم10.7830s (نسبة1.51). connection_started≈10.0213s ثم13.0435s. max loop lag≈5.9324 ثم10.7471 ثم13.7592s، وهي قمم تراكمية لكلعملية وليست timestamps للأحداث نفسها.
++السبب البنيوي المثبت في الشفرة:
++r4a/durable.py RedisState.restore يتحقق من كامل السلسلة1..seq بطلبHGET منفصل لكلepoch مع JSON/hash. ثم r4b/store.py load_archive يستدعيrestore مجددًا ويعيدHGET لكلepoch مرة أخرى لإعادة بناءR/U/proof. السجل دائم ويزيد عند تغييراتcontrol/ACK/evidence/admission، ولذلك تزداد الكلفة خطيًا بـN؛ لكنه لا يطبعN في هذه السطور، فلا ننسب كل الزيادة إلى عددepochs وحده. تغيرRTT وحجمsnapshot يظلانUNKNOWN.
++في مسار بناء الابن المعتاد: compose.restore، ثم _build.load_archive (restore+replay)، ثم Runtime.run.restore، ثم connection_started.load_archive (restore+replay). هذا أربع مرات تحقق ومرتاreplay قبل أول اتصال كامل، بخلاف قراءات أخرى. أول البناء في asyncio.to_thread، وRuntime.run.restore بالفعلto_thread. لكن Runtime.connection يستدعي a.connection_started بشكل متزامن على الحلقة، وفيه load_archive ثم restore_pins/prepare_needs، فمدة10–13s توافق سببًا مباشرًا قويًا لتجمد الحلقة وقت الاتصال. توافق لا يعني أن كل قمة5.93/10.75/13.76 نُسبت حصريًا له.
++أيضًا checkpoint في writer وACK، وLockedControl.plan/tick/ack، تستخدم Redis أو تنتظرcontrol_lock على الحلقة؛ وon_message يمسكcontrol_lock أثناء عمل BAR والشبكة. قد تؤخر الحلقة أثناء الموجة. السبب الدقيق لقمةR1 المذكورة3.78s UNKNOWN؛ مدةstate.restore=3.7825s هنا مدة عملية أخرى، ولا يجوز مساواتهما لمجرد تقارب الرقم.
++هل يغير الآن؟ يستحق إصلاحًا لاحقًا محدودًا: batch-HMGET للسجل مع التحقق الكامل نفسه، وتجنب إعادة التحقق المكرر بشرط عدم إسقاطfencing/CAS، ونقل مرحلة اتصال كاملة خارج الحلقة بعد ضبط ترتيب التزامن. لم يُنفذ شيء من ذلك هنا: تغييرconcurrency/replay قد يتخطىcorrection أو يحركثقة قبلrestore؛ لا نختصر السلسلة ولا نحذفepochs ولا نضعtruncate.
++
++5. قياس R6 المطلوب في أول تشغيل يُؤذن به لاحقًا
++اقرأ سطر فشل واحد بالـwave ثم قارن مدة BAR وقفل ingress_BAR مع redis:GET وزمن الحلقة وعلم REST/incremental. افصل الانتظار عن CPU. لا تبدل حد5.0 لتنجح التجربة. إن بقيت معظم مدة BAR داخل GET، فالنافذة وحدها غير كافية؛ يلزم تصميم مستقل لتحسين مسار القيادة مع الحفاظ على الفصل والـfencing، وليس إضعافهما تلقائيًا.
++لم يُؤذن بتشغيل R6 في هذا الطلب، ولم ننشرها.
+--- /dev/null
++++ b/R6_REPORT_AR.txt
+@@ -0,0 +1,51 @@
++COMPLETE_REVIEW_ONLY — تنفيذ نطاق R6 محليًا؛ لا تشغيل حي ولا ضمان نجاح على 512Mi و0.5 CPU.
++
++1. انتظار القيادة قبل الإقلاع
++المكان: r4a/lease_wait.py وr4a/direct_parent.py، وربطهما في ipr/main.py. لا تغيير في r4a/parent.py الأصلي.
++الأب يقرأ مفتاح القيادة الأصلي فقط، وينتظر أن يبقى غير موجود 35 ثانية متصلة قبل بدء الابن. إذا ظهر مالك جديد يُعاد عدّ الـ35 من الصفر. لا يُحذف عقد ولا يُمدّد عقد قديم ولا تُقرأ/تُطبع أسرار. يُطبع GUARD_WAIT_FOR_LEASE كل خمس ثوانٍ وعند الانتهاء، بالانتظار الفعلي وبوجود العقد فقط، دون هوية المالك.
++هذا أكثر تحفظًا من انتظار 35 ثانية من لحظة خروج محلية: عند موت صاحب العقد دون تحريره قد يبقى TTL ثلاثين ثانية، ثم تأتي 35 ثانية خلو مؤكدة. إذا أُعيد الأب بعد ست ثوانٍ من توقف التجديد، قد ينتظر 24+35=59 ثانية أخرى. عند بقاء القديمة 60 ثانية وتحريرها، ينتظر حتى الثانية 95. هذه أرقام المحاكاة، وليست قياس Render.
++المفتاح: ipr_direct:v1:canonical:operational_priority_radar:v1:runtime:leader.
++لا نملك من هذا المفتاح إثباتًا أن عملية بعيدة انتهت ماديًا؛ نثبت أنها لم تعد تملك عقدًا خلال نافذة الخلو. نسخة فقدت عقدها لا يجوز لها اتخاذ قرار بالمحرك الأصلي. انتهاؤها المادي يبقى تحققًا حيًا UNKNOWN.
++
++لتجنب السباق بين قراءة الخلو والمطالبة: الأب لا يطالب قبل spawn في مسار Direct. compose في الابن يكتسب عقد القيادة الذري الأصلي أولًا، ثم ينفذ CLAIM الأصلي بنفس boot_id، ثم يبني المحرك. إذا سبقه ناشر آخر عند الاكتساب، لا CLAIM ولا ردّ ميزانية؛ ينتظر الخلو ثانيةً. لا نُضعف الاكتساب الذري ولا نمنح قيادة من قراءة GET فقط.
++الأب يستعيد رقم boot الخاص بهذا boot_id من السجل الدائم بعد خروج الابن، ثم يطبق after_worker_exit وcooldown الأصليين. أي عطل حقيقي حدث قبل أن يستطيع الابن المطالبة (ويشمل فشل إنشاء العملية من النظام) يُحتسب مرة واحدة بعد خروجه بالـCLAIM الأصلي؛ فلا تصبح أعطال التجهيز محاولة مجانية لا نهائية. الإيقاف الخارجي لا يضيف مطالبة تعويضية. عند أربعة إقلاعات يبقى PARK/BUDGET_EXHAUSTED، ولا يوجد ردّ أو تصفير أو حذف للميزانية.
++فقد العقد أثناء العمل يبقى قاتلًا كما كان؛ الانتظار خاص بالاكتساب الأول، وليس استعادة قيادة عامل فقدها. قد تؤدي Redis غير المتاحة إلى فشل/توقف واضح، ولا تعتبر عقدًا حرًا. سياسة فشل startup_claim العابرة والحد 120 ثانية في الأب الأصلي لم تُحرر أو تُختصر.
++
++2. قياس موجة الدقيقة
++r4a/ingress_observed.py يرث BoundedWSIngress الأصلية ويستدعي submit و_work و_fail وsnapshot الأصلية. القرار والمراقب والإغلاق من المصدر المجمد نفسه، وبسعة8192 ودفعة32 وعمر5.0 دون تعديل.
++كل IPR_METRICS يحتوي داخل ws_ingress.wave: آخر ست دقائق حسب وقت الاستلام، received_BAR وprocessed_BAR وfailed_BAR، وعدد المقبولين عند أول استلام للموجة، ونشاط incremental/scan_rest آنذاك، ومدة معالجة BAR بالثواني count/mean/p95 nearest-rank/max. المدة من دخول _work حتى خروجه، وتشمل انتظار قفل القرار ومعالجة الشمعة؛ ليست CPU، ولا زمن الشبكة، ولا الكلفة الصافية لحساب B.
++processed هنا إتمام عنصر الإدخال، بما في ذلك الرمز الذي يتجاهله المكيّف لغياب الثقة/الأهلية؛ لا يعني إنتاج قرار ولا قبول رمز جديد. عدد الرموز المقبولة منفصل، وهو bar ناقص recovering، وليس عدد إشارات أو رسائل.
++يُحفظ حتى8192 زمنًا في كل دقيقة من الدقائق الست. بعد تجاوز الحد يبقى count/mean/max لجميع العناصر، ويصبح p95=null مع timing_overflow صريحًا. لا يُختلق percentile من عينة ناقصة.
++القيم اللحظية: queue_length وoldest_age_seconds وinflight_BAR_elapsed_seconds وaccepted_symbols_now وactive_now وloop_lag_current_seconds وloop_lag_max_observed_seconds.
++قرار القفل: إحصاءات Probe الأصلية كما هي، ومعها decision_lock_hold_by_operation من proxy يحتفظ بالقفل الأصلي نفسه. تفصيل ingress_BAR/on_bar/غيرها وincremental_admission/full_recovery_commit/case_recovery بالعدد والمتوسط والأقصى. حيازة الأقفال المتداخلة تُسجل لكل نطاق، فلا تجمع أزمنتها كأنها وقت CPU مستقل.
++أقصى تأخر الحلقة هو تأخر جدولة رصده مسبار100ms، ومعه العمر الحالي لو كانت الحلقة متأخرة؛ ليس تتبعًا حصريًا لكل callback ولا إثباتًا لأي دالة سببت التأخير.
++عند الفشل تُلتقط wave قبل سحب الثقة وتُضاف إلى WS_INGRESS_FAIL_CLOSED مع snapshot الإدخال. لا Redis ولا REST ولا انتظار لقفل القرار لأجل التشخيص. البيانات إجماليات/أسماء عمليات، دون محتوى أسرار أو رسائل مستخدم. فشل التشخيص يُطبع باسمه ولا يمنع الإغلاق الأصلي. قد يتأخر stdout نفسه، كما في المسار الأصلي؛ لا ضمان كتابة سجل عند قتل فوري/OOM.
++
++3. نافذة الموجة
++ipr/wave.py يمنع بدء عملية incremental أو scan_rest بين الثانية55 شاملًا والثانية10 غير شاملة من الدقيقة التالية. عند10 يسمح بالبدء؛ عند55 ينتظر. الحساب UTC، وحدود الدقيقة مطابقة لحدود الدقيقة بالرياض.
++العمل ينتظر في خيط، لا ينام داخل حلقة البث. لا تراكب جديد لدورات المسح أو القبول. فترة incremental تبقى1.0 ودفعة100 والرفض30.0.
++قبل كل طلب Alpaca داخل هذين المسارين يعاد فحص النافذة بعد الحصول على قفل API وقبل فتح الطلب. الانتظار نفسه يحدث خارج قفل API المشترك؛ إذا عبرت الساعة إلى النافذة أثناء انتظار القفل، يُحرر القفل وتُعاد المحاولة بعد النافذة، ولذلك يشمل جميع صفحات bars_multi وصفحات أحجام المسح ودفعات snapshots. لا يضاف طلب؛ لا تتغير نافذة البيانات ولا OHLCV. وقت محاولة الاستعادة التزايدية يُؤخذ بعد انتظار البوابة، ولا يوسم تاريخ قديم بزمن مستقبلي مصطنع.
++نطاق active_now يعني أن العملية بدأت ولم تنته، ويشمل انتظار صفحة لاحقة أو بوابة النافذة، ولا يثبت أنها تستهلك CPU في تلك اللحظة.
++طلب بدأ قبل55 لا يُلغى: قد يبقى أثناء الموجة بسبب timeout الشبكة أو زمن الرد، وكذلك الحساب/الالتزام الذي بدأ قبل النافذة. هذه فجوة متبقية معلنة. لم نغير طلبات full recovery الأولى أو متابعة الصفقات أو native5 أو مؤقتات السلامة؛ تأخيرها قد يغير T120 أو سلوك القرار، وهو خارج هذا التعديل.
++الانتظار قد يجعل لقطة المسح أقدم من60 ثانية، فتتعطل الترشيحات الجديدة بفحص الحداثة الأصلي إلى المسح التالي. لا نرفع شرط الحداثة ولا نمد T120 لتعويض ذلك.
++
++4. ما لم ننقله خارج القفل
++لم ننقل _bar_evidence أو inventory أو preload أو attest أو append_epoch خارج منطقة القرار/التحكم. الدليل يقرأ StreamProof المتغير، والأهلية وpins قد تتغير بين الفحص والالتزام. نقل الحساب وحده بلا لقطة إصدار ثابتة وإعادة تحقق كاملة قد يقبل شاهدًا أبطله correction أو يسبق متابعة قائمة. اختبارات اصطناعية محدودة لا تثبت سلامة هذا النقل؛ لذلك لا نعده إصلاحًا منجزًا ولا نخمن سلامته.
++لم نبدل فحوص القيادة المتسلسلة ولا سجل المحرك المجمد. هذا سبب مهم لعدم إعلان حل سعة500 شمعة حتى بعد إبعاد REST.
++
++5. حدود الاختبار والقياس
++124 اختبارًا موروثًا نجحت قبل التعديل. في R6 نجح المجموع مع اختبارات الانتظار والسباق والتداخل والأخطاء والبوابة والتشخيص والإغلاق الأصلي. المخرجات الخام الأصلية والمفكوكة مرفقة. أول محاولة لاختبارات R6 الجديدة فشلت بثلاثة مواضع في fixtures: recovery وهمي بلا on_stream_message، ومقارنتان لثوانٍ float بدل دقة datetime؛ سُجلت وفُصلت عن النجاح النهائي، وأزيل استيراد كان يكرر سبعة اختبارات. لا إخفاقات موروثة مخفية.
++العميل الوهمي ينفذ Lua الفعلي بـliblua5.4 مع أنواع وانتهاء؛ ليس Redis حقيقيًا. البدائل لا تثبت تشغيل نسختي Render أو انضباط SIGTERM في نشر حقيقي أو تأخر Alpaca أو TLS أو تجديد القيادة تحت ازدحام حي.
++benchmark_r6_diagnostics.py شغّل سبع مقارنات محلية، كل منها5000 BAR في مسار قرار no-op. وسيط الزيادة≈9.07 ميكروثانية/BAR، أي≈4.53ms لكل500 في هذا الاختبار فقط. ليس اختبار محرك كامل ولا قيد0.5CPU ولا توقعًا لزمن السوق. التفاصيل الخام مرفقة.
++لا ضمان موارد512Mi/0.5CPU أو عدم تجاوز5sec. لا بيانات جديدة جُلبت، ولا full engine، ولا خدمة شُغلت، ولا نشر أو تعديل خارجي.
++
++6. قرارات اتخذتها للتنفيذ
++- خلو قيادة متصل35 ثانية، لا الاعتماد على TTL متوقع أو توقف قديم مفترض.
++- المطالبة في الابن بعد الاكتساب؛ لا تعديل Lua أو تعويض حسابات الميزانية. احتساب الأعطال الحقيقية السابقة للمطالبة في الأب.
++- التشخيص محلي مقيّد بست دقائق و8192 عينة/دقيقة، مع p95 دقيق أوnull صريح عند overflow.
++- القياس يشمل lock-wait ولا يُسوَّق كزمن CPU؛ إبقاء الأصل المقفل كما هو.
++- بوابة زمنية على بدايات العمليتين وكل طلب REST فيهما، دون إلغاء طلب قائم أو تعطيل المتابعة.
++- ترك تضخم journal والاستعادة المتزامنة لتغيير مستقل؛ لا حذف سجل ولا اختصار تحقق في R6.
++
++7. ما لم يتغير
++reference_app كاملًا مطابق بايتيًا لـR5، المرجع نفسه المعتمد منذR1. كود الاستراتيجية والفلوت والأخبار والقائمة والأوزان والسيولة والسعر1–50 ومنع التكرار ومرسل تيليجرام كما كانت. لا تغيير T120 أو budget4 أوTTL30/renew10 أو512/410/60 أو5.0/8192/32 أوincremental1.0/100/30. لا متغير بيئة جديد ولا حاجة لإعداد جديد.
+--- a/README_AR.txt
++++ b/README_AR.txt
+@@ -1,3 +1,8 @@
+-COMPLETE_REVIEW_ONLY — IPR_DIRECT_R5: إصلاح ترتيب القبول التزايدي فقط، بلا نشر.
+-اقرأ R5_REPORT_AR.txt وDIFF_FROM_R4.patch والاختبارات الخام. الملفات الأقدم موروثة للتوثيق التاريخي.
+-تنبيه: recover الكامل لم يتغير ويحتوي preload قبل الحفظ الدائم؛ موضح في التقرير، ولم نَدّعِ إصلاحه.
++COMPLETE_REVIEW_ONLY — IPR_DIRECT_R6؛ حزمة تصحيح وقياس محلية، بلا نشر، ونجاح الموجة الحية UNKNOWN.
++المصدر R5 المعتمدة ببصمة 0bfca8d04969e472001b1c815c88c52fb63047ee8cc5ec2fb3512efd01ee877a.
++اقرأ R6_REPORT_AR.txt وCOST_AND_STARTUP_R6_AR.txt وDIFF_FROM_R5.patch وINTEGRITY_R6.json.
++كل الملفات الأقدم وتقاريرها موروثة للتوثيق، وليست نتائج R6. لا تتبع تعليمات نشر قديمة من هذه الحزمة؛ لم يُصرّح بنشر R6.
++لم يتغير reference_app أو المحرك أو شروط E/B/confluence/ENTRY أو الوقف والأهداف. لا تغيير للبيئة أو الخدمة أو الموارد أو Redis الحي.
++انتظار القيادة والمقاييس نافذان في تركيب ipr.main الفعلي، وليسا أدوات منفصلة غير موصولة.
++مهم: تجنّب النافذة لا يزيل انتظار Redis المتسلسل تحت قفل القرار. لا ندّعي أن R6 تحل كل أسباب WS_INGRESS_FAIL_CLOSED.
++ما زال عيب recover الكامل الموثق في R5 (preload قبل الحفظ النهائي) موروثًا دون تغيير ترتيب هذا المسار.
+--- a/STATUS.json
++++ b/STATUS.json
+@@ -1,26 +1,40 @@
+ {
+-  "release": "IPR_DIRECT_R5",
++  "release": "IPR_DIRECT_R6",
+   "status": "COMPLETE_REVIEW_ONLY",
++  "baseline_zip_sha256": "0bfca8d04969e472001b1c815c88c52fb63047ee8cc5ec2fb3512efd01ee877a",
+   "production_deployed": false,
+   "real_services_modified": false,
+-  "live_validation": "UNKNOWN",
++  "network_used_for_services": false,
+   "reference_app_modified": false,
++  "reference_files_identical": 72,
+   "T_sec": 120,
+   "max_boots": 4,
+-  "realistic_load_test": "NOT_RUN",
+-  "network_namespace": "HOST_DENIED",
++  "lease_TTL_seconds": 30,
++  "lease_renew_seconds": 10,
++  "lease_confirmed_free_wait_seconds": 35,
++  "ingress_max_age_seconds": 5.0,
++  "ingress_capacity": 8192,
++  "ingress_batch_size": 32,
++  "memory_MiB": 512,
++  "memory_anon_guard_MiB": 410,
++  "incremental_spacing_seconds": 1.0,
++  "incremental_max_symbols": 100,
++  "incremental_reject_cooldown_seconds": 30.0,
++  "inherited_tests": 124,
++  "total_tests": 155,
++  "synthetic_live_equivalence": "NOT_PROVEN",
++  "realistic_market_load_test": "NOT_RUN",
++  "live_validation": "UNKNOWN",
+   "remaining_unknowns": [
+-    "live_R3_warmup_and_incremental_duration",
+-    "Alpaca_real_endpoint_and_rate_behavior",
+-    "live_T120_initial_trust_success",
+-    "real_512Mi_0_5CPU_resource_and_lag",
+-    "source_TRADE_completeness",
+-    "R1_3_78_second_lag_exact_cause"
++    "whether_500_BAR_can_finish_under_5_seconds",
++    "true_CPU_cost_per_BAR",
++    "Redis_RTT_per_ingress_GET",
++    "inflight_REST_overlap_after_start_gate",
++    "exact_epoch_count_and_RTT_contribution_to_restore_growth",
++    "actual_remote_process_shutdown_timing",
++    "real_Render_deploy_handover_and_network_failures"
+   ],
+-  "baseline_sha256": "0df06f835839da8350ef0133e97f7660651d12d56b50856f30f0d283ead3ded4",
+-  "incremental_spacing_seconds": 1,
+-  "incremental_max_symbols": 100,
+-  "original_and_extracted_tests": 124,
+-  "incremental_reject_cooldown_seconds": 30,
+-  "known_unchanged_issue": "full recover preload precedes durable journal; possible duplicate history on retry after later failure"
++  "known_unchanged_issue": "full recover preload precedes durable journal; potential duplicate history on retry",
++  "original_and_extracted_tests": 155,
++  "network_namespace": "DENIED_BY_HOST_UID_MAP"
+ }
+--- /dev/null
++++ b/TEST_SCOPE_R6_AR.txt
+@@ -0,0 +1,6 @@
++COMPLETE — اختبارات فعلية محلية مع حدود صريحة.
++R5 الأصلية:124/124 قبل التعديل. R6:155/155 (124 سابقة+31 جديدة).
++اختبارات R6: الانتظار بعد العطل والـTTL المتبقي ثم خلو35 ثانية؛ نسخة قديمة60 ثانية؛ سباق GET/اكتساب؛ إعادة ضبط الانتظار عند ظهور عقد؛ انقطاع Redis؛ الإيقاف أثناء الانتظار؛ ترتيب acquire قبل CLAIM في compose؛ تركيب الأب والابن المزيف مع Lua الفعلي؛ احتساب العطل الحقيقي قبل المطالبة؛ ثبات سقف4؛ بقاء فقد القيادة قاتلًا؛ حدود النافذة55/10؛ منع صفحات REST؛ الانتظار خارج حلقة البث وخارج قفل API؛ تركيب بوابة القبول في recovery_loop؛ nearest-rank والتكدس والفيض؛ الإغلاق الأصلي عند5sec؛ لقطة قبل سحب الثقة؛ قياس القفل الأصلي المتداخل وعدم قابلية دخول خيط آخر.
++العزل: run_tests.py يمنع socket.connect/connect_ex/create_connection وDNS. محاولة unshare -rn فشلت بـOperation not permitted؛ لا ندعي عزل شبكة kernel أو Redis حقيقيًا. لم تُستخدم الشبكة للاتصال بخدمات أثناء الإعداد.
++توجد مخرجات من المجلد الأصلي ومن ZIP مفكوك فعليًا، وفحص ZIP والبصمات. مخرجات المحاولة الأولى الفاشلة مرفقة ومفسرة، وليست نجاحًا نهائيًا.
++benchmark_r6_diagnostics.py ليس اختبار حمل سوق ولا full ولا قياس موارد Render؛ إنما كلفة مشاهدات محلية على مسار مصنوع no-op.
+--- /dev/null
++++ b/UNKNOWN_R6_AR.txt
+@@ -0,0 +1,10 @@
++COMPLETE — حدود المعرفة، وليست عوائق كودية مخفية.
++لم يُقَس نجاح R6 في السوق أو على 512Mi و0.5CPU. لا ضمان لقبول500 أو إنهاء الموجة تحت5s. عدد التنبيهات UNKNOWN.
++انتظار Redis داخل خيط BAR مثبت بلقطة؛ نسبته من إجمالي التأخر وRTT الدقيق وكلفة CPU لكل شمعة UNKNOWN. لا تكفي قمة CPU بالدقيقة لتحديد المعالج المطلوب.
++تجنب بدء العمل الثقيل لا يُنهي طلبًا بدأ قبل النافذة، ولا يُوقف native5 أو full recovery أو المتابعة. مقدار التحسن UNKNOWN.
++نمو عدد epochs نفسه غير مسجل في العينات؛ النمو الخطي وتكرار القراءة ثابتان من الشفرة، ومساهمة RTT وحجم JSON في زيادة المدة UNKNOWN.
++الحيازة المتداخلة للقفل ليست أوقاتًا حصرية قابلة للجمع. p95 لتوقيت الخدمة ليس p95 لتأخر الاستقبال.
++لم تُنقل حسابات الأدلة خارج القفل لأن سلامة التزامن لم تثبت. لم تُنقل connection_started المتزامنة لنفس السبب. لم تتغير قواعد المحرك أو القيادة المجمدة.
++مراقبة غياب العقد تثبت خلوه، لا موت عملية بعيدة ماديًا. الربط الحقيقي مع نسختي Render وشبكة Redis وAlpaca ووقت SIGTERM لم يُجرّب.
++عيب preload في recover الكامل الموروث من R5 باقٍ ومعلن؛ مسار admit_incremental يحافظ على ترتيب R5 المصحح.
++لا تشغيل حاليًا ولا نشر ولا إعدادات ولا قراءة/كتابة Redis حي. ملفات النشر القديمة داخل الحزمة توثيق موروث وليست إذنًا بالنشر.

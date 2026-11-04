@@ -1,0 +1,9 @@
+{
+  "durable_py_byte_identical": true,
+  "ProofStore_class_byte_identical": true,
+  "persistent_format_changed": false,
+  "old_records_rewritten": false,
+  "actual_user_Redis_read": false,
+  "actual_user_archive_tested": "UNKNOWN",
+  "legacy_synthetic_chain_and_archive_test": "PASS"
+}

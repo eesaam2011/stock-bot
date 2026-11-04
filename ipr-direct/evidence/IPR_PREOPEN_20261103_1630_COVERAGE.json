@@ -1,0 +1,15 @@
+{
+  "cutoff_utc": "2026-11-03T13:30:47Z",
+  "coverage_start_utc": "2026-11-03T01:18:00Z",
+  "coverage_end_utc": "2026-11-03T13:30:47Z",
+  "pages": 8,
+  "unique_log_records": 733,
+  "hasMore_at_end": false,
+  "errors_found": [],
+  "current_boot_from_logs": 1,
+  "max_boots": 4,
+  "budget_count_direct_redis": "NOT_READ",
+  "boot_inference": "same instance r9dgv; no new boot or parent exit since boot=1 after manual reset",
+  "commit": "17251b1bf5f1acbd03bf761f58226801441b2aff",
+  "service_mutations": 0
+}

@@ -24,6 +24,8 @@ class StreamProof:
    ss=set(symbols)
    if len(ss)>self.MAX_SYMBOLS:raise ValueError('EVIDENCE_SYMBOL_CAP')
    self.scope=ss
+   self.invalid={s:v for s,v in self.invalid.items() if s in ss}
+   self.last_reason={s:v for s,v in self.last_reason.items() if s in ss}
    for s in list(self.rows):
     if s not in ss:self.rows.pop(s);self.invalid.pop(s,None)
  def invalidate(self,symbol=None,reason='DISCONNECT'):

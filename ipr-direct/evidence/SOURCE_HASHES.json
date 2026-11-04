@@ -1,0 +1,127 @@
+[
+  {
+    "path": "IPR_PREOPEN_20261103_1630/BOOT_PREP_RAW.jsonl",
+    "bytes": 239,
+    "sha256": "b42ee2082629ed52d65eb4df1a2cebb0bb75a4668efaf16efb4ae06bafa9446c"
+  },
+  {
+    "path": "IPR_PREOPEN_20261103_1630/COVERAGE.json",
+    "bytes": 506,
+    "sha256": "2a0acdadd8188f37ca0726f3bab0e66c17dde5bcced5d44006a80b4fd556fbf7"
+  },
+  {
+    "path": "IPR_PREOPEN_20261103_1630/LAST_IPR_METRICS_RAW.jsonl",
+    "bytes": 1709,
+    "sha256": "1bc82ce6ff3e9493c23a2d33701effd43447f9c701e6d9ecb09baae902d6b5e8"
+  },
+  {
+    "path": "IPR_PREOPEN_20261103_1630/RENDER_METRICS.json",
+    "bytes": 4808,
+    "sha256": "ab0cfd758469dd10036b3f4d4c4483ae01272fedf811160768d51eed869f105f"
+  },
+  {
+    "path": "IPR_PREOPEN_20261103_1630/SHA256SUMS.txt",
+    "bytes": 345,
+    "sha256": "98c9c1624e25c295e7d85c0bb7c2baed3a73df93c5c3766bb5a68b0a0fd5babc"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/SHA256SUMS.txt",
+    "bytes": 863,
+    "sha256": "03602d507c5bb1bdb64661261a47a728f154c32b9c5270204867310989f8a87b"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/SUMMARY_AR.txt",
+    "bytes": 2254,
+    "sha256": "62c627fc68cfabb311ca9518c8a54a5b4b80fb4fedee11dae8786c1a41e8e06b"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/coverage.json",
+    "bytes": 571,
+    "sha256": "ad174e8cffd5b59eea0ebaa6626fa4de1e01239b4de791de7dc7e3c28ea921ee"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/failures_raw.txt",
+    "bytes": 1913,
+    "sha256": "e2e829cf0e735074214765c7dd7f6a5ba27eba60bcf7c5a05fbed7f4bb9951cb"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/incremental_admission.csv",
+    "bytes": 2890,
+    "sha256": "3280227f83a2c9d57cf468650e81c6997486e11b07269311830b94d8128d7aec"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/incremental_admission_raw.jsonl",
+    "bytes": 10667,
+    "sha256": "926235d2889462aa045142bb0773dafa0eae79690458b3254c416a111a43d323"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/metrics_session.csv",
+    "bytes": 7406,
+    "sha256": "c9083fbb197e44d34228a9aa9479e337bf367f2e08727ae902ef8e3045638529"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/raw_logs_redacted.jsonl",
+    "bytes": 266330,
+    "sha256": "8aa26d7a5507789b5070d271a1cf6026cc700c03ca41a707c9b529b78c735647"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/raw_logs_redacted.txt",
+    "bytes": 184589,
+    "sha256": "cf786c5ea5329567797a228e101c0ef337554e016fec3e7e19569905d018a761"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/render_metrics.json",
+    "bytes": 9800,
+    "sha256": "0c9f867b3ff1bce8e003247f40071ba48edfd3cd25ced023f723b2a32fb24e48"
+  },
+  {
+    "path": "IPR_OPEN_20261103_1725_1750/summary.json",
+    "bytes": 6425,
+    "sha256": "288156bd9ce97fd84f1f1e4900247da308c4215f9eaa5e437024629db9671194"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/SHA256SUMS.txt",
+    "bytes": 682,
+    "sha256": "c0b48cad677099574cf426e56c363fa57c84c45fc7f38465cde2c6ef1d7de16e"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/SUMMARY_AR.txt",
+    "bytes": 2163,
+    "sha256": "f127dec111a68c00c82b51c35ef52da3dfbef9005dc3e88b9d690f78b8b015bc"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/context_before_1750.jsonl",
+    "bytes": 20418,
+    "sha256": "a26fe140a51abd3551bee2817ec0437edeb7a234d99a736f0fd5462134cad893"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/coverage.json",
+    "bytes": 570,
+    "sha256": "c6cb30eeddbf74745b7adafb8779117a3f1fa0161a0ae64a8d72d797f0f249c0"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/metrics_session.csv",
+    "bytes": 10738,
+    "sha256": "b64fbb5cd86a6e92433ea1d2371ff4a0d7b16e1f5ddf341fe7ea78a7a686cfe1"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/raw_logs_redacted.jsonl",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/raw_logs_redacted.txt",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/render_metrics.json",
+    "bytes": 14837,
+    "sha256": "0e017d29c0226e9b88e2d588ff21d40230b08e1c431a55744f75afa36405d89b"
+  },
+  {
+    "path": "IPR_FOLLOW_20261103_1750_1830/summary.json",
+    "bytes": 1624,
+    "sha256": "1960a4cb8612eeef7e199bd515839e98269b2ae3219f1ac206a2a2adad884056"
+  }
+]

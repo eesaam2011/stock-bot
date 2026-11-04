@@ -1,0 +1,9 @@
+{
+  "python": "3.12.14",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.39",
+  "network": "socket connect/connect_ex/create_connection/getaddrinfo denied by run_tests.py",
+  "unshare_rn": "FAILED: Operation not permitted",
+  "cpu_limit": "not set for these tests; not a 0.5CPU/512Mi Render validation",
+  "cpu.max": "800000 100000",
+  "memory.max": "8589934592"
+}

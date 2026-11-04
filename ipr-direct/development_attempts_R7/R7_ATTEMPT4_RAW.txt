@@ -1,0 +1,391 @@
+test_closed_day_does_not_fetch_assets_and_calendar_cached (test_direct.AutomaticPreparation.test_closed_day_does_not_fetch_assets_and_calendar_cached) ... ok
+test_historical_missing_session_not_synthesized (test_direct.AutomaticPreparation.test_historical_missing_session_not_synthesized) ... ok
+test_no_scope_from_failed_assets_with_no_cases (test_direct.AutomaticPreparation.test_no_scope_from_failed_assets_with_no_cases) ... {"stage": "ROOT_SOURCE_FAILED", "component": "assets", "reason": "ConnectionError"}
+ok
+test_root_from_actual_assets_saved_once_per_day (test_direct.AutomaticPreparation.test_root_from_actual_assets_saved_once_per_day) ... ok
+test_committed_T1_is_delivered_even_while_stream_recovers (test_direct.CommittedFollowups.test_committed_T1_is_delivered_even_while_stream_recovers) ... {"stage": "MESSAGE_DELIVERY", "event_type": "T1", "symbol": "X", "result": "SENT"}
+ok
+test_api_no_order_endpoint (test_direct.Contracts.test_api_no_order_endpoint) ... ok
+test_cached_prep_hash_verified (test_direct.Contracts.test_cached_prep_hash_verified) ... ok
+test_classifier_original_rejections (test_direct.Contracts.test_classifier_original_rejections) ... ok
+test_main_missing_env_before_connection (test_direct.Contracts.test_main_missing_env_before_connection) ... ok
+test_old_leader_no_reservation (test_direct.Delivery.test_old_leader_no_reservation) ... ok
+test_original_recovery_T1_STOP_real_outbox_to_telegram (test_direct.Delivery.test_original_recovery_T1_STOP_real_outbox_to_telegram) ... {"stage": "MESSAGE_DELIVERY", "event_type": "T1", "symbol": "X", "result": "SENT"}
+{"stage": "MESSAGE_DELIVERY", "event_type": "STOP", "symbol": "X", "result": "SENT"}
+ok
+test_same_symbol_different_trade_not_suppressed (test_direct.Delivery.test_same_symbol_different_trade_not_suppressed) ... ok
+test_same_trade_event_once_after_finish (test_direct.Delivery.test_same_trade_event_once_after_finish) ... ok
+test_started_ambiguous_no_retry (test_direct.Delivery.test_started_ambiguous_no_retry) ... ok
+test_composed_real_original_pipeline_no_manual_files (test_direct.MoreIntegration.test_composed_real_original_pipeline_no_manual_files) ... {"stage": "CLOCK_REFRESH_BEGIN", "monotonic": 34623.812877232, "thread_id": 140468781295424}
+{"stage": "CLOCK_REFRESH_END", "monotonic": 34623.812905594, "duration_seconds": 2.8362002922222018e-05, "success": true, "thread_id": 140468781295424}
+{"stage": "CLOCK_REFRESH_BEGIN", "monotonic": 34623.813162489, "thread_id": 140468346123968}
+{"stage": "CLOCK_REFRESH_END", "monotonic": 34623.81322967, "duration_seconds": 6.718099757563323e-05, "success": true, "thread_id": 140468346123968}
+{"stage": "PHASE_TIMING", "phase": "state.restore.read_checkpoint", "seconds": 0.00033020499540725723, "success": true}
+{"stage": "PHASE_TIMING", "phase": "state.restore", "seconds": 0.0003550409965100698, "success": true}
+{"stage": "PHASE_TIMING", "phase": "state.restore.read_checkpoint", "seconds": 0.0003037650021724403, "success": true}
+{"stage": "PHASE_TIMING", "phase": "state.restore", "seconds": 0.0003204399981768802, "success": true}
+{"stage": "PHASE_TIMING", "phase": "load_archive.replay", "seconds": 2.9139991966076195e-06, "success": true}
+{"stage": "PHASE_TIMING", "phase": "load_archive", "seconds": 0.00034345400490565225, "success": true}
+ok
+test_monotonic_ACK (test_direct.MoreIntegration.test_monotonic_ACK) ... ok
+test_rolling_history_reuses_20_known_sessions_without_fetch (test_direct.MoreIntegration.test_rolling_history_reuses_20_known_sessions_without_fetch) ... ok
+test_stream_buffer_rolls_per_symbol_not_global_invalid (test_direct.MoreIntegration.test_stream_buffer_rolls_per_symbol_not_global_invalid) ... ok
+test_750_three_batches_no_HGET_no_write (test_direct.News.test_750_three_batches_no_HGET_no_write) ... ok
+test_cache_strictly_less_than_60 (test_direct.News.test_cache_strictly_less_than_60) ... ok
+test_count_read_only (test_direct.News.test_count_read_only) ... ok
+test_missing_fails_open_zero (test_direct.News.test_missing_fails_open_zero) ... ok
+test_preparation_cache_fails_corruption (test_direct.ParentAndLifecycle.test_preparation_cache_fails_corruption) ... ok
+test_prepare_task_does_not_terminate_runtime_when_ready (test_direct.ParentAndLifecycle.test_prepare_task_does_not_terminate_runtime_when_ready) ... ERROR
+test_501_pins_explicit_conflict (test_direct.Scores.test_501_pins_explicit_conflict) ... ok
+test_exact_price_bounds (test_direct.Scores.test_exact_price_bounds) ... ok
+test_float_boundaries (test_direct.Scores.test_float_boundaries) ... ok
+test_float_unknown (test_direct.Scores.test_float_unknown) ... ok
+test_log_activity_exact (test_direct.Scores.test_log_activity_exact) ... ok
+test_no_future_stale_or_outside_price (test_direct.Scores.test_no_future_stale_or_outside_price) ... ok
+test_no_pin_dropped_without_snapshot (test_direct.Scores.test_no_pin_dropped_without_snapshot) ... ok
+test_pin_priority_and_500 (test_direct.Scores.test_pin_priority_and_500) ... ok
+test_replacement_exact_five_and_alphabetical (test_direct.Scores.test_replacement_exact_five_and_alphabetical) ... ok
+test_update_clock_120 (test_direct.Scores.test_update_clock_120) ... ok
+test_zero_score_allowed (test_direct.Scores.test_zero_score_allowed) ... ok
+test_bad_ohlcv_rejected (test_direct.Volumes.test_bad_ohlcv_rejected) ... ok
+test_failed_page_rolls_back (test_direct.Volumes.test_failed_page_rolls_back) ... ok
+test_history_20_regular_sums_not_daily_snapshot (test_direct.Volumes.test_history_20_regular_sums_not_daily_snapshot) ... ok
+test_missing_history_symbol_not_filled (test_direct.Volumes.test_missing_history_symbol_not_filled) ... ok
+test_only_RTH_completed (test_direct.Volumes.test_only_RTH_completed) ... ok
+test_replayed_and_revised_minute_not_double_counted (test_direct.Volumes.test_replayed_and_revised_minute_not_double_counted) ... ok
+test_expiry_still_ten_and_failure_diagnostics (test_r2.ClockTests.test_expiry_still_ten_and_failure_diagnostics) ... ok
+test_loop_lag_current_includes_still_blocked_window (test_r2.ClockTests.test_loop_lag_current_includes_still_blocked_window) ... ok
+test_real_12_seconds_event_loop_stall_independent_refresh (test_r2.ClockTests.test_real_12_seconds_event_loop_stall_independent_refresh) ... ok
+test_redis_failure_false_no_old_proof_revival (test_r2.ClockTests.test_redis_failure_false_no_old_proof_revival) ... ok
+test_uncertainty_limit_unchanged (test_r2.ClockTests.test_uncertainty_limit_unchanged) ... ok
+test_phase_timing_on_exception (test_r2.DiagnosticTests.test_phase_timing_on_exception) ... ok
+test_recovery_quarantine_counts_use_report_not_stale_attribute (test_r2.DiagnosticTests.test_recovery_quarantine_counts_use_report_not_stale_attribute) ... ok
+test_redaction_before_120_and_full_type (test_r2.DiagnosticTests.test_redaction_before_120_and_full_type) ... ok
+test_archive_timing_replay_and_restore_chain_unchanged (test_r2.ParentAndTimingTests.test_archive_timing_replay_and_restore_chain_unchanged) ... ok
+test_failed_clock_does_not_hide_root_mismatch (test_r2.ParentAndTimingTests.test_failed_clock_does_not_hide_root_mismatch) ... ok
+test_first_ACK_witness_can_be_older_on_rebalance (test_r2.ParentAndTimingTests.test_first_ACK_witness_can_be_older_on_rebalance) ... ok
+test_parent_reports_actual_child_2_separately_from_restart_75 (test_r2.ParentAndTimingTests.test_parent_reports_actual_child_2_separately_from_restart_75) ... ok
+test_deadline_remains_120_if_no_BAR_arrives (test_r2.RecoveryTests.test_deadline_remains_120_if_no_BAR_arrives) ... ok
+test_first_ACK_no_witness_cannot_prove (test_r2.RecoveryTests.test_first_ACK_no_witness_cannot_prove) ... {"test": "REAL_ASYNCIO_STALL", "seconds": 12.100154640000255, "refresh_calls": 4, "last_success_age_seconds": 2.1000510919984663}
+{"stage": "RECOVERY_WARMUP", "symbols": 0, "bar_scope": 2, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.858300235355273e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.863799793180078e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 1.0055002348963171e-05, "success": true}
+ok
+test_future_receipt_not_in_attempt_asof (test_r2.RecoveryTests.test_future_receipt_not_in_attempt_asof) ... ok
+test_mandatory_pin_is_in_warmup_even_without_live_witness (test_r2.RecoveryTests.test_mandatory_pin_is_in_warmup_even_without_live_witness) ... {"stage": "RECOVERY_WARMUP", "symbols": 1, "bar_scope": 2, "native1_minutes": 60, "native5_minutes": 305, "seconds": 2.9463997634593397e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.182699583703652e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.522998541593552e-06, "success": true}
+ok
+test_new_scheduler_waits_then_real_adapter_proves_inside_T120 (test_r2.RecoveryTests.test_new_scheduler_waits_then_real_adapter_proves_inside_T120) ... {"stage": "RECOVERY_WARMUP", "symbols": 1, "bar_scope": 2, "native1_minutes": 60, "native5_minutes": 305, "seconds": 5.83970031584613e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 4.067100235261023e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 9.773997589945793e-06, "success": true}
+ok
+test_no_minute_required_for_sparse_symbol (test_r2.RecoveryTests.test_no_minute_required_for_sparse_symbol) ... ok
+test_wrong_values_do_not_create_trust (test_r2.RecoveryTests.test_wrong_values_do_not_create_trust) ... {"test": "RECOVERY_SCHEDULE_SIMULATION", "ACK_to_witness_seconds": 25.1, "assumed_warmup_seconds": 53.75194773636758, "ACK_to_trust_seconds": 78.85194773636758, "T120": 120, "production_latency": "UNKNOWN"}
+{"stage": "RECOVERY_WARMUP", "symbols": 1, "bar_scope": 2, "native1_minutes": 60, "native5_minutes": 305, "seconds": 2.966500323964283e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.393099905224517e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.12199868960306e-06, "success": true}
+ok
+test_adapter_distinguishes_clock_and_root (test_r2.SenderTests.test_adapter_distinguishes_clock_and_root) ... ok
+test_clock_failure_before_START_not_unknown (test_r2.SenderTests.test_clock_failure_before_START_not_unknown) ... {"stage": "SENDER_CLOCK_DEFERRED"}
+ok
+test_identity_conflict_remains_fatal (test_r2.SenderTests.test_identity_conflict_remains_fatal) ... ok
+test_leader_loss_remains_fatal (test_r2.SenderTests.test_leader_loss_remains_fatal) ... ok
+test_root_real_failure_remains_fatal (test_r2.SenderTests.test_root_real_failure_remains_fatal) ... ok
+test_sender_coroutine_survives_clock_failure (test_r2.SenderTests.test_sender_coroutine_survives_clock_failure) ... {"stage": "SENDER_CLOCK_DEFERRED"}
+ok
+test_session_close_remains_fatal (test_r2.SenderTests.test_session_close_remains_fatal) ... ok
+test_batch_cap_enforced (test_r3.R3Incremental.test_batch_cap_enforced) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 5.198800499783829e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.4552002034615725e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.00023563199647469446, "success": true}
+ok
+test_concurrent_epoch_change_or_revocation_never_admits (test_r3.R3Incremental.test_concurrent_epoch_change_or_revocation_never_admits) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.449699918041006e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.8772999939974397e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.351998985745013e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"INCREMENTAL_CONTEXT_CHANGED": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.8182999812997878e-05, "seconds": 0.0002656270007719286, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.805699816439301e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.723099896684289e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.47200135467574e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"INCREMENTAL_CONTEXT_CHANGED": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 6.125099753262475e-05, "seconds": 0.000410684006055817, "transport_trusted": false, "TRADE_completeness": "UNKNOWN"}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.393600102048367e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.9493996407836676e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.513001375831664e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"INCREMENTAL_CONTEXT_CHANGED": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 3.68350010830909e-05, "seconds": 0.00033188699308084324, "transport_trusted": false, "TRADE_completeness": "UNKNOWN"}
+ok
+test_correction_while_fetch_thread_blocked_cannot_revive_trust (test_r3.R3Incremental.test_correction_while_fetch_thread_blocked_cannot_revive_trust) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.063099913764745e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.063600161112845e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 1.148699811892584e-05, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"INCREMENTAL_CONTEXT_CHANGED": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.005100488000607584, "seconds": 0.005536290002055466, "transport_trusted": false, "TRADE_completeness": "UNKNOWN"}
+ok
+test_durable_write_before_symbol_attestation (test_r3.R3Incremental.test_durable_write_before_symbol_attestation) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.8461995902471244e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.215800097677857e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 7.572001777589321e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.7830996259581298e-05, "seconds": 0.00148695899406448, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_exact_30_second_boundary_allows_admission (test_r3.R3Incremental.test_exact_30_second_boundary_allows_admission) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.686499985633418e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.014499816345051e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.271999831777066e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 3.835700044874102e-05, "seconds": 0.001675796003837604, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_exact_OHLCV_mismatch_rejected_without_global_revoke (test_r3.R3Incremental.test_exact_OHLCV_mismatch_rejected_without_global_revoke) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.275399987818673e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.755700163310394e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.372000593226403e-06, "success": true}
+ok
+test_journal_failure_fails_closed_without_admission (test_r3.R3Incremental.test_journal_failure_fails_closed_without_admission) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.453700239537284e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.4151002182625234e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.31299985293299e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"FATAL_ConnectionError": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 3.332000051159412e-05, "seconds": 0.001259012999071274, "transport_trusted": false, "TRADE_completeness": "UNKNOWN"}
+ok
+test_leader_or_clock_failure_remains_fatal (test_r3.R3Incremental.test_leader_or_clock_failure_remains_fatal) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.900800220435485e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.037499845959246e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 7.871996785979718e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"FATAL_RuntimeError": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.0, "seconds": 3.875800030073151e-05, "transport_trusted": false, "TRADE_completeness": "UNKNOWN"}
+ok
+test_missing_REST_BAR_set_rejected (test_r3.R3Incremental.test_missing_REST_BAR_set_rejected) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.2905005102511495e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.6649999199435115e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.381997758988291e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:33:01+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"REST_STREAM_BAR_SET_MISMATCH": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 3.541299520293251e-05, "seconds": 0.0008660550010972656, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_native5_incomplete_rejected (test_r3.R3Incremental.test_native5_incomplete_rejected) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.1602004785090685e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.6740002795122564e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 7.672002539038658e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"INCOMPLETE_OR_NON_NATIVE_5MIN": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.8241993277333677e-05, "seconds": 0.0004897129983874038, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_no_witness_not_admitted (test_r3.R3Incremental.test_no_witness_not_admitted) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.08609994337894e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.1948002288118005e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.10199708212167e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:01+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"NATIVE_HISTORY_UNAVAILABLE": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.237399894511327e-05, "seconds": 0.0005896619986742735, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_open_case_needs_original_full_path (test_r3.R3Incremental.test_open_case_needs_original_full_path) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.058000195072964e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.8442998882383108e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.481998520437628e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"REQUIRES_FULL_CASE_RECOVERY": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.4717002816032618e-05, "seconds": 0.0004773540058522485, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_real_invalidations_still_revoke (test_r3.R3Incremental.test_real_invalidations_still_revoke) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.4832002711482346e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.7911999495700002e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.201997843571007e-06, "success": true}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 0.00010456600284669548}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.5707995519042015e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 1.056499604601413e-05, "success": true}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.8867998227942735e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.826200216077268e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.012000762391835e-06, "success": true}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.7186000554356724e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.2082997020334005e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 1.0976000339724123e-05, "success": true}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.826699685305357e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.5137996999546885e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.092996722552925e-06, "success": true}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.047000402351841e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.48869982897304e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 7.741997251287103e-06, "success": true}
+ok
+test_scheduler_batch_100_rotates_to_other_symbols (test_r3.R3Incremental.test_scheduler_batch_100_rotates_to_other_symbols) ... {"stage": "RECOVERY_WARMUP", "symbols": 1, "bar_scope": 135, "native1_minutes": 60, "native5_minutes": 305, "seconds": 2.8563001251313835e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.095200034091249e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 9.39400342758745e-06, "success": true}
+ok
+test_source_outage_preserves_other_trust_and_deferred_symbol (test_r3.R3Incremental.test_source_outage_preserves_other_trust_and_deferred_symbol) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.052099393447861e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 5.419100489234552e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 9.073002729564905e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"WARMUP_ConnectionError": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.002292899000167381, "seconds": 0.003089851001277566, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_spacing_coalesces_repeated_deferred_BARs (test_r3.R3Incremental.test_spacing_coalesces_repeated_deferred_BARs) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 0.0002675809955690056}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.1887997465673834e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 7.852002454455942e-06, "success": true}
+ok
+test_ACK_witness_trust_20_BARs_incremental_then_correction (test_r3.R3Lifecycle.test_ACK_witness_trust_20_BARs_incremental_then_correction) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 6.465600017691031e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.4852004318963736e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.021997928153723e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:41:01+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 5.389999569160864e-05, "seconds": 0.0016599830050836317, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_499_deferred_real_adapter_preserves_other_trusted_symbol (test_r4.R4Tests.test_499_deferred_real_adapter_preserves_other_trusted_symbol) ... {"test": "R3_COMPLETE_LIFECYCLE", "normal_BARs_after_trust": 20, "full_recoveries": 1, "incremental_batches": 1, "warmup_symbol_sets": [["X", "Z"], ["Y"]], "trusted_during_incremental_fetch": true, "correction_revoked": true}
+{"stage": "RECOVERY_WARMUP", "symbols": 1, "bar_scope": 500, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.391599941300228e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.603399818530306e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.622999303042889e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:01+00:00", "requested": 100, "accepted": 100, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.0008114640004350804, "seconds": 0.005274467999697663, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:01+00:00", "requested": 100, "accepted": 100, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.0007625500002177432, "seconds": 0.005245735999778844, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:01+00:00", "requested": 100, "accepted": 100, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.0010824589990079403, "seconds": 0.006856995998532511, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:01+00:00", "requested": 100, "accepted": 100, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.0008996459946502, "seconds": 0.0076371309987735, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:01+00:00", "requested": 99, "accepted": 99, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.0007940680006868206, "seconds": 0.00495315800071694, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_500_deferred_scheduler_five_batches_simulation (test_r4.R4Tests.test_500_deferred_scheduler_five_batches_simulation) ... ok
+test_clock_at_each_precommit_check_defers_without_journal (test_r4.R4Tests.test_clock_at_each_precommit_check_defers_without_journal) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.816299770027399e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.2187999750021845e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.531998901162297e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.4035995011217892e-05, "seconds": 0.0005136789986863732, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 6.391499482560903e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.8732996725011617e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.19200067780912e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 1.6605001292191446e-05, "seconds": 0.0005344189994502813, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.5573000786826015e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.4396998924203217e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.021997928153723e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.2544001694768667e-05, "seconds": 0.0005801579973194748, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_leader_still_fatal (test_r4.R4Tests.test_leader_still_fatal) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 9.441099973628297e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 5.691499973181635e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.543000149074942e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"FATAL_RuntimeError": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.0, "seconds": 3.618399932747707e-05, "transport_trusted": false, "TRADE_completeness": "UNKNOWN"}
+ok
+test_rejection_cooldown_exact_boundary (test_r4.R4Tests.test_rejection_cooldown_exact_boundary) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.105100379092619e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.233399573015049e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.533002983313054e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"REST_STREAM_BAR_VALUE_MISMATCH": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.8101996576879174e-05, "seconds": 0.0006356710000545718, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.7000001864507794e-05, "seconds": 0.0014839590003248304, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_clock_after_fetch_no_history_change_retry_exact_rows (test_r5.R5HistoryCommit.test_clock_after_fetch_no_history_change_retry_exact_rows) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.367600195109844e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.4656997993588448e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.14200029708445e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION_DEFERRED", "reason": "CLOCK_UNAVAILABLE", "symbols": 1}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.9274000553414226e-05, "seconds": 5.618399882223457e-05, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.5749002816155553e-05, "seconds": 0.0010476669995114207, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.956900036428124e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.345500251976773e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.752998837735504e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION_DEFERRED", "reason": "CLOCK_UNAVAILABLE", "symbols": 1}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.8563001251313835e-05, "seconds": 8.710999827599153e-05, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 2.649999805726111e-05, "seconds": 0.0004438839969225228, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_journal_failure_before_preload_leaves_all_history_unchanged (test_r5.R5HistoryCommit.test_journal_failure_before_preload_leaves_all_history_unchanged) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 3.927900252165273e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.412599860690534e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.242997864726931e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"FATAL_ConnectionError": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 3.6735000321641564e-05, "seconds": 0.0008392649979214184, "transport_trusted": false, "TRADE_completeness": "UNKNOWN"}
+ok
+test_order_journal_leadership_root_preload_attest (test_r5.R5HistoryCommit.test_order_journal_leadership_root_preload_attest) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.053100565215573e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.5879002350848168e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.19200067780912e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 0.00013281800056574866, "seconds": 0.002122844998666551, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_postjournal_root_failure_before_preload (test_r5.R5HistoryCommit.test_postjournal_root_failure_before_preload) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.4015003368258476e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.6059002266265452e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.563001756556332e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 0, "rejected": 1, "rejection_reasons": {"FATAL_Blocked": 1, "REJECTION_COOLDOWN": 0}, "fetch_seconds": 9.668400161899626e-05, "seconds": 0.0015189820041996427, "transport_trusted": false, "TRADE_completeness": "UNKNOWN"}
+ok
+test_backlog_original_watchdog_and_failure_snapshot_before_revoke (test_r6.DiagnosticTests.test_backlog_original_watchdog_and_failure_snapshot_before_revoke) ... ok
+test_bounds_evict_only_old_diagnostics_no_trust_changes (test_r6.DiagnosticTests.test_bounds_evict_only_old_diagnostics_no_trust_changes) ... ok
+test_exact_nearest_rank_counts_and_duration (test_r6.DiagnosticTests.test_exact_nearest_rank_counts_and_duration) ... ok
+test_inflight_and_loop_current_not_just_last_tick (test_r6.DiagnosticTests.test_inflight_and_loop_current_not_just_last_tick) ... ok
+test_original_queue_too_old_still_fails_at_five_not_extended (test_r6.DiagnosticTests.test_original_queue_too_old_still_fails_at_five_not_extended) ... ok
+test_original_submit_process_and_metrics (test_r6.DiagnosticTests.test_original_submit_process_and_metrics) ... ok
+test_sample_overflow_explicit_no_fake_percentile (test_r6.DiagnosticTests.test_sample_overflow_explicit_no_fake_percentile) ... ok
+test_stats_thread_safe (test_r6.DiagnosticTests.test_stats_thread_safe) ... ok
+test_parent_deploy_with_sixty_second_old_instance (test_r6.DirectOverlapIntegration.test_parent_deploy_with_sixty_second_old_instance) ... ok
+test_parent_replacement_six_seconds_after_crash (test_r6.DirectOverlapIntegration.test_parent_replacement_six_seconds_after_crash) ... ok
+test_compose_direct_atomic_lease_precedes_original_budget (test_r6.LeaseTests.test_compose_direct_atomic_lease_precedes_original_budget) ... ok
+test_crash_replacement_six_seconds_later_no_claim_until_free_35 (test_r6.LeaseTests.test_crash_replacement_six_seconds_later_no_claim_until_free_35) ... ok
+test_direct_parent_claims_only_inside_child_after_wait (test_r6.LeaseTests.test_direct_parent_claims_only_inside_child_after_wait) ... ok
+test_four_real_failures_still_park_no_fifth (test_r6.LeaseTests.test_four_real_failures_still_park_no_fifth) ... ok
+test_free_timer_resets_if_other_worker_claims (test_r6.LeaseTests.test_free_timer_resets_if_other_worker_claims) ... ok
+test_overlap_old_runs_sixty_no_budget_is_burned (test_r6.LeaseTests.test_overlap_old_runs_sixty_no_budget_is_burned) ... ok
+test_read_acquire_race_rewaits_without_budget (test_r6.LeaseTests.test_read_acquire_race_rewaits_without_budget) ... ok
+test_real_OS_spawn_failure_is_still_counted (test_r6.LeaseTests.test_real_OS_spawn_failure_is_still_counted) ... ok
+test_real_loss_remains_fatal_not_reacquired (test_r6.LeaseTests.test_real_loss_remains_fatal_not_reacquired) ... ok
+test_real_preclaim_fault_still_consumes_one (test_r6.LeaseTests.test_real_preclaim_fault_still_consumes_one) ... ok
+test_redis_failure_is_not_free (test_r6.LeaseTests.test_redis_failure_is_not_free) ... ok
+test_stop_during_wait_does_not_claim (test_r6.LeaseTests.test_stop_during_wait_does_not_claim) ... ok
+test_original_reentrant_serialization_and_named_hold_preserved (test_r6.LockMetricsTests.test_original_reentrant_serialization_and_named_hold_preserved) ... ok
+test_other_thread_cannot_enter_original_lock (test_r6.LockMetricsTests.test_other_thread_cannot_enter_original_lock) ... ok
+test_api_gate_wait_is_outside_serialization_lock_then_rechecked (test_r6.WindowTests.test_api_gate_wait_is_outside_serialization_lock_then_rechecked) ... ok
+test_each_pagination_request_gated_after_waiting_api_lock (test_r6.WindowTests.test_each_pagination_request_gated_after_waiting_api_lock) ... ok
+test_exact_window_boundaries (test_r6.WindowTests.test_exact_window_boundaries) ... ok
+test_incremental_and_scan_start_after_wave (test_r6.WindowTests.test_incremental_and_scan_start_after_wave) ... ok
+test_ordinary_requests_not_globally_delayed (test_r6.WindowTests.test_ordinary_requests_not_globally_delayed) ... ok
+test_runtime_incremental_uses_guard_in_real_loop (test_r6.WindowTests.test_runtime_incremental_uses_guard_in_real_loop) ... {"stage": "RECOVERY_WARMUP", "symbols": 2, "bar_scope": 3, "native1_minutes": 60, "native5_minutes": 305, "seconds": 4.9434005632065237e-05}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 3.037600254174322e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.79299477674067e-06, "success": true}
+{"stage": "INCREMENTAL_ADMISSION", "at": "2026-10-28T13:31:02+00:00", "requested": 1, "accepted": 1, "rejected": 0, "rejection_reasons": {"REJECTION_COOLDOWN": 0}, "fetch_seconds": 3.772700438275933e-05, "seconds": 0.0015878749982221052, "transport_trusted": true, "TRADE_completeness": "UNKNOWN"}
+ok
+test_shutdown_unblocks_wait (test_r6.WindowTests.test_shutdown_unblocks_wait) ... ok
+test_A_nonterminal_original_result_allowed_without_stricter_contract (test_recovery_regression.OriginalCaseRouting.test_A_nonterminal_original_result_allowed_without_stricter_contract) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0005718350003007799, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0006625710011576302, "success": true}
+ok
+test_A_original_T1_then_STOP_and_no_duplicate (test_recovery_regression.OriginalCaseRouting.test_A_original_T1_then_STOP_and_no_duplicate) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0008165010003722273, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0007241630009957589, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0006516450011986308, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0008722839993424714, "success": true}
+ok
+test_OHLC_both_touched_without_order_original_FINAL (test_recovery_regression.OriginalCaseRouting.test_OHLC_both_touched_without_order_original_FINAL) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.000562862005608622, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0006644029999733903, "success": true}
+ok
+test_OHLC_order_proven_STOP_wins_unchanged (test_recovery_regression.OriginalCaseRouting.test_OHLC_order_proven_STOP_wins_unchanged) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0007536670018453151, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0010122539970325306, "success": true}
+ok
+test_R_native_failure_keeps_pin (test_recovery_regression.OriginalCaseRouting.test_R_native_failure_keeps_pin) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.3836000764276832e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 1.1477000953163952e-05, "success": true}
+ok
+test_U_known_no_commit_resolves_via_canonical (test_recovery_regression.OriginalCaseRouting.test_U_known_no_commit_resolves_via_canonical) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0005961220012977719, "success": true}
+{'stage': 'ENTRY_DIAGNOSTIC', 'symbol': 'X', 'reason': 'ENTRY_EXPIRED_STALE_MARKET_DATA', 'utc': '2026-10-28T14:00:00+00:00', 'count': 1}
+{'stage': 'ENTRY_EXPIRED', 'symbol': 'X', 'reason': 'ENTRY_EXPIRED_STALE_MARKET_DATA', 'utc': '2026-10-28T14:00:00+00:00'}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0006800870032748207, "success": true}
+ok
+test_U_missing_canonical_not_assumed_uncommitted (test_recovery_regression.OriginalCaseRouting.test_U_missing_canonical_not_assumed_uncommitted) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 2.4116001441143453e-05, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 8.329500269610435e-05, "success": true}
+ok
+test_closed_STOP_not_inverted_on_R (test_recovery_regression.OriginalCaseRouting.test_closed_STOP_not_inverted_on_R) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0006451039953390136, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.000746856996556744, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0008843920004437678, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0009299209996243007, "success": true}
+ok
+test_epoch_change_prevents_commit_retains_pin (test_recovery_regression.OriginalCaseRouting.test_epoch_change_prevents_commit_retains_pin) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0005269680041237734, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0005172429955564439, "success": true}
+ok
+test_equal_timestamp_ambiguity_original_FINAL (test_recovery_regression.OriginalCaseRouting.test_equal_timestamp_ambiguity_original_FINAL) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0009648829945945181, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0008801259973552078, "success": true}
+ok
+test_expiry_original_FINAL (test_recovery_regression.OriginalCaseRouting.test_expiry_original_FINAL) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0005731269993702881, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0011659640003927052, "success": true}
+ok
+test_halted_original_requires_status_and_stays_pinned (test_recovery_regression.OriginalCaseRouting.test_halted_original_requires_status_and_stays_pinned) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0025366839981870726, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0005164020039956085, "success": true}
+ok
+test_missing_input_or_source_failure_retains_A_R (test_recovery_regression.OriginalCaseRouting.test_missing_input_or_source_failure_retains_A_R) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0005301530036376789, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0007290709982044064, "success": true}
+ok
+test_prior_legal_BAR_exit_not_replaced_by_later_OHLC_conflict (test_recovery_regression.OriginalFirstTerminalPriority.test_prior_legal_BAR_exit_not_replaced_by_later_OHLC_conflict) ... {"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0007366119971266016, "success": true}
+{"stage": "PHASE_TIMING", "phase": "restore_pins", "seconds": 0.0006893800018588081, "success": true}
+ok
+test_actual_gist_protocol_and_preserved_date (test_sources.FloatTests.test_actual_gist_protocol_and_preserved_date) ... ok
+test_exact_seven_days_valid (test_sources.FloatTests.test_exact_seven_days_valid) ... ok
+test_failed_fetch_clears_old_value (test_sources.FloatTests.test_failed_fetch_clears_old_value) ... ok
+test_missing_config_never_requests (test_sources.FloatTests.test_missing_config_never_requests) ... ok
+test_old_future_missing_unknown (test_sources.FloatTests.test_old_future_missing_unknown) ... ok
+test_truncation_not_silently_used (test_sources.FloatTests.test_truncation_not_silently_used) ... ok
+test_zero_unknown_not_small (test_sources.FloatTests.test_zero_unknown_not_small) ... ok
+test_exact_one_hour_not_stale_original_boundary (test_sources.NewsTests.test_exact_one_hour_not_stale_original_boundary) ... ok
+test_future_record_original_consumer_does_not_reject (test_sources.NewsTests.test_future_record_original_consumer_does_not_reject) ... ok
+test_missing_is_zero_not_exclusion (test_sources.NewsTests.test_missing_is_zero_not_exclusion) ... ok
+test_no_source_config_no_call (test_sources.NewsTests.test_no_source_config_no_call) ... ok
+test_old_articles_removed_by_original_12h_filter (test_sources.NewsTests.test_old_articles_removed_by_original_12h_filter) ... ok
+test_original_negative_flag_retained_without_IPR_gate (test_sources.NewsTests.test_original_negative_flag_retained_without_IPR_gate) ... ok
+test_real_key_HGET_only_and_fresh_positive (test_sources.NewsTests.test_real_key_HGET_only_and_fresh_positive) ... ok
+test_stale_positive_zero_after_hour (test_sources.NewsTests.test_stale_positive_zero_after_hour) ... ok
+test_transport_error_does_not_leak_or_raise (test_sources.NewsTests.test_transport_error_does_not_leak_or_raise) ... ok
+test_weekend_expires_at_not_enforced_by_original_consumer (test_sources.NewsTests.test_weekend_expires_at_not_enforced_by_original_consumer) ... ok
+
+======================================================================
+ERROR: test_prepare_task_does_not_terminate_runtime_when_ready (test_direct.ParentAndLifecycle.test_prepare_task_does_not_terminate_runtime_when_ready)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/e53e85146866/R7/tests/test_direct.py", line 188, in test_prepare_task_does_not_terminate_runtime_when_ready
+    asyncio.run(go())
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e53e85146866/R7/tests/test_direct.py", line 186, in go
+    with patch.object(loop,'add_signal_handler'):await rt.run(bundle,None,raw,{},'boot')
+                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e53e85146866/R7/ipr/runtime.py", line 112, in run
+    observer=PauseObserver(p.contention_probe,lambda row:print(json.dumps(row),flush=True));observer.start()
+                           ^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'contention_probe'
+
+----------------------------------------------------------------------
+Ran 155 tests in 13.643s
+
+FAILED (errors=1)

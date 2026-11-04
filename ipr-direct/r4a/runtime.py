@@ -50,7 +50,11 @@ class Runtime:
   # Close entry eligibility in memory BEFORE any failing Redis operation.
   self.a.close_eligibility(reason)
  def checkpoint(self,reason):
-  self.state.append_epoch({'reason':reason,'controller':self.c.epoch()})
+  lock=getattr(self.a,'control_lock',None)
+  if lock is None:epoch=self.c.epoch()
+  else:
+   with lock:epoch=self.c.epoch()
+  self.state.append_epoch({'reason':reason,'controller':epoch})
  def check_session(self):
   self.authorize()
   if not self.policy.time_allows(self.wall().timestamp()):raise SafetyStop('SESSION_CLOSED')
@@ -61,13 +65,13 @@ class Runtime:
   self.checkpoint('DESIRED_UPDATED')
  async def _writer(self):
   while not self.stop.is_set():
-   self.check_session();self.control.tick()
+   self.check_session();await asyncio.to_thread(self.control.tick)
    if self.c.failed:raise SafetyStop('CONTROL_FAILED')
    if self.auth:
-    p=self.control.plan()
+    p=await asyncio.to_thread(self.control.plan)
     if p:
      # Record intent before send; crash/timeout => reconnect and re-ACK, never restore inflight trust.
-     self.checkpoint('CONTROL_INTENT')
+     await asyncio.to_thread(self.checkpoint,'CONTROL_INTENT')
      wire=dict(p)
      if p['action']=='subscribe':wire['statuses']=['*']
      # Unsubscribe only the named BAR/TRADE deltas; keep the status channel.
@@ -87,8 +91,8 @@ class Runtime:
      continue
     if kind=='subscription':
      if not self.auth or set(msg.get('statuses',[]))!={'*'}:raise SafetyStop('UNPROVEN_ACK')
-     if not self.control.ack(self.c.connection,msg.get('bars',[]),msg.get('trades',[])):raise SafetyStop('ACK_REJECTED')
-     self.deadline.ack();self.checkpoint('ACK_CONFIRMED');self.ready.set();continue
+     if not await asyncio.to_thread(self.control.ack,self.c.connection,msg.get('bars',[]),msg.get('trades',[])):raise SafetyStop('ACK_REJECTED')
+     self.deadline.ack();await asyncio.to_thread(self.checkpoint,'ACK_CONFIRMED');self.ready.set();continue
     if kind=='error':raise SafetyStop('SOURCE_ERROR')
     if not self.auth:raise SafetyStop('UNAUTHENTICATED_DATA')
     if self.observe_stream is not None:self.observe_stream(msg,received)
@@ -119,10 +123,10 @@ class Runtime:
    self.revoke('RECOVERY_EPOCH_CHANGED');return False
   return ok
  async def connection(self):
-  self.check_session();self.leader.require_current()
-  self.revoke('CONNECTING');self.a.connection_started();self.auth=False;self.ready.clear()
-  self.checkpoint('CONNECTION_STARTED')
-  self.ingress=BoundedWSIngress(PipelinePort(self.a),RecoveryPort(self.a),lambda:self.a.transport_trusted,
+  self.check_session();await asyncio.to_thread(self.leader.require_current)
+  self.revoke('CONNECTING');await asyncio.to_thread(self.a.connection_started);self.auth=False;self.ready.clear()
+  await asyncio.to_thread(self.checkpoint,'CONNECTION_STARTED')
+  self.ingress=getattr(self,"ingress_factory",BoundedWSIngress)(PipelinePort(self.a),RecoveryPort(self.a),lambda:self.a.transport_trusted,
     capacity=8192,max_age_seconds=5.0,on_gap=lambda:self.revoke('INGRESS_FAIL_CLOSED'))
   assert self.ingress.batch_size==32
   tasks=[];self.ws=None
@@ -148,13 +152,13 @@ class Runtime:
    except (SafetyStop,ValueError,TypeError):raise
    except Exception:
     # Network disconnect can reconnect; durable checkpoint error cannot be suppressed.
-    self.revoke('CONNECTION_FAILED');self.checkpoint('CONNECTION_FAILED')
+    self.revoke('CONNECTION_FAILED');await asyncio.to_thread(self.checkpoint,'CONNECTION_FAILED')
    await asyncio.sleep(delay);delay=min(30,delay*2)
  async def run(self):
   self.revoke('STARTING_UNTRUSTED')
   self.check_session();self.memory.check(self.sample())
   await asyncio.to_thread(self.state.restore);self.revoke('RESTORED_UNTRUSTED')
-  self.leader.require_current();self.checkpoint('RUNTIME_START');self.initialized.set()
+  await asyncio.to_thread(self.leader.require_current);await asyncio.to_thread(self.checkpoint,'RUNTIME_START');self.initialized.set()
   self.tasks=[asyncio.create_task(f()) for f in (self.connections,self._watch,self._renew)]
   self.tasks.append(asyncio.create_task(self.stop.wait()))
   try:
@@ -180,7 +184,7 @@ class Factory:
   return Runtime(adapter,state,leadership,socket_open,authorize,policy,**ports)
 
 
-def compose(*,redis,root,worker,boot_id,policy,session_policy,rest,recovery_factory,clock_check,filter_check,root_check,measure,socket_open,authorize,sample,clock=time.monotonic,wall=lambda:datetime.now(timezone.utc),observe_stream=None):
+def compose(*,redis,root,worker,boot_id,policy,session_policy,rest,recovery_factory,clock_check,filter_check,root_check,measure,socket_open,authorize,sample,clock=time.monotonic,wall=lambda:datetime.now(timezone.utc),observe_stream=None,lease_before_budget=False):
  """Construct originals in isolated namespace only AFTER all pre-I/O gates.
  Data/recovery ports are R4-B inputs, not default stubs. No token/env reader here.
  """
@@ -193,9 +197,17 @@ def compose(*,redis,root,worker,boot_id,policy,session_policy,rest,recovery_fact
  if not policy.time_allows(wall().timestamp()) or root.session!=policy.session:raise SafetyStop('SESSION_ROOT_MISMATCH')
  if root_check() is not True or clock_check() is not True:raise SafetyStop('ROOT_OR_CLOCK_UNPROVEN')
  MemoryBounds().check(sample())
- status,number=SessionBudget(redis).claim(policy,boot_id)
- if status not in {'ALLOW','INITIALIZED_BY_FIRST_CLAIM'} or not 1<=number<=4:raise SafetyStop('BOOT_CLAIM_DENIED')
- lead=leadership(redis,worker);lead.acquire()
+ lead=leadership(redis,worker)
+ if lease_before_budget:
+  from .lease_wait import acquire_without_budget
+  acquire_without_budget(lead,redis,authorize)
+ try:
+  status,number=SessionBudget(redis).claim(policy,boot_id)
+  if status not in {'ALLOW','INITIALIZED_BY_FIRST_CLAIM'} or not 1<=number<=4:raise SafetyStop('BOOT_CLAIM_DENIED')
+ except BaseException:
+  if lease_before_budget:lead.release()
+  raise
+ if not lease_before_budget:lead.acquire()
  canonical=NamespacedRedis(redis,PREFIX+':canonical:');lua=ProductionRedisLua(canonical)
  bridge=OriginalBridge(canonical,lua,lead,policy.session,root.symbols,rest,worker,session_policy)
  state=RedisState(redis,policy.session,root.identity(),worker,lead.require_current().leader_generation)

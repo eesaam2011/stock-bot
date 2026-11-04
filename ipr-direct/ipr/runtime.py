@@ -57,7 +57,7 @@ async def fixed_connect(uri):
 
 def _build(bundle,api,redis,env,boot,clock,measure):
  import runtime_provenance
- runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R2'
+ runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R7'
  policy=policy_for(bundle);root=Root(bundle['session'],frozenset(bundle['symbols']),policy.frozen_manifest_sha256,True)
  cls=Classifier(bundle['assets']);rest=MarketREST(api.get,root,measure);prepared={'ready':False,'history':None,'scan_ok':False}
  def authorize():
@@ -71,7 +71,7 @@ def _build(bundle,api,redis,env,boot,clock,measure):
   def __init__(self):self.original=ProductionStatusTracker()
   def on_status(self,m):return self.original.ingest(m)
  market=bundle['market'];schedule={'session':bundle['session'],'open_utc':market['open'],'close_utc':market['close']} if market else None
- base=compose(redis=redis,root=root,worker=uuid.uuid4().hex,boot_id=boot,policy=policy,session_policy=schedule,rest=rest,recovery_factory=lambda b:Status(),clock_check=clock.check,filter_check=final_filter,root_check=lambda:True,measure=measure,socket_open=SocketTransport(authorize,lambda:(env['APCA_API_KEY_ID'],env['APCA_API_SECRET_KEY']),connect=fixed_connect).open,authorize=authorize,sample=cgroup_sample)
+ base=compose(redis=redis,root=root,worker=uuid.uuid4().hex,boot_id=boot,policy=policy,session_policy=schedule,rest=rest,recovery_factory=lambda b:Status(),clock_check=clock.check,filter_check=final_filter,root_check=lambda:True,measure=measure,socket_open=SocketTransport(authorize,lambda:(env['APCA_API_KEY_ID'],env['APCA_API_SECRET_KEY']),connect=fixed_connect).open,authorize=authorize,sample=cgroup_sample,lease_before_budget=True)
  proof=StreamProof();barrier=CaseBarrier(base.a.bridge,proof)
  a=DirectEvidence(base.c,base.a.bridge,rest,base.a.recovery,base.a.clock_check,base.a.filter_check,base.a.root_check,base.state,measure,proof=proof,barrier=barrier,wall=base.wall)
  r=DirectRuntime(a,base.state,base.leader,base.socket_open,authorize,policy,clock=base.clock,wall=base.wall,sample=base.sample)
@@ -79,6 +79,18 @@ def _build(bundle,api,redis,env,boot,clock,measure):
  if base.state.seq==0:
   u,rec=carried(redis,bundle['session']);a.checkpoint.append_epoch({'kind':'DIRECT_CARRIED_CASES','case_schema':2,'add_U':sorted(u),'add_R':sorted(rec)})
   a.bridge.p._entry_uncertain.update(u);barrier.persisted_R.update(rec)
+ from functools import partial
+ from .wave import HeavyWindow,WaveDiagnostics
+ from r4a.ingress_observed import ObservedIngress
+ from r4a.decision_metrics import MeasuredDecisionLock
+ a.bridge.p._decision_lock=MeasuredDecisionLock(a.bridge.p._decision_lock)
+ r.heavy_window=HeavyWindow(r.wall,lambda:r.stop.is_set())
+ r.wave=WaveDiagnostics(a,measure,r.heavy_window)
+ r.ingress_factory=partial(ObservedIngress,diagnostics=r.wave)
+ api.before_request=r.heavy_window.before_request
+ api.request_allowed=r.heavy_window.request_allowed
+ from .observability import OBS
+ OBS.clock=clock
  r.boot_number=base.boot_number
  return r,prepared,clock,measure
 
@@ -96,6 +108,8 @@ async def pause(stop,seconds):
 
 async def run(bundle,api,redis,env,boot):
  r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
+ from .observability import PauseObserver
+ observer=PauseObserver(getattr(p,'contention_probe',None),lambda row:print(json.dumps(row),flush=True));observer.start()
  sender=Sender(r,redis,env);floats=FloatReader(env,requests.get);news=BatchNews(env,requests.post);selection=Selection()
  print(json.dumps({'stage':'GUARD_BOOT_CLAIMED','boot':r.boot_number,'max_boots':4,'mode':'TELEGRAM_ALERTS_ONLY'}),flush=True)
  async def prepare():
@@ -140,12 +154,15 @@ async def run(bundle,api,redis,env,boot):
       if (end-volumes.watermark).total_seconds()>60:raise ValueError('RTH_VOLUME_STALE')
       scores={s:v for s,v in scores.items() if 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60}
       with p._decision_lock:needs=r.a.bridge.needs(recovery_symbols=r.a.barrier.persisted_R)
-      target=selection.update(scores,needs.pins,time.monotonic())
-      with r.a.control_lock:r.planner.propose(needs,set(target))
+      blocked=bool(r.c.desired_bar) and (bool(r.c.inflight) or r.recovery_running or bool(r.a.recovering) or not r.a.transport_trusted)
+      target=selection.update(scores,needs.pins,time.monotonic(),blocked=blocked,utc_minute=end.replace(second=0,microsecond=0).isoformat())
+      r.planner.propose(needs,set(target))
       save(redis,'scan:'+bundle['session'],{'at':end.isoformat(),'selected':target,'root_symbols':len(bundle['eligible']),'scores':{s:scores[s] for s in target if s in scores},'rth_watermark':volumes.watermark.isoformat(),'linear_approximation':True})
       state['scan_ok']=True;state['scan_at']=r.wall()
       print(json.dumps({'stage':'IPR_SCAN','at':end.isoformat(),'ranked':len(scores),'BAR_desired':len(target),'news_candidates':len(top),'api_requests':api.requests,'duration_seconds':time.monotonic()-start}),flush=True)
-     await asyncio.to_thread(work)
+     def gated_work():
+      with r.heavy_window.operation('scan_rest'):return work()
+     await asyncio.to_thread(gated_work)
     except Exception as e:
      state['scan_ok']=False;print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True)
    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
@@ -163,7 +180,7 @@ async def run(bundle,api,redis,env,boot):
    await pause(r.stop,1.)
  async def metrics():
   while not r.stop.is_set():
-   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok']}),flush=True)
+   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics()}),flush=True)
    await pause(r.stop,60.)
  import signal
  loop=asyncio.get_running_loop()
@@ -182,4 +199,4 @@ async def run(bundle,api,redis,env,boot):
   for t in tasks:t.cancel()
   try:await asyncio.wait_for(asyncio.gather(*tasks,return_exceptions=True),timeout=60.)
   except asyncio.TimeoutError:raise RuntimeError('PARENT_KILL_REQUIRED')
-  finally:getattr(clock,'close',lambda:None)()
+  finally:observer.close();getattr(clock,'close',lambda:None)()

@@ -1,0 +1,111 @@
+{
+  "scope": "fake no-op decision path, local machine, no 0.5CPU constraint; NOT production load or stability proof",
+  "trials": [
+    {
+      "baseline": {
+        "bars": 5000,
+        "elapsed_seconds": 0.007579021003039088,
+        "cpu_seconds": 0.007579509999999998,
+        "elapsed_us_per_BAR": 1.5158042006078176
+      },
+      "R6": {
+        "bars": 5000,
+        "elapsed_seconds": 0.047780087999854004,
+        "cpu_seconds": 0.047783772,
+        "elapsed_us_per_BAR": 9.5560175999708
+      },
+      "added_us_per_BAR": 8.040213399362983
+    },
+    {
+      "baseline": {
+        "bars": 5000,
+        "elapsed_seconds": 0.005551594000280602,
+        "cpu_seconds": 0.005554258999999978,
+        "elapsed_us_per_BAR": 1.1103188000561204
+      },
+      "R6": {
+        "bars": 5000,
+        "elapsed_seconds": 0.05193518899977789,
+        "cpu_seconds": 0.051684794000000006,
+        "elapsed_us_per_BAR": 10.387037799955579
+      },
+      "added_us_per_BAR": 9.276718999899458
+    },
+    {
+      "baseline": {
+        "bars": 5000,
+        "elapsed_seconds": 0.0060874159971717745,
+        "cpu_seconds": 0.0060898620000000014,
+        "elapsed_us_per_BAR": 1.217483199434355
+      },
+      "R6": {
+        "bars": 5000,
+        "elapsed_seconds": 0.052344093997817254,
+        "cpu_seconds": 0.05117861300000001,
+        "elapsed_us_per_BAR": 10.46881879956345
+      },
+      "added_us_per_BAR": 9.251335600129096
+    },
+    {
+      "baseline": {
+        "bars": 5000,
+        "elapsed_seconds": 0.005913708999287337,
+        "cpu_seconds": 0.005914923000000016,
+        "elapsed_us_per_BAR": 1.1827417998574674
+      },
+      "R6": {
+        "bars": 5000,
+        "elapsed_seconds": 0.05124060300295241,
+        "cpu_seconds": 0.05124496099999998,
+        "elapsed_us_per_BAR": 10.248120600590482
+      },
+      "added_us_per_BAR": 9.065378800733015
+    },
+    {
+      "baseline": {
+        "bars": 5000,
+        "elapsed_seconds": 0.0048352650010201614,
+        "cpu_seconds": 0.004835725000000013,
+        "elapsed_us_per_BAR": 0.9670530002040323
+      },
+      "R6": {
+        "bars": 5000,
+        "elapsed_seconds": 0.0583959670002514,
+        "cpu_seconds": 0.058398579000000006,
+        "elapsed_us_per_BAR": 11.67919340005028
+      },
+      "added_us_per_BAR": 10.712140399846248
+    },
+    {
+      "baseline": {
+        "bars": 5000,
+        "elapsed_seconds": 0.00706530100069358,
+        "cpu_seconds": 0.007067590999999984,
+        "elapsed_us_per_BAR": 1.413060200138716
+      },
+      "R6": {
+        "bars": 5000,
+        "elapsed_seconds": 0.051932575999671826,
+        "cpu_seconds": 0.05163212499999997,
+        "elapsed_us_per_BAR": 10.386515199934365
+      },
+      "added_us_per_BAR": 8.97345499979565
+    },
+    {
+      "baseline": {
+        "bars": 5000,
+        "elapsed_seconds": 0.014738220001163427,
+        "cpu_seconds": 0.014741038999999956,
+        "elapsed_us_per_BAR": 2.9476440002326854
+      },
+      "R6": {
+        "bars": 5000,
+        "elapsed_seconds": 0.049544966997927986,
+        "cpu_seconds": 0.04954866799999996,
+        "elapsed_us_per_BAR": 9.908993399585597
+      },
+      "added_us_per_BAR": 6.961349399352912
+    }
+  ],
+  "median_added_us_per_BAR": 9.065378800733015
+}

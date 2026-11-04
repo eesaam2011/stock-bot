@@ -1,0 +1,188 @@
+[
+  {
+    "path": "dintegration/bridge.py",
+    "old_sha256": "5aa392c679e192760526609f2ec304d70152718d7af0849274aad8e2b41b4a51",
+    "new_sha256": "f5cb5905c1d71c7473234899eb1d59ac7c38c8c1624b621e521b6e6217ae61e8",
+    "hunks": [
+      "@@ -1,7 +1,8 @@",
+      "@@ -10,7 +11,7 @@",
+      "@@ -23,9 +24,45 @@"
+    ]
+  },
+  {
+    "path": "dintegration/clock.py",
+    "old_sha256": "c5d405f54adcce6631430a02cfdcdf38a8e6136f1ac17973d4ec094437b60b72",
+    "new_sha256": "6c96d2b5529a4a732410191f0929f62360ad387279ed9d3094ca8cea462bcfa0",
+    "hunks": [
+      "@@ -5,7 +5,11 @@",
+      "@@ -14,14 +18,24 @@"
+    ]
+  },
+  {
+    "path": "dintegration/measure.py",
+    "old_sha256": "26c7ef0e85857588373c9521b546c59d6aeb3286ae565ad96d1c4acff7c426fb",
+    "new_sha256": "1015a2a71daa3a54bea6a1c0da41c85b6ad05d533e43db879849aa66ff023102",
+    "hunks": [
+      "@@ -18,10 +18,12 @@"
+    ]
+  },
+  {
+    "path": "dintegration/stream_proof.py",
+    "old_sha256": "011c81f5a5afbdf6205a030e2653c6c1c4e4b4509d43472e4f2a04b998826931",
+    "new_sha256": "e96f382908c68e1af7c8315ece38cc0ad542d500e288bb456644b33b6f2c5c4f",
+    "hunks": [
+      "@@ -24,6 +24,8 @@"
+    ]
+  },
+  {
+    "path": "dreview/core.py",
+    "old_sha256": "ebfc2f0cf99fb3e30f073f5b3d777c3c5fd07b823a538f86f74938acfd6e5daf",
+    "new_sha256": "1faf831797dd6ad17bda0c943f05b2d79f634de7efb4c29ef64d5899a27e73d5",
+    "hunks": [
+      "@@ -1,4 +1,7 @@",
+      "@@ -51,7 +54,7 @@",
+      "@@ -106,16 +109,25 @@"
+    ]
+  },
+  {
+    "path": "ipr/api.py",
+    "old_sha256": "5564982ef83346826a461df82666a6187814665822283dbdfb1a1627b098a78b",
+    "new_sha256": "90d4515d48651d8456213de98606df43d4ba9f58b8c47e1f549b7a965380f202",
+    "hunks": [
+      "@@ -35,7 +35,8 @@"
+    ]
+  },
+  {
+    "path": "ipr/main.py",
+    "old_sha256": "922f7cffda688f97e888986d5978166db592afb9c07a2fad059bd07f6477dcaa",
+    "new_sha256": "42021dfdf21a77386447b121a37d3a990fe3a6678c6dc200ff6ce6970959f17b",
+    "hunks": [
+      "@@ -28,7 +28,8 @@"
+    ]
+  },
+  {
+    "path": "ipr/observability.py",
+    "old_sha256": null,
+    "new_sha256": "df4c7a015d227c863efec9e9fc4e5ea186b6d8403b23f6fe8c9a7bbe09969fd4",
+    "hunks": [
+      "@@ -0,0 +1,90 @@"
+    ]
+  },
+  {
+    "path": "ipr/ranking.py",
+    "old_sha256": "3a2e2e5fc031e0f6fff1d9b84ade0cb641f11414b92a45afccf16b2eea2978e4",
+    "new_sha256": "d60040bb471fa74728a852df3ade324f7d0aa8bb982ba72f975bbc3076ffb6a9",
+    "hunks": [
+      "@@ -24,19 +24,37 @@"
+    ]
+  },
+  {
+    "path": "ipr/runtime.py",
+    "old_sha256": "485091828a9f1c6d60cc3bce3f9ae07603474fe23856b4d10908957b5b457f8b",
+    "new_sha256": "8a484327ebfdb60fd64cb58a377b486e96919d11244b5f6a3bdaf9ccbaa28915",
+    "hunks": [
+      "@@ -57,7 +57,7 @@",
+      "@@ -89,6 +89,8 @@",
+      "@@ -106,6 +108,8 @@",
+      "@@ -150,8 +154,9 @@",
+      "@@ -175,7 +180,7 @@",
+      "@@ -194,4 +199,4 @@"
+    ]
+  },
+  {
+    "path": "ipr/turnover.py",
+    "old_sha256": null,
+    "new_sha256": "494c2890ca5343b321917b021b59d565db05ffe8a551fb0b8fb0af124a29d2cd",
+    "hunks": [
+      "@@ -0,0 +1,3 @@"
+    ]
+  },
+  {
+    "path": "r4a/decision_metrics.py",
+    "old_sha256": "e154ebcfa4d99c78e87fedb6886dd3e49affc56f83e49fdae755d6269bff8e96",
+    "new_sha256": "bc1f5ff684c874b416928d577d989999647cabdc262de20eb3fd20db97029c73",
+    "hunks": [
+      "@@ -16,7 +16,10 @@"
+    ]
+  },
+  {
+    "path": "r4a/redis_ports.py",
+    "old_sha256": "8a556650a6398594087d30d9d60418d1fd3fdf8776ff7cbfdf6a08ccb3418852",
+    "new_sha256": "0259cf7f20c702c04ec2cdebdb55cd67fe3065b2f287791ae5fc7fdc07fe0d28",
+    "hunks": [
+      "@@ -1,5 +1,5 @@",
+      "@@ -11,7 +11,19 @@"
+    ]
+  },
+  {
+    "path": "r4a/runtime.py",
+    "old_sha256": "59c3c987c700f2cd5bad64bd8ca139561fc1db0c37342321742e8cd39e4e5ac6",
+    "new_sha256": "61ea5320294c9610bbe0bb790c2a7618c462e989b3128148bc72bcf3c938382d",
+    "hunks": [
+      "@@ -50,7 +50,11 @@",
+      "@@ -61,13 +65,13 @@",
+      "@@ -87,8 +91,8 @@",
+      "@@ -119,9 +123,9 @@",
+      "@@ -148,13 +152,13 @@"
+    ]
+  },
+  {
+    "path": "r4b/adapter.py",
+    "old_sha256": "6404d2b2cbf889c4840c6dd2dc84f4887a2fded59f6cde29ec47327f9bb4615f",
+    "new_sha256": "d273804d6d94d62d0f578c2e82b8c7bfc36ac1ee0a67eaa4397e600134fa2b3e",
+    "hunks": [
+      "@@ -11,6 +11,7 @@",
+      "@@ -45,13 +46,12 @@",
+      "@@ -78,7 +78,8 @@",
+      "@@ -87,7 +88,8 @@",
+      "@@ -106,30 +108,51 @@",
+      "@@ -148,50 +171,65 @@",
+      "@@ -200,6 +238,7 @@"
+    ]
+  },
+  {
+    "path": "r4b/replan.py",
+    "old_sha256": "9919b4864e44ab7b19d1797fe90dc958b4a35b234567edf1511054f69d639692",
+    "new_sha256": "2e64dcee3094a918836f1550bb9eb9a0a54f8481653c3acceb89cb05ed22b29f",
+    "hunks": [
+      "@@ -21,13 +21,20 @@"
+    ]
+  },
+  {
+    "path": "r4b/runtime.py",
+    "old_sha256": "a407308778ecfc93e0f8eec8b95c34fd19832a559115db30abfdf41834095bd7",
+    "new_sha256": "032206b1d5dce8d1cee6c2d62154437a68fc98d840dffaa284f88601995a99e1",
+    "hunks": [
+      "@@ -1,7 +1,7 @@",
+      "@@ -15,8 +15,8 @@",
+      "@@ -40,10 +40,12 @@",
+      "@@ -64,7 +66,12 @@",
+      "@@ -78,8 +85,27 @@",
+      "@@ -131,7 +157,7 @@"
+    ]
+  },
+  {
+    "path": "r4b/store.py",
+    "old_sha256": "c4f27a6bcfc9e8b2dfa63b2fe3dec674511755bf1c2fe407f288b54d752f111b",
+    "new_sha256": "3ae036bfb8235b075f196d382699245f50de2dea3d991f9b1ed8444a23904516",
+    "hunks": [
+      "@@ -5,11 +5,15 @@"
+    ]
+  },
+  {
+    "path": "tests/lua_redis.py",
+    "old_sha256": "161a0c70a859556e1794d30a4d1d3946d4df0ae5e9a11fece19a79d139572500",
+    "new_sha256": "a6d93044a10c8bbf87a0029a7603ba439213e2f9150393a389d4682887cd7d9c",
+    "hunks": [
+      "@@ -97,7 +97,9 @@"
+    ]
+  },
+  {
+    "path": "tests/test_r7.py",
+    "old_sha256": null,
+    "new_sha256": "a86c4415ebb444d25c0aa5e8e87bde0cdf94da525eba74d0bd74db3c2cb04d05",
+    "hunks": [
+      "@@ -0,0 +1,238 @@"
+    ]
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "test": "R7_RECOVER_500_AND_ATTEST_1500",
+  "symbols": 500,
+  "native1_rows_per_symbol": 60,
+  "native5_rows_per_symbol": 61,
+  "recover_seconds": 0.6100323009959538,
+  "heartbeat_samples": 55,
+  "max_loop_pause_seconds": 0.10137955099809914,
+  "pause_limit_seconds": 0.5,
+  "journal_entries": 128,
+  "tracemalloc_delta_after_500_1000_1500": [
+    72962,
+    73210,
+    73426
+  ],
+  "scope": "Synthetic real adapter/StreamProof/PackedHistory/Controller; no network or 0.5CPU cgroup claim"
+}

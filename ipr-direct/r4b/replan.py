@@ -21,13 +21,20 @@ class UnionPlanner:
   if c.inflight and (not needs.pins<=c.inflight['after_bar'] or not needs.trades<=c.inflight['after_trade']):
    # Keep the already-sent plan immutable. Its ACK is consumed, then this target is
    # applied before another ordinary recovery. Never ignore a newly arriving need.
-   r.revoke('NEEDS_DURING_PENDING_CONTROL');self.pending=(target,needs)
-   r.state.append_epoch({'kind':'B_NEEDS_PENDING','bar':sorted(target),'O':sorted(needs.O),'A':sorted(needs.A),'U':sorted(needs.U),'R':sorted(needs.R),'add_U':sorted(needs.U)})
-   self.last={'status':'WAIT_PENDING_ACK_THEN_RECOVER','bar':sorted(target)};return self.last
+   trade_only=(target==c.desired_bar and not (needs.U or needs.R))
+   if not trade_only:r.revoke('NEEDS_DURING_PENDING_CONTROL')
+   self.pending=(target,needs)
+   try:r.state.append_epoch({'kind':'B_NEEDS_PENDING','bar':sorted(target),'O':sorted(needs.O),'A':sorted(needs.A),'U':sorted(needs.U),'R':sorted(needs.R),'add_U':sorted(needs.U)})
+   except Exception:
+    r.revoke('NEEDS_PENDING_PERSIST_FAILED');raise
+   self.last={'status':'WAIT_PENDING_ACK_THEN_REPLAN' if trade_only else 'WAIT_PENDING_ACK_THEN_RECOVER','bar':sorted(target)};return self.last
   same_channels=target==c.desired_bar and set(needs.trades)==c.desired_trade
   if same_channels and not (needs.U or needs.R):
    # O -> A retains exactly the same channel set; do not create an artificial gap.
-   with r.a.control_lock:c.set_desired(target,needs);r.checkpoint('NEEDS_CHANGED_SAME_CHANNELS')
+   with r.a.control_lock:c.set_desired(target,needs)
+   try:r.checkpoint('NEEDS_CHANGED_SAME_CHANNELS')
+   except Exception:
+    r.revoke('NEEDS_CHECKPOINT_PERSIST_FAILED');raise
   else:r.set_desired(target,needs)
   self.pending=None;self.last={'status':'APPLIED','bar':sorted(target),'requires_recovery':not same_channels};return self.last
  def after_ack(self):

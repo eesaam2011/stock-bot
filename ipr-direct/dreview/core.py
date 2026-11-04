@@ -1,4 +1,7 @@
 from dataclasses import dataclass,field
+from collections import deque
+import threading
+from contextlib import contextmanager
 import hashlib,json,math
 from pathlib import Path
 SPEC_SHA='ac787471d49c742051f3a2d10b2064f467c51d46d7b3fbc3fa5d05b4d5bb1a4a'
@@ -51,7 +54,7 @@ class Controller:
  def __init__(self,root,control_timeout=10):
   root.check()
   if control_timeout!=10:raise Blocked('CONTROL_LIMIT_CHANGED')
-  self.root=root;self.connection=0;self.revision=0;self.needs_revision=-1;self.bar=set();self.trade=set();self.desired_bar=set();self.desired_trade=set();self.inflight=None;self.failed=True;self._transport_trusted=False;self.proofs={};self.needs=None;self.journal=[]
+  self.root=root;self.connection=0;self.revision=0;self.needs_revision=-1;self.bar=set();self.trade=set();self.desired_bar=set();self.desired_trade=set();self.inflight=None;self.failed=True;self._transport_trusted=False;self.proofs={};self.needs=None;self.journal=deque(maxlen=128);self.audit_sequence=0;self._evidence_local=threading.local()
  @property
  def transport_trusted(self):return self._transport_trusted
  def _set_transport_from_adapter(self,value,authority):
@@ -106,16 +109,25 @@ class Controller:
  def attest(self,s,*,history,continuity,reconciled,first_trade=False):
   if s not in self.bar or self.failed:raise Blocked('NO_CONFIRMED_BAR')
   # Evidence flags must be supplied by audited adapters; this component cannot verify market truth.
-  self.proofs[s]={'connection':self.connection,'history':history is True,'continuity':continuity is True,'reconciled':reconciled is True,'first_trade':first_trade is True}
-  self._log('symbol_evidence')
+  proof={'connection':self.connection,'history':history is True,'continuity':continuity is True,'reconciled':reconciled is True,'first_trade':first_trade is True}
+  target=getattr(self._evidence_local,'target',None)
+  if target is not None:target[s]=proof;return
+  self.proofs[s]=proof
+  self._log('symbol_evidence',symbol=s,proof=proof)
  def can_entry(self,s):
   p=self.proofs.get(s,{})
   return bool(not self.failed and self.transport_trusted and self.needs and s in self.needs.O and s in self.bar and s in self.trade and p.get('connection')==self.connection and all(p.get(k) for k in ['history','continuity','reconciled','first_trade']))
  def epoch(self):
   return {'schema':'D_REVIEW_EPOCH_V1','session':self.root.session,'root_hash':self.root.identity(),'selector_spec_sha256':SPEC_SHA,'connection_generation':self.connection,'revision':self.revision,'needs_revision':self.needs_revision,'desired_bar':sorted(self.desired_bar),'confirmed_bar':sorted(self.bar),'desired_trade':sorted(self.desired_trade),'confirmed_trade':sorted(self.trade),'desired_bar_sha256':digest(sorted(self.desired_bar)),'confirmed_bar_sha256':digest(sorted(self.bar)),'desired_trade_sha256':digest(sorted(self.desired_trade)),'confirmed_trade_sha256':digest(sorted(self.trade)),'inflight':None if not self.inflight else {k:sorted(v) if isinstance(v,set) else v for k,v in self.inflight.items()},'transport_trusted':self.transport_trusted,'control_failed':self.failed,'symbol_evidence':json.loads(json.dumps(self.proofs)),'evidence_authority':'external audited adapters required; booleans alone not production trust'}
 
- def _log(self,kind,now=None):
-  entry={'sequence':len(self.journal)+1,'event':kind,'observed_time':now,'previous_sha256':self.journal[-1]['sha256'] if self.journal else None,'epoch':self.epoch()}
+ @contextmanager
+ def stage_evidence(self):
+  target={};self._evidence_local.target=target
+  try:yield target
+  finally:self._evidence_local.target=None
+ def _log(self,kind,now=None,**delta):
+  self.audit_sequence+=1
+  entry={'schema':'D_CONTROLLER_AUDIT_V2','sequence':self.audit_sequence,'event':kind,'observed_time':now,'connection':self.connection,'revision':self.revision,'previous_sha256':self.journal[-1]['sha256'] if self.journal else None,**delta}
   entry['sha256']=digest(entry);self.journal.append(entry)
  def journal_jsonl(self):
   return ''.join(json.dumps(x,sort_keys=True,allow_nan=False)+'\n' for x in self.journal)

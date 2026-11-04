@@ -1,7 +1,7 @@
 from dintegration.timing import timed
 # COMPLETE: R4-B REV1 review scope; live deployment and R4-C are not authorized.
 """Opt-in R4-B assembly. No executable production CLI or sender; R4-C untouched."""
-import asyncio
+import asyncio,threading
 from r4a.runtime import Runtime
 from r4a.clocked import ClockedControl
 from .store import ProofStore
@@ -15,8 +15,8 @@ class LockedControl:
  def ack(self,*args):
   with self.lock:
    ok=self.base.ack(*args)
-   if ok:self.notify_ack()
-   return ok
+  if ok:self.notify_ack()
+  return ok
 class EvidenceRuntime(Runtime):
  INCREMENTAL_SPACING=1.0
  INCREMENTAL_BATCH=100
@@ -40,10 +40,12 @@ class EvidenceRuntime(Runtime):
    finally:self.notify_cases_changed()
   self.a.bridge.native_cycle=native_with_notification
  def acknowledged(self):
+  if self.loop is not None and getattr(self,'_loop_thread',threading.get_ident())!=threading.get_ident():
+   self.loop.call_soon_threadsafe(self.acknowledged);return
   self.proof.set_scope(self.c.bar)
-  applied=self.planner.after_ack()
+  self.a.recovering.intersection_update(self.c.bar|self.c.desired_bar)
   self.case_event.set()
-  if self.c.bar==self.c.desired_bar and self.c.trade==self.c.desired_trade:self.wake.set()
+  if self.planner.pending is None and self.c.bar==self.c.desired_bar and self.c.trade==self.c.desired_trade:self.wake.set()
  @timed('prepare_needs')
  def prepare_needs(self):
   # Called after the original controller reconnect reset; an old pending request
@@ -64,7 +66,12 @@ class EvidenceRuntime(Runtime):
     with self.a.bridge.p._decision_lock:
      return self.a.bridge.needs(recovery_symbols=self.a.barrier.persisted_R)
    needs=await asyncio.to_thread(read_needs)
-   with self.a.control_lock:result=self.planner.propose(needs)
+   def replan():
+    self.planner.after_ack()
+    result=self.planner.propose(needs)
+    self.a.bridge.release_unused_history(self.c,self.a.recovering,self.a.barrier.persisted_R)
+    return result
+   result=await asyncio.to_thread(replan)
    if result['status']=='APPLIED' and not self.a.transport_trusted and self.auth and not self.c.inflight and self.c.bar==self.c.desired_bar and self.c.trade==self.c.desired_trade:self.wake.set()
  def received(self,msg,received):
   if msg.get('T') in {'c','x','u','error'}:self.revoke('SOURCE_REVISION_OR_ERROR')
@@ -78,8 +85,27 @@ class EvidenceRuntime(Runtime):
    self.store.save('INVALID_OR_CONFLICTING_BAR',self.a.barrier.persisted_R,msg)
    raise SafetyStop('INVALID_OR_CONFLICTING_BAR')
   if changed and (not self.a.transport_trusted or msg.get('S') in self.a.recovering):self.wake.set()
- def set_desired(self,*a):
-  with self.a.control_lock:return super().set_desired(*a)
+ def set_desired(self,bar,needs):
+  self.check_session();self.leader.require_current()
+  with self.a.control_lock:
+   healthy=self.a.transport_trusted and not self.c.failed and not (needs.U or needs.R) and not ((set(bar)-self.c.bar)&set(needs.trades))
+   incoming=set(bar)-self.c.bar
+   if not healthy:self.revoke('SUBSCRIPTION_CHANGE_REQUIRES_RECOVERY')
+   self.c.set_desired(bar,needs)
+   for symbol in set(needs.trades)-self.c.trade:
+    if symbol in self.c.proofs:self.c.proofs[symbol]={**self.c.proofs[symbol],'first_trade':False}
+   keep=set(bar)
+   self.a.quarantine={s:v for s,v in self.a.quarantine.items() if s in keep}
+   self.a.report={**self.a.report,'good':{s:v for s,v in self.a.report.get('good',{}).items() if s in keep},'quarantine':dict(self.a.quarantine)}
+   self.a.symbol_admitted_at={s:v for s,v in self.a.symbol_admitted_at.items() if s in keep}
+   self.a.rejection_until={s:v for s,v in self.a.rejection_until.items() if s in keep}
+   if healthy:
+    self.a.recovering.intersection_update(set(bar));self.a.recovering.update(incoming)
+    for symbol in incoming:self.a.symbol_admitted_at.pop(symbol,None)
+  # Redis persistence is never performed holding control/decision RLock.
+  try:self.checkpoint('DESIRED_UPDATED')
+  except Exception:
+   self.revoke('DESIRED_PERSIST_FAILED');raise
  async def recovery_loop(self):
   while not self.stop.is_set():
    await self.wake.wait();self.wake.clear()
@@ -105,7 +131,12 @@ class EvidenceRuntime(Runtime):
      pending=[s for s in pending if s>self.incremental_cursor]+[s for s in pending if s<=self.incremental_cursor]
     batch=pending[:self.INCREMENTAL_BATCH];self.incremental_cursor=batch[-1]
     self.last_incremental=self.clock();self.incremental_attempts+=1
-    await asyncio.to_thread(self.a.admit_incremental,batch,now)
+    def incremental_work():
+     gate=getattr(self,'heavy_window',None)
+     if gate is None:return self.a.admit_incremental(batch,now)
+     with gate.operation('incremental'):
+      return self.a.admit_incremental(batch,self.wall()) # evidence as-of actual attempt, after gate wait
+    await asyncio.to_thread(incremental_work)
     if self.a.recovering & self.proof.witnessed(self.wall()):self.wake.set()
     continue
    if self.last_attempt is not None:
@@ -126,7 +157,7 @@ class EvidenceRuntime(Runtime):
    self.proof.invalidate();self.wake.clear()
    self.store.save('CONNECTION_ENDED_UNTRUSTED',self.a.barrier.persisted_R)
  async def connections(self):
-  self.loop=asyncio.get_running_loop()
+  self.loop=asyncio.get_running_loop();self._loop_thread=threading.get_ident()
   tasks=[asyncio.create_task(super().connections()),asyncio.create_task(self.recovery_loop()),asyncio.create_task(self.case_loop())]
   try:
    done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
