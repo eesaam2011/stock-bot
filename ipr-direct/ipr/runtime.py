@@ -22,6 +22,7 @@ from .classifier import Classifier
 from .connectors import FloatReader
 from .news_batch import BatchNews
 from .ranking import base_score,Selection
+from .wave import ScanDiagnostics
 from .sender import Sender
 
 class DirectEvidence(EvidenceAdapter):
@@ -110,7 +111,7 @@ async def run(bundle,api,redis,env,boot):
  r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
  from .observability import PauseObserver
  observer=PauseObserver(getattr(p,'contention_probe',None),lambda row:print(json.dumps(row),flush=True));observer.start()
- sender=Sender(r,redis,env);floats=FloatReader(env,requests.get);news=BatchNews(env,requests.post);selection=Selection()
+ sender=Sender(r,redis,env);floats=FloatReader(env,requests.get);news=BatchNews(env,requests.post);selection=Selection();scan_diagnostics=ScanDiagnostics()
  print(json.dumps({'stage':'GUARD_BOOT_CLAIMED','boot':r.boot_number,'max_boots':4,'mode':'TELEGRAM_ALERTS_ONLY'}),flush=True)
  async def prepare():
   def work():
@@ -151,7 +152,7 @@ async def run(bundle,api,redis,env,boot):
        row['score']=round(row['score95']+pts,12);row['parts']['news']=pts
       # Source price freshness is rechecked AFTER possibly slow HMGET requests.
       end=r.wall()
-      if (end-volumes.watermark).total_seconds()>60:raise ValueError('RTH_VOLUME_STALE')
+      if scan_diagnostics.watermark(end,volumes.watermark)>60:raise ValueError('RTH_VOLUME_STALE')
       scores={s:v for s,v in scores.items() if 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60}
       with p._decision_lock:needs=r.a.bridge.needs(recovery_symbols=r.a.barrier.persisted_R)
       blocked=bool(r.c.desired_bar) and (bool(r.c.inflight) or r.recovery_running or bool(r.a.recovering) or not r.a.transport_trusted)
@@ -160,10 +161,13 @@ async def run(bundle,api,redis,env,boot):
       save(redis,'scan:'+bundle['session'],{'at':end.isoformat(),'selected':target,'root_symbols':len(bundle['eligible']),'scores':{s:scores[s] for s in target if s in scores},'rth_watermark':volumes.watermark.isoformat(),'linear_approximation':True})
       state['scan_ok']=True;state['scan_at']=r.wall()
       print(json.dumps({'stage':'IPR_SCAN','at':end.isoformat(),'ranked':len(scores),'BAR_desired':len(target),'news_candidates':len(top),'api_requests':api.requests,'duration_seconds':time.monotonic()-start}),flush=True)
-     def gated_work():
+     def scan_work():
+      # Observe activity only: scan_rest is NOT a gated operation.
       with r.heavy_window.operation('scan_rest'):return work()
-     await asyncio.to_thread(gated_work)
+     await asyncio.to_thread(scan_work)
+     scan_diagnostics.finish(True,time.monotonic()-start)
     except Exception as e:
+     scan_diagnostics.finish(False,time.monotonic()-start)
      state['scan_ok']=False;print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True)
    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
  async def native():
@@ -180,7 +184,7 @@ async def run(bundle,api,redis,env,boot):
    await pause(r.stop,1.)
  async def metrics():
   while not r.stop.is_set():
-   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics()}),flush=True)
+   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics(),'heavy_window':r.heavy_window.metrics(),'scan':scan_diagnostics.snapshot()}),flush=True)
    await pause(r.stop,60.)
  import signal
  loop=asyncio.get_running_loop()

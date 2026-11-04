@@ -1,0 +1,19 @@
+{
+  "status": "COMPLETE_OFFLINE_REVIEW_ONLY",
+  "release": "R7.1",
+  "deployed": false,
+  "live_tested": false,
+  "runtime_changes": [
+    "ipr/runtime.py",
+    "ipr/wave.py"
+  ],
+  "original_tests": 191,
+  "original_success": true,
+  "baseline_R7_tests": 182,
+  "old_gate_tests_updated": 2,
+  "new_tests": 9,
+  "reference_app_unchanged_files": 72,
+  "extracted_tests": 191,
+  "extracted_success": true,
+  "diff_applies_to_R7": true
+}

@@ -1,0 +1,23 @@
+{
+  "R7_baseline": {
+    "passed": 182,
+    "failed": 0
+  },
+  "R71_original": {
+    "passed": 191,
+    "failed": 0,
+    "seconds": 15.353
+  },
+  "R71_extracted": {
+    "passed": 191,
+    "failed": 0,
+    "seconds": 15.232
+  },
+  "notes": [
+    "Two legacy gate assertions intentionally updated for requested scan exemption; lifecycle fake receives new metrics interface.",
+    "Nine new tests; original run_tests.py unchanged; no live tests.",
+    "unshare -rn unavailable: Operation not permitted.",
+    "patch -p1 reconstructs all five changed/new code files."
+  ],
+  "reference_app_byte_identical": 72
+}

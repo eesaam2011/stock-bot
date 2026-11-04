@@ -3,30 +3,61 @@ import math,time,threading
 from collections import OrderedDict
 from contextlib import contextmanager
 class HeavyWindow:
- def __init__(self,wall,stop=lambda:False,sleep=time.sleep):
-  self.wall=wall;self.stop=stop;self.sleep=sleep;self.local=threading.local();self.lock=threading.Lock();self.active={}
+ GATED_OPERATIONS=frozenset({'incremental'})
+ def __init__(self,wall,stop=lambda:False,sleep=time.sleep,clock=time.monotonic):
+  self.wall=wall;self.stop=stop;self.sleep=sleep;self.clock=clock;self.local=threading.local();self.lock=threading.Lock();self.active={}
+  self.wait_seconds={name:0. for name in self.GATED_OPERATIONS}
  def blocked(self):
   now=self.wall();s=now.second+now.microsecond/1e6
   return s>=55 or s<10
- def wait(self):
-  while self.blocked():
+ def wait(self,name=None):
+  name=name or getattr(self.local,'name',None)
+  started=None
+  try:
+   while self.blocked():
+    if started is None:started=self.clock()
+    if self.stop():raise RuntimeError('HEAVY_WORK_STOPPED')
+    self.sleep(.1)
    if self.stop():raise RuntimeError('HEAVY_WORK_STOPPED')
-   self.sleep(.1)
-  if self.stop():raise RuntimeError('HEAVY_WORK_STOPPED')
+  finally:
+   if started is not None:
+    elapsed=max(0.,self.clock()-started)
+    with self.lock:self.wait_seconds[name]=self.wait_seconds.get(name,0.)+elapsed
  @contextmanager
  def operation(self,name):
-  self.wait();old=getattr(self.local,'name',None);self.local.name=name
-  with self.lock:self.active[name]=self.active.get(name,0)+1
+  if name in self.GATED_OPERATIONS:self.wait(name)
+  elif self.stop():raise RuntimeError('HEAVY_WORK_STOPPED')
+  old=getattr(self.local,'name',None);self.local.name=name
+  with self.lock:
+   self.active[name]=self.active.get(name,0)+1;self.wait_seconds.setdefault(name,0.)
   try:yield
   finally:
    with self.lock:self.active[name]-=1
    self.local.name=old
  def request_allowed(self):
-  return getattr(self.local,'name',None) not in {'scan_rest','incremental'} or not self.blocked()
+  return getattr(self.local,'name',None) not in self.GATED_OPERATIONS or not self.blocked()
  def before_request(self):
-  if getattr(self.local,'name',None) in {'scan_rest','incremental'}:self.wait()
+  if getattr(self.local,'name',None) in self.GATED_OPERATIONS:self.wait()
+  elif getattr(self.local,'name',None)=='scan_rest' and self.stop():raise RuntimeError('HEAVY_WORK_STOPPED')
+ def metrics(self):
+  with self.lock:return {'wait_seconds_by_operation':dict(self.wait_seconds),'scope':'cumulative since child start; monotonic elapsed inside gate wait only'}
  def snapshot(self):
   with self.lock:return {k:bool(self.active.get(k,0)) for k in ('scan_rest','incremental')}
+
+class ScanDiagnostics:
+ def __init__(self):
+  self.lock=threading.Lock();self.last_success_seconds=None;self.last_failure_seconds=None;self.last_watermark_age_seconds=None
+ def watermark(self,end,watermark):
+  age=(end-watermark).total_seconds()
+  with self.lock:self.last_watermark_age_seconds=age
+  return age
+ def finish(self,success,seconds):
+  with self.lock:
+   if success:self.last_success_seconds=seconds
+   else:self.last_failure_seconds=seconds
+ def snapshot(self):
+  with self.lock:return {'last_success_duration_seconds':self.last_success_seconds,'last_failure_duration_seconds':self.last_failure_seconds,'last_watermark_age_seconds':self.last_watermark_age_seconds}
+
 
 class WaveDiagnostics:
  MINUTES=6

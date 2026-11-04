@@ -109,8 +109,8 @@ class WindowTests(unittest.TestCase):
  def test_exact_window_boundaries(self):
   for second,blocked in [(0,True),(9.999,True),(10,False),(54.999,False),(55,True),(59.999,True)]:
    _,g=self.gate(second);self.assertEqual(g.blocked(),blocked)
- def test_incremental_and_scan_start_after_wave(self):
-  for kind in ('scan_rest','incremental'):
+ def test_incremental_starts_after_wave(self):
+  for kind in ('incremental',):
    for second in (0,5,55,59):
     t,g=self.gate(second)
     with g.operation(kind):
@@ -118,7 +118,7 @@ class WindowTests(unittest.TestCase):
     self.assertFalse(g.snapshot()[kind])
  def test_each_pagination_request_gated_after_waiting_api_lock(self):
   t,g=self.gate(54.);calls=[]
-  with g.operation('scan_rest'):
+  with g.operation('incremental'):
    g.before_request();calls.append(t.at);t.at=55;g.before_request();calls.append(t.at)
   self.assertEqual(calls[0],54);self.assertGreaterEqual(calls[1],70)
  def test_ordinary_requests_not_globally_delayed(self):

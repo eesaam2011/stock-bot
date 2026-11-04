@@ -1,0 +1,235 @@
+[
+  {
+    "file": "ipr/runtime.py",
+    "R7_sha256": "8a484327ebfdb60fd64cb58a377b486e96919d11244b5f6a3bdaf9ccbaa28915",
+    "R71_sha256": "a88024a6ef55ba9ab9e529e5df97fa32efd99c551752406d582441fd06d71821",
+    "hunks": [
+      {
+        "operation": "insert",
+        "R7_lines": [
+          25,
+          24
+        ],
+        "R71_lines": [
+          25,
+          25
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          113,
+          113
+        ],
+        "R71_lines": [
+          114,
+          114
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          154,
+          154
+        ],
+        "R71_lines": [
+          155,
+          155
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          163,
+          163
+        ],
+        "R71_lines": [
+          164,
+          165
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          165,
+          165
+        ],
+        "R71_lines": [
+          167,
+          168
+        ]
+      },
+      {
+        "operation": "insert",
+        "R7_lines": [
+          167,
+          166
+        ],
+        "R71_lines": [
+          170,
+          170
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          183,
+          183
+        ],
+        "R71_lines": [
+          187,
+          187
+        ]
+      }
+    ]
+  },
+  {
+    "file": "ipr/wave.py",
+    "R7_sha256": "3983cffb70481ccf88424b48bb7077fbef5e200b9be6661570217d1475e77edf",
+    "R71_sha256": "0f7c3e57b616fd6ccbac2dc5b4d6717576f30a48b5a691f99514f9ceb267e93c",
+    "hunks": [
+      {
+        "operation": "replace",
+        "R7_lines": [
+          6,
+          7
+        ],
+        "R71_lines": [
+          6,
+          9
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          11,
+          12
+        ],
+        "R71_lines": [
+          13,
+          20
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          14,
+          15
+        ],
+        "R71_lines": [
+          22,
+          25
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          18,
+          19
+        ],
+        "R71_lines": [
+          28,
+          32
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          25,
+          25
+        ],
+        "R71_lines": [
+          38,
+          38
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          27,
+          27
+        ],
+        "R71_lines": [
+          40,
+          43
+        ]
+      },
+      {
+        "operation": "insert",
+        "R7_lines": [
+          30,
+          29
+        ],
+        "R71_lines": [
+          46,
+          60
+        ]
+      }
+    ]
+  },
+  {
+    "file": "tests/test_direct.py",
+    "R7_sha256": "438554de4c11442b6067d357b97fc6aeffdb9252d099cb40fb6fca8cb345d3ad",
+    "R71_sha256": "5c5973c2313218e722f0142598afbac09125ac2fd121a7eb3ff2c537a7218664",
+    "hunks": [
+      {
+        "operation": "replace",
+        "R7_lines": [
+          176,
+          176
+        ],
+        "R71_lines": [
+          176,
+          176
+        ]
+      }
+    ]
+  },
+  {
+    "file": "tests/test_r6.py",
+    "R7_sha256": "5f7b7dd67bac05a4341c3e97f1e8945626df38f1b0a9611d9618037eaf7e6cc2",
+    "R71_sha256": "0c87f25b72908d46a6b94116b3f6e758d38d4434b677b025e7089a8f205570ac",
+    "hunks": [
+      {
+        "operation": "replace",
+        "R7_lines": [
+          112,
+          113
+        ],
+        "R71_lines": [
+          112,
+          113
+        ]
+      },
+      {
+        "operation": "replace",
+        "R7_lines": [
+          121,
+          121
+        ],
+        "R71_lines": [
+          121,
+          121
+        ]
+      }
+    ]
+  },
+  {
+    "file": "tests/test_r71.py",
+    "R7_sha256": null,
+    "R71_sha256": "ca939752a748cc6fbd0460de1bb094ac7e98771f402f134a0ca717d0ab7bb988",
+    "hunks": [
+      {
+        "operation": "insert",
+        "R7_lines": [
+          1,
+          0
+        ],
+        "R71_lines": [
+          1,
+          120
+        ]
+      }
+    ]
+  }
+]

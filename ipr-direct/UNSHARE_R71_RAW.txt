@@ -1,0 +1,2 @@
+unshare: write failed /proc/self/uid_map: Operation not permitted
+exit_code=1

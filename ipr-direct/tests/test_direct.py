@@ -173,7 +173,7 @@ class ParentAndLifecycle(unittest.TestCase):
    p=NS(expire_entry_opportunities=lambda now:None)
    ended=[]
    async def life():await asyncio.sleep(.02);ended.append(True);stopped.set()
-   r=NS(a=NS(bridge=NS(p=p),transport_trusted=False),boot_number=1,stop=stopped,ingress=None,wall=lambda:NOW,notify_cases_changed=lambda:None,revoke=lambda reason:None,run=life)
+   r=NS(a=NS(bridge=NS(p=p),transport_trusted=False),boot_number=1,stop=stopped,ingress=None,heavy_window=NS(metrics=lambda:{}),wall=lambda:NOW,notify_cases_changed=lambda:None,revoke=lambda reason:None,run=life)
    class FakeSender:
     def __init__(self,*a):pass
     async def run(self):await stopped.wait()

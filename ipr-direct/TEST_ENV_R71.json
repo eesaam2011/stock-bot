@@ -1,0 +1,10 @@
+{
+  "python": "3.12.14",
+  "network": "run_tests.py denies socket.connect/connect_ex/create_connection/getaddrinfo; synthetic HTTP/Redis only",
+  "unshare_rn": {
+    "exit_code": 1,
+    "result": "unshare: write failed /proc/self/uid_map: Operation not permitted"
+  },
+  "live_Render_Alpaca_Redis": "NOT_RUN",
+  "schedules_modified": false
+}
