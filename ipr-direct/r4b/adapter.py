@@ -3,6 +3,7 @@ from dintegration.timing import timed
 No retrospective ENTRY, no hand-supplied continuity booleans.
 """
 import threading,time,json
+from r9core.chain import EvidenceRecordTooLarge,ChainFailure
 from datetime import timedelta
 from dreview.core import _LIVE_ADAPTER_AUTHORITY
 from dintegration.live import LiveAdapter
@@ -146,15 +147,18 @@ class EvidenceAdapter(LiveAdapter):
      self.quarantine=bad;self.report=report
      self.entry_floor=self.entry_floor or self.wall();self.trusted_since=self.entry_floor;self.gap_start=None
      self._LiveAdapter__trusted=True;self.c._set_transport_from_adapter(True,_LIVE_ADAPTER_AUTHORITY)
-     self.recovering=set(bad);self.last=now;return True
+     self.recovering=set(bad);self._invalidation_open=False;self.last=now;return True
    finally:self.bridge.p._decision_lock.release()
 
+  except ChainFailure:
+   self.close_eligibility('CHAIN2_FAILURE');raise
   except Exception as exc:
    self.report={'reason':str(exc) if isinstance(exc,ValueError) else type(exc).__name__};return False
   finally:
    self.bridge.discard_preload_stage()
    self.measure.observe('recovery',time.monotonic()-start)
-   if not self.transport_trusted:
+   import sys
+   if not self.transport_trusted and not isinstance(sys.exc_info()[1],ChainFailure):
     self.close_eligibility('RECOVERY_EVIDENCE_INCOMPLETE')
     # A persistence failure propagates to scheduler/supervisor. Never swallow Redis outage.
     self.checkpoint.append_epoch({'kind':'B_RECOVERY_FAILED','proof':self.proof.snapshot(),'report':self.report})

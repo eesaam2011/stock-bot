@@ -1,0 +1,11 @@
+{
+  "status": "COMPLETE_OFFLINE_REVIEW_ONLY",
+  "release": "R8",
+  "base_commit": "92cad3e9a9014e4b77560d5281e62e44ffc4ebfd",
+  "deployed": false,
+  "original_tests": 191,
+  "added_tests": 24,
+  "total_passed_twice": 215,
+  "reference_files_identical": 72,
+  "live_resource_and_latency_validation": "UNKNOWN"
+}

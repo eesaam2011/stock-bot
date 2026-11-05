@@ -16,10 +16,19 @@ class Measurements:
   except OSError:pass
   try:throttling=open('/sys/fs/cgroup/cpu.stat').read()
   except OSError:pass
+  memory_stat={};sqlite_files=[];sqlite_stat_error=None
+  try:
+   memory_stat=dict(line.split() for line in open('/sys/fs/cgroup/memory.stat'))
+   memory_stat={k:int(memory_stat[k]) for k in ('anon','file','shmem')}
+  except (OSError,KeyError,ValueError):memory_stat={}
+  try:
+   from pathlib import Path
+   sqlite_files=[{'file':p.name,'bytes':p.stat().st_size} for p in Path('/tmp').glob('ipr_rth_*.sqlite*') if p.is_file()]
+  except OSError as exc:sqlite_files=None;sqlite_stat_error=type(exc).__name__
   cores=(cpu-self.last_cpu)/(now-self.last_wall) if self.last_wall is not None and now>self.last_wall else None;self.last_cpu=cpu;self.last_wall=now
   with self.guard:span_copy={k:{'count':v['count'],'mean':v['total']/v['count'],'max':v['max']} for k,v in self.spans.items()}
   from ipr.observability import OBS
-  return {'R7_diagnostics':OBS.snapshot(),'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
+  return {'R7_diagnostics':OBS.snapshot(),'memory_stat':memory_stat,'anon_bytes':memory_stat.get('anon'),'file_bytes':memory_stat.get('file'),'shmem_bytes':memory_stat.get('shmem'),'sqlite_files':sqlite_files,'sqlite_total_bytes':sum(x['bytes'] for x in sqlite_files) if sqlite_files is not None else None,'sqlite_stat_error':sqlite_stat_error,'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
  async def loop_lag(self,stop,period=.1):
   while not stop.is_set():
    from ipr.observability import OBS

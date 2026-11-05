@@ -1,4 +1,4 @@
-# COMPLETE: R4-A offline assembly scope only; live B/C integration pending.
+# COMPLETE: R9-core offline assembly; live execution remains unproven.
 """Assembly kernel. R4-B supplies data/recovery; R4-C supplies sender/config.
 Only one WS reader. Control mutations occur on the asyncio loop, not in ingress worker.
 """
@@ -37,6 +37,9 @@ class RecoveryPort:
  def on_status(self,msg):self.a.on_message(msg,datetime.now(timezone.utc))
  def on_stream_message(self,kind,msg):pass # R4-B stream evidence is recorded at reader receipt.
 
+from r9core.lifecycle import FirstFailure,wait_first,close_tasks
+from r9core.chain import ChainFailure
+
 class Runtime:
  def __init__(self,adapter,state,leadership,socket_open,authorize,policy,*,clock=time.monotonic,
               wall=lambda:datetime.now(timezone.utc),sample,observe_stream=None):
@@ -45,7 +48,7 @@ class Runtime:
   self.control=ClockedControl(self.c,clock)
   self.deadline=AckTrustDeadline(clock);self.memory=MemoryBounds();self.stop=asyncio.Event()
   self.ready=asyncio.Event();self.initialized=asyncio.Event();self.ws=None;self.auth=False;self.stopping=False;self.reason=None
-  self.observe_stream=observe_stream;self.tasks=[];self.last_renew=None;self.ingress=None
+  self.observe_stream=observe_stream;self.tasks=[];self.last_renew=None;self.ingress=None;self.failure=FirstFailure()
  def revoke(self,reason):
   # Close entry eligibility in memory BEFORE any failing Redis operation.
   self.a.close_eligibility(reason)
@@ -149,10 +152,10 @@ class Runtime:
   delay=1
   while not self.stop.is_set():
    try:await self.connection()
-   except (SafetyStop,ValueError,TypeError):raise
+   except (SafetyStop,ValueError,TypeError,ChainFailure):raise
    except Exception:
     # Network disconnect can reconnect; durable checkpoint error cannot be suppressed.
-    self.revoke('CONNECTION_FAILED');await asyncio.to_thread(self.checkpoint,'CONNECTION_FAILED')
+    self.revoke('CONNECTION_FAILED');await asyncio.to_thread(self.a.revoke,'CONNECTION_FAILED')
    await asyncio.sleep(delay);delay=min(30,delay*2)
  async def run(self):
   self.revoke('STARTING_UNTRUSTED')
@@ -162,14 +165,12 @@ class Runtime:
   self.tasks=[asyncio.create_task(f()) for f in (self.connections,self._watch,self._renew)]
   self.tasks.append(asyncio.create_task(self.stop.wait()))
   try:
-   done,_=await asyncio.wait(self.tasks,return_when=asyncio.FIRST_COMPLETED)
-   for t in done:t.result()
+   await wait_first(self.tasks,self.failure)
   finally:
    self.revoke('STOPPING');self.stop.set()
    for t in self.tasks:t.cancel()
    # Existing 60-second tail ceiling. A non-cooperative thread requires a PROCESS parent.
-   try:await asyncio.wait_for(asyncio.gather(*self.tasks,return_exceptions=True),timeout=60)
-   except asyncio.TimeoutError:raise SafetyStop('TAIL_60_SECONDS_PARENT_KILL_REQUIRED')
+   await close_tasks(self.tasks,self.failure,60.)
 
 class Factory:
  """Dependency injection assembly, no env credentials or implicit connections.
@@ -178,7 +179,8 @@ class Factory:
  @staticmethod
  def build(adapter,redis,leadership,socket_open,authorize,policy,**ports):
   authorize()
-  state=RedisState(redis,policy.session,adapter.c.root.identity(),leadership.worker_instance_id,
+  from r9core.chain import ChainState
+  state=ChainState(redis,policy.session,adapter.c.root.identity(),leadership.worker_instance_id,
                    leadership.require_current().leader_generation)
   adapter.checkpoint=state
   return Runtime(adapter,state,leadership,socket_open,authorize,policy,**ports)
@@ -210,7 +212,13 @@ def compose(*,redis,root,worker,boot_id,policy,session_policy,rest,recovery_fact
  if not lease_before_budget:lead.acquire()
  canonical=NamespacedRedis(redis,PREFIX+':canonical:');lua=ProductionRedisLua(canonical)
  bridge=OriginalBridge(canonical,lua,lead,policy.session,root.symbols,rest,worker,session_policy)
- state=RedisState(redis,policy.session,root.identity(),worker,lead.require_current().leader_generation)
+ from r9core.chain import ChainState
+ state=ChainState(redis,policy.session,root.identity(),worker,lead.require_current().leader_generation)
+ def case_refs():
+  from state_store import key_trade,key_opportunity
+  with bridge.p._decision_lock:
+   return {'O':[key_opportunity(v['session'],s) for s,v in bridge.p._entry_opportunities.items()], 'A':[key_trade(v['trade_id']) for v in bridge.p._active_by_symbol.values()]}
+ state.case_refs=case_refs
  state.restore();controller=Controller(root)
  rec=recovery_factory(bridge)
  adapter=LiveAdapter(controller,bridge,rest,rec,clock_check,filter_check,root_check,state,measure)

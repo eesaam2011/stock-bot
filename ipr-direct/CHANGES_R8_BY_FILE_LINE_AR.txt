@@ -1,0 +1,53 @@
+COMPLETE — قائمة الملفات والسطور في R8؛ فرق الكود الكامل DIFF_FROM_R71.patch.
+
+ipr/api.py
+replace: R7.1 lines 2..2; R8 lines 2..2
+insert: R7.1 lines 16..15; R8 lines 16..35
+replace: R7.1 lines 21..21; R8 lines 41..41
+replace: R7.1 lines 27..27; R8 lines 47..49
+
+ipr/main.py
+insert: R7.1 lines 21..20; R8 lines 21..21
+replace: R7.1 lines 36..36; R8 lines 37..37
+
+ipr/ranking.py
+replace: R7.1 lines 11..11; R8 lines 11..11
+replace: R7.1 lines 13..15; R8 lines 13..18
+
+ipr/runtime.py
+insert: R7.1 lines 27..26; R8 lines 27..27
+insert: R7.1 lines 29..28; R8 lines 30..37
+replace: R7.1 lines 68..69; R8 lines 77..78
+insert: R7.1 lines 71..70; R8 lines 80..88
+insert: R7.1 lines 93..92; R8 lines 111..112
+replace: R7.1 lines 110..110; R8 lines 130..131
+insert: R7.1 lines 112..111; R8 lines 133..134
+replace: R7.1 lines 134..134; R8 lines 157..157
+insert: R7.1 lines 137..136; R8 lines 160..161
+insert: R7.1 lines 141..140; R8 lines 166..166
+insert: R7.1 lines 146..145; R8 lines 172..172
+replace: R7.1 lines 147..147; R8 lines 174..174
+insert: R7.1 lines 149..148; R8 lines 176..176
+replace: R7.1 lines 155..155; R8 lines 183..185
+insert: R7.1 lines 157..156; R8 lines 187..187
+replace: R7.1 lines 159..159; R8 lines 190..193
+replace: R7.1 lines 162..162; R8 lines 196..197
+replace: R7.1 lines 171..171; R8 lines 206..207
+replace: R7.1 lines 178..178; R8 lines 214..217
+replace: R7.1 lines 183..183; R8 lines 222..222
+replace: R7.1 lines 187..187; R8 lines 226..226
+replace: R7.1 lines 202..202; R8 lines 241..241
+
+ipr/scan_health.py
+insert: R7.1 lines 1..0; R8 lines 1..124
+
+tests/test_r8.py
+insert: R7.1 lines 1..0; R8 lines 1..168
+
+المواضع الرئيسية:
+ipr/scan_health.py: SCAN_VALIDITY_SECONDS/Gate/failure/expire/accounting؛ ScanExclusions؛ BlockedTrades؛ blocked_context_valid.
+ipr/api.py: operation وتصنيفالجهة؛قياسacquire/releaseوlock_metrics؛قفلونافذةوطلباتغيرمتغيرة.
+ipr/runtime.py:callbacksفقدالثقة؛final_filterالتشخيصي؛ربطGateوالعداد؛graceالمسح؛استبعادات؛nativeوسمفقط؛upkeep150؛تصديرالمقاييس؛إغلاقالحارس.
+ipr/main.py:ختمبدءقياسالابنmonotonicفقط.
+ipr/ranking.py:أسبابالرفضالتشخيصيةاختيارية؛القيموالنقاطوالترتيببلا تغيير.
+tests/test_r8.py:24اختبارًاجديدًا؛كلملفاتاختباراتR7.1بلا تعديل.

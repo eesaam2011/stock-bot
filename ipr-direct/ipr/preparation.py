@@ -62,17 +62,5 @@ def prepare_root(api,redis,now):
  save(redis,'root:'+day,result);return result
 
 def carried(redis,day):
- from r4a.durable import RedisState
- from r4b.store import ProofStore
- from dintegration.stream_proof import StreamProof
- keys=[];cursor=0
- while True:
-  cursor,ks=redis.scan(cursor=cursor,match=PREFIX+':session:*:checkpoint',count=100)
-  keys.extend(k.decode() if isinstance(k,bytes) else k for k in ks)
-  if int(cursor)==0:break
- keys=[k for k in keys if k.split(':session:')[1].split(':')[0]<=day]
- if not keys:return set(),set()
- key=sorted(keys)[-1];raw=redis.get(key);head=json.loads(raw);session=head['session']
- state=RedisState(redis,session,head['root_hash'],'read_only',0);state.restore()
- store=ProofStore(state,StreamProof());store.load_archive()
- return set(store.pending_U),set(store.pending_R)
+ from r9core.chain import previous_cases
+ return previous_cases(redis,day)

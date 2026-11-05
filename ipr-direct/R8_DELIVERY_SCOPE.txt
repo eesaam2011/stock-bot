@@ -1,0 +1,1 @@
+Only local code/test/artifact work. No service operations; no Render/GitHub/Redis changes. No secrets read. Code diff against the verified R7.1 source, base commit 92cad3e9a9014e4b77560d5281e62e44ffc4ebfd. All 191 historical test sources and 72 reference files identical. Final original and ZIP-extracted Python source bytes equal.

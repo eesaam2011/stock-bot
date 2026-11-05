@@ -1,4 +1,6 @@
 import asyncio,json,time,uuid,threading,os
+from r9core.chain import EvidenceRecordTooLarge,ChainFailure
+from r9core.lifecycle import FirstFailure,wait_first,close_tasks
 from datetime import datetime,timezone,timedelta
 from types import SimpleNamespace
 from . import http as requests
@@ -24,8 +26,17 @@ from .news_batch import BatchNews
 from .ranking import base_score,Selection
 from .wave import ScanDiagnostics
 from .sender import Sender
+from .scan_health import SCAN_VALIDITY_SECONDS,gate_for,BlockedTrades,blocked_context_valid
 
 class DirectEvidence(EvidenceAdapter):
+ def close_eligibility(self,reason):
+  gate=getattr(self,'scan_gate',None)
+  if gate is not None and (reason!='RECOVERY_PENDING' or self.transport_trusted):gate.invalidate('TRUST_LOST')
+  return super().close_eligibility(reason)
+ def revoke(self,reason):
+  gate=getattr(self,'scan_gate',None)
+  if gate is not None:gate.invalidate('TRUST_LOST')
+  return super().revoke(reason)
  def recover(self,now):
   ok=super().recover(now)
   bad=self.report.get('quarantine',{});counts={}
@@ -58,16 +69,25 @@ async def fixed_connect(uri):
 
 def _build(bundle,api,redis,env,boot,clock,measure):
  import runtime_provenance
- runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R7'
+ runtime_provenance.RUNTIME_MODE='ALERTS_ONLY';runtime_provenance.SHADOW_MODE=False;runtime_provenance.RELEASE_ID='IPR_DIRECT_R9_CORE'
  policy=policy_for(bundle);root=Root(bundle['session'],frozenset(bundle['symbols']),policy.frozen_manifest_sha256,True)
  cls=Classifier(bundle['assets']);rest=MarketREST(api.get,root,measure);prepared={'ready':False,'history':None,'scan_ok':False}
  def authorize():
   if not policy.time_allows(datetime.now(timezone.utc).timestamp()):raise ValueError('SESSION_CLOSED')
  def final_filter(s,m,now):
   # New entry price admission only; the original monitor still receives allow=False.
-  if not prepared['ready'] or not prepared['scan_ok'] or s not in bundle['eligible']:return False
-  try:return cls.eligible(s) and 1<=float(m['p'])<=50 and 0<=(now-dt(m['t'])).total_seconds()<=60
+  if not prepared['ready'] or s not in bundle['eligible']:return False
+  try:valid=cls.eligible(s) and 1<=float(m['p'])<=50 and 0<=(now-dt(m['t'])).total_seconds()<=60
   except Exception:return False
+  if not valid:return False
+  gate=prepared.get('_scan_gate')
+  allowed=gate.expire() if gate is not None else prepared['scan_ok']
+  if not allowed:
+   try:
+    if blocked_context_valid(prepared.get('_runtime'),s):prepared['_blocked_trades'].record(s,m,now)
+   except Exception:pass # Observation must not change the existing False decision.
+   return False
+  return True
  class Status:
   def __init__(self):self.original=ProductionStatusTracker()
   def on_status(self,m):return self.original.ingest(m)
@@ -90,6 +110,8 @@ def _build(bundle,api,redis,env,boot,clock,measure):
  r.ingress_factory=partial(ObservedIngress,diagnostics=r.wave)
  api.before_request=r.heavy_window.before_request
  api.request_allowed=r.heavy_window.request_allowed
+ api.request_operation=lambda:getattr(r.heavy_window.local,'name',None)
+ r.api=api
  from .observability import OBS
  OBS.clock=clock
  r.boot_number=base.boot_number
@@ -107,13 +129,18 @@ async def pause(stop,seconds):
  try:await asyncio.wait_for(stop.wait(),timeout=max(0.,seconds))
  except asyncio.TimeoutError:pass
 
-async def run(bundle,api,redis,env,boot):
+async def run(bundle,api,redis,env,boot,started_monotonic=None):
+ started=time.monotonic() if started_monotonic is None else started_monotonic
  r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
+ gate=gate_for(state,time.monotonic,r.wall,started);r.a.scan_gate=gate
+ state['_runtime']=r;state['_blocked_trades']=BlockedTrades(bundle['eligible'])
  from .observability import PauseObserver
  observer=PauseObserver(getattr(p,'contention_probe',None),lambda row:print(json.dumps(row),flush=True));observer.start()
+ r.failure=getattr(r,'failure',None) or FirstFailure()
  sender=Sender(r,redis,env);floats=FloatReader(env,requests.get);news=BatchNews(env,requests.post);selection=Selection();scan_diagnostics=ScanDiagnostics()
  print(json.dumps({'stage':'GUARD_BOOT_CLAIMED','boot':r.boot_number,'max_boots':4,'mode':'TELEGRAM_ALERTS_ONLY'}),flush=True)
  async def prepare():
+  from r9core.chain import EvidenceRecordTooLarge,ChainFailure
   def work():
    floats.refresh();news.count()
    count=sum(floats.value(s)['status']=='VALID' for s in bundle['eligible'])
@@ -130,65 +157,87 @@ async def run(bundle,api,redis,env,boot):
    print(json.dumps({'stage':'PREP_READY','symbols_with_history':len(h['features']),'symbols_without_history':len(bundle['eligible'])-len(h['features'])}),flush=True)
   while not r.stop.is_set() and not state['ready']:
    try:await asyncio.to_thread(work)
+   except ChainFailure:raise
    except Exception as e:
-    state['ready']=False;state['scan_ok']=False;print(json.dumps({'stage':'PREP_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True);await pause(r.stop,300.)
+    state['ready']=False;gate.invalidate('PREP_FAILED');print(json.dumps({'stage':'PREP_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True);await pause(r.stop,300.)
   await r.stop.wait()
  async def scan():
+  from r9core.chain import EvidenceRecordTooLarge,ChainFailure
+  from ipr.scan_health import gate_for,ScanExclusions,RTHVolumeStale
+  scan_gate=gate_for(state,time.monotonic,r.wall)
   volumes=None
   while not r.stop.is_set():
    start=time.monotonic();market=bundle['market'];now=r.wall()
    if state['ready'] and market and dt(market['open'])<=now<dt(market['close']):
+    exclusions=ScanExclusions();generation=scan_gate.generation
     try:
      def work():
       nonlocal volumes
       if volumes is None:volumes=SessionVolumes('/tmp/ipr_rth_'+bundle['session']+'.sqlite',bundle['calendar'],bundle['session'])
       totals=volumes.update(api,bundle['eligible'],r.wall());snaps=r.a.rest.snapshot_envelopes(bundle['eligible'],r.wall);at=r.wall();scores={}
+      for missing in set(bundle['eligible'])-set(snaps):exclusions.add('SNAPSHOT_MISSING',missing)
       for s,e in snaps.items():
-       row=base_score(s,e['data'],state['history']['features'].get(s),totals.get(s),at,dt(market['open']),floats)
+       row=base_score(s,e['data'],state['history']['features'].get(s),totals.get(s),at,dt(market['open']),floats,exclusions)
        if row:scores[s]=row
+      exclusions.scoring_complete=True
       top=sorted(scores,key=lambda s:(-scores[s]['score95'],s))[:750];news.refresh(top)
       for s,row in scores.items():
        n=news.read(s) if s in top else {};pts=5 if n.get('positive') and n.get('bonus',0)>0 else 0
        row['score']=round(row['score95']+pts,12);row['parts']['news']=pts
       # Source price freshness is rechecked AFTER possibly slow HMGET requests.
       end=r.wall()
-      if scan_diagnostics.watermark(end,volumes.watermark)>60:raise ValueError('RTH_VOLUME_STALE')
+      if scan_diagnostics.watermark(end,volumes.watermark)>60:raise RTHVolumeStale('RTH_VOLUME_STALE')
+      for s,v in scores.items():
+       if not 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60:exclusions.add('SNAPSHOT_AGE_GT60',s)
       scores={s:v for s,v in scores.items() if 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60}
+      exclusions.snapshot_check_complete=True
       with p._decision_lock:needs=r.a.bridge.needs(recovery_symbols=r.a.barrier.persisted_R)
       blocked=bool(r.c.desired_bar) and (bool(r.c.inflight) or r.recovery_running or bool(r.a.recovering) or not r.a.transport_trusted)
-      target=selection.update(scores,needs.pins,time.monotonic(),blocked=blocked,utc_minute=end.replace(second=0,microsecond=0).isoformat())
+      previous=set(getattr(selection,'current',set()));selection_now=time.monotonic()
+      last=getattr(selection,'last',None);due=last is None or selection_now-last>=120 or bool(getattr(selection,'pending',set()))
+      target=selection.update(scores,needs.pins,selection_now,blocked=blocked,utc_minute=end.replace(second=0,microsecond=0).isoformat())
+      exclusions.selection(previous,scores,needs.pins,target,blocked,due)
       r.planner.propose(needs,set(target))
       save(redis,'scan:'+bundle['session'],{'at':end.isoformat(),'selected':target,'root_symbols':len(bundle['eligible']),'scores':{s:scores[s] for s in target if s in scores},'rth_watermark':volumes.watermark.isoformat(),'linear_approximation':True})
-      state['scan_ok']=True;state['scan_at']=r.wall()
+      scan_gate.success(generation,allowed=not r.stop.is_set());state['scan_at']=r.wall()
+      exclusions.report(end,'SUCCESS')
       print(json.dumps({'stage':'IPR_SCAN','at':end.isoformat(),'ranked':len(scores),'BAR_desired':len(target),'news_candidates':len(top),'api_requests':api.requests,'duration_seconds':time.monotonic()-start}),flush=True)
      def scan_work():
       # Observe activity only: scan_rest is NOT a gated operation.
       with r.heavy_window.operation('scan_rest'):return work()
      await asyncio.to_thread(scan_work)
      scan_diagnostics.finish(True,time.monotonic()-start)
+    except ChainFailure:
+     r.revoke('EVIDENCE_RECORD_TOO_LARGE');raise
     except Exception as e:
      scan_diagnostics.finish(False,time.monotonic()-start)
-     state['scan_ok']=False;print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True)
+     scan_gate.failure(e);exclusions.report(r.wall(),'FAILED')
+     print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e),'scan_ok':state['scan_ok'],'previous_success_preserved':type(e) is RTHVolumeStale and state['scan_ok']}),flush=True)
    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
  async def native():
   while not r.stop.is_set():
    market=bundle['market'];now=r.wall()
    if state['ready'] and state['scan_ok'] and market and dt(market['open'])<=now<dt(market['close']) and r.a.transport_trusted:
     with r.a.control_lock:syms=[s for s in r.c.bar if s not in r.a.recovering and all(r.c.proofs.get(s,{}).get(k) for k in ('history','continuity','reconciled'))]
-    if syms:await asyncio.to_thread(r.a.bridge.native_cycle,syms,now,True)
+    if syms:
+     def native_work():
+      with api.operation('native'):return r.a.bridge.native_cycle(syms,now,True)
+     await asyncio.to_thread(native_work)
    await pause(r.stop,5.)
  async def upkeep():
   while not r.stop.is_set():
    await asyncio.to_thread(p.expire_entry_opportunities,r.wall());r.notify_cases_changed()
-   if state.get('scan_at') and (r.wall()-state['scan_at']).total_seconds()>60:state['scan_ok']=False
+   gate.expire() # SCAN_VALIDITY_SECONDS=150; per-scan freshness stays 60 seconds.
    await pause(r.stop,1.)
  async def metrics():
   while not r.stop.is_set():
-   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics(),'heavy_window':r.heavy_window.metrics(),'scan':scan_diagnostics.snapshot()}),flush=True)
+   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics(),'heavy_window':r.heavy_window.metrics(),'scan':scan_diagnostics.snapshot(),'scan_gate':state['_scan_gate'].snapshot() if '_scan_gate' in state else None,'scan_gate_blocked':state['_blocked_trades'].snapshot() if '_blocked_trades' in state else None,'rest_lock':getattr(getattr(r,'api',None),'lock_metrics',lambda:{})(),'evidence_chain':getattr(getattr(r,'state',None),'metrics',lambda:None)(),'invalidation_repeats':dict(getattr(r.a,'invalidation_counts',{}))}),flush=True)
    await pause(r.stop,60.)
  import signal
  loop=asyncio.get_running_loop()
- for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,r.stop.set)
+ r.exit_reason='WORKER_TASK_COMPLETED_WITHOUT_EXCEPTION'
+ def signal_stop(sig):r.exit_reason='SIGNAL_'+sig.name;r.stop.set()
+ for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,signal_stop,sig)
  async def after_init(fn):
   gate=getattr(r,'initialized',None)
   if gate is not None:await gate.wait()
@@ -196,11 +245,11 @@ async def run(bundle,api,redis,env,boot):
  tasks=[asyncio.create_task(r.run()),asyncio.create_task(metrics()),asyncio.create_task(measure.loop_lag(r.stop))]
  tasks.extend(asyncio.create_task(after_init(f)) for f in (prepare,scan,native,upkeep,sender.run))
  try:
-  done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
-  for t in done:t.result()
+  await wait_first(tasks,r.failure)
  finally:
-  r.revoke('DIRECT_STOPPING');r.stop.set()
+  gate.invalidate('GUARD_STOP');r.revoke('DIRECT_STOPPING');r.stop.set()
   for t in tasks:t.cancel()
-  try:await asyncio.wait_for(asyncio.gather(*tasks,return_exceptions=True),timeout=60.)
-  except asyncio.TimeoutError:raise RuntimeError('PARENT_KILL_REQUIRED')
+  try:await close_tasks(tasks,r.failure,60.)
   finally:observer.close();getattr(clock,'close',lambda:None)()
+
+ return r.exit_reason

@@ -1,0 +1,117 @@
+[
+  {
+    "path": "CHANGES_R8_BY_FILE_LINE_AR.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "23dd43f919188ddb4fb7168f1c38175da4c5405bc527c42bcbd4331ca6395bce"
+  },
+  {
+    "path": "CODE_CHANGES_R8.json",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "d7b24259dfbec700643e33f9dbd99333120e484fdc27fc8f49741428566d87e4"
+  },
+  {
+    "path": "DIFF_FROM_R71.patch",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "d30fe7ff345815808653969cc2d5c3ccc98ce5313f1614ec8c8a8728d4edde80"
+  },
+  {
+    "path": "PRECONDITION_R8_AR.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "1226c856d904d4a3f45a6d4695eb0bc25d1b4489bdb47e9bf5954c22c1aac196"
+  },
+  {
+    "path": "R71_BASELINE_191_RAW.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "aae757e1d838f22cb3fed8f9af7a9a7e6bec6621b81e0fc3b251126175fb04cb"
+  },
+  {
+    "path": "R8_DELIVERY_SCOPE.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "ffd97a0d5a34ccd13fbdc345637f8671c96c4a2bc02587c9c119d1a1eb9b3058"
+  },
+  {
+    "path": "R8_DEVELOPMENT_FIXTURE_FAILURE_RAW.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "38d8b3ea78fb4747b6ea90ac40407889fce87edb760f106a8c5b2a58c4fff9de"
+  },
+  {
+    "path": "R8_TEST_EXTRACTED_RAW.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "afde2e1eae3b857800e992b56c56d49ce798feda72f3e1f0f3fd2c0bce08aea3"
+  },
+  {
+    "path": "R8_TEST_ORIGINAL_RAW.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "137174f390638dc33d56dbd5beed595fac1f80b9029a3be168f3467727782730"
+  },
+  {
+    "path": "README_AR.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "f44a6cc5ef4bdded14253285e66da535460f4b9fc52a47d1c6e840788fd5cbf4"
+  },
+  {
+    "path": "README_R8_AR.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "a577d60e15e89109a3c6ab231d16efa1974652881a90fa032dff5821c5170ec6"
+  },
+  {
+    "path": "REFERENCE_COMPATIBILITY_R8.json",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "29006ff4734562d53c27b95ec8f008de8efdb8bb25d460b28ec9ef8b45bcd832"
+  },
+  {
+    "path": "REPORT_R8_AR.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "387a425f3b6c32587ed599165e51e4c993dfe399a01ce93f9501e3c9e5848e1d"
+  },
+  {
+    "path": "STATUS_R8.json",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "40cd03551cc4bdda10992e4f8a66e1c010e931ce3abb5627efdaea56970beaa0"
+  },
+  {
+    "path": "TEST_SUMMARY_R8.json",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "84f588fcc578af77f4dad3ce833dd363af578386c72962d05d7db66b8dba2546"
+  },
+  {
+    "path": "UNKNOWN_R8_AR.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "faa0bcfcd546eaadf6f199894172b7c13a36a02d4e23ee16bc01b53ae1c0ad26"
+  },
+  {
+    "path": "UNSHARE_R8_RAW.txt",
+    "kind": "documentation_or_test_evidence",
+    "sha256": "0cbeefafec79dcc1db607e427ccb0acb2a8e66b3962f6c618174647530dc90e2"
+  },
+  {
+    "path": "ipr/api.py",
+    "kind": "code",
+    "sha256": "32777c1fe1e1e0b14b1d35df50417e422658ee297ee81e224b38598a4d4d5dcd"
+  },
+  {
+    "path": "ipr/main.py",
+    "kind": "code",
+    "sha256": "27c5c76331d05ab267421cd582038433a7205f518af51f71b3f082e1b9b10d58"
+  },
+  {
+    "path": "ipr/ranking.py",
+    "kind": "code",
+    "sha256": "8a9c39c21fc1fe195e6b1c066dcc181af9666928456055e7649f23bbcc66755d"
+  },
+  {
+    "path": "ipr/runtime.py",
+    "kind": "code",
+    "sha256": "77c9c9f3d4e4ae81f07a1b139fadcdf91dee814cc39a3426f6e7bb8e2a1235ff"
+  },
+  {
+    "path": "ipr/scan_health.py",
+    "kind": "code",
+    "sha256": "0ac492b22073b0cbc7f6b88c22c9bca8752276bcdd91970802fcd02aae5f5a50"
+  },
+  {
+    "path": "tests/test_r8.py",
+    "kind": "code",
+    "sha256": "c7a69cf1c4767f9c00e99c991346e6aa2d433d6ebb3cdb446b9841126013e6d6"
+  }
+]

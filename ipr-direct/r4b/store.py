@@ -9,6 +9,10 @@ class JournalState:
   self.lock=self.raw._r4b_lock
  def __getattr__(self,key):return getattr(self.raw,key)
  def append_epoch(self,event):
+  # Snapshot canonical references BEFORE taking the journal/state locks. Ingress
+  # already owns the decision lock; reversing this order would deadlock on error.
+  provider=getattr(self.raw,'case_refs',None)
+  if provider is not None and 'case_refs' not in event:event={**event,'case_refs':provider()}
   from ipr.observability import observed_phase
   with observed_phase('journal.lock_wait'):self.lock.acquire()
   try:
@@ -31,6 +35,13 @@ class ProofStore:
   self.pending_R.difference_update(resolved_R);self.pending_U.difference_update(resolved_U)
  @timed('load_archive')
  def load_archive(self):
+  if hasattr(self.state,'archive_state'):
+   archive=self.state.archive_state();self.pending_R=set(archive['R']);self.pending_U=set(archive['U']);self.last_control=archive['control_event'];latest=archive['proof']
+   if latest is None:self.proof.invalidate();return False
+   latest['invalid']={s:why for s,why in latest.get('invalid',{}).items() if why not in {'CORRECTION_OR_CANCEL','PERSISTED_UNRESOLVED_CORRECTION'} or s in self.pending_R}
+   for s in self.pending_R:
+    if s in latest.get('scope',[]):latest['invalid'].setdefault(s,'PERSISTED_UNRESOLVED_CORRECTION')
+   self.proof.restore(latest);return True
   self.state.restore();latest=None;self.pending_R=set();self.pending_U=set();self.last_control=None
   # Apply case facts in journal order. A delayed/stale witness snapshot cannot
   # resurrect a resolved correction; a NEW correction has its own explicit add_R.

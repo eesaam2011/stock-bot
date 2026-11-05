@@ -12,12 +12,20 @@ from r4a.direct_parent import DirectProcessGuard as ProcessGuard
 from r4a.child_boundary import arm_parent_death
 from r4a.guards import cgroup_sample
 
+def chain_error_fields(exc):
+ import re
+ match=re.search(r'key=(ipr_direct:v1:chain2:[A-Za-z0-9:_-]+)',str(exc))
+ original=exc
+ while original.__cause__ is not None:original=original.__cause__
+ return {'exception_type':type(original).__module__+'.'+type(original).__qualname__,'key':match.group(1) if match else None}
+
 def credentials(env):
  for name in ('REDIS_URL','APCA_API_KEY_ID','APCA_API_SECRET_KEY','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID'):
   if not env.get(name):raise ValueError('MISSING_'+name)
  return True
 
 def main():
+ child_started=time.monotonic()
  import argparse
  ap=argparse.ArgumentParser();ap.add_argument('--child',action='store_true',help=argparse.SUPPRESS);ap.add_argument('--boot-id',help=argparse.SUPPRESS);ap.add_argument('--parent-pid',type=int,help=argparse.SUPPRESS);ap.add_argument('--session',help=argparse.SUPPRESS);args=ap.parse_args()
  try:
@@ -33,7 +41,8 @@ def main():
   if args.child:
    bundle=load(client,'root:'+args.session)
    if not bundle:raise ValueError('PREP_ROOT_MISSING')
-   asyncio.run(run(bundle,api,client,env,args.boot_id));return 0
+   exit_reason=asyncio.run(run(bundle,api,client,env,args.boot_id,started_monotonic=child_started))
+   print(json.dumps({'stage':'IPR_CHILD_EXIT','exit_code':0,'reason':exit_reason or 'WORKER_TASK_COMPLETED_WITHOUT_EXCEPTION'}),flush=True);return 0
   stopped=[False];guard=[None]
   def stop(*_):
    stopped[0]=True
@@ -44,9 +53,11 @@ def main():
    now=datetime.now(timezone.utc);day=now.date().isoformat()
    if parked_day==day:
     time.sleep(1);continue
-   try:bundle=prepare_root(api,client,now)
+   try:
+    from r9core.chain import validate_bootstrap
+    validate_bootstrap(client,day);bundle=prepare_root(api,client,now)
    except Exception as e:
-    print(json.dumps({'stage':'PREP_ROOT_FAILED','reason':reason(e)}),flush=True);time.sleep(30);continue
+    print(json.dumps({'stage':'PREP_ROOT_FAILED','reason':reason(e),**chain_error_fields(e)}),flush=True);time.sleep(30);continue
    if bundle is None:time.sleep(30);continue
    policy=policy_for(bundle)
    def authorize():
@@ -58,5 +69,7 @@ def main():
    parked_day=day
   return 0
  except Exception as e:
-  print(json.dumps({'stage':'IPR_FATAL','reason':reason(e),**exception_fields(e)}),flush=True);return 2
+  print(json.dumps({'stage':'IPR_FATAL','reason':reason(e),**exception_fields(e)}),flush=True)
+  if args.child:print(json.dumps({'stage':'IPR_CHILD_EXIT','exit_code':2,'reason':reason(e),**exception_fields(e)}),flush=True)
+  return 2
 if __name__=='__main__':raise SystemExit(main())

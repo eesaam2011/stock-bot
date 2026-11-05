@@ -1,0 +1,547 @@
+--- a/ipr/api.py
++++ b/ipr/api.py
+@@ -1,5 +1,5 @@
+ """Fixed read-only Alpaca endpoints. No order/account mutation interface."""
+-import json,urllib.request,urllib.parse,urllib.error,threading
++import json,urllib.request,urllib.parse,urllib.error,threading,time
+ from datetime import datetime,timezone
+ from contextlib import contextmanager
+ class APIError(RuntimeError):pass
+@@ -13,18 +13,40 @@
+   if not self.key or not self.secret:raise APIError('ALPACA_CREDENTIALS_MISSING')
+   self.opener=opener or urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect()).open
+   self.lock=threading.Lock();self.requests=0
++  self.local=threading.local();self.timing_lock=threading.Lock();self.timing={};self.timing_clock=time.monotonic
++ @contextmanager
++ def operation(self,name):
++  old=getattr(self.local,'name',None);self.local.name=name
++  try:yield
++  finally:self.local.name=old
++ def _operation(self):
++  name=getattr(self.local,'name',None)
++  if name is None:name=getattr(self,'request_operation',lambda:None)()
++  return name if name in {'scan_rest','incremental','native'} else 'other'
++ def _timing(self,name,wait,hold):
++  with self.timing_lock:
++   row=self.timing.setdefault(name,{'count':0,'wait_total_seconds':0.,'wait_max_seconds':0.,'hold_total_seconds':0.,'hold_max_seconds':0.})
++   row['count']+=1
++   for kind,value in [('wait',wait),('hold',hold)]:
++    row[kind+'_total_seconds']+=value;row[kind+'_max_seconds']=max(row[kind+'_max_seconds'],value)
++ def lock_metrics(self):
++  with self.timing_lock:
++   return {'operations':{name:{**v,'wait_mean_seconds':v['wait_total_seconds']/v['count'],'hold_mean_seconds':v['hold_total_seconds']/v['count']} for name,v in self.timing.items()},
++           'scope':'acquisitions including denied window rechecks; wait excludes heavy-window sleep; hold includes HTTP/read/JSON; no scheduling change'}
+  @contextmanager
+  def serialized_request(self):
+   while True:
+    hook=getattr(self,'before_request',None)
+    if hook is not None:hook() # wait OUTSIDE the shared API serialization lock
+-   self.lock.acquire()
++   operation=self._operation();waiting=self.timing_clock();self.lock.acquire();acquired=self.timing_clock()
+    try:
+     allowed=getattr(self,'request_allowed',None)
+     if allowed is not None and not allowed():continue # window crossed while waiting for lock
+     yield
+     return
+-   finally:self.lock.release()
++   finally:
++    released=self.timing_clock();self.lock.release()
++    self._timing(operation,max(0.,acquired-waiting),max(0.,released-acquired))
+  def call(self,host,path,params):
+   if (host,path) not in {('paper-api.alpaca.markets','/v2/assets'),('paper-api.alpaca.markets','/v2/calendar'),('api.alpaca.markets','/v2/assets'),('api.alpaca.markets','/v2/calendar'),('data.alpaca.markets','/v2/stocks/bars'),('data.alpaca.markets','/v2/stocks/trades'),('data.alpaca.markets','/v2/stocks/snapshots')}:raise APIError('ENDPOINT_FORBIDDEN')
+   req=urllib.request.Request('https://'+host+path+'?'+urllib.parse.urlencode(params),headers={'APCA-API-KEY-ID':self.key,'APCA-API-SECRET-KEY':self.secret},method='GET')
+--- a/ipr/main.py
++++ b/ipr/main.py
+@@ -18,6 +18,7 @@
+  return True
+ 
+ def main():
++ child_started=time.monotonic()
+  import argparse
+  ap=argparse.ArgumentParser();ap.add_argument('--child',action='store_true',help=argparse.SUPPRESS);ap.add_argument('--boot-id',help=argparse.SUPPRESS);ap.add_argument('--parent-pid',type=int,help=argparse.SUPPRESS);ap.add_argument('--session',help=argparse.SUPPRESS);args=ap.parse_args()
+  try:
+@@ -33,7 +34,7 @@
+   if args.child:
+    bundle=load(client,'root:'+args.session)
+    if not bundle:raise ValueError('PREP_ROOT_MISSING')
+-   asyncio.run(run(bundle,api,client,env,args.boot_id));return 0
++   asyncio.run(run(bundle,api,client,env,args.boot_id,started_monotonic=child_started));return 0
+   stopped=[False];guard=[None]
+   def stop(*_):
+    stopped[0]=True
+--- a/ipr/ranking.py
++++ b/ipr/ranking.py
+@@ -8,11 +8,14 @@
+  f=value['float']
+  return 20 if f<=10e6 else 15 if f<=20e6 else 10 if f<=30e6 else 5 if f<=50e6 else 0
+ 
+-def base_score(symbol,snapshot,history,volume,now,op,floats):
++def base_score(symbol,snapshot,history,volume,now,op,floats,diagnostics=None):
+  trade=snapshot.get('latestTrade',{});p=trade.get('p');t=instant(trade['t']) if trade.get('t') else None
+- if isinstance(p,bool) or not isinstance(p,(float,int)) or not math.isfinite(p) or not 1<=p<=50 or t is None or not 0<=(now-t).total_seconds()<=60:return None
+- if t<op:return None
+- if not history or not volume or history['adv20']<=0:return None
++ def reject(reason):
++  if diagnostics is not None:diagnostics.add(reason,symbol)
++  return None
++ if isinstance(p,bool) or not isinstance(p,(float,int)) or not math.isfinite(p) or not 1<=p<=50:return reject('PRICE')
++ if t is None or not 0<=(now-t).total_seconds()<=60 or t<op:return reject('LAST_TRADE_STALE')
++ if not history or not volume or history['adv20']<=0:return reject('HISTORY_OR_VOLUME_MISSING')
+  elapsed=(now-op).total_seconds()/60
+  if not 0<elapsed<=390:return None
+  ratio=volume['volume']/(history['adv20']*elapsed/390)
+--- a/ipr/runtime.py
++++ b/ipr/runtime.py
+@@ -24,8 +24,17 @@
+ from .ranking import base_score,Selection
+ from .wave import ScanDiagnostics
+ from .sender import Sender
++from .scan_health import SCAN_VALIDITY_SECONDS,gate_for,BlockedTrades,blocked_context_valid
+ 
+ class DirectEvidence(EvidenceAdapter):
++ def close_eligibility(self,reason):
++  gate=getattr(self,'scan_gate',None)
++  if gate is not None and (reason!='RECOVERY_PENDING' or self.transport_trusted):gate.invalidate('TRUST_LOST')
++  return super().close_eligibility(reason)
++ def revoke(self,reason):
++  gate=getattr(self,'scan_gate',None)
++  if gate is not None:gate.invalidate('TRUST_LOST')
++  return super().revoke(reason)
+  def recover(self,now):
+   ok=super().recover(now)
+   bad=self.report.get('quarantine',{});counts={}
+@@ -65,9 +74,18 @@
+   if not policy.time_allows(datetime.now(timezone.utc).timestamp()):raise ValueError('SESSION_CLOSED')
+  def final_filter(s,m,now):
+   # New entry price admission only; the original monitor still receives allow=False.
+-  if not prepared['ready'] or not prepared['scan_ok'] or s not in bundle['eligible']:return False
+-  try:return cls.eligible(s) and 1<=float(m['p'])<=50 and 0<=(now-dt(m['t'])).total_seconds()<=60
++  if not prepared['ready'] or s not in bundle['eligible']:return False
++  try:valid=cls.eligible(s) and 1<=float(m['p'])<=50 and 0<=(now-dt(m['t'])).total_seconds()<=60
+   except Exception:return False
++  if not valid:return False
++  gate=prepared.get('_scan_gate')
++  allowed=gate.expire() if gate is not None else prepared['scan_ok']
++  if not allowed:
++   try:
++    if blocked_context_valid(prepared.get('_runtime'),s):prepared['_blocked_trades'].record(s,m,now)
++   except Exception:pass # Observation must not change the existing False decision.
++   return False
++  return True
+  class Status:
+   def __init__(self):self.original=ProductionStatusTracker()
+   def on_status(self,m):return self.original.ingest(m)
+@@ -90,6 +108,8 @@
+  r.ingress_factory=partial(ObservedIngress,diagnostics=r.wave)
+  api.before_request=r.heavy_window.before_request
+  api.request_allowed=r.heavy_window.request_allowed
++ api.request_operation=lambda:getattr(r.heavy_window.local,'name',None)
++ r.api=api
+  from .observability import OBS
+  OBS.clock=clock
+  r.boot_number=base.boot_number
+@@ -107,8 +127,11 @@
+  try:await asyncio.wait_for(stop.wait(),timeout=max(0.,seconds))
+  except asyncio.TimeoutError:pass
+ 
+-async def run(bundle,api,redis,env,boot):
++async def run(bundle,api,redis,env,boot,started_monotonic=None):
++ started=time.monotonic() if started_monotonic is None else started_monotonic
+  r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
++ gate=gate_for(state,time.monotonic,r.wall,started);r.a.scan_gate=gate
++ state['_runtime']=r;state['_blocked_trades']=BlockedTrades(bundle['eligible'])
+  from .observability import PauseObserver
+  observer=PauseObserver(getattr(p,'contention_probe',None),lambda row:print(json.dumps(row),flush=True));observer.start()
+  sender=Sender(r,redis,env);floats=FloatReader(env,requests.get);news=BatchNews(env,requests.post);selection=Selection();scan_diagnostics=ScanDiagnostics()
+@@ -131,35 +154,47 @@
+   while not r.stop.is_set() and not state['ready']:
+    try:await asyncio.to_thread(work)
+    except Exception as e:
+-    state['ready']=False;state['scan_ok']=False;print(json.dumps({'stage':'PREP_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True);await pause(r.stop,300.)
++    state['ready']=False;gate.invalidate('PREP_FAILED');print(json.dumps({'stage':'PREP_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True);await pause(r.stop,300.)
+   await r.stop.wait()
+  async def scan():
++  from ipr.scan_health import gate_for,ScanExclusions,RTHVolumeStale
++  scan_gate=gate_for(state,time.monotonic,r.wall)
+   volumes=None
+   while not r.stop.is_set():
+    start=time.monotonic();market=bundle['market'];now=r.wall()
+    if state['ready'] and market and dt(market['open'])<=now<dt(market['close']):
++    exclusions=ScanExclusions();generation=scan_gate.generation
+     try:
+      def work():
+       nonlocal volumes
+       if volumes is None:volumes=SessionVolumes('/tmp/ipr_rth_'+bundle['session']+'.sqlite',bundle['calendar'],bundle['session'])
+       totals=volumes.update(api,bundle['eligible'],r.wall());snaps=r.a.rest.snapshot_envelopes(bundle['eligible'],r.wall);at=r.wall();scores={}
++      for missing in set(bundle['eligible'])-set(snaps):exclusions.add('SNAPSHOT_MISSING',missing)
+       for s,e in snaps.items():
+-       row=base_score(s,e['data'],state['history']['features'].get(s),totals.get(s),at,dt(market['open']),floats)
++       row=base_score(s,e['data'],state['history']['features'].get(s),totals.get(s),at,dt(market['open']),floats,exclusions)
+        if row:scores[s]=row
++      exclusions.scoring_complete=True
+       top=sorted(scores,key=lambda s:(-scores[s]['score95'],s))[:750];news.refresh(top)
+       for s,row in scores.items():
+        n=news.read(s) if s in top else {};pts=5 if n.get('positive') and n.get('bonus',0)>0 else 0
+        row['score']=round(row['score95']+pts,12);row['parts']['news']=pts
+       # Source price freshness is rechecked AFTER possibly slow HMGET requests.
+       end=r.wall()
+-      if scan_diagnostics.watermark(end,volumes.watermark)>60:raise ValueError('RTH_VOLUME_STALE')
++      if scan_diagnostics.watermark(end,volumes.watermark)>60:raise RTHVolumeStale('RTH_VOLUME_STALE')
++      for s,v in scores.items():
++       if not 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60:exclusions.add('SNAPSHOT_AGE_GT60',s)
+       scores={s:v for s,v in scores.items() if 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60}
++      exclusions.snapshot_check_complete=True
+       with p._decision_lock:needs=r.a.bridge.needs(recovery_symbols=r.a.barrier.persisted_R)
+       blocked=bool(r.c.desired_bar) and (bool(r.c.inflight) or r.recovery_running or bool(r.a.recovering) or not r.a.transport_trusted)
+-      target=selection.update(scores,needs.pins,time.monotonic(),blocked=blocked,utc_minute=end.replace(second=0,microsecond=0).isoformat())
++      previous=set(getattr(selection,'current',set()));selection_now=time.monotonic()
++      last=getattr(selection,'last',None);due=last is None or selection_now-last>=120 or bool(getattr(selection,'pending',set()))
++      target=selection.update(scores,needs.pins,selection_now,blocked=blocked,utc_minute=end.replace(second=0,microsecond=0).isoformat())
++      exclusions.selection(previous,scores,needs.pins,target,blocked,due)
+       r.planner.propose(needs,set(target))
+       save(redis,'scan:'+bundle['session'],{'at':end.isoformat(),'selected':target,'root_symbols':len(bundle['eligible']),'scores':{s:scores[s] for s in target if s in scores},'rth_watermark':volumes.watermark.isoformat(),'linear_approximation':True})
+-      state['scan_ok']=True;state['scan_at']=r.wall()
++      scan_gate.success(generation,allowed=not r.stop.is_set());state['scan_at']=r.wall()
++      exclusions.report(end,'SUCCESS')
+       print(json.dumps({'stage':'IPR_SCAN','at':end.isoformat(),'ranked':len(scores),'BAR_desired':len(target),'news_candidates':len(top),'api_requests':api.requests,'duration_seconds':time.monotonic()-start}),flush=True)
+      def scan_work():
+       # Observe activity only: scan_rest is NOT a gated operation.
+@@ -168,23 +203,27 @@
+      scan_diagnostics.finish(True,time.monotonic()-start)
+     except Exception as e:
+      scan_diagnostics.finish(False,time.monotonic()-start)
+-     state['scan_ok']=False;print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e)}),flush=True)
++     scan_gate.failure(e);exclusions.report(r.wall(),'FAILED')
++     print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e),'scan_ok':state['scan_ok'],'previous_success_preserved':type(e) is RTHVolumeStale and state['scan_ok']}),flush=True)
+    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
+  async def native():
+   while not r.stop.is_set():
+    market=bundle['market'];now=r.wall()
+    if state['ready'] and state['scan_ok'] and market and dt(market['open'])<=now<dt(market['close']) and r.a.transport_trusted:
+     with r.a.control_lock:syms=[s for s in r.c.bar if s not in r.a.recovering and all(r.c.proofs.get(s,{}).get(k) for k in ('history','continuity','reconciled'))]
+-    if syms:await asyncio.to_thread(r.a.bridge.native_cycle,syms,now,True)
++    if syms:
++     def native_work():
++      with api.operation('native'):return r.a.bridge.native_cycle(syms,now,True)
++     await asyncio.to_thread(native_work)
+    await pause(r.stop,5.)
+  async def upkeep():
+   while not r.stop.is_set():
+    await asyncio.to_thread(p.expire_entry_opportunities,r.wall());r.notify_cases_changed()
+-   if state.get('scan_at') and (r.wall()-state['scan_at']).total_seconds()>60:state['scan_ok']=False
++   gate.expire() # SCAN_VALIDITY_SECONDS=150; per-scan freshness stays 60 seconds.
+    await pause(r.stop,1.)
+  async def metrics():
+   while not r.stop.is_set():
+-   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics(),'heavy_window':r.heavy_window.metrics(),'scan':scan_diagnostics.snapshot()}),flush=True)
++   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics(),'heavy_window':r.heavy_window.metrics(),'scan':scan_diagnostics.snapshot(),'scan_gate':state['_scan_gate'].snapshot() if '_scan_gate' in state else None,'scan_gate_blocked':state['_blocked_trades'].snapshot() if '_blocked_trades' in state else None,'rest_lock':getattr(getattr(r,'api',None),'lock_metrics',lambda:{})()}),flush=True)
+    await pause(r.stop,60.)
+  import signal
+  loop=asyncio.get_running_loop()
+@@ -199,7 +238,7 @@
+   done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+   for t in done:t.result()
+  finally:
+-  r.revoke('DIRECT_STOPPING');r.stop.set()
++  gate.invalidate('GUARD_STOP');r.revoke('DIRECT_STOPPING');r.stop.set()
+   for t in tasks:t.cancel()
+   try:await asyncio.wait_for(asyncio.gather(*tasks,return_exceptions=True),timeout=60.)
+   except asyncio.TimeoutError:raise RuntimeError('PARENT_KILL_REQUIRED')
+--- /dev/null
++++ b/ipr/scan_health.py
+@@ -0,0 +1,124 @@
++"""Local bounded scan gate and diagnostics. Never calls the engine or Redis."""
++import json, math, threading, time
++from collections import OrderedDict
++from datetime import datetime, timezone
++
++SCAN_VALIDITY_SECONDS = 150
++
++def emit(row):
++ try:print(json.dumps(row),flush=True)
++ except Exception:pass  # Observation never changes an existing admission decision.
++
++class RTHVolumeStale(ValueError):
++ pass
++
++class ScanGate:
++ def __init__(self,state,clock=time.monotonic,wall=lambda:datetime.now(timezone.utc),started_at=None,log=emit):
++  self.state=state;self.clock=clock;self.wall=wall;self.log=log;self.lock=threading.RLock()
++  self.started=clock() if started_at is None else started_at;self.accounted=self.started
++  self.total={False:0.,True:0.};self.last_success=None;self.generation=0
++ def _account(self,now):
++  self.total[bool(self.state['scan_ok'])]+=max(0.,now-self.accounted);self.accounted=now
++ def _change(self,value,reason,now):
++  self._account(now);old=bool(self.state['scan_ok']);self.state['scan_ok']=value
++  if old!=value:
++   self.log({'stage':'SCAN_GATE_TRANSITION','at':self.wall().isoformat(),'from':old,'to':value,'reason':reason,
++             'true_seconds':self.total[True],'false_seconds':self.total[False]})
++ def success(self,generation=None,allowed=True):
++  with self.lock:
++   if not allowed or (generation is not None and generation!=self.generation):return False
++   self.last_success=self.clock();self._change(True,'SCAN_SUCCESS',self.last_success);return True
++ def invalidate(self,reason):
++  with self.lock:
++   self.generation+=1;self.last_success=None;self._change(False,reason,self.clock())
++ def expire(self):
++  with self.lock:
++   if self.state['scan_ok'] and (self.last_success is None or self.clock()-self.last_success>SCAN_VALIDITY_SECONDS):
++    self._change(False,'SCAN_EXPIRED',self.clock())
++   return bool(self.state['scan_ok'])
++ def failure(self,exc):
++  if type(exc) is RTHVolumeStale:
++   return self.expire()  # Preserve ONLY a previous uninvalidated, unexpired success.
++  self.invalidate('SCAN_FAILED');return False
++ def snapshot(self):
++  with self.lock:
++   self._account(self.clock());total=sum(self.total.values())
++   return {'validity_seconds':SCAN_VALIDITY_SECONDS,'scan_ok':bool(self.state['scan_ok']),
++           'true_seconds':self.total[True],'false_seconds':self.total[False],
++           'elapsed_seconds':total,'availability_ratio':self.total[True]/total if total else None,
++           'last_success_age_seconds':None if self.last_success is None else max(0.,self.clock()-self.last_success),
++           'scope':'monotonic time since child main instrumentation; not process exec timestamp'}
++
++def gate_for(state,clock=time.monotonic,wall=lambda:datetime.now(timezone.utc),started_at=None):
++ if '_scan_gate' not in state:state['_scan_gate']=ScanGate(state,clock,wall,started_at)
++ return state['_scan_gate']
++
++class ScanExclusions:
++ REASONS=('PRICE','LAST_TRADE_STALE','HISTORY_OR_VOLUME_MISSING','SNAPSHOT_MISSING','SNAPSHOT_AGE_GT60','ADDITIONS_BLOCKED_RECOVERY','ADDITIONS_NOT_DUE')
++ def __init__(self):
++  self.counts={k:0 for k in self.REASONS};self.samples={k:[] for k in self.REASONS}
++  self.scoring_complete=False;self.snapshot_check_complete=False;self.selection_check_complete=False
++ def add(self,reason,symbol):
++  self.counts[reason]=self.counts.get(reason,0)+1
++  if len(self.samples.setdefault(reason,[]))<3:self.samples[reason].append(symbol)
++ def selection(self,previous,scores,pins,target,blocked,due):
++  eligible=set(scores)-set(pins);target=set(target)
++  unfilled=max(0,500-len(target));available_not_added=len(eligible-target)
++  why='ADDITIONS_BLOCKED_RECOVERY' if blocked else 'ADDITIONS_NOT_DUE'
++  if blocked or not due:
++   self.counts[why]=min(unfilled,available_not_added)
++   self.samples[why]=sorted(eligible-target)[:3] if self.counts[why] else []
++  self.retained=len(set(previous)&target);self.unfilled=unfilled
++  self.selection_check_complete=True
++ def report(self,at,outcome):
++  counts=dict(self.counts)
++  if not self.snapshot_check_complete:counts['SNAPSHOT_AGE_GT60']=None
++  if not self.selection_check_complete:
++   counts['ADDITIONS_BLOCKED_RECOVERY']=None;counts['ADDITIONS_NOT_DUE']=None
++  emit({'stage':'SCAN_EXCLUSIONS','at':at.isoformat(),'outcome':outcome,'counts':counts,'samples':self.samples,
++        'scoring_complete':self.scoring_complete,'snapshot_check_complete':self.snapshot_check_complete,'selection_check_complete':self.selection_check_complete,
++        'retained_previous':getattr(self,'retained',None),'unfilled_slots':getattr(self,'unfilled',None),
++        'scope':'first rejection reason per symbol; addition counts are unfilled slots, not ENTRY opportunities'})
++
++class BlockedTrades:
++ def __init__(self,allowed_symbols,log=emit):
++  self.allowed=frozenset(allowed_symbols);self.log=log;self.lock=threading.Lock();self.total=0;self.minutes=OrderedDict();self.errors=0
++ def record(self,s,msg,now):
++  # Telemetry must not throw into or change final_filter's existing False decision.
++  try:
++   if s not in self.allowed:return
++   minute=int(now.timestamp()//60);row=None
++   with self.lock:
++    self.total+=1
++    if self.minutes and minute<max(self.minutes)-5:return
++    bucket=self.minutes.setdefault(minute,{'count':0,'symbols':set(),'logged':0})
++    bucket['count']+=1;first=s not in bucket['symbols'];bucket['symbols'].add(s)
++    for old in list(self.minutes):
++     if old<max(self.minutes)-5:del self.minutes[old]
++    if first and bucket['logged']<50:
++     bucket['logged']+=1
++     flags=msg.get('c');flags=[x for x in flags[:16] if isinstance(x,str) and len(x)==1] if isinstance(flags,list) else None
++     size=msg.get('s');size=size if type(size) in (int,float) and math.isfinite(size) else None
++     row={'stage':'SCAN_GATE_BLOCKED_TRADE','symbol':s,'at':now.isoformat(),'price':msg.get('p'),'size':size,'conditions':flags}
++   if row is not None:self.log(row)
++  except Exception:
++   with self.lock:self.errors+=1
++ def snapshot(self):
++  with self.lock:
++   return {'total_rejected_trade_messages':self.total,'minutes':[{'minute_utc':datetime.fromtimestamp(k*60,timezone.utc).isoformat(),
++           'rejected_trade_messages':v['count'],'distinct_symbols':len(v['symbols']),'logged_symbols':v['logged']} for k,v in sorted(self.minutes.items())],
++           'telemetry_errors':self.errors,'scope':'blocked TRADE messages only; not counterfactual ENTRY or recall; max 50 detail logs/minute, last 6 UTC minutes'}
++
++def blocked_context_valid(runtime,s):
++ if runtime is None or not runtime.a.transport_trusted or runtime.c.failed or s not in runtime.c.bar or s in runtime.a.recovering:return False
++ proof=runtime.c.proofs.get(s,{})
++ if proof.get('connection')!=runtime.c.connection or not all(proof.get(k) for k in ('history','continuity','reconciled')):return False
++ # Conservative telemetry-only mirror of the remaining adapter opportunity floor checks.
++ opp=runtime.a.bridge.p._entry_opportunities.get(s)
++ if opp:
++  if (opp['session'],s,opp['entry_trigger_ts']) in runtime.a.missed_opportunities:return False
++  floor=runtime.a.trusted_since
++  if floor is None:return False
++  floor=max(floor,runtime.a.symbol_admitted_at.get(s,floor))
++  if datetime.fromisoformat(opp['entry_trigger_ts'].replace('Z','+00:00'))<floor:return False
++ return True
+--- /dev/null
++++ b/tests/test_r8.py
+@@ -0,0 +1,168 @@
++"""Offline R8 integration and observational-equivalence checks. No real services."""
++import ast,asyncio,contextlib,copy,io,json,threading,time,unittest
++from datetime import timedelta
++from pathlib import Path
++from types import SimpleNamespace as NS
++from unittest.mock import patch
++from ipr.scan_health import ScanGate,BlockedTrades,ScanExclusions,RTHVolumeStale,SCAN_VALIDITY_SECONDS,blocked_context_valid
++from ipr.api import Alpaca
++from ipr.ranking import base_score,Selection
++from test_r71 import Sim,nested
++import test_r71 as prior
++from test_direct import OP
++
++def filter_actual(env):
++ path=Path(__file__).resolve().parents[1]/'ipr/runtime.py';module=ast.parse(path.read_text())
++ build=next(n for n in module.body if isinstance(n,ast.FunctionDef) and n.name=='_build')
++ node=copy.deepcopy(next(n for n in build.body if isinstance(n,ast.FunctionDef) and n.name=='final_filter'))
++ exec(compile(ast.fix_missing_locations(ast.Module(body=[node],type_ignores=[])),str(path),'exec'),env)
++ return env['final_filter']
++
++class GateTests(unittest.TestCase):
++ def fixture(self):
++  t=Sim(0);s={'scan_ok':False};logs=[];g=ScanGate(s,t.clock,t.wall,started_at=0,log=logs.append);return t,s,g,logs
++ def test_named_constant_and_exact_boundary(self):
++  t,s,g,l=self.fixture();self.assertEqual(SCAN_VALIDITY_SECONDS,150);g.success();t.at=150;self.assertTrue(g.expire());t.at=150.000001;self.assertFalse(g.expire());self.assertEqual(l[-1]['reason'],'SCAN_EXPIRED')
++ def test_stale_retains_success_but_never_refreshes_its_age(self):
++  t,s,g,l=self.fixture();g.success();t.at=140;self.assertTrue(g.failure(RTHVolumeStale('RTH_VOLUME_STALE')));self.assertEqual(g.last_success,0);self.assertEqual(len(l),1);t.at=151;self.assertFalse(g.failure(RTHVolumeStale('RTH_VOLUME_STALE')))
++ def test_stale_without_success_stays_closed(self):
++  t,s,g,l=self.fixture();self.assertFalse(g.failure(RTHVolumeStale('RTH_VOLUME_STALE')));self.assertEqual(l,[])
++ def test_other_error_closes_immediately_including_lookalike(self):
++  for e in (RuntimeError('fixture'),ValueError('RTH_VOLUME_STALE')):
++   t,s,g,l=self.fixture();g.success();t.at=1;g.failure(e);self.assertFalse(s['scan_ok']);self.assertIsNone(g.last_success)
++ def test_trust_loss_and_late_inflight_success_cannot_reopen(self):
++  t,s,g,l=self.fixture();g.success();version=g.generation;g.invalidate('TRUST_LOST');self.assertFalse(g.success(version));self.assertFalse(g.success(allowed=False));self.assertFalse(s['scan_ok'])
++ def test_accounting_transitions_exact_and_nonduplicated(self):
++  t,s,g,l=self.fixture();t.at=10;g.success();t.at=20;g.success();t.at=30;g.invalidate('PREP_FAILED');g.invalidate('GUARD_STOP');t.at=50
++  m=g.snapshot();self.assertEqual(m['true_seconds'],20);self.assertEqual(m['false_seconds'],30);self.assertEqual(m['availability_ratio'],.4);self.assertEqual(len(l),2)
++ def test_actual_nested_scan_preserves_recent_success_on_stale(self):
++  from ipr.scan_health import gate_for
++  def seed(state,clock,wall):
++   g=gate_for(state,clock,wall);g.success();return g
++  with patch('ipr.scan_health.gate_for',seed):
++   result=prior.R71Scan().scan_once(durations=(1.,30.,30.))
++  self.assertTrue(result[3]['scan_ok']);self.assertTrue(result[5][-1]['previous_success_preserved']);result[4].propose.assert_not_called()
++ def test_actual_nested_scan_unexpected_failure_does_not_preserve_success(self):
++  from ipr.scan_health import gate_for
++  def seed(state,clock,wall):
++   g=gate_for(state,clock,wall);g.success();return g
++  with patch('ipr.scan_health.gate_for',seed),patch('ipr.wave.HeavyWindow.before_request',side_effect=RuntimeError('fixture')):
++   result=prior.R71Scan().scan_once()
++  self.assertFalse(result[3]['scan_ok']);self.assertFalse(result[5][-1]['previous_success_preserved'])
++ def test_actual_adapter_revocation_closes_gate_even_persistence_fails(self):
++  from ipr.runtime import DirectEvidence
++  t,s,g,l=self.fixture();g.success();obj=object.__new__(DirectEvidence);obj.scan_gate=g
++  from r4b.adapter import EvidenceAdapter
++  with patch.object(EvidenceAdapter,'revoke',side_effect=RuntimeError('fake Redis failure')):
++   with self.assertRaises(RuntimeError):DirectEvidence.revoke(obj,'fixture')
++  self.assertFalse(s['scan_ok'])
++ def test_initial_warmup_is_not_a_loss_of_previously_absent_trust(self):
++  from ipr.runtime import DirectEvidence
++  from r4b.adapter import EvidenceAdapter
++  t,s,g,l=self.fixture();g.success();obj=object.__new__(DirectEvidence);obj.scan_gate=g
++  obj._LiveAdapter__trusted=False;obj.cancel_event=threading.Event()
++  with patch.object(EvidenceAdapter,'close_eligibility',return_value=None):
++   DirectEvidence.close_eligibility(obj,'RECOVERY_PENDING');self.assertTrue(s['scan_ok'])
++   obj._LiveAdapter__trusted=True
++   DirectEvidence.close_eligibility(obj,'fixture');self.assertFalse(s['scan_ok'])
++
++class BlockedTests(unittest.TestCase):
++ def fixture(self,n=500):
++  t=Sim(0);symbols={'S'+str(i) for i in range(n)};state={'ready':True,'scan_ok':False};lines=[]
++  state['_scan_gate']=ScanGate(state,t.clock,t.wall,log=lambda r:None);state['_blocked_trades']=BlockedTrades(symbols,log=lines.append)
++  a=NS(transport_trusted=True,recovering=set(),bridge=NS(p=NS(_entry_opportunities={})),missed_opportunities=set(),trusted_since=OP,symbol_admitted_at={})
++  c=NS(failed=False,bar=set(symbols),connection=1,proofs={s:{'history':True,'continuity':True,'reconciled':True,'connection':1} for s in symbols})
++  runtime=NS(a=a,c=c);state['_runtime']=runtime
++  f=filter_actual({'prepared':state,'bundle':{'eligible':symbols},'cls':NS(eligible=lambda s:True),'dt':lambda x:x,'blocked_context_valid':blocked_context_valid})
++  return t,state,lines,runtime,f
++ def test_500_symbols_thousands_messages_max50_logs_exact_unique(self):
++  t,s,lines,r,f=self.fixture()
++  for repeat in range(10):
++   for symbol in sorted(r.c.bar):self.assertFalse(f(symbol,{'p':2.,'t':OP,'s':1,'c':['I']},OP))
++  m=s['_blocked_trades'].snapshot();self.assertEqual(m['total_rejected_trade_messages'],5000);self.assertEqual(m['minutes'][0]['distinct_symbols'],500);self.assertEqual(len(lines),50);self.assertEqual(lines[0]['conditions'],['I']);self.assertEqual(lines[0]['size'],1)
++ def test_six_minutes_bounded_and_first_per_symbol_per_minute(self):
++  t,s,lines,r,f=self.fixture(1)
++  for minute in range(10):
++   now=OP+timedelta(minutes=minute)
++   for repeat in range(100):f('S0',{'p':2.,'t':now},now)
++  m=s['_blocked_trades'].snapshot();self.assertEqual(m['total_rejected_trade_messages'],1000);self.assertEqual(len(m['minutes']),6);self.assertEqual(len(lines),10)
++ def test_no_count_for_other_filter_or_trust_rejections(self):
++  t,s,lines,r,f=self.fixture(1)
++  for msg in ({'p':.99,'t':OP},{'p':50.01,'t':OP},{'p':2,'t':OP-timedelta(seconds=61)}):self.assertFalse(f('S0',msg,OP))
++  self.assertEqual(s['_blocked_trades'].total,0)
++  for mutate in (lambda:r.c.bar.clear(),lambda:r.a.recovering.add('S0'),lambda:setattr(r.a,'transport_trusted',False)):
++   t,s,lines,r,f=self.fixture(1);mutate();self.assertFalse(f('S0',{'p':2,'t':OP},OP));self.assertEqual(s['_blocked_trades'].snapshot()['total_rejected_trade_messages'],0)
++ def test_no_count_for_known_missed_opportunity_floor(self):
++  t,s,lines,r,f=self.fixture(1);r.a.bridge.p._entry_opportunities['S0']={'session':'fixture','entry_trigger_ts':(OP-timedelta(seconds=1)).isoformat()}
++  self.assertFalse(f('S0',{'p':2,'t':OP},OP));self.assertEqual(s['_blocked_trades'].total,0)
++ def test_open_gate_keeps_I_B_and_price_boundaries_unchanged(self):
++  t,s,lines,r,f=self.fixture(1);s['_scan_gate'].success()
++  for price in (1.,50.):
++   for flag in ('I','B'):self.assertTrue(f('S0',{'p':price,'t':OP,'s':1,'c':[flag]},OP))
++  self.assertEqual(s['_blocked_trades'].total,0)
++ def test_telemetry_logger_failure_keeps_false_decision(self):
++  t,s,lines,r,f=self.fixture(1);s['_blocked_trades'].log=lambda r:(_ for _ in ()).throw(RuntimeError('fixture'))
++  self.assertFalse(f('S0',{'p':2,'t':OP},OP));self.assertEqual(s['_blocked_trades'].total,1)
++ def test_blocked_events_observational_reference_truth_unchanged(self):
++  t,s,lines,r,f=self.fixture(1)
++  for ready in (True,False):
++   for gate in (True,False):
++    for price in (.99,1.,2.,50.,50.01):
++     s['ready']=ready
++     if gate:s['_scan_gate'].success()
++     else:s['_scan_gate'].invalidate('SCAN_FAILED')
++     self.assertEqual(f('S0',{'p':price,'t':OP,'s':1,'c':['B']},OP),ready and gate and 1<=price<=50)
++
++class ExclusionTests(unittest.TestCase):
++ def test_scoring_outputs_unchanged_with_diagnostics(self):
++  floats=NS(value=lambda s:{'status':'UNKNOWN'});now=OP+timedelta(minutes=20)
++  for price in (.99,1.,3.,50.,50.01):
++   for age in (0,60,61):
++    for history in (None,{'adv20':1000,'high':4.,'low':3.,'close':3.5}):
++     for volume in (None,{'volume':100,'open':2.}):
++      snap={'latestTrade':{'p':price,'t':(now-timedelta(seconds=age)).isoformat()}};d=ScanExclusions()
++      self.assertEqual(base_score('X',snap,history,volume,now,OP,floats),base_score('X',snap,history,volume,now,OP,floats,d))
++ def test_blocked_fill_diagnostic_does_not_change_selection(self):
++  scores={str(i):{'score':i} for i in range(500)};sel=Selection();sel.current={'0','1'};sel.last=0
++  target=sel.update(scores,set(),1,blocked=True);d=ScanExclusions();d.selection({'0','1'},scores,set(),target,True,False)
++  self.assertEqual(set(target),{'0','1'});self.assertEqual(d.retained,2);self.assertEqual(d.unfilled,498);self.assertEqual(d.counts['ADDITIONS_BLOCKED_RECOVERY'],498);self.assertLessEqual(len(d.samples['ADDITIONS_BLOCKED_RECOVERY']),3)
++ def test_reason_counts_samples_bounded(self):
++  d=ScanExclusions()
++  for i in range(500):d.add('SNAPSHOT_AGE_GT60',str(i))
++  self.assertEqual(d.counts['SNAPSHOT_AGE_GT60'],500);self.assertEqual(len(d.samples['SNAPSHOT_AGE_GT60']),3)
++
++class RestTimingTests(unittest.TestCase):
++ def api(self):return Alpaca({'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'})
++ def test_wait_separate_from_hold_and_operation_names(self):
++  a=self.api();t=Sim(0);a.timing_clock=t.clock
++  class Lock:
++   def acquire(self):t.at+=2
++   def release(self):pass
++  a.lock=Lock()
++  for operation in ('scan_rest','incremental','native','arbitrary'):
++   with a.operation(operation):
++    with a.serialized_request():t.at+=3
++  m=a.lock_metrics()['operations'];self.assertEqual(set(m),{'scan_rest','incremental','native','other'})
++  for row in m.values():self.assertEqual(row['count'],1);self.assertEqual(row['wait_mean_seconds'],2);self.assertEqual(row['hold_mean_seconds'],3)
++ def test_heavy_gate_sleep_excluded_from_lock_wait(self):
++  a=self.api();t=Sim(0);a.timing_clock=t.clock;a.before_request=lambda:setattr(t,'at',t.at+15)
++  with a.operation('incremental'):
++   with a.serialized_request():t.at+=1
++  row=a.lock_metrics()['operations']['incremental'];self.assertEqual(row['wait_total_seconds'],0);self.assertEqual(row['hold_total_seconds'],1)
++ def test_exception_releases_lock_and_preserves_exception(self):
++  a=self.api()
++  with self.assertRaisesRegex(RuntimeError,'fixture'):
++   with a.serialized_request():raise RuntimeError('fixture')
++  self.assertTrue(a.lock.acquire(False));a.lock.release();self.assertEqual(a.lock_metrics()['operations']['other']['count'],1)
++ def test_actual_runtime_metrics_exports_new_fields(self):
++  t=Sim();state={'ready':True,'scan_ok':False};state['_scan_gate']=ScanGate(state,t.clock,t.wall);state['_blocked_trades']=BlockedTrades({'X'})
++  state['_blocked_trades'].record('X',{'p':2},t.wall());a=self.api()
++  with a.operation('native'):
++   with a.serialized_request():pass
++  stop=NS(value=False);stop.is_set=lambda:stop.value
++  async def pause(*args):stop.value=True
++  r=NS(stop=stop,wall=t.wall,api=a,ingress=None,a=NS(transport_trusted=False),heavy_window=NS(metrics=lambda:{}))
++  env={'r':r,'measure':NS(sample=lambda:{}),'state':state,'selection':NS(metrics=lambda:{}),'scan_diagnostics':NS(snapshot=lambda:{}),'json':json,'pause':pause}
++  out=io.StringIO()
++  with contextlib.redirect_stdout(out):asyncio.run(nested('metrics',env)())
++  result=json.loads(out.getvalue());self.assertEqual(result['scan_gate_blocked']['total_rejected_trade_messages'],1);self.assertEqual(result['rest_lock']['operations']['native']['count'],1);self.assertIn('availability_ratio',result['scan_gate'])

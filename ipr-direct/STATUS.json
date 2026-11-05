@@ -1,15 +1,44 @@
 {
-  "status": "COMPLETE_OFFLINE_REVIEW",
-  "release": "R7",
-  "base_zip_sha256": "b26f87bf46793c3abe4173ad54c4c8b179f3c1960fb5ffc15f3eb465d426ae9c",
+  "status": "COMPLETE_OFFLINE_REVIEW_ONLY",
+  "release": "R9-core",
+  "base_R8_sha256": "3cb9924901ef940e81c5a13b66155730f9189816ab8834c14fc5d16714005abe",
+  "tests_original": 250,
+  "tests_extracted": 250,
+  "R8_tests_unchanged": 215,
+  "reference_app_files_byte_identical": 72,
+  "final_python_files_identical_to_tested_zip": true,
   "deployed": false,
-  "service_or_database_mutations": false,
-  "offline_tests_original": 182,
-  "unshare": "UNAVAILABLE_OPERATION_NOT_PERMITTED",
-  "live_performance_on_512Mi_0_5CPU": "UNPROVEN",
-  "current_user_Redis_archive_read": "NOT_READ",
-  "deployment_boot_count": "One per successfully acquired/claimed child; zero if UTC-day budget is already4/4; total on retries UNKNOWN",
-  "offline_tests_extracted": 182,
-  "runnable_files_identical_to_tested_zip": true,
-  "reference_app_files_unchanged": 72
+  "external_service_or_database_mutations": false,
+  "delta_implemented": false,
+  "real_Redis_tested": false,
+  "unshare": "NOT_PERMITTED; socket connect/connect_ex/create_connection/getaddrinfo blocked by run_tests.py",
+  "waived_sessions": [
+    "2026-11-03",
+    "2026-11-04"
+  ],
+  "first_empty_bootstrap_authorized_UTC_day": "2026-11-05",
+  "record_limit_bytes": 2097152,
+  "segment_limit_bytes": 16777216,
+  "session_warning_bytes": 157286400,
+  "session_warning_stops_worker": false,
+  "full_day_size_target": null,
+  "full_day_results": [
+    {
+      "source": "ORIGINAL",
+      "count": 250,
+      "seconds": 150.113,
+      "session_payload_bytes": 368197078
+    },
+    {
+      "source": "EXTRACTED",
+      "count": 250,
+      "seconds": 151.14,
+      "session_payload_bytes": 368197078
+    }
+  ],
+  "live_restore_latency": "UNPROVEN",
+  "live_512Mi_0_5CPU_resources": "UNPROVEN",
+  "deployment_boot_count": "1 per claimed successful child; lease wait claims 0; total on genuine failures UNKNOWN, original 4/day cap unchanged",
+  "R9a_delta_delivery_estimate": "2026-11-06 18:00 Asia/Riyadh if core accepted 2026-11-05 by14:30; otherwise12-24 hours after acceptance; not scheduled",
+  "generated_UTC": "2026-11-04T23:17:45.932245+00:00"
 }

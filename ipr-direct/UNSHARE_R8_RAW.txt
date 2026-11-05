@@ -1,0 +1,3 @@
+unshare -rn true
+unshare: write failed /proc/self/uid_map: Operation not permitted
+Exit status: 1. No escalation or external connections attempted. run_tests.py denies socket connect/connect_ex/create_connection/getaddrinfo.

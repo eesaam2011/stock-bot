@@ -1,0 +1,7 @@
+PASS — تحقق الشرط قبل تعديل الكود.
+أساس القراءة R7.1 commit 92cad3e9a9014e4b77560d5281e62e44ffc4ebfd؛ مجلد R71_DEPLOY_VERIFY اجتاز269/269 من manifest الأصلي قبل النسخ، و191 اختبارًا قبل التعديل.
+R7.1 ipr/runtime.py:145-161 يستعمل snapshots وscores للترتيب والحفظ. السطر160 يمرر set(target) فقط إلى planner.propose. لا يمرر النقاط أو اللقطات إلى المحرك.
+final_filter في R7.1 runtime.py:66-70 يقرأ جاهزية التحضير وبوابة المسح والنطاق والتصنيف وسعر ووقت التداول الوارد؛ لا يقرأ scores أو snapshot أو مفتاح scan من Redis.
+dintegration/bridge.py:70-73 يمرر BAR/TRADE إلى production_pipeline. reference_app/production_pipeline.py:371-383 يبني SIPTrade من p/t الواردين، ويستدعي _try_entry. السطر428 يستدعي evaluate_entry_price؛ entry_engine.py:13-24 يختار تداول SIP وفق القواعد المجمدة. المخاطرة تستخدم structure bars في production_pipeline.py:444-452.
+الاختيار يؤثر في العضوية والفحص والثقة والبوابة، لكنه ليس قيمة عددية داخل حساب E/B/confluence/ENTRY. التاريخ اليومي الخاص بترتيب الاكتشاف منفصل عن التاريخ الأصلي الذي يغذّي المحرك.
+لا تغيير لأي ملف في reference_app، ولا اختيار جديد لشروط SIP I/B.

@@ -1,0 +1,46 @@
+{
+  "test": "R9_CORE_FULL_DAY_SNAPSHOT_JOURNAL",
+  "symbols": 500,
+  "minutes": 390,
+  "incremental_admissions": 390,
+  "admissions_per_hour": 60,
+  "disconnects": 12,
+  "records": 504,
+  "segments": 23,
+  "session_payload_bytes": 368197078,
+  "session_payload_MiB": 351.1400966644287,
+  "record_values_bytes": 367422188,
+  "largest_record_bytes": 785634,
+  "active_segment_allocated_bytes": 6244187,
+  "boot_active_HGET_count": 9,
+  "full_audit_seconds": 41.51492552900163,
+  "total_test_seconds": 134.0735681799997,
+  "by_kind": {
+    "CHAIN2_SEGMENT_START": {
+      "count": 23,
+      "bytes": 16781155
+    },
+    "B_EVIDENCE_READY": {
+      "count": 13,
+      "bytes": 9914121
+    },
+    "B_INCREMENTAL_ADMISSION": {
+      "count": 390,
+      "bytes": 306396800
+    },
+    "B_NEEDS_INTENT": {
+      "count": 33,
+      "bytes": 13027
+    },
+    "B_CASE_RESOLUTION": {
+      "count": 33,
+      "bytes": 25165827
+    },
+    "B_STREAM_WITNESS": {
+      "count": 12,
+      "bytes": 9151258
+    }
+  },
+  "size_target": "NONE; prints actual full-snapshot bytes",
+  "scope": "Disk contract fake, real Python serialization/hash/replay. Small tests execute Lua via liblua. No Upstash, live API, full engine, 512Mi/0.5CPU claim."
+}

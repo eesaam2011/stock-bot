@@ -1,0 +1,1 @@
+{"test": "OFFLINE_RESTORE_FULL_SNAPSHOT_ACTIVE_SEGMENT", "active_record_bytes": 15269723, "active_segment_allocated_bytes": 15280508, "segments": 1, "HGET": 21, "restore_seconds": 1.1582271810038947, "scope": "Disk contract fake; uncapped local CPU; no Redis RTT or 512Mi/0.5CPU claim"}

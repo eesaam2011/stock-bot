@@ -8,11 +8,14 @@ def float_points(value):
  f=value['float']
  return 20 if f<=10e6 else 15 if f<=20e6 else 10 if f<=30e6 else 5 if f<=50e6 else 0
 
-def base_score(symbol,snapshot,history,volume,now,op,floats):
+def base_score(symbol,snapshot,history,volume,now,op,floats,diagnostics=None):
  trade=snapshot.get('latestTrade',{});p=trade.get('p');t=instant(trade['t']) if trade.get('t') else None
- if isinstance(p,bool) or not isinstance(p,(float,int)) or not math.isfinite(p) or not 1<=p<=50 or t is None or not 0<=(now-t).total_seconds()<=60:return None
- if t<op:return None
- if not history or not volume or history['adv20']<=0:return None
+ def reject(reason):
+  if diagnostics is not None:diagnostics.add(reason,symbol)
+  return None
+ if isinstance(p,bool) or not isinstance(p,(float,int)) or not math.isfinite(p) or not 1<=p<=50:return reject('PRICE')
+ if t is None or not 0<=(now-t).total_seconds()<=60 or t<op:return reject('LAST_TRADE_STALE')
+ if not history or not volume or history['adv20']<=0:return reject('HISTORY_OR_VOLUME_MISSING')
  elapsed=(now-op).total_seconds()/60
  if not 0<elapsed<=390:return None
  ratio=volume['volume']/(history['adv20']*elapsed/390)

@@ -7,7 +7,7 @@ from dreview.core import Blocked,_LIVE_ADAPTER_AUTHORITY
 class LiveAdapter:
  def __init__(self,controller,bridge,rest,recovery,clock_check,filter_check,root_check,checkpoint,measure):
   self.c=controller;self.bridge=bridge;self.rest=rest;self.recovery=recovery;self.clock_check=clock_check;self.filter_check=filter_check;self.root_check=root_check;self.checkpoint=checkpoint;self.measure=measure
-  self.__trusted=False;self.authenticated=False;self.recovering=set();self.last=None;self.failure=None;self.history={};self.received_sequence=0
+  self.__trusted=False;self.authenticated=False;self.recovering=set();self.last=None;self.failure=None;self.history={};self.received_sequence=0;self.invalidation_counts={};self._invalidation_open=False
  @property
  def transport_trusted(self):return self.__trusted
  def checks(self):
@@ -19,8 +19,12 @@ class LiveAdapter:
  def close_eligibility(self,reason):
   self.__trusted=False;self.c._set_transport_from_adapter(False,_LIVE_ADAPTER_AUTHORITY);self.failure=reason
  def revoke(self,reason):
-  self.__trusted=False;self.c._set_transport_from_adapter(False,_LIVE_ADAPTER_AUTHORITY);self.failure=reason
-  self.checkpoint.append_epoch({'state':'UNTRUSTED','reason':reason,'epoch':self.c.epoch()})
+  self.close_eligibility(reason)
+  if reason not in self.invalidation_counts and len(self.invalidation_counts)>=64:reason='OTHER'
+  self.invalidation_counts[reason]=self.invalidation_counts.get(reason,0)+1
+  if self._invalidation_open:return
+  self._invalidation_open=True
+  self.checkpoint.append_epoch({'kind':'TRANSPORT_INVALIDATED','reason':reason,'connection':self.c.connection,'revision':self.c.revision})
  def connection_started(self):
   self.revoke('CONNECTING');self.c.reconnect();self.authenticated=False;self.history={};self.recovering=set(self.c.desired_bar)
  def authenticated_message(self,msg):

@@ -1,5 +1,5 @@
 """Fixed read-only Alpaca endpoints. No order/account mutation interface."""
-import json,urllib.request,urllib.parse,urllib.error,threading
+import json,urllib.request,urllib.parse,urllib.error,threading,time
 from datetime import datetime,timezone
 from contextlib import contextmanager
 class APIError(RuntimeError):pass
@@ -13,18 +13,40 @@ class Alpaca:
   if not self.key or not self.secret:raise APIError('ALPACA_CREDENTIALS_MISSING')
   self.opener=opener or urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect()).open
   self.lock=threading.Lock();self.requests=0
+  self.local=threading.local();self.timing_lock=threading.Lock();self.timing={};self.timing_clock=time.monotonic
+ @contextmanager
+ def operation(self,name):
+  old=getattr(self.local,'name',None);self.local.name=name
+  try:yield
+  finally:self.local.name=old
+ def _operation(self):
+  name=getattr(self.local,'name',None)
+  if name is None:name=getattr(self,'request_operation',lambda:None)()
+  return name if name in {'scan_rest','incremental','native'} else 'other'
+ def _timing(self,name,wait,hold):
+  with self.timing_lock:
+   row=self.timing.setdefault(name,{'count':0,'wait_total_seconds':0.,'wait_max_seconds':0.,'hold_total_seconds':0.,'hold_max_seconds':0.})
+   row['count']+=1
+   for kind,value in [('wait',wait),('hold',hold)]:
+    row[kind+'_total_seconds']+=value;row[kind+'_max_seconds']=max(row[kind+'_max_seconds'],value)
+ def lock_metrics(self):
+  with self.timing_lock:
+   return {'operations':{name:{**v,'wait_mean_seconds':v['wait_total_seconds']/v['count'],'hold_mean_seconds':v['hold_total_seconds']/v['count']} for name,v in self.timing.items()},
+           'scope':'acquisitions including denied window rechecks; wait excludes heavy-window sleep; hold includes HTTP/read/JSON; no scheduling change'}
  @contextmanager
  def serialized_request(self):
   while True:
    hook=getattr(self,'before_request',None)
    if hook is not None:hook() # wait OUTSIDE the shared API serialization lock
-   self.lock.acquire()
+   operation=self._operation();waiting=self.timing_clock();self.lock.acquire();acquired=self.timing_clock()
    try:
     allowed=getattr(self,'request_allowed',None)
     if allowed is not None and not allowed():continue # window crossed while waiting for lock
     yield
     return
-   finally:self.lock.release()
+   finally:
+    released=self.timing_clock();self.lock.release()
+    self._timing(operation,max(0.,acquired-waiting),max(0.,released-acquired))
  def call(self,host,path,params):
   if (host,path) not in {('paper-api.alpaca.markets','/v2/assets'),('paper-api.alpaca.markets','/v2/calendar'),('api.alpaca.markets','/v2/assets'),('api.alpaca.markets','/v2/calendar'),('data.alpaca.markets','/v2/stocks/bars'),('data.alpaca.markets','/v2/stocks/trades'),('data.alpaca.markets','/v2/stocks/snapshots')}:raise APIError('ENDPOINT_FORBIDDEN')
   req=urllib.request.Request('https://'+host+path+'?'+urllib.parse.urlencode(params),headers={'APCA-API-KEY-ID':self.key,'APCA-API-SECRET-KEY':self.secret},method='GET')

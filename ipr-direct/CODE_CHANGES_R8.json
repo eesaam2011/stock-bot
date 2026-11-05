@@ -1,0 +1,32 @@
+[
+  {
+    "path": "ipr/api.py",
+    "old_sha256": "90d4515d48651d8456213de98606df43d4ba9f58b8c47e1f549b7a965380f202",
+    "new_sha256": "32777c1fe1e1e0b14b1d35df50417e422658ee297ee81e224b38598a4d4d5dcd"
+  },
+  {
+    "path": "ipr/main.py",
+    "old_sha256": "42021dfdf21a77386447b121a37d3a990fe3a6678c6dc200ff6ce6970959f17b",
+    "new_sha256": "27c5c76331d05ab267421cd582038433a7205f518af51f71b3f082e1b9b10d58"
+  },
+  {
+    "path": "ipr/ranking.py",
+    "old_sha256": "d60040bb471fa74728a852df3ade324f7d0aa8bb982ba72f975bbc3076ffb6a9",
+    "new_sha256": "8a9c39c21fc1fe195e6b1c066dcc181af9666928456055e7649f23bbcc66755d"
+  },
+  {
+    "path": "ipr/runtime.py",
+    "old_sha256": "a88024a6ef55ba9ab9e529e5df97fa32efd99c551752406d582441fd06d71821",
+    "new_sha256": "77c9c9f3d4e4ae81f07a1b139fadcdf91dee814cc39a3426f6e7bb8e2a1235ff"
+  },
+  {
+    "path": "ipr/scan_health.py",
+    "old_sha256": null,
+    "new_sha256": "0ac492b22073b0cbc7f6b88c22c9bca8752276bcdd91970802fcd02aae5f5a50"
+  },
+  {
+    "path": "tests/test_r8.py",
+    "old_sha256": null,
+    "new_sha256": "c7a69cf1c4767f9c00e99c991346e6aa2d433d6ebb3cdb446b9841126013e6d6"
+  }
+]

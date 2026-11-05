@@ -1,0 +1,156 @@
+[
+  {
+    "file": "benchmark_restore_r9_core.py",
+    "before_sha256": null,
+    "after_sha256": "f9b8e23cd170bb5a0e55f9792f2c578834105a3b418af9fdb8a5f7ec4d3bfcba",
+    "line_hunks": [
+      "@@ -0,0 +1,15 @@"
+    ]
+  },
+  {
+    "file": "dintegration/live.py",
+    "before_sha256": "51979e7f36634771380bd0477f4f5bc6123eb07fdafcbf1bf3bf0346420e59ac",
+    "after_sha256": "edff92d24ee01bd9e6c7ed0e62f6444489b8129627a0f9846227f133e0f05e85",
+    "line_hunks": [
+      "@@ -7,7 +7,7 @@",
+      "@@ -19,8 +19,12 @@"
+    ]
+  },
+  {
+    "file": "dintegration/measure.py",
+    "before_sha256": "1015a2a71daa3a54bea6a1c0da41c85b6ad05d533e43db879849aa66ff023102",
+    "after_sha256": "f43ccc1e5cc1a3b38d8988e1a33cb62f288094bf61ec7f4fa84072ac092d418c",
+    "line_hunks": [
+      "@@ -16,10 +16,19 @@"
+    ]
+  },
+  {
+    "file": "ipr/main.py",
+    "before_sha256": "27c5c76331d05ab267421cd582038433a7205f518af51f71b3f082e1b9b10d58",
+    "after_sha256": "d5275368243dc8bb0a16054d440a8abcefc9abbef72b0292d9e54d88d193ff5a",
+    "line_hunks": [
+      "@@ -11,6 +11,13 @@",
+      "@@ -34,7 +41,8 @@",
+      "@@ -45,9 +53,11 @@",
+      "@@ -59,5 +69,7 @@"
+    ]
+  },
+  {
+    "file": "ipr/preparation.py",
+    "before_sha256": "8abc2553206a99ada52b0ac00c4c5d30a9f24ce3e21caae6d16717c1d224a10c",
+    "after_sha256": "8191fc2e3cc8cacf7e3c1947d6d0846d101530265e8a6b016cc0045e5a796ecf",
+    "line_hunks": [
+      "@@ -62,17 +62,5 @@"
+    ]
+  },
+  {
+    "file": "ipr/runtime.py",
+    "before_sha256": "77c9c9f3d4e4ae81f07a1b139fadcdf91dee814cc39a3426f6e7bb8e2a1235ff",
+    "after_sha256": "870a4973eabde390cbe5027c33029068d18c0b3a58b172ad579dcfa345e685e3",
+    "line_hunks": [
+      "@@ -1,4 +1,6 @@",
+      "@@ -67,7 +69,7 @@",
+      "@@ -134,9 +136,11 @@",
+      "@@ -153,10 +157,12 @@",
+      "@@ -201,6 +207,8 @@",
+      "@@ -223,11 +231,13 @@",
+      "@@ -235,11 +245,11 @@"
+    ]
+  },
+  {
+    "file": "r4a/runtime.py",
+    "before_sha256": "61ea5320294c9610bbe0bb790c2a7618c462e989b3128148bc72bcf3c938382d",
+    "after_sha256": "62b4b3348dbc06e7cbe69154577cae0d4cf14bab9cb3d6297603ca9b66134b0e",
+    "line_hunks": [
+      "@@ -1,4 +1,4 @@",
+      "@@ -37,6 +37,9 @@",
+      "@@ -45,7 +48,7 @@",
+      "@@ -149,10 +152,10 @@",
+      "@@ -162,14 +165,12 @@",
+      "@@ -178,7 +179,8 @@",
+      "@@ -210,7 +212,13 @@"
+    ]
+  },
+  {
+    "file": "r4b/adapter.py",
+    "before_sha256": "d273804d6d94d62d0f578c2e82b8c7bfc36ac1ee0a67eaa4397e600134fa2b3e",
+    "after_sha256": "1835e5d3dd1a95379a998a7b92757de22b4561230386b0521b696481df80c507",
+    "line_hunks": [
+      "@@ -3,6 +3,7 @@",
+      "@@ -146,15 +147,18 @@"
+    ]
+  },
+  {
+    "file": "r4b/store.py",
+    "before_sha256": "3ae036bfb8235b075f196d382699245f50de2dea3d991f9b1ed8444a23904516",
+    "after_sha256": "1a59b97d8b2b27382dae702d01edf1f756b71d04c9c30cc7f8783dabe93a0327",
+    "line_hunks": [
+      "@@ -9,6 +9,10 @@",
+      "@@ -31,6 +35,13 @@"
+    ]
+  },
+  {
+    "file": "r9core/__init__.py",
+    "before_sha256": null,
+    "after_sha256": "0d27a94518167b4aebaeec742175694a3d38260d666fd08cac6be6f09be52c57",
+    "line_hunks": [
+      "@@ -0,0 +1 @@"
+    ]
+  },
+  {
+    "file": "r9core/audit.py",
+    "before_sha256": null,
+    "after_sha256": "022eb05c554f18d088c32f63aefec9566627a18a8dad3d885f7b3b58b69bd55e",
+    "line_hunks": [
+      "@@ -0,0 +1,26 @@"
+    ]
+  },
+  {
+    "file": "r9core/chain.py",
+    "before_sha256": null,
+    "after_sha256": "ea431107e11ed01ffcf4e72ffcbda279667faf11278ac8e42fef6243db1cc5ec",
+    "line_hunks": [
+      "@@ -0,0 +1,270 @@"
+    ]
+  },
+  {
+    "file": "r9core/lifecycle.py",
+    "before_sha256": null,
+    "after_sha256": "b6810ff1de296f86bf4e62e4fec5d782ef09eb78c4e22bbecc04f78ec7705444",
+    "line_hunks": [
+      "@@ -0,0 +1,24 @@"
+    ]
+  },
+  {
+    "file": "tests/day_backend.py",
+    "before_sha256": null,
+    "after_sha256": "c8a55da592d98ab17bd42505c13321804f20d0bacde83a81cc18b6353f00e355",
+    "line_hunks": [
+      "@@ -0,0 +1,34 @@"
+    ]
+  },
+  {
+    "file": "tests/test_r9_core.py",
+    "before_sha256": null,
+    "after_sha256": "d3f3e515d283e19e57c9c77701400f52a729c5674cadcf8c2d3bdd84d49a41d3",
+    "line_hunks": [
+      "@@ -0,0 +1,285 @@"
+    ]
+  },
+  {
+    "file": "tests/test_r9_day.py",
+    "before_sha256": null,
+    "after_sha256": "d197a4ef66cc7457204c437f41f624658c32ef9a9966d87dfb95c40d744b0a98",
+    "line_hunks": [
+      "@@ -0,0 +1,40 @@"
+    ]
+  },
+  {
+    "file": "verify_evidence_archive.py",
+    "before_sha256": null,
+    "after_sha256": "c0fa5f4e9a1e94356ae89e3980183d3e7392cc1c8677557151ba224aec6d2d19",
+    "line_hunks": [
+      "@@ -0,0 +1,32 @@"
+    ]
+  }
+]

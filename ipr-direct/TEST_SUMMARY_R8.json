@@ -1,0 +1,16 @@
+{
+  "baseline": 191,
+  "candidate_original": 215,
+  "candidate_extracted": 215,
+  "all_old_test_sources_unchanged": true,
+  "network": "run_tests.py denies DNS and socket connections; OS unshare denied",
+  "tests_excluded": [
+    "real Alpaca",
+    "real Redis",
+    "real Telegram",
+    "Render rollout",
+    "live CPU/memory/lock latency",
+    "ENTRY opportunity counterfactuals"
+  ],
+  "source_files_matched_between_tested_extraction_and_final_package": true
+}
