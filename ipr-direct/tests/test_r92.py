@@ -1,0 +1,83 @@
+"""R9.2 regressions exercise restored writers and fresh reader objects."""
+import copy,json,unittest
+from r9core.chain import ChainState,ChainFailure,checked,encode,previous_cases
+from r9core.audit import full_verify
+from r4a.durable import canonical,sha
+import test_r9_core as baseline
+
+class RestoredHeadDigest(unittest.TestCase):
+ fixture=baseline.ChainTests.fixture
+ def fresh(self,r,s):
+  t=ChainState(r,s.session,s.root_hash,'w',1,segment_bytes=s.segment_bytes,emit=lambda *a,**k:None)
+  t.restore();return t
+ def assert_complete(self,r,s):
+  t=self.fresh(r,s);result=full_verify(t)
+  self.assertEqual(result['records'],s.seq)
+  self.assertTrue(result['sealed_payloads_checked'])
+  checked(r.get(s.head_key));checked(r.get(s.checkpoint_key))
+  for k,v in r.state['values'].items():
+   if ':seal:' in k:checked(v)
+  for k,fields in r.state['hashes'].items():
+   if k.startswith(s.base+':segment:'):
+    for raw in fields.values():checked(raw)
+  return t,result
+ def test_new_payload_encoding_stays_byte_identical(self):
+  value={'session':'2026-11-06','sequence':3,'nested':{'value':1}}
+  expected=canonical({**value,'sha256':sha(canonical(value))})
+  self.assertEqual(encode(value),expected)
+ def test_stale_outer_digest_ignored_without_mutating_input(self):
+  value={'sequence':4,'sha256':'stale','nested':{'sha256':'keep'}};before=copy.deepcopy(value)
+  self.assertEqual(encode(value),encode({'sequence':4,'nested':{'sha256':'keep'}}))
+  self.assertEqual(value,before);self.assertEqual(checked(encode(value))['nested']['sha256'],'keep')
+ def test_checked_reencoding_is_idempotent(self):
+  raw=encode({'kind':'TEST','n':1});self.assertEqual(encode(checked(raw)),raw)
+ def test_restore_append_restore_preserves_case_facts(self):
+  r,l,s=self.fixture();s.append_epoch({'kind':'FIRST','case_schema':2,'add_U':['X'],'add_R':['Y']})
+  t=self.fresh(r,s);self.assertIn('sha256',t.head)
+  t.append_epoch({'kind':'SECOND','case_schema':2,'resolved_U':['X'],'add_R':['Z']})
+  u,result=self.assert_complete(r,t);self.assertEqual(u.archive['U'],[]);self.assertEqual(u.archive['R'],['Y','Z'])
+  self.assertFalse(u.restore()['transport_trusted'])
+ def test_two_consecutive_restarts_with_append(self):
+  r,l,s=self.fixture();s.append_epoch({'kind':'FIRST','case_schema':2,'add_U':['X']})
+  for symbol in ['Y','Z']:
+   s=self.fresh(r,s);s.append_epoch({'kind':'AFTER_RESTART','case_schema':2,'add_R':[symbol]})
+  t,result=self.assert_complete(r,s);self.assertEqual(t.archive['U'],['X']);self.assertEqual(t.archive['R'],['Y','Z'])
+ def test_rotation_before_restore_then_nonrotating_append(self):
+  r,l,s=self.fixture(6000);s.append_epoch({'kind':'FIRST'})
+  while s.head['segment']==1:s.append_epoch({'kind':'PAD','pad':'x'*500})
+  t=self.fresh(r,s);segment=t.head['segment'];t.append_epoch({'kind':'AFTER_RESTORE','case_schema':2,'add_R':['X']})
+  self.assertEqual(t.head['segment'],segment);u,result=self.assert_complete(r,t);self.assertEqual(u.archive['R'],['X'])
+ def test_restore_then_rotation_then_another_restore_and_append(self):
+  r,l,s=self.fixture(6000);s.append_epoch({'kind':'FIRST'})
+  t=self.fresh(r,s);segment=t.head['segment']
+  while t.head['segment']==segment:t.append_epoch({'kind':'PAD','pad':'x'*500})
+  u=self.fresh(r,t);u.append_epoch({'kind':'AFTER_ROTATION','case_schema':2,'add_U':['X']})
+  v,result=self.assert_complete(r,u);self.assertEqual(v.archive['U'],['X'])
+ def test_fresh_full_audit_after_restarts_across_multiple_segments(self):
+  r,l,s=self.fixture(6000);s.append_epoch({'kind':'FIRST','case_schema':2,'add_R':['X']})
+  for i in range(14):
+   if i in [2,7,11]:s=self.fresh(r,s)
+   s.append_epoch({'kind':'PAD','pad':'p'*500,'case_schema':2,'add_U':['S'+str(i)]})
+  self.assertGreater(s.head['segment'],1);t,result=self.assert_complete(r,s)
+  self.assertEqual(len(t.archive['U']),14);self.assertEqual(result['R'],['X'])
+ def test_corrupted_head_still_rejected_without_any_write(self):
+  r,l,s=self.fixture();s.append_epoch({'kind':'FIRST'})
+  row=json.loads(r.get(s.head_key));row['sequence']+=1;r.state['values'][s.head_key]=canonical(row);before=copy.deepcopy(r.state)
+  with self.assertRaisesRegex(ChainFailure,'CHAIN2_DIGEST_INVALID') as cm:self.fresh(r,s)
+  self.assertIsInstance(cm.exception.__cause__,AssertionError);self.assertEqual(r.state,before)
+ def test_preexisting_legacy_bug_digest_is_not_silently_repaired(self):
+  r,l,s=self.fixture();s.append_epoch({'kind':'FIRST'})
+  row=checked(r.get(s.head_key));r.state['values'][s.head_key]=canonical({**row,'sha256':sha(canonical(row))});before=copy.deepcopy(r.state)
+  with self.assertRaisesRegex(ChainFailure,'CHAIN2_DIGEST_INVALID'):self.fresh(r,s)
+  self.assertEqual(r.state,before)
+ def test_previous_cases_after_restored_writer(self):
+  r,l,s=self.fixture();s.append_epoch({'kind':'FIRST','case_schema':2,'add_U':['X'],'add_R':['Y']})
+  t=self.fresh(r,s);t.append_epoch({'kind':'SECOND','case_schema':2,'resolved_R':['Y'],'add_R':['Z']})
+  self.assertEqual(previous_cases(r,'2026-11-06'),({'X'},{'Z'}));self.assert_complete(r,t)
+ def test_raw_head_cas_and_old_verified_records_are_preserved(self):
+  r,l,s=self.fixture();s.append_epoch({'kind':'FIRST'})
+  oldraw=r.get(s.head_key);oldfields=copy.deepcopy(r.state['hashes']);t=self.fresh(r,s)
+  self.assertEqual(t.head_raw,oldraw);t.append_epoch({'kind':'AFTER_RESTORE'})
+  for key,fields in oldfields.items():
+   for field,raw in fields.items():self.assertEqual(r.hget(key,field),raw)
+  self.assert_complete(r,t)

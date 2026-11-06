@@ -1,0 +1,213 @@
+test_checked_reencoding_is_idempotent (test_r92.RestoredHeadDigest.test_checked_reencoding_is_idempotent) ... FAIL
+test_corrupted_head_still_rejected_without_any_write (test_r92.RestoredHeadDigest.test_corrupted_head_still_rejected_without_any_write) ... ok
+test_fresh_full_audit_after_restarts_across_multiple_segments (test_r92.RestoredHeadDigest.test_fresh_full_audit_after_restarts_across_multiple_segments) ... ok
+test_new_payload_encoding_stays_byte_identical (test_r92.RestoredHeadDigest.test_new_payload_encoding_stays_byte_identical) ... ok
+test_preexisting_legacy_bug_digest_is_not_silently_repaired (test_r92.RestoredHeadDigest.test_preexisting_legacy_bug_digest_is_not_silently_repaired) ... ok
+test_previous_cases_after_restored_writer (test_r92.RestoredHeadDigest.test_previous_cases_after_restored_writer) ... ERROR
+test_raw_head_cas_and_old_verified_records_are_preserved (test_r92.RestoredHeadDigest.test_raw_head_cas_and_old_verified_records_are_preserved) ... ERROR
+test_restore_append_restore_preserves_case_facts (test_r92.RestoredHeadDigest.test_restore_append_restore_preserves_case_facts) ... ERROR
+test_restore_then_rotation_then_another_restore_and_append (test_r92.RestoredHeadDigest.test_restore_then_rotation_then_another_restore_and_append) ... ERROR
+test_rotation_before_restore_then_nonrotating_append (test_r92.RestoredHeadDigest.test_rotation_before_restore_then_nonrotating_append) ... ERROR
+test_stale_outer_digest_ignored_without_mutating_input (test_r92.RestoredHeadDigest.test_stale_outer_digest_ignored_without_mutating_input) ... FAIL
+test_two_consecutive_restarts_with_append (test_r92.RestoredHeadDigest.test_two_consecutive_restarts_with_append) ... ERROR
+
+======================================================================
+ERROR: test_previous_cases_after_restored_writer (test_r92.RestoredHeadDigest.test_previous_cases_after_restored_writer)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 30, in checked
+    x=json.loads(raw);h=x.pop('sha256');assert sha(canonical(x))==h
+                                               ^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 252, in previous_cases
+    head=checked(raw);s=ChainState(redis,session,head['root_hash'],'readonly',0);s.restore()
+         ^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 31, in checked
+    except Exception as e:raise ChainFailure('CHAIN2_DIGEST_INVALID') from e
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+r9core.chain.ChainFailure: CHAIN2_DIGEST_INVALID
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 76, in test_previous_cases_after_restored_writer
+    self.assertEqual(previous_cases(r,'2026-11-06'),({'X'},{'Z'}));self.assert_complete(r,t)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 253, in previous_cases
+    except Exception as exc:raise ChainFailure('CHAIN2_PREVIOUS_FAILED key='+key+' type='+type(exc).__module__+'.'+type(exc).__name__) from exc
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+r9core.chain.ChainFailure: CHAIN2_PREVIOUS_FAILED key=ipr_direct:v1:chain2:2026-11-05:head type=r9core.chain.ChainFailure
+
+======================================================================
+ERROR: test_raw_head_cas_and_old_verified_records_are_preserved (test_r92.RestoredHeadDigest.test_raw_head_cas_and_old_verified_records_are_preserved)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 30, in checked
+    x=json.loads(raw);h=x.pop('sha256');assert sha(canonical(x))==h
+                                               ^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 83, in test_raw_head_cas_and_old_verified_records_are_preserved
+    self.assert_complete(r,t)
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 14, in assert_complete
+    t=self.fresh(r,s);result=full_verify(t)
+      ^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 12, in fresh
+    t.restore();return t
+    ^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 148, in restore
+    head=checked(raw)
+         ^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 31, in checked
+    except Exception as e:raise ChainFailure('CHAIN2_DIGEST_INVALID') from e
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+r9core.chain.ChainFailure: CHAIN2_DIGEST_INVALID
+
+======================================================================
+ERROR: test_restore_append_restore_preserves_case_facts (test_r92.RestoredHeadDigest.test_restore_append_restore_preserves_case_facts)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 30, in checked
+    x=json.loads(raw);h=x.pop('sha256');assert sha(canonical(x))==h
+                                               ^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 38, in test_restore_append_restore_preserves_case_facts
+    u,result=self.assert_complete(r,t);self.assertEqual(u.archive['U'],[]);self.assertEqual(u.archive['R'],['Y','Z'])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 14, in assert_complete
+    t=self.fresh(r,s);result=full_verify(t)
+      ^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 12, in fresh
+    t.restore();return t
+    ^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 148, in restore
+    head=checked(raw)
+         ^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 31, in checked
+    except Exception as e:raise ChainFailure('CHAIN2_DIGEST_INVALID') from e
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+r9core.chain.ChainFailure: CHAIN2_DIGEST_INVALID
+
+======================================================================
+ERROR: test_restore_then_rotation_then_another_restore_and_append (test_r92.RestoredHeadDigest.test_restore_then_rotation_then_another_restore_and_append)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 30, in checked
+    x=json.loads(raw);h=x.pop('sha256');assert sha(canonical(x))==h
+                                               ^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 55, in test_restore_then_rotation_then_another_restore_and_append
+    v,result=self.assert_complete(r,u);self.assertEqual(v.archive['U'],['X'])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 14, in assert_complete
+    t=self.fresh(r,s);result=full_verify(t)
+      ^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 12, in fresh
+    t.restore();return t
+    ^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 148, in restore
+    head=checked(raw)
+         ^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 31, in checked
+    except Exception as e:raise ChainFailure('CHAIN2_DIGEST_INVALID') from e
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+r9core.chain.ChainFailure: CHAIN2_DIGEST_INVALID
+
+======================================================================
+ERROR: test_rotation_before_restore_then_nonrotating_append (test_r92.RestoredHeadDigest.test_rotation_before_restore_then_nonrotating_append)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 30, in checked
+    x=json.loads(raw);h=x.pop('sha256');assert sha(canonical(x))==h
+                                               ^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 49, in test_rotation_before_restore_then_nonrotating_append
+    self.assertEqual(t.head['segment'],segment);u,result=self.assert_complete(r,t);self.assertEqual(u.archive['R'],['X'])
+                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 14, in assert_complete
+    t=self.fresh(r,s);result=full_verify(t)
+      ^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 12, in fresh
+    t.restore();return t
+    ^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 148, in restore
+    head=checked(raw)
+         ^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 31, in checked
+    except Exception as e:raise ChainFailure('CHAIN2_DIGEST_INVALID') from e
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+r9core.chain.ChainFailure: CHAIN2_DIGEST_INVALID
+
+======================================================================
+ERROR: test_two_consecutive_restarts_with_append (test_r92.RestoredHeadDigest.test_two_consecutive_restarts_with_append)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 30, in checked
+    x=json.loads(raw);h=x.pop('sha256');assert sha(canonical(x))==h
+                                               ^^^^^^^^^^^^^^^^^^^^
+AssertionError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 43, in test_two_consecutive_restarts_with_append
+    s=self.fresh(r,s);s.append_epoch({'kind':'AFTER_RESTART','case_schema':2,'add_R':[symbol]})
+      ^^^^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 12, in fresh
+    t.restore();return t
+    ^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 148, in restore
+    head=checked(raw)
+         ^^^^^^^^^^^^
+  File "/workspace/scratch/381ba86dc90b/r92_work/r9core/chain.py", line 31, in checked
+    except Exception as e:raise ChainFailure('CHAIN2_DIGEST_INVALID') from e
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+r9core.chain.ChainFailure: CHAIN2_DIGEST_INVALID
+
+======================================================================
+FAIL: test_checked_reencoding_is_idempotent (test_r92.RestoredHeadDigest.test_checked_reencoding_is_idempotent)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 33, in test_checked_reencoding_is_idempotent
+    raw=encode({'kind':'TEST','n':1});self.assertEqual(encode(checked(raw)),raw)
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '{"ki[22 chars]56":"8afd3f99abf6caeab09e3ba57337c587ee865dc48[21 chars]fb"}' != '{"ki[22 chars]56":"0194d85b3428975ae02e877745a99670ab1bf9edf[21 chars]6d"}'
+- {"kind":"TEST","n":1,"sha256":"8afd3f99abf6caeab09e3ba57337c587ee865dc4806d4bfe92ad0f5cbbbc3dfb"}
++ {"kind":"TEST","n":1,"sha256":"0194d85b3428975ae02e877745a99670ab1bf9edf26a33a803033d241e0dca6d"}
+
+
+======================================================================
+FAIL: test_stale_outer_digest_ignored_without_mutating_input (test_r92.RestoredHeadDigest.test_stale_outer_digest_ignored_without_mutating_input)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/381ba86dc90b/r92_work/tests/test_r92.py", line 30, in test_stale_outer_digest_ignored_without_mutating_input
+    self.assertEqual(encode(value),encode({'sequence':4,'nested':{'sha256':'keep'}}))
+AssertionError: '{"ne[42 chars]56":"962dcce3c436d916204545d274d90f1723fd0963e[21 chars]bb"}' != '{"ne[42 chars]56":"15e16a67c885da3c835dd1bcffb9ef800ea86a04b[21 chars]ad"}'
+- {"nested":{"sha256":"keep"},"sequence":4,"sha256":"962dcce3c436d916204545d274d90f1723fd0963ea72b0b45a22f221aa94a6bb"}
++ {"nested":{"sha256":"keep"},"sequence":4,"sha256":"15e16a67c885da3c835dd1bcffb9ef800ea86a04bdde287d9c8313d7b91d42ad"}
+
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.373s
+
+FAILED (failures=2, errors=6)
+COUNTEREXAMPLE_EXPECTED_FAILURES 2 ERRORS 6 TESTS 12

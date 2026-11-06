@@ -30,7 +30,9 @@ def checked(raw):
   x=json.loads(raw);h=x.pop('sha256');assert sha(canonical(x))==h
  except Exception as e:raise ChainFailure('CHAIN2_DIGEST_INVALID') from e
  return {**x,'sha256':h}
-def encode(data):return canonical({**data,'sha256':sha(canonical(data))})
+def encode(data):
+ payload={k:v for k,v in data.items() if k!='sha256'}
+ return canonical({**payload,'sha256':sha(canonical(payload))})
 APPEND='''
 -- chain2 commit: all structural checks before mutation, no cjson dependency.
 if redis.call('GET',KEYS[1])~=ARGV[1] or redis.call('GET',KEYS[2])~=ARGV[2] then return -10 end

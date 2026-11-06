@@ -61,18 +61,18 @@ class R71Scan(unittest.TestCase):
   self.assertTrue(state['scan_ok']);self.assertEqual(planner.propose.call_count,1)
   self.assertEqual(d.snapshot(),{'last_success_duration_seconds':53.,'last_failure_duration_seconds':None,'last_watermark_age_seconds':53.})
   self.assertEqual(rows[-1]['stage'],'IPR_SCAN');self.assertEqual(rows[-1]['duration_seconds'],53.)
- def test_old_gate_same_scan_reproduces_stale_watermark(self):
+ def test_old_gate_same_scan_delay_is_within_new_watermark_limit(self):
   t,g,d,state,planner,rows,sent=self.scan_once(legacy=True)
   self.assertEqual(t.at,122.);self.assertEqual(sent,[54.,70.,95.])
-  self.assertFalse(state['scan_ok']);planner.propose.assert_not_called()
-  self.assertEqual(rows[-1]['reason'],'RTH_VOLUME_STALE')
-  self.assertEqual(d.snapshot()['last_failure_duration_seconds'],68.)
+  self.assertTrue(state['scan_ok']);self.assertEqual(planner.propose.call_count,1)
+  self.assertEqual(rows[-1]['stage'],'IPR_SCAN')
+  self.assertEqual(d.snapshot()['last_success_duration_seconds'],68.)
   self.assertEqual(d.snapshot()['last_watermark_age_seconds'],68.)
   self.assertAlmostEqual(g.metrics()['wait_seconds_by_operation']['scan_rest'],15.)
- def test_over_sixty_without_gate_still_fails_closed(self):
-  _,g,d,state,planner,rows,_=self.scan_once(durations=(1.,30.,30.))
+ def test_over_120_without_gate_still_fails_closed(self):
+  _,g,d,state,planner,rows,_=self.scan_once(durations=(1.,60.,60.))
   self.assertFalse(state['scan_ok']);planner.propose.assert_not_called()
-  self.assertEqual(rows[-1]['reason'],'RTH_VOLUME_STALE');self.assertEqual(d.snapshot()['last_watermark_age_seconds'],61.)
+  self.assertEqual(rows[-1]['reason'],'RTH_VOLUME_STALE');self.assertEqual(d.snapshot()['last_watermark_age_seconds'],121.)
   self.assertEqual(g.metrics()['wait_seconds_by_operation']['scan_rest'],0.)
  def test_exact_sixty_still_allowed(self):
   _,_,d,state,_,rows,_=self.scan_once(durations=(1.,30.,29.))

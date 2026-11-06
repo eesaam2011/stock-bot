@@ -40,7 +40,7 @@ class GateTests(unittest.TestCase):
   def seed(state,clock,wall):
    g=gate_for(state,clock,wall);g.success();return g
   with patch('ipr.scan_health.gate_for',seed):
-   result=prior.R71Scan().scan_once(durations=(1.,30.,30.))
+   result=prior.R71Scan().scan_once(durations=(1.,60.,60.))
   self.assertTrue(result[3]['scan_ok']);self.assertTrue(result[5][-1]['previous_success_preserved']);result[4].propose.assert_not_called()
  def test_actual_nested_scan_unexpected_failure_does_not_preserve_success(self):
   from ipr.scan_health import gate_for

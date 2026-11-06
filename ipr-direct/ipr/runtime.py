@@ -186,7 +186,7 @@ async def run(bundle,api,redis,env,boot,started_monotonic=None):
        row['score']=round(row['score95']+pts,12);row['parts']['news']=pts
       # Source price freshness is rechecked AFTER possibly slow HMGET requests.
       end=r.wall()
-      if scan_diagnostics.watermark(end,volumes.watermark)>60:raise RTHVolumeStale('RTH_VOLUME_STALE')
+      if scan_diagnostics.watermark(end,volumes.watermark)>120:raise RTHVolumeStale('RTH_VOLUME_STALE')
       for s,v in scores.items():
        if not 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60:exclusions.add('SNAPSHOT_AGE_GT60',s)
       scores={s:v for s,v in scores.items() if 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60}

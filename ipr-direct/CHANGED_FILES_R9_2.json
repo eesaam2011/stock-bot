@@ -1,0 +1,44 @@
+{
+  "deployed_base_commit": "6aa56b0026cdc39d1b3bc8e7ef9d3d4068c89e53",
+  "R9_1_SHA256": "4ef8a0005f2ec3338302312dbb916f6dc3e61eeaeeaa752e6d02f5ede8f0d0c6",
+  "changed_or_added_files": [
+    "CHANGED_FILES_R9_1.json",
+    "CHANGED_FILES_R9_2.json",
+    "INVARIANTS_R9_2.json",
+    "ISOLATION_R9_1.txt",
+    "R9.1_vs_R9-core.diff",
+    "R9.2_vs_DEPLOYED_R9_CORE.diff",
+    "R9.2_vs_R9.1.diff",
+    "REFERENCE_R9_1_BYTE_CHECK.json",
+    "REFERENCE_R9_2_BYTE_CHECK.json",
+    "REVIEW_R9_1_AR.txt",
+    "REVIEW_R9_2_AR.txt",
+    "SHA256SUMS.txt",
+    "TESTS_R9_1_EXTRACTED_RAW.txt",
+    "TESTS_R9_2_CANDIDATE_RAW.txt",
+    "TESTS_R9_2_EXTRACTED_RAW.txt",
+    "TESTS_R9_2_NEW_RAW.txt",
+    "TESTS_R9_2_OLD_ENCODER_COUNTEREXAMPLE_RAW.txt",
+    "ipr/runtime.py",
+    "r9core/chain.py",
+    "tests/test_r71.py",
+    "tests/test_r8.py",
+    "tests/test_r91.py",
+    "tests/test_r92.py"
+  ],
+  "removed_files": [],
+  "source_test_changes": [
+    "ipr/runtime.py",
+    "r9core/chain.py",
+    "tests/test_r71.py",
+    "tests/test_r8.py",
+    "tests/test_r91.py",
+    "tests/test_r92.py"
+  ],
+  "new_source_test_changes_vs_R9_1": [
+    "r9core/chain.py",
+    "tests/test_r92.py"
+  ],
+  "hashes": "Final SHA256SUMS.txt covers every file except itself.",
+  "reference_app": 72
+}

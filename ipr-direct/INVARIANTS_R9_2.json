@@ -1,0 +1,30 @@
+{
+  "new_operational_code_vs_R9_1": "r9core/chain.py encode only",
+  "checked_unchanged": true,
+  "restore_unchanged": true,
+  "r4a_runtime_unchanged": true,
+  "SOURCE_ERROR_logging": "EXCLUDED: credential-aware sanitizer only exists in ipr.diagnostics; adding a reverse r4a->ipr dependency affects separation; no unsafe raw msg output.",
+  "safety_constants_unchanged": {
+    "ingress_seconds": 5.0,
+    "queue": 8192,
+    "batch": 32,
+    "T120": 120,
+    "boots": 4,
+    "incremental_spacing": 1.0,
+    "incremental_batch": 100,
+    "cooldown": 30,
+    "lease": 35,
+    "turnover": 100,
+    "turnover_seconds": 60,
+    "scan_validity": 150,
+    "snapshot_freshness": 60,
+    "segment_bytes": 16777216,
+    "record_bytes": 2097152,
+    "warning_bytes": 157286400
+  },
+  "watermark_limit": 120,
+  "watermark_note": "Existing approved R9.1 change only.",
+  "reference_app_count": 72,
+  "deploys": 0,
+  "remote_Redis_connections": 0
+}

@@ -1,0 +1,41 @@
+{
+  "production_changed": [
+    "ipr/runtime.py"
+  ],
+  "test_modified": [
+    "tests/test_r71.py",
+    "tests/test_r8.py"
+  ],
+  "test_added": [
+    "tests/test_r91.py"
+  ],
+  "existing_metadata_updated": [
+    "SHA256SUMS.txt"
+  ],
+  "new_files": [
+    "CHANGED_FILES_R9_1.json",
+    "ISOLATION_R9_1.txt",
+    "R9.1_vs_R9-core.diff",
+    "REFERENCE_R9_1_BYTE_CHECK.json",
+    "REVIEW_R9_1_AR.txt",
+    "TESTS_R9_1_EXTRACTED_RAW.txt",
+    "tests/test_r91.py"
+  ],
+  "all_other_original_files_byte_identical": true,
+  "reference_files_byte_identical": 72,
+  "full_suite": {
+    "count": 258,
+    "original_test_count_retained": 250,
+    "new_tests": 8,
+    "seconds": 141.199,
+    "command": "python3 -I run_tests.py",
+    "source": "ZIP-extracted directory",
+    "all_final_python_bytes_equal_tested_tree": true
+  },
+  "runtime_literal_change": {
+    "line": 189,
+    "from": 60,
+    "to": 120
+  },
+  "unshare_available": false
+}
