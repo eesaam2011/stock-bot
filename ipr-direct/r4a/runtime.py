@@ -96,7 +96,12 @@ class Runtime:
      if not self.auth or set(msg.get('statuses',[]))!={'*'}:raise SafetyStop('UNPROVEN_ACK')
      if not await asyncio.to_thread(self.control.ack,self.c.connection,msg.get('bars',[]),msg.get('trades',[])):raise SafetyStop('ACK_REJECTED')
      self.deadline.ack();await asyncio.to_thread(self.checkpoint,'ACK_CONFIRMED');self.ready.set();continue
-    if kind=='error':raise SafetyStop('SOURCE_ERROR')
+    if kind=='error':
+     try:
+      from ipr.diagnostics import source_error_fields
+      print(json.dumps({'stage':'SOURCE_ERROR',**source_error_fields(msg)}),flush=True)
+     except Exception:pass
+     raise SafetyStop('SOURCE_ERROR')
     if not self.auth:raise SafetyStop('UNAUTHENTICATED_DATA')
     if self.observe_stream is not None:self.observe_stream(msg,received)
     if kind in {'c','x','u'}:

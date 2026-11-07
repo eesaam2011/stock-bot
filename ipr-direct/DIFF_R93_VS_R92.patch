@@ -1,0 +1,251 @@
+--- R9.2/ipr/main.py
++++ R9.3/ipr/main.py
+@@ -24,6 +24,28 @@
+   if not env.get(name):raise ValueError('MISSING_'+name)
+  return True
+ 
++def observe(event):
++ # Diagnostics must never change the worker/parent decision or exception path.
++ try:print(json.dumps(event),flush=True)
++ except Exception:pass
++
++class ParentLogs:
++ def __init__(self):self.none_day=None;self.last_idle=None
++ def pause(self,seconds,parked_day):
++  self.idle(datetime.now(timezone.utc).date().isoformat(),parked_day,time.monotonic())
++  time.sleep(seconds)
++ def idle(self,day,parked_day,now):
++  if self.last_idle is None or now-self.last_idle>=3600:
++   import hashlib
++   observe({'stage':'PARENT_IDLE','at':datetime.now(timezone.utc).isoformat(),'day':day,'parked_day':parked_day,'fingerprint':hashlib.sha256((day+'|'+str(parked_day)).encode()).hexdigest()[:12]})
++   self.last_idle=now
++ def prepared(self,bundle,day,none_reason):
++  if bundle is None:
++   if self.none_day!=day:
++    observe({'stage':'PREP_ROOT_NONE','session':day,'reason':none_reason});self.none_day=day
++  else:
++   observe({'stage':'PREP_ROOT_OK','session':bundle['session'],'eligible_symbols':len(bundle['eligible']),'new_entries_prepared':bundle['new_entries_prepared']})
++
+ def main():
+  child_started=time.monotonic()
+  import argparse
+@@ -48,27 +70,32 @@
+    stopped[0]=True
+    if guard[0]:guard[0].stop()
+   signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
+-  parked_day=None
++  parked_day=None;parent_logs=ParentLogs()
+   while not stopped[0]:
+    now=datetime.now(timezone.utc);day=now.date().isoformat()
++   parent_logs.idle(day,parked_day,time.monotonic())
+    if parked_day==day:
+     time.sleep(1);continue
+    try:
+     from r9core.chain import validate_bootstrap
+-    validate_bootstrap(client,day);bundle=prepare_root(api,client,now)
++    none_reason=['NO_SESSION_AND_NO_ACTIVE']
++    validate_bootstrap(client,day);bundle=prepare_root(api,client,now,observe_none=lambda why:none_reason.__setitem__(0,why))
+    except Exception as e:
+     print(json.dumps({'stage':'PREP_ROOT_FAILED','reason':reason(e),**chain_error_fields(e)}),flush=True);time.sleep(30);continue
++   parent_logs.prepared(bundle,day,none_reason[0])
+    if bundle is None:time.sleep(30);continue
+    policy=policy_for(bundle)
+    def authorize():
+     if not policy.time_allows(time.time()):raise ValueError('SESSION_CLOSED')
+    def spawn(boot,number):return subprocess.Popen([sys.executable,'-m','ipr.main','--child','--boot-id',boot,'--parent-pid',str(os.getpid()),'--session',day],cwd=ROOT)
+-   guard[0]=ProcessGuard(client,policy,authorize,spawn,cgroup_sample);result=guard[0].run();guard[0]=None
++   guard[0]=ProcessGuard(client,policy,authorize,spawn,cgroup_sample,sleep=lambda seconds:parent_logs.pause(seconds,parked_day));result=guard[0].run();guard[0]=None
+    print(json.dumps({'stage':'IPR_PARENT_EXIT',**result}),flush=True)
+    if result.get('action')=='WORKER_EXIT' and result.get('exit_code')==75:continue
+    parked_day=day
+   return 0
+  except Exception as e:
++  if args.child and isinstance(e,ValueError) and str(e)=='SESSION_CLOSED':
++   observe({'stage':'CHILD_SESSION_CLOSED_EXPECTED','at':datetime.now(timezone.utc).isoformat(),'session':args.session,'reason':'SESSION_CLOSED'})
+   print(json.dumps({'stage':'IPR_FATAL','reason':reason(e),**exception_fields(e)}),flush=True)
+   if args.child:print(json.dumps({'stage':'IPR_CHILD_EXIT','exit_code':2,'reason':reason(e),**exception_fields(e)}),flush=True)
+   return 2
+--- R9.2/ipr/preparation.py
++++ R9.3/ipr/preparation.py
+@@ -33,7 +33,12 @@
+  # R with no canonical object is restored by B's current session journal before subscription.
+  return out
+ 
+-def prepare_root(api,redis,now):
++def prepare_root(api,redis,now,*,observe_none=None):
++ def no_root(why):
++  if observe_none is not None:
++   try:observe_none(why)
++   except Exception:pass
++  return None
+  day=now.date().isoformat();cached=load(redis,'root:'+day)
+  if cached:
+   if cached['session']!=day:raise ValueError('PREP_SESSION_MISMATCH')
+@@ -48,16 +53,16 @@
+  carry_u,carry_r=carried(redis,day)
+  active=pins(redis)|carry_u|carry_r
+  current=next((c for c in (calendar or []) if c['session']==day),None)
+- if current is None and not active:return None
++ if current is None and not active:return no_root('NO_SESSION_AND_NO_ACTIVE')
+  try:assets=api.assets();save(redis,'assets',{'observed_at':now.isoformat(),'assets':assets})
+  except Exception as exc:
+   errors.append('ASSETS_FAILED');print(json.dumps({'stage':'ROOT_SOURCE_FAILED','component':'assets','reason':reason(exc)}),flush=True)
+- if current is None and not active:return None
++ if current is None and not active:return no_root('NO_SESSION_AND_NO_ACTIVE')
+  prior=load(redis,'assets')
+  if assets is None:assets=prior['assets'] if prior else {}
+  cls=Classifier(assets);allowed={s for s,a in assets.items() if cls.eligible(s)}
+  if errors:allowed=set() # cached classification may support monitoring, never silently new nominations
+- if not allowed and not active:return None
++ if not allowed and not active:return no_root('NO_ELIGIBLE_AND_NO_ACTIVE')
+  result={'session':day,'observed_at':now.isoformat(),'assets':assets,'eligible':sorted(allowed),'symbols':sorted(allowed|active),'calendar':calendar or [],'market':current,'new_entries_prepared':not errors and current is not None and 0<(dt(current['close'])-dt(current['open'])).total_seconds()<=23400,'errors':errors}
+  save(redis,'root:'+day,result);return result
+ 
+--- R9.2/ipr/diagnostics.py
++++ R9.3/ipr/diagnostics.py
+@@ -14,3 +14,13 @@
+  message=re.sub(r"(?i)(?:token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+",'[REDACTED_CREDENTIAL]',message)
+  message=re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|[0-9]{6,}:[A-Za-z0-9_-]{20,})\b','[REDACTED_TOKEN]',message)
+  return {'exception_type':type(exc).__module__+'.'+type(exc).__qualname__,'message_redacted_120':message[:120]}
++
++def source_error_fields(msg):
++ # Only an integer source code and sanitized text; never copy the remote object.
++ code=msg.get('code');code=code if type(code) is int else int(code) if isinstance(code,str) and code.isascii() and code.isdigit() and len(code)<=10 else None
++ text=msg.get('msg','');text=text if isinstance(text,str) else '[REDACTED_NON_TEXT]'
++ text=re.sub(r"(?i)(?:[a-z][a-z0-9+.-]*)://[^\s\"'<>]+",'[REDACTED_URL]',text)
++ text=re.sub(r'(?i)\bbearer\s+[^\s,;]+','[REDACTED_CREDENTIAL]',text)
++ text=re.sub(r'(?i)(?:chat[_-]?id|bot[_-]?token|access[_-]?token)\s*[:=]\s*[^\s,;]+','[REDACTED_CREDENTIAL]',text)
++ text=re.sub(r"(?i)[\"']?(?:key|api[_-]?key|secret|token|password|authorization|chat[_-]?id)[\"']?\s*[:=]\s*[\"']?[^\s,;\"'}]+",'[REDACTED_CREDENTIAL]',text)
++ return {'code':code,'msg':exception_fields(ValueError(text))['message_redacted_120']}
+--- R9.2/r4a/runtime.py
++++ R9.3/r4a/runtime.py
+@@ -96,7 +96,12 @@
+      if not self.auth or set(msg.get('statuses',[]))!={'*'}:raise SafetyStop('UNPROVEN_ACK')
+      if not await asyncio.to_thread(self.control.ack,self.c.connection,msg.get('bars',[]),msg.get('trades',[])):raise SafetyStop('ACK_REJECTED')
+      self.deadline.ack();await asyncio.to_thread(self.checkpoint,'ACK_CONFIRMED');self.ready.set();continue
+-    if kind=='error':raise SafetyStop('SOURCE_ERROR')
++    if kind=='error':
++     try:
++      from ipr.diagnostics import source_error_fields
++      print(json.dumps({'stage':'SOURCE_ERROR',**source_error_fields(msg)}),flush=True)
++     except Exception:pass
++     raise SafetyStop('SOURCE_ERROR')
+     if not self.auth:raise SafetyStop('UNAUTHENTICATED_DATA')
+     if self.observe_stream is not None:self.observe_stream(msg,received)
+     if kind in {'c','x','u'}:
+--- /dev/null
++++ R9.3/tests/test_r93.py
+@@ -0,0 +1,113 @@
++"""R9.3: offline observability regressions; no external service calls."""
++import asyncio,copy,io,json,sys,types,unittest
++from contextlib import redirect_stdout
++from unittest.mock import patch,MagicMock
++from datetime import timedelta
++from ipr import main as parent
++from ipr.diagnostics import source_error_fields
++from ipr.preparation import prepare_root
++from r4a.runtime import Runtime
++from r4a.guards import SafetyStop
++from test_direct import NOW,CAL,OP
++from lua_redis import LuaRedis
++
++class ParentTelemetry(unittest.TestCase):
++ def capture(self,fn):
++  out=io.StringIO()
++  with redirect_stdout(out):fn()
++  return [json.loads(s) for s in out.getvalue().splitlines()]
++ def test_ok_counts_eligible_not_active_union_and_preserves_bundle(self):
++  b={'session':'2026-11-07','eligible':['X'],'symbols':['X','Y'],'new_entries_prepared':False};before=copy.deepcopy(b)
++  rows=self.capture(lambda:parent.ParentLogs().prepared(b,b['session'],None))
++  self.assertEqual(rows,[{'stage':'PREP_ROOT_OK','session':b['session'],'eligible_symbols':1,'new_entries_prepared':False}]);self.assertEqual(b,before)
++ def test_none_once_per_UTC_day_with_repeated_polling(self):
++  p=parent.ParentLogs()
++  def go():
++   for _ in range(2880):p.prepared(None,'2026-11-07','NO_SESSION_AND_NO_ACTIVE')
++   p.prepared(None,'2026-11-08','NO_SESSION_AND_NO_ACTIVE')
++  rows=self.capture(go);self.assertEqual(len(rows),2);self.assertEqual([r['session'] for r in rows],['2026-11-07','2026-11-08'])
++ def test_idle_hourly_without_changing_callers_polling(self):
++  p=parent.ParentLogs()
++  rows=self.capture(lambda:[p.idle('2026-11-07',None,t) for t in range(7201)])
++  self.assertEqual(len(rows),3);self.assertEqual(len(rows[0]['fingerprint']),12);self.assertEqual(len({r['fingerprint'] for r in rows}),1)
++ def test_idle_reports_parked_day_without_changing_it(self):
++  p=parent.ParentLogs();rows=self.capture(lambda:[p.idle('2026-11-07','2026-11-06',0),p.idle('2026-11-08','2026-11-07',3600)])
++  self.assertEqual(rows[0]['parked_day'],'2026-11-06');self.assertNotEqual(rows[0]['fingerprint'],rows[1]['fingerprint'])
++ def test_new_logs_swallow_print_failure(self):
++  with patch('builtins.print',side_effect=OSError('fixture')):
++   p=parent.ParentLogs();p.idle('2026-11-07',None,0);p.prepared(None,'2026-11-07','NO_SESSION_AND_NO_ACTIVE');p.prepared({'session':'x','eligible':[],'new_entries_prepared':False},'x',None)
++ def test_guard_pause_preserves_every_sleep_duration_even_when_log_fails(self):
++  with patch.object(parent.time,'sleep') as sleep,patch('builtins.print',side_effect=OSError('fixture')):
++   p=parent.ParentLogs()
++   for seconds in [.25,1,30]:p.pause(seconds,None)
++  self.assertEqual([c.args[0] for c in sleep.call_args_list],[.25,1,30])
++
++class PreparationTelemetry(unittest.TestCase):
++ def test_closed_day_reason_and_no_changed_redis_effects(self):
++  class API:
++   def calendar(self,*a):return []
++   def assets(self):raise AssertionError('must not fetch')
++  a,b=LuaRedis(),LuaRedis();seen=[]
++  self.assertIsNone(prepare_root(API(),a,NOW));self.assertIsNone(prepare_root(API(),b,NOW,observe_none=seen.append))
++  self.assertEqual(a.state,b.state);self.assertEqual(seen,['NO_SESSION_AND_NO_ACTIVE'])
++ def test_empty_eligible_is_not_falsely_labeled_no_session(self):
++  class API:
++   def calendar(self,*a):return CAL
++   def assets(self):return {}
++  seen=[];self.assertIsNone(prepare_root(API(),LuaRedis(),NOW,observe_none=seen.append));self.assertEqual(seen,['NO_ELIGIBLE_AND_NO_ACTIVE'])
++ def test_callback_exception_keeps_original_none(self):
++  class API:
++   def calendar(self,*a):return []
++  def fail(*a):raise RuntimeError('telemetry only')
++  self.assertIsNone(prepare_root(API(),LuaRedis(),NOW,observe_none=fail))
++ def test_success_and_cache_identical_with_observer(self):
++  class API:
++   def calendar(self,*a):return CAL
++   def assets(self):return {'X':{'name':'X Common Stock','exchange':'NASDAQ','status':'active','tradable':True,'class':'us_equity','id':'fixture'}}
++  a,b=LuaRedis(),LuaRedis();seen=[]
++  first=prepare_root(API(),a,NOW);observed=prepare_root(API(),b,NOW,observe_none=seen.append)
++  self.assertEqual(first,observed);self.assertEqual(a.state,b.state);self.assertEqual(prepare_root(API(),b,NOW,observe_none=seen.append),first);self.assertEqual(seen,[])
++
++class ChildTelemetry(unittest.TestCase):
++ def invoke(self,exc):
++  redis=types.ModuleType('redis');redis.Redis=MagicMock();retry=types.ModuleType('redis.retry');retry.Retry=MagicMock();backoff=types.ModuleType('redis.backoff');backoff.NoBackoff=MagicMock()
++  async def run(*a,**kw):raise exc
++  env={k:'fixture-only' for k in ('REDIS_URL','APCA_API_KEY_ID','APCA_API_SECRET_KEY','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID')};out=io.StringIO()
++  with patch.dict(sys.modules,{'redis':redis,'redis.retry':retry,'redis.backoff':backoff}),patch.dict('os.environ',env,clear=True),patch.object(sys,'argv',['ipr.main','--child','--boot-id','fixture','--parent-pid','123','--session','2026-11-06']),patch.object(parent,'arm_parent_death'),patch.object(parent,'load',return_value={'session':'2026-11-06'}),patch.object(parent,'Alpaca'),patch.object(parent,'run',run),redirect_stdout(out):result=parent.main()
++  return result,[json.loads(s) for s in out.getvalue().splitlines()]
++ def test_session_closed_note_precedes_unchanged_fatal_and_exit2(self):
++  code,rows=self.invoke(ValueError('SESSION_CLOSED'));self.assertEqual(code,2)
++  self.assertEqual([r['stage'] for r in rows],['CHILD_SESSION_CLOSED_EXPECTED','IPR_FATAL','IPR_CHILD_EXIT']);self.assertEqual(rows[0]['session'],'2026-11-06');self.assertIn('at',rows[0]);self.assertEqual(rows[-1]['exit_code'],2);self.assertEqual(rows[-1]['reason'],'SESSION_CLOSED')
++ def test_other_failure_not_marked_expected(self):
++  code,rows=self.invoke(ValueError('PREP_ROOT_MISSING'));self.assertEqual(code,2);self.assertEqual([r['stage'] for r in rows],['IPR_FATAL','IPR_CHILD_EXIT'])
++ def test_same_text_different_exception_type_not_marked_expected(self):
++  code,rows=self.invoke(RuntimeError('SESSION_CLOSED'));self.assertEqual(code,2);self.assertNotIn('CHILD_SESSION_CLOSED_EXPECTED',[r['stage'] for r in rows])
++
++class SourceTelemetry(unittest.TestCase):
++ def test_only_code_and_bounded_sanitized_message_copied(self):
++  msg={'code':407,'msg':'x'*500,'api_key':'must-not-copy','extra':{'secret':'must-not-copy'}};before=copy.deepcopy(msg);out=source_error_fields(msg)
++  self.assertEqual(set(out),{'code','msg'});self.assertEqual(out['code'],407);self.assertEqual(len(out['msg']),120);self.assertEqual(msg,before)
++ def test_secrets_urls_bearer_and_chat_redacted(self):
++  with patch.dict('os.environ',{'APCA_API_SECRET_KEY':'synthetic-secret'},clear=True):
++   text=source_error_fields({'code':'407','msg':'synthetic-secret https://example.invalid/token postgres://user:pass@host db chat_id=123456789 bearer abcdef api_key=forbidden'})['msg']
++  for secret in ['synthetic-secret','example.invalid','user:pass','123456789','abcdef','forbidden']:self.assertNotIn(secret,text)
++ def test_invalid_code_not_echoed(self):
++  for code in ['secret-value',{'token':'x'},True,'9'*100]:self.assertIsNone(source_error_fields({'code':code})['code'])
++ def test_each_credential_removed_before_truncation_and_nontext_not_echoed(self):
++  for text in ['key=fixture_secret',"{'token': 'fixture_secret'}",'chat_id=fixture_secret','Bearer fixture_secret','postgres://fixture_secret']:
++   self.assertNotIn('fixture_secret',source_error_fields({'msg':text})['msg'])
++  self.assertEqual(source_error_fields({'msg':{'extra':'fixture_secret'}})['msg'],'[REDACTED_NON_TEXT]')
++ def read_error(self,print_fails=False):
++  rt=object.__new__(Runtime);rt.check_session=MagicMock();rt.wall=MagicMock();rt.auth=False
++  async def ws():yield json.dumps([{'T':'error','code':407,'msg':'fixture source error'}])
++  rt.ws=ws();out=io.StringIO()
++  with redirect_stdout(out):
++   if print_fails:
++    with patch('builtins.print',side_effect=OSError('fixture')):
++     with self.assertRaisesRegex(SafetyStop,'SOURCE_ERROR'):asyncio.run(rt._reader())
++   else:
++    with self.assertRaisesRegex(SafetyStop,'SOURCE_ERROR'):asyncio.run(rt._reader())
++  return out.getvalue()
++ def test_real_reader_logs_once_and_still_raises_same_SafetyStop(self):
++  rows=[json.loads(x) for x in self.read_error().splitlines()];self.assertEqual(rows,[{'stage':'SOURCE_ERROR','code':407,'msg':'fixture source error'}])
++ def test_log_failure_does_not_mask_source_SafetyStop(self):self.read_error(True)

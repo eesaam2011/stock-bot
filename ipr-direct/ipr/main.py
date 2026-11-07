@@ -24,6 +24,28 @@ def credentials(env):
   if not env.get(name):raise ValueError('MISSING_'+name)
  return True
 
+def observe(event):
+ # Diagnostics must never change the worker/parent decision or exception path.
+ try:print(json.dumps(event),flush=True)
+ except Exception:pass
+
+class ParentLogs:
+ def __init__(self):self.none_day=None;self.last_idle=None
+ def pause(self,seconds,parked_day):
+  self.idle(datetime.now(timezone.utc).date().isoformat(),parked_day,time.monotonic())
+  time.sleep(seconds)
+ def idle(self,day,parked_day,now):
+  if self.last_idle is None or now-self.last_idle>=3600:
+   import hashlib
+   observe({'stage':'PARENT_IDLE','at':datetime.now(timezone.utc).isoformat(),'day':day,'parked_day':parked_day,'fingerprint':hashlib.sha256((day+'|'+str(parked_day)).encode()).hexdigest()[:12]})
+   self.last_idle=now
+ def prepared(self,bundle,day,none_reason):
+  if bundle is None:
+   if self.none_day!=day:
+    observe({'stage':'PREP_ROOT_NONE','session':day,'reason':none_reason});self.none_day=day
+  else:
+   observe({'stage':'PREP_ROOT_OK','session':bundle['session'],'eligible_symbols':len(bundle['eligible']),'new_entries_prepared':bundle['new_entries_prepared']})
+
 def main():
  child_started=time.monotonic()
  import argparse
@@ -48,27 +70,32 @@ def main():
    stopped[0]=True
    if guard[0]:guard[0].stop()
   signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
-  parked_day=None
+  parked_day=None;parent_logs=ParentLogs()
   while not stopped[0]:
    now=datetime.now(timezone.utc);day=now.date().isoformat()
+   parent_logs.idle(day,parked_day,time.monotonic())
    if parked_day==day:
     time.sleep(1);continue
    try:
     from r9core.chain import validate_bootstrap
-    validate_bootstrap(client,day);bundle=prepare_root(api,client,now)
+    none_reason=['NO_SESSION_AND_NO_ACTIVE']
+    validate_bootstrap(client,day);bundle=prepare_root(api,client,now,observe_none=lambda why:none_reason.__setitem__(0,why))
    except Exception as e:
     print(json.dumps({'stage':'PREP_ROOT_FAILED','reason':reason(e),**chain_error_fields(e)}),flush=True);time.sleep(30);continue
+   parent_logs.prepared(bundle,day,none_reason[0])
    if bundle is None:time.sleep(30);continue
    policy=policy_for(bundle)
    def authorize():
     if not policy.time_allows(time.time()):raise ValueError('SESSION_CLOSED')
    def spawn(boot,number):return subprocess.Popen([sys.executable,'-m','ipr.main','--child','--boot-id',boot,'--parent-pid',str(os.getpid()),'--session',day],cwd=ROOT)
-   guard[0]=ProcessGuard(client,policy,authorize,spawn,cgroup_sample);result=guard[0].run();guard[0]=None
+   guard[0]=ProcessGuard(client,policy,authorize,spawn,cgroup_sample,sleep=lambda seconds:parent_logs.pause(seconds,parked_day));result=guard[0].run();guard[0]=None
    print(json.dumps({'stage':'IPR_PARENT_EXIT',**result}),flush=True)
    if result.get('action')=='WORKER_EXIT' and result.get('exit_code')==75:continue
    parked_day=day
   return 0
  except Exception as e:
+  if args.child and isinstance(e,ValueError) and str(e)=='SESSION_CLOSED':
+   observe({'stage':'CHILD_SESSION_CLOSED_EXPECTED','at':datetime.now(timezone.utc).isoformat(),'session':args.session,'reason':'SESSION_CLOSED'})
   print(json.dumps({'stage':'IPR_FATAL','reason':reason(e),**exception_fields(e)}),flush=True)
   if args.child:print(json.dumps({'stage':'IPR_CHILD_EXIT','exit_code':2,'reason':reason(e),**exception_fields(e)}),flush=True)
   return 2

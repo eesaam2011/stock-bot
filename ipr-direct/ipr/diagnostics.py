@@ -14,3 +14,13 @@ def exception_fields(exc):
  message=re.sub(r"(?i)(?:token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+",'[REDACTED_CREDENTIAL]',message)
  message=re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|[0-9]{6,}:[A-Za-z0-9_-]{20,})\b','[REDACTED_TOKEN]',message)
  return {'exception_type':type(exc).__module__+'.'+type(exc).__qualname__,'message_redacted_120':message[:120]}
+
+def source_error_fields(msg):
+ # Only an integer source code and sanitized text; never copy the remote object.
+ code=msg.get('code');code=code if type(code) is int else int(code) if isinstance(code,str) and code.isascii() and code.isdigit() and len(code)<=10 else None
+ text=msg.get('msg','');text=text if isinstance(text,str) else '[REDACTED_NON_TEXT]'
+ text=re.sub(r"(?i)(?:[a-z][a-z0-9+.-]*)://[^\s\"'<>]+",'[REDACTED_URL]',text)
+ text=re.sub(r'(?i)\bbearer\s+[^\s,;]+','[REDACTED_CREDENTIAL]',text)
+ text=re.sub(r'(?i)(?:chat[_-]?id|bot[_-]?token|access[_-]?token)\s*[:=]\s*[^\s,;]+','[REDACTED_CREDENTIAL]',text)
+ text=re.sub(r"(?i)[\"']?(?:key|api[_-]?key|secret|token|password|authorization|chat[_-]?id)[\"']?\s*[:=]\s*[\"']?[^\s,;\"'}]+",'[REDACTED_CREDENTIAL]',text)
+ return {'code':code,'msg':exception_fields(ValueError(text))['message_redacted_120']}

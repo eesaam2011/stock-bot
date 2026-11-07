@@ -1,0 +1,21 @@
+{
+  "compared_to_zip_sha256": "532b4f5b424abf2859f574fd05f2f6b83406d4346ef9978f35fb676ece3e22d1",
+  "modified": [
+    "SHA256SUMS.txt",
+    "ipr/diagnostics.py",
+    "ipr/main.py",
+    "ipr/preparation.py",
+    "r4a/runtime.py"
+  ],
+  "added": [
+    "CHANGED_FILES_R93.json",
+    "DIFF_R93_VS_R92.patch",
+    "REFERENCE_R93_BYTE_CHECK.json",
+    "REPORT_R93_AR.txt",
+    "TESTS_R93_COMPLETE_RAW.txt",
+    "VALIDATION_R93.json",
+    "tests/test_r93.py"
+  ],
+  "removed": [],
+  "patch_scope": "Four operational files + new tests. Documentation, validation, test transcript, byte-check and checksum manifest are separately listed; patch does not recursively include itself."
+}

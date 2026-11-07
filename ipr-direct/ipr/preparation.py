@@ -33,7 +33,12 @@ def pins(redis):
  # R with no canonical object is restored by B's current session journal before subscription.
  return out
 
-def prepare_root(api,redis,now):
+def prepare_root(api,redis,now,*,observe_none=None):
+ def no_root(why):
+  if observe_none is not None:
+   try:observe_none(why)
+   except Exception:pass
+  return None
  day=now.date().isoformat();cached=load(redis,'root:'+day)
  if cached:
   if cached['session']!=day:raise ValueError('PREP_SESSION_MISMATCH')
@@ -48,16 +53,16 @@ def prepare_root(api,redis,now):
  carry_u,carry_r=carried(redis,day)
  active=pins(redis)|carry_u|carry_r
  current=next((c for c in (calendar or []) if c['session']==day),None)
- if current is None and not active:return None
+ if current is None and not active:return no_root('NO_SESSION_AND_NO_ACTIVE')
  try:assets=api.assets();save(redis,'assets',{'observed_at':now.isoformat(),'assets':assets})
  except Exception as exc:
   errors.append('ASSETS_FAILED');print(json.dumps({'stage':'ROOT_SOURCE_FAILED','component':'assets','reason':reason(exc)}),flush=True)
- if current is None and not active:return None
+ if current is None and not active:return no_root('NO_SESSION_AND_NO_ACTIVE')
  prior=load(redis,'assets')
  if assets is None:assets=prior['assets'] if prior else {}
  cls=Classifier(assets);allowed={s for s,a in assets.items() if cls.eligible(s)}
  if errors:allowed=set() # cached classification may support monitoring, never silently new nominations
- if not allowed and not active:return None
+ if not allowed and not active:return no_root('NO_ELIGIBLE_AND_NO_ACTIVE')
  result={'session':day,'observed_at':now.isoformat(),'assets':assets,'eligible':sorted(allowed),'symbols':sorted(allowed|active),'calendar':calendar or [],'market':current,'new_entries_prepared':not errors and current is not None and 0<(dt(current['close'])-dt(current['open'])).total_seconds()<=23400,'errors':errors}
  save(redis,'root:'+day,result);return result
 
