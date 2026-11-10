@@ -1,0 +1,1283 @@
+# Source/config/tests diff against R9.3 commit37128172762b55b947d5f127eb340521ba220e18
+# All documentation/results/generated metadata: CHANGED_FILES_FROM_R93.json
+--- /dev/null
++++ R10.3/classifications/OWNER_EXCLUSIONS.json
+@@ -0,0 +1,7 @@
++{
++  "schema": 1,
++  "source": "PROJECT_OWNER_EXPLICIT_DECISION",
++  "records": [
++    {"symbol": "INSE", "reason": "OWNER_EXCLUDED_GAMBLING_ACTIVITY"}
++  ]
++}
+--- R9.3/ipr/api.py
++++ R10.3/ipr/api.py
+@@ -23,6 +23,11 @@
+   name=getattr(self.local,'name',None)
+   if name is None:name=getattr(self,'request_operation',lambda:None)()
+   return name if name in {'scan_rest','incremental','native'} else 'other'
++ @contextmanager
++ def observe_requests(self,observer):
++  old=getattr(self.local,'request_observer',None);self.local.request_observer=observer
++  try:yield
++  finally:self.local.request_observer=old
+  def _timing(self,name,wait,hold):
+   with self.timing_lock:
+    row=self.timing.setdefault(name,{'count':0,'wait_total_seconds':0.,'wait_max_seconds':0.,'hold_total_seconds':0.,'hold_max_seconds':0.})
+@@ -47,6 +52,11 @@
+    finally:
+     released=self.timing_clock();self.lock.release()
+     self._timing(operation,max(0.,acquired-waiting),max(0.,released-acquired))
++    # Measurement after release; observer is local to this requesting thread.
++    observer=getattr(self.local,'request_observer',None)
++    if observer is not None:
++     try:observer(operation,max(0.,acquired-waiting),max(0.,released-acquired))
++     except BaseException:pass # Observer failures never mask an application exception.
+  def call(self,host,path,params):
+   if (host,path) not in {('paper-api.alpaca.markets','/v2/assets'),('paper-api.alpaca.markets','/v2/calendar'),('api.alpaca.markets','/v2/assets'),('api.alpaca.markets','/v2/calendar'),('data.alpaca.markets','/v2/stocks/bars'),('data.alpaca.markets','/v2/stocks/trades'),('data.alpaca.markets','/v2/stocks/snapshots')}:raise APIError('ENDPOINT_FORBIDDEN')
+   req=urllib.request.Request('https://'+host+path+'?'+urllib.parse.urlencode(params),headers={'APCA-API-KEY-ID':self.key,'APCA-API-SECRET-KEY':self.secret},method='GET')
+--- R9.3/ipr/classifier.py
++++ R10.3/ipr/classifier.py
+@@ -30,6 +30,11 @@
+   root=Path(__file__).resolve().parents[1]/"classifications"
+   rules=json.loads((root/"NAME_RULES.json").read_bytes());manual=json.loads((root/"TYPE_MANUAL.json").read_bytes())
+   activity=frozenset((root/"ACTIVITY.txt").read_text().splitlines());assert len(activity)==656
++  owner=json.loads((root/"OWNER_EXCLUSIONS.json").read_bytes())
++  if owner.get('schema')!=1 or not isinstance(owner.get('records'),list):raise ValueError('OWNER_EXCLUSIONS_INVALID')
++  symbols=[r['symbol'] for r in owner['records']]
++  if any(not isinstance(s,str) or not s or s!=s.strip() or s!=s.upper() for s in symbols) or len(symbols)!=len(set(symbols)):raise ValueError('OWNER_EXCLUSIONS_INVALID')
++  self.owner_exclusions=frozenset(symbols)
+   self.frozen=SimpleNamespace(activity=activity,manual=frozenset((root/"ADR_MANUAL.txt").read_text().splitlines()),type_manual={r["symbol"]:r for r in manual["records"]},day={"assets":assets},patterns=[(r["rule_id"],r["type"],re.compile(r["regex"],re.I)) for r in rules["rules"]])
+   self._static={s:self._classify_asset(a) for s,a in assets.items()}
+  def _classify_asset(self,a):return classify_name(a.get("name"),self.frozen.patterns)
+@@ -37,6 +42,7 @@
+          f=self.frozen;asset=f.day['assets'].get(symbol) if asset is None else asset;reasons=set()
+          if asset is None:return {'ASSET_STATUS_UNKNOWN'},'TYPE_UNKNOWN',(),()
+          if symbol in f.activity:reasons.add('ACTIVITY_DENYLIST_EXACT_MATCH')
++         if symbol in self.owner_exclusions:reasons.add('OWNER_ACTIVITY_EXCLUSION_EXACT_MATCH')
+          if symbol in f.manual:reasons.add('TYPE_ADR_MANUAL')
+          exception=f.type_manual.get(symbol)
+          if exception:
+--- /dev/null
++++ R10.3/ipr/entry_shadow.py
+@@ -0,0 +1,410 @@
++"""Bounded, best-effort observation outside the byte-frozen engine.
++
++No app state/record fields, prices, permission, timers or Redis calls are changed.
++Every callback is isolated; stdout is never used by the asynchronous writer.
++"""
++import collections,datetime,functools,hashlib,json,math,os,queue,re,threading,time
++from .price_policy import entry_price_eligible
++from . import price_policy
++from .telemetry_safe import bounded
++from constants import ENTRY_PRICE_WAIT_SECONDS,MAX_ENTRY_TRADE_AGE_SECONDS
++
++UTC=datetime.timezone.utc
++MAX_OPPORTUNITIES=64
++TRADE_RING=8
++GATE_HISTORY=2048
++MAX_LINE_BYTES=2048
++QUEUE_SIZE=128
++DETAILS_PER_SYMBOL_MINUTE=4
++EVENTS_PER_SYMBOL_MINUTE=8
++DETAILS_GLOBAL_MINUTE=60
++EVENTS_GLOBAL_MINUTE=240
++MAX_EVENTS_DAY=8192
++MAX_BYTES_DAY=10*1024*1024
++
++def instant(x):
++    if isinstance(x,datetime.datetime):return x.astimezone(UTC)
++    return datetime.datetime.fromisoformat(x.replace('Z','+00:00')).astimezone(UTC)
++def text(x):return x if isinstance(x,str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}',x) else None
++def number(x):return x if type(x) in (int,float) and math.isfinite(x) else None
++def timestamp(x):
++    try:return instant(x).isoformat()
++    except BaseException:return None
++def field_time(record,key):return timestamp(record.get(key))
++
++def notify(observer,name,*a,**kw):
++    try:return observer.safe(name,*a,**kw)
++    except BaseException:
++        if name=='gate':
++            try:observer.gate_history_lost=True
++            except BaseException:pass
++        return None
++
++class ObservedOpportunities(dict):
++    """Publish exactly the original value first; callback cannot roll it back."""
++    def __init__(self,initial,callback):super().__init__(initial);self.callback=callback
++    def __setitem__(self,key,value):
++        super().__setitem__(key,value)
++        try:self.callback(key,value)
++        except BaseException:pass
++
++class EntryShadow:
++    def __init__(self,p,state,wall=lambda:datetime.datetime.now(UTC),clock=time.monotonic,sink=None,boot=None):
++        self.p=p;self.state=state;self.wall=wall;self.clock=clock;self.boot=boot
++        self.lock=threading.RLock();self.local=threading.local();self.ops={};self.by_symbol={}
++        self.gates=collections.deque(maxlen=GATE_HISTORY);self.gate_history_lost=False;self.closed=collections.deque(maxlen=8)
++        self.counts=collections.Counter();self.errors=0;self.busy=0;self.generation=0
++        self.q=queue.Queue(QUEUE_SIZE);self.stop=threading.Event();self.thread=None
++        self.sink=sink or (lambda data:os.write(2,data))
++        self.day=None;self.day_events=0;self.day_bytes=0;self.minute=None;self.minute_symbols={};self.minute_total=0;self.minute_details=0
++
++    def safe(self,name,*a,**kw):
++        # A damaged/slow observer cannot hold up an engine/reader thread.
++        if not self.lock.acquire(blocking=False):
++            self.busy+=1
++            if name=='gate':self.gate_history_lost=True
++            return None
++        try:return getattr(self,name)(*a,**kw)
++        except BaseException:
++            self.errors+=1
++            if name=='gate':self.gate_history_lost=True
++            return None
++        finally:self.lock.release()
++
++    def start(self):
++        def write():
++            while not self.stop.is_set() or not self.q.empty():
++                try:data=self.q.get(timeout=.2)
++                except queue.Empty:continue
++                try:
++                    n=self.sink(data)
++                    if n is not None and n!=len(data):self.counts['writer_errors']+=1
++                except BaseException:self.counts['writer_errors']+=1
++                finally:self.q.task_done()
++        self.thread=threading.Thread(target=write,name='ipr-entry-shadow-log',daemon=True);self.thread.start()
++    def close(self):self.stop.set() # Never wait for a potentially blocked log sink.
++
++    def _emit(self,stage,symbol,fields,detail=False):
++        now=self.wall();day=now.date().isoformat();minute=int(now.timestamp()//60)
++        if self.day is None or day>self.day:self.day=day;self.day_events=0;self.day_bytes=0
++        if self.minute is None or minute>self.minute:self.minute=minute;self.minute_symbols={};self.minute_total=0;self.minute_details=0
++        bucket=self.minute_symbols.setdefault(symbol,[0,0]) if symbol in self.minute_symbols or len(self.minute_symbols)<MAX_OPPORTUNITIES else None
++        if bucket is None or bucket[0]>=EVENTS_PER_SYMBOL_MINUTE or self.minute_total>=EVENTS_GLOBAL_MINUTE or (detail and (bucket[1]>=DETAILS_PER_SYMBOL_MINUTE or self.minute_details>=DETAILS_GLOBAL_MINUTE)):
++            self.counts['log_rate_dropped']+=1;return
++        row={'stage':stage,'session':self.p.session,'boot':self.boot,'symbol':symbol,'observed_at':now.isoformat(),'policy_enforced':price_policy.ENTRY_PRICE_POLICY_ENFORCED,**fields}
++        data=(json.dumps(row,allow_nan=False,separators=(',',':'))+'\n').encode()
++        if len(data)>MAX_LINE_BYTES:
++            if 'context' in row:
++                ctx=row['context'];row['context']={kind:{k:v for k,v in values.items() if k in {
++                    'fetch_seconds','evaluation_seconds','rest_wait_seconds','rest_hold_seconds','logical_cycle_at',
++                    'elapsed_to_publication_seconds','canonical_seconds','canonical_started_at','canonical_returned_at','confluence_total_seconds','rest_measurement_available'}}
++                    for kind,values in ctx.items() if kind in ('native','confluence')}
++            row['details_truncated']=True
++            data=(json.dumps(row,allow_nan=False,separators=(',',':'))+'\n').encode()
++        if len(data)>MAX_LINE_BYTES:
++            row={k:v for k,v in row.items() if k not in {'nearest_same_price','first_eligible'}}
++            data=(json.dumps(row,allow_nan=False,separators=(',',':'))+'\n').encode()
++        if len(data)>MAX_LINE_BYTES:self.counts['log_size_dropped']+=1;return
++        if self.day_events>=MAX_EVENTS_DAY or self.day_bytes+len(data)>MAX_BYTES_DAY:
++            self.counts['log_day_dropped']+=1;return
++        self.day_events+=1;self.day_bytes+=len(data);bucket[0]+=1;self.minute_total+=1
++        if detail:bucket[1]+=1;self.minute_details+=1
++        try:self.q.put_nowait(data)
++        except queue.Full:self.counts['log_queue_dropped']+=1
++
++    def gate(self,row):
++        at=instant(row['at'])
++        if self.gates and at<self.gates[-1][0]:self.gate_history_lost=True
++        self.gates.append((at,bool(row['to'])))
++    def seed_gate(self):self.gates.append((self.wall(),bool(self.state.get('scan_ok'))))
++    def gate_at(self,at):
++        if self.gate_history_lost:return None
++        for when,value in reversed(self.gates):
++            if when<=at:return value
++        return None
++    def _contexts(self):return getattr(self.local,'contexts',[])
++    def context_begin(self,kind,args):
++        ctx={'kind':kind,'start':self.clock(),'wall':self.wall().isoformat()}
++        if kind=='native':ctx.update(logical_cycle_at=timestamp(args[0]) if args else None,fetch_seconds=0.,evaluation_seconds=0.,rest_wait_seconds=0.,rest_hold_seconds=0.,rest_count=0,rest_measurement_available=False)
++        if kind=='bar':ctx.update(symbol=text(args[0]),received_at=timestamp(args[2]))
++        if kind=='confluence':ctx.update(symbol=text(args[0]),signals={},logical_argument_at=timestamp(args[1]) if len(args)>1 else None)
++        if kind=='evaluate':ctx.update(symbol=text(args[0]))
++        if kind=='get':
++            ctx['record_type']=args[1] if len(args)>1 and args[1] in ('early_core','base_ready','opportunity') else None
++            for parent in self._contexts():
++                if parent['kind']=='confluence':parent.setdefault('first_get_at',ctx['wall'])
++        self.local.contexts=self._contexts()[-7:]+[ctx];return ctx
++    def rest_scope(self,ctx,available):
++        if ctx is not None:ctx['rest_measurement_available']=available
++    def context_end(self,ctx,result,failed):
++        if ctx is None:return
++        elapsed=max(0.,self.clock()-ctx['start']);stack=self._contexts()
++        try:
++            native=next((c for c in stack if c['kind']=='native'),None)
++            confluence=next((c for c in stack if c['kind']=='confluence'),None)
++            if ctx['kind']=='fetch' and native is not None:
++                native['fetch_seconds']+=elapsed;native['last_fetch_seconds']=elapsed
++            elif ctx['kind']=='evaluate' and native is not None:
++                native['evaluation_seconds']+=elapsed;native['last_evaluation_seconds']=elapsed;native['last_evaluation_symbol']=ctx.get('symbol')
++            elif ctx['kind']=='canonical' and confluence is not None:
++                confluence['canonical_seconds']=elapsed;confluence['canonical_started_at']=ctx['wall'];confluence['canonical_returned_at']=self.wall().isoformat()
++            elif ctx['kind']=='get' and confluence is not None and isinstance(result,dict) and ctx.get('record_type') in ('early_core','base_ready'):
++                confluence['signals'][ctx['record_type']]={k:field_time(result,k) for k in ('decision_available_ts','received_at','bar_end_ts')}
++            elif ctx['kind']=='get' and confluence is not None and isinstance(result,dict) and ctx.get('record_type')=='opportunity':
++                confluence['existing_canonical_loaded']=result.get('state')=='CONFLUENCE_VALID'
++            elif ctx['kind']=='confluence' and ctx.get('opid') in self.ops:
++                self.ops[ctx['opid']]['context']['confluence_total_seconds']=elapsed
++            elif ctx['kind']=='native':self.counts['native_cycles_observed']+=1
++        finally:self.local.contexts=[c for c in stack if c is not ctx]
++
++    def rest(self,operation,wait,hold):
++        def record():
++            for c in self._contexts():
++                if c['kind']=='native':
++                    c['rest_count']+=1;c['rest_wait_seconds']+=wait;c['rest_hold_seconds']+=hold
++        if self.lock.acquire(False):
++            try:record()
++            except BaseException:self.errors+=1
++            finally:self.lock.release()
++        else:self.busy+=1
++
++    def _context_snapshot(self):
++        out={};now=self.clock()
++        for c in self._contexts():
++            if c['kind'] in ('native','bar','confluence'):
++                row={k:v for k,v in c.items() if k not in ('start','kind','opid')}
++                row['elapsed_to_publication_seconds']=max(0.,now-c['start']);out[c['kind']]=row
++        return out
++    def _id(self,symbol,record):
++        trigger=instant(record['entry_trigger_ts'])
++        key=hashlib.sha256((self.p.session+'|'+symbol+'|'+trigger.isoformat()).encode()).hexdigest()[:20]
++        return key,trigger
++    def publish(self,symbol,record,restored=False):
++        key,trigger=self._id(symbol,record)
++        if key in self.ops:self.by_symbol[symbol]=(id(record),key);return
++        if len(self.ops)>=MAX_OPPORTUNITIES:self.counts['opportunity_capacity_dropped']+=1;return
++        now=self.wall();self.generation+=1
++        restored=restored or any(c.get('existing_canonical_loaded') for c in self._contexts() if c['kind']=='confluence')
++        origin='canonical_restore_or_initial' if restored else 'engine_cache_publication'
++        state={'opid':key,'symbol':symbol,'trigger':trigger,'deadline':trigger+datetime.timedelta(seconds=ENTRY_PRICE_WAIT_SECONDS),
++               'published':now,'origin':origin,'gate_signal':self.gate_at(trigger),'gate_publication':bool(self.state.get('scan_ok')),
++               'context':self._context_snapshot(),'ring':collections.deque(maxlen=TRADE_RING),'received':0,'rejected':0,'processed':0,
++               'within_wait_received':0,'unknown':0,'first_eligible':None,'pre_first_count':None,'pre_first_rejected_pct':None,
++               'errors_at_start':self.errors,'busy_at_start':self.busy,'metadata':collections.Counter()}
++        self.ops[key]=state;self.by_symbol[symbol]=(id(record),key);self.counts['opportunities']+=1
++        for c in self._contexts():
++            if c['kind']=='confluence':c['opid']=key
++        self._emit('R103_OPPORTUNITY_PUBLISHED',symbol,{'opid':key,'trigger_at':trigger.isoformat(),'deadline':state['deadline'].isoformat(),
++             'publication_delay_seconds':(now-trigger).total_seconds(),'appeared_after_deadline':now>state['deadline'],
++             'scan_ok_at_trigger':state['gate_signal'],'scan_ok_at_publication':state['gate_publication'],'origin':origin,'context':state['context']})
++    def ensure_map(self):
++        original=self.p._entry_opportunities
++        if not isinstance(original,ObservedOpportunities):
++            self.p._entry_opportunities=ObservedOpportunities(original,lambda s,r:self.safe('publish',s,r))
++        for symbol,record in tuple(self.p._entry_opportunities.items()):
++            if record.get('state')=='CONFLUENCE_VALID':self.publish(symbol,record,True)
++    def _op(self,symbol):
++        record=self.p._entry_opportunities.get(symbol)
++        if record is None:return None
++        known=self.by_symbol.get(symbol)
++        if known and known[0]==id(record):return self.ops.get(known[1])
++        key,_=self._id(symbol,record)
++        if key not in self.ops:self.publish(symbol,record,True)
++        return self.ops.get(key)
++
++    def _message(self,msg,received):
++        c=msg.get('c');z=msg.get('z');schema={}
++        schema['z_missing']='z' not in msg;schema['c_missing']='c' not in msg
++        schema['c_empty']=isinstance(c,list) and not c
++        schema['z_unexpected']=not schema['z_missing'] and (not isinstance(z,str) or len(z)!=1 or z not in 'ABCO')
++        schema['c_unexpected']=not schema['c_missing'] and (not isinstance(c,list) or len(c)>16 or any(not isinstance(v,str) or len(v)!=1 for v in c[:16]))
++        if isinstance(c,list) and len(c)>16:eligible=None
++        else:eligible=entry_price_eligible(msg)
++        flags=[v if isinstance(v,str) and len(v)==1 and v.isprintable() else '[INVALID]' for v in c[:16]] if isinstance(c,list) else None
++        identifier=msg.get('i');identifier=identifier if type(identifier) is int else None
++        row={'i':identifier,'x':text(msg.get('x')),'p':number(msg.get('p')),'s':number(msg.get('s')),
++             't':timestamp(msg.get('t')),'c':flags,'z':z if isinstance(z,str) and len(z)==1 and z.isprintable() else None,
++             'received_at':timestamp(received),'seq':msg.get('_seq') if type(msg.get('_seq')) is int else None,
++             'price_eligible':eligible,'schema':schema}
++        return row
++    def _same(self,a,b):return all(a.get(k)==b.get(k) for k in ('i','x','p','t','received_at'))
++    def _eligible_in_wait(self,op,row):
++        if row['price_eligible'] is not True or row['p'] is None or row['p']<=0 or row['t'] is None:return False
++        received=instant(row['received_at']);age=(received-instant(row['t'])).total_seconds()
++        return op['trigger']<=received<=op['deadline'] and 0<=age<=MAX_ENTRY_TRADE_AGE_SECONDS
++    def trade(self,symbol,msg,received,source):
++        op=self._op(symbol)
++        if op is None:return None
++        row=self._message(msg,received);row['source']=source;row['opid']=op['opid']
++        within=op['trigger']<=instant(row['received_at'])<=op['deadline']
++        if source=='READER':
++            op['received']+=1;op['rejected']+=int(row['price_eligible'] is False);op['unknown']+=int(row['price_eligible'] is None);op['within_wait_received']+=int(within)
++            self.counts['received_active_opportunity_TRADES']+=1
++            self.counts['price_rejected']+=int(row['price_eligible'] is False);self.counts['price_unknown']+=int(row['price_eligible'] is None)
++            for k,v in row['schema'].items():
++                if v:op['metadata'][k]+=1;self.counts[k]+=1
++            op['ring'].append(row)
++            self._emit('R103_PRICE_SHADOW_TRADE',symbol,{'opid':op['opid'],**row,'within_wait':within},True)
++        else:
++            op['processed']+=1
++            old=next((x for x in reversed(op['ring']) if self._same(x,row)),None)
++            if old is not None:old['seq']=row['seq']
++            else:op['ring'].append(row);self.counts['process_only_trade_observations']+=1
++        if self._eligible_in_wait(op,row) and op['first_eligible'] is None:
++            op['first_eligible']=dict(row)
++            if source=='READER':
++                n=op['received']-1;op['pre_first_count']=n
++                op['pre_first_rejected_pct']=(100*op['rejected']/n if n else 0.) if not op['unknown'] else None
++            self._emit('R103_FIRST_ELIGIBLE_TRADE',symbol,{'opid':op['opid'],'first_eligible':row,'preceding_received_count':op['pre_first_count'],
++                  'preceding_rejected_pct':op['pre_first_rejected_pct'],'seconds_from_trigger':(instant(row['received_at'])-op['trigger']).total_seconds()})
++        return row
++    def received(self,msg,received):
++        if msg.get('T')=='t':return self.trade(msg.get('S'),msg,received,'READER')
++
++    def process_begin(self,symbol,msg,received):
++        prior=getattr(self.local,'current_trade',None)
++        self.local.current_trade=self.trade(symbol,msg,received,'PROCESS')
++        return {'prior':prior}
++    def process_end(self,token):
++        if token is not None:self.local.current_trade=token['prior']
++
++    def commit(self,symbol,trade,selected,current):
++        if not isinstance(trade,dict):return
++        op=self.ops.get(current.get('opid')) if isinstance(current,dict) else None
++        if op is None:op=next((x for x in self.ops.values() if x['symbol']==symbol),None)
++        if op is None:return
++        # Canonical trade.created_at is built from entry_alert_sent_at by EntryCommitBuilder.
++        price=number(trade.get('entry_alert_price'));logical=instant(trade['created_at'])
++        rows=list(op['ring'])+([current] if isinstance(current,dict) else [])
++        same=[x for x in rows if x['p']==price]
++        nearest=min(same,key=lambda x:abs((instant(x['received_at'])-logical).total_seconds())) if same else None
++        exact=None
++        if selected is not None:
++            exact=next((x for x in reversed(same) if x['seq']==selected.sequence and instant(x['received_at'])==selected.received_at and instant(x['t'])==selected.trade_ts),None)
++        self._emit('R103_ENTRY_PRICE_SHADOW',symbol,{'opid':op['opid'],'entry_price':price,'entry_at_declared':logical.isoformat(),
++                  'selected_trade_policy_eligible':exact['price_eligible'] if exact else None,
++                  'triggering_trade_policy_eligible':current.get('price_eligible') if isinstance(current,dict) else None,
++                  'counterfactual_ENTRY':'NOT_SIMULATED','selected_match':'EXACT_RECEIPT_SEQUENCE_MARKET_TIME_PRICE' if exact else 'UNKNOWN',
++                  'selected_trade':exact,'nearest_same_price':nearest})
++        self._finish(op,'ENTRY_COMMITTED',None,logical)
++    def terminal(self,record,state,reason):
++        key,_=self._id(record['symbol'],record);op=self.ops.get(key)
++        if op is not None:self._finish(op,text(state),text(reason),None)
++    def _finish(self,op,outcome,reason,logical):
++        now=self.wall();gaps=self.errors!=op['errors_at_start'] or self.busy!=op['busy_at_start']
++        full=op['origin']=='engine_cache_publication' and op['published']<=op['trigger'] and not gaps
++        yes=op['first_eligible'] is not None
++        within_result=True if yes else False if full and now>=op['deadline'] else None
++        row={'opid':op['opid'],'trigger_at':op['trigger'].isoformat(),'published_at':op['published'].isoformat(),
++             'publication_delay_seconds':(op['published']-op['trigger']).total_seconds(),'terminal_observed_at':now.isoformat(),
++             'trigger_to_terminal_observed_seconds':(now-op['trigger']).total_seconds(),'terminal_declared_at':logical.isoformat() if logical else None,
++             'outcome':outcome,'reason':reason,'scan_ok_at_trigger':op['gate_signal'],'scan_ok_at_terminal':bool(self.state.get('scan_ok')),
++             'received_TRADES':op['received'],'processed_TRADES':op['processed'],'rejected_price_conditions':op['rejected'],
++             'rejected_pct':100*op['rejected']/op['received'] if op['received'] and not op['unknown'] else None,'unknown_policy_count':op['unknown'],'within_wait_received':op['within_wait_received'],
++             'eligible_received_in_wait':within_result,'first_eligible':op['first_eligible'],
++             'preceding_first_eligible_count':op['pre_first_count'],'preceding_first_eligible_rejected_pct':op['pre_first_rejected_pct'],
++             'received_coverage_starts_at':op['published'].isoformat(),'coverage_from_trigger':full,'observation_gaps':gaps,
++             'appeared_after_deadline':op['published']>op['deadline'],'context':op['context']}
++        self._emit('R103_OPPORTUNITY_FINAL',op['symbol'],row)
++        self.closed.append({k:row[k] for k in ('opid','outcome','reason','eligible_received_in_wait','coverage_from_trigger')})
++        self.ops.pop(op['opid'],None);self.counts['opportunities_finalized']+=1
++        known=self.by_symbol.get(op['symbol'])
++        if known and known[1]==op['opid']:self.by_symbol.pop(op['symbol'],None)
++    def snapshot(self):
++        row={'mode':'ENFORCED' if price_policy.ENTRY_PRICE_POLICY_ENFORCED else 'SHADOW','counts':dict(self.counts),'observer_errors':self.errors,'observations_skipped_busy':self.busy,
++             'gate_history_lost':self.gate_history_lost,
++             'active_tracked':len(self.ops),'log_queue':self.q.qsize(),'day_log_events_reserved':self.day_events,'day_log_bytes_reserved':self.day_bytes,
++             'coverage':'opportunity-visible READER scope; PROCESS_ONLY separate; check error/gap counters'}
++        result=bounded(row,1024)
++        if result and result.get('truncated'):
++            row['counts']={k:self.counts[k] for k in ('received_active_opportunity_TRADES','price_rejected','price_unknown','z_missing','c_missing','c_empty','z_unexpected','c_unexpected','log_rate_dropped','log_day_dropped','log_queue_dropped','writer_errors','opportunity_capacity_dropped')}
++            row.pop('coverage',None);row['counts_truncated']=True;return bounded(row,1024)
++        return result
++
++def install_shadow(r,state,api,boot):
++    """All installed wrappers call the original exactly once; no app exception swallowed."""
++    observer=None
++    try:
++        p=r.a.bridge.p;observer=EntryShadow(p,state,wall=r.wall,boot=getattr(r,'boot_number',None));r.price_shadow=observer
++        notify(observer,'seed_gate');gate=state['_scan_gate'];old_log=gate.log
++        def logged(row):
++            notify(observer,'gate',row)
++            return old_log(row)
++        gate.log=logged
++        old_receive=r.observe_stream
++        def received(msg,at):
++            try:return old_receive(msg,at) if old_receive else None
++            finally:
++                try:
++                    if msg.get('T')=='t' and msg.get('S') in p._entry_opportunities:notify(observer,'received',msg,at)
++                except BaseException:pass
++        r.observe_stream=received
++        def context_method(obj,name,kind):
++            original=getattr(obj,name,None)
++            if original is None:return
++            @functools.wraps(original)
++            def wrapped(*a,**kw):
++                if kind=='get':
++                    try:tracked=any(c['kind']=='confluence' for c in observer._contexts())
++                    except BaseException:tracked=False
++                    if not tracked:return original(*a,**kw)
++                ctx=notify(observer,'context_begin',kind,a)
++                result=None;failed=True
++                try:
++                    if kind=='native':
++                        from .telemetry_safe import observing
++                        with observing(lambda:api.observe_requests(lambda *v:notify(observer,'rest',*v))) as available:
++                            notify(observer,'rest_scope',ctx,available)
++                            result=original(*a,**kw)
++                    else:result=original(*a,**kw)
++                    failed=False;return result
++                finally:
++                    notify(observer,'context_end',ctx,result,failed)
++                    # TLS cleanup must run even when the nonblocking observer lock is busy.
++                    try:observer.local.contexts=[c for c in observer._contexts() if c is not ctx][-8:]
++                    except BaseException:pass
++            setattr(obj,name,wrapped)
++        for obj,name,kind in [(p,'on_bar','bar'),(p,'poll_native5','native'),(p,'_confluence','confluence'),(p,'_get','get'),
++                              (p.rest,'bars_multi','fetch'),(p.cw,'evaluate_and_persist','canonical'),
++                              (p.ec,'evaluate_with_telemetry','evaluate'),(p.ec,'evaluate','evaluate')]:context_method(obj,name,kind)
++        original_refresh=p.refresh_runtime_caches
++        @functools.wraps(original_refresh)
++        def refresh(*a,**kw):
++            # Keep original cache refresh and observer-map installation atomic
++            # against original engine writers; never replace a stale copied dict.
++            with p._decision_lock:
++                result=original_refresh(*a,**kw);notify(observer,'ensure_map');return result
++        p.refresh_runtime_caches=refresh;notify(observer,'ensure_map')
++        original_trade=p.on_trade
++        @functools.wraps(original_trade)
++        def on_trade(symbol,msg,at,allow):
++            token=notify(observer,'process_begin',symbol,msg,at)
++            try:return original_trade(symbol,msg,at,allow)
++            finally:
++                notify(observer,'process_end',token)
++                try:observer.local.current_trade=token['prior'] if token is not None else None
++                except BaseException:pass
++        p.on_trade=on_trade
++        original_entry=p._try_entry_checked
++        @functools.wraps(original_entry)
++        def entry(symbol,at):
++            selected=None;before=None
++            try:
++                rows=p.trades.get(symbol,[]);selected=rows[-1] if rows else None;before=p._active_by_symbol.get(symbol)
++            except BaseException:pass
++            result=original_entry(symbol,at)
++            try:
++                after=p._active_by_symbol.get(symbol)
++                if after is not None and after is not before:notify(observer,'commit',symbol,after,selected,getattr(observer.local,'current_trade',None))
++            except BaseException:observer.errors+=1
++            return result
++        p._try_entry_checked=entry
++        original_terminal=p._terminal_opportunity
++        @functools.wraps(original_terminal)
++        def terminal(symbol,record,at,outcome,reason):
++            result=original_terminal(symbol,record,at,outcome,reason);notify(observer,'terminal',record,outcome,reason);return result
++        p._terminal_opportunity=terminal
++        observer.start()
++    except BaseException:
++        if observer is not None:observer.errors+=1
++    return observer
+--- /dev/null
++++ R10.3/ipr/price_policy.py
+@@ -0,0 +1,33 @@
++"""ENTRY admission only; never drop a TRADE or change open-trade monitoring.
++
++Alpaca Market Data FAQ, stock minute-bar OC and HL eligibility, reviewed
++2026-11-08: https://docs.alpaca.markets/us/docs/market-data-faq
++All conditions must permit both price components for the supplied tape.
++Unknown/missing metadata fails closed for ENTRY. No size threshold.
++"""
++from types import MappingProxyType
++
++# R10.3: only this isolated flag controls future ENTRY enforcement. SHADOW now.
++ENTRY_PRICE_POLICY_ENFORCED = False
++
++def price_policy_allows_entry(message):
++    if not ENTRY_PRICE_POLICY_ENFORCED:
++        return True
++    return entry_price_eligible(message)
++
++MINUTE_PRICE_CONDITIONS = MappingProxyType({
++    'A': frozenset((' ', 'E', 'F', 'K', 'L', 'O', 'T', 'X', '5', '6')),
++    'B': frozenset((' ', 'E', 'F', 'K', 'L', 'O', 'T', 'X', '5', '6')),
++    'C': frozenset(('@', 'A', 'B', 'D', 'F', 'K', 'L', 'O', 'T', 'X', 'Y', '5', '6')),
++    'O': frozenset(('@', 'T')),
++})
++
++def entry_price_eligible(message):
++    tape = message.get('z')
++    conditions = message.get('c')
++    if not isinstance(tape, str) or tape not in MINUTE_PRICE_CONDITIONS:
++        return False
++    if not isinstance(conditions, (list, tuple)) or not conditions:
++        return False
++    permitted = MINUTE_PRICE_CONDITIONS[tape]
++    return all(isinstance(c, str) and c in permitted for c in conditions)
+--- R9.3/ipr/runtime.py
++++ R10.3/ipr/runtime.py
+@@ -80,6 +80,8 @@
+   try:valid=cls.eligible(s) and 1<=float(m['p'])<=50 and 0<=(now-dt(m['t'])).total_seconds()<=60
+   except Exception:return False
+   if not valid:return False
++  from ipr.price_policy import price_policy_allows_entry
++  if not price_policy_allows_entry(m):return False # R10.3 flag=False: always passes, SHADOW only.
+   gate=prepared.get('_scan_gate')
+   allowed=gate.expire() if gate is not None else prepared['scan_ok']
+   if not allowed:
+@@ -134,6 +136,11 @@
+  r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
+  gate=gate_for(state,time.monotonic,r.wall,started);r.a.scan_gate=gate
+  state['_runtime']=r;state['_blocked_trades']=BlockedTrades(bundle['eligible'])
++ shadow=None
++ try:
++  from .entry_shadow import install_shadow
++  shadow=install_shadow(r,state,api,boot)
++ except BaseException:pass # Diagnostics cannot prevent application startup.
+  from .observability import PauseObserver
+  observer=PauseObserver(getattr(p,'contention_probe',None),lambda row:print(json.dumps(row),flush=True));observer.start()
+  r.failure=getattr(r,'failure',None) or FirstFailure()
+@@ -164,55 +171,74 @@
+  async def scan():
+   from r9core.chain import EvidenceRecordTooLarge,ChainFailure
+   from ipr.scan_health import gate_for,ScanExclusions,RTHVolumeStale
++  from ipr.scan_timing import safe_timings
++  timings=safe_timings(clock=time.monotonic,wall=r.wall);r.scan_timings=timings
+   scan_gate=gate_for(state,time.monotonic,r.wall)
+   volumes=None
+   while not r.stop.is_set():
+    start=time.monotonic();market=bundle['market'];now=r.wall()
+    if state['ready'] and market and dt(market['open'])<=now<dt(market['close']):
+     exclusions=ScanExclusions();generation=scan_gate.generation
++    timings.begin(start,now)
+     try:
+      def work():
+       nonlocal volumes
+-      if volumes is None:volumes=SessionVolumes('/tmp/ipr_rth_'+bundle['session']+'.sqlite',bundle['calendar'],bundle['session'])
+-      totals=volumes.update(api,bundle['eligible'],r.wall());snaps=r.a.rest.snapshot_envelopes(bundle['eligible'],r.wall);at=r.wall();scores={}
+-      for missing in set(bundle['eligible'])-set(snaps):exclusions.add('SNAPSHOT_MISSING',missing)
+-      for s,e in snaps.items():
+-       row=base_score(s,e['data'],state['history']['features'].get(s),totals.get(s),at,dt(market['open']),floats,exclusions)
+-       if row:scores[s]=row
+-      exclusions.scoring_complete=True
+-      top=sorted(scores,key=lambda s:(-scores[s]['score95'],s))[:750];news.refresh(top)
+-      for s,row in scores.items():
+-       n=news.read(s) if s in top else {};pts=5 if n.get('positive') and n.get('bonus',0)>0 else 0
+-       row['score']=round(row['score95']+pts,12);row['parts']['news']=pts
++      with timings.phase('volume_fetch'):
++       if volumes is None:volumes=SessionVolumes('/tmp/ipr_rth_'+bundle['session']+'.sqlite',bundle['calendar'],bundle['session'])
++       totals=volumes.update(api,bundle['eligible'],r.wall())
++      with timings.phase('snapshot_fetch'):
++       snaps=r.a.rest.snapshot_envelopes(bundle['eligible'],r.wall);at=r.wall();scores={}
++      with timings.phase('base_evaluation'):
++       for missing in set(bundle['eligible'])-set(snaps):exclusions.add('SNAPSHOT_MISSING',missing)
++       for s,e in snaps.items():
++        row=base_score(s,e['data'],state['history']['features'].get(s),totals.get(s),at,dt(market['open']),floats,exclusions)
++        if row:scores[s]=row
++       exclusions.scoring_complete=True
++      with timings.phase('ranking'):
++       top=sorted(scores,key=lambda s:(-scores[s]['score95'],s))[:750]
++      with timings.phase('news_fetch'):news.refresh(top)
++      with timings.phase('news_evaluation'):
++       for s,row in scores.items():
++        n=news.read(s) if s in top else {};pts=5 if n.get('positive') and n.get('bonus',0)>0 else 0
++        row['score']=round(row['score95']+pts,12);row['parts']['news']=pts
+       # Source price freshness is rechecked AFTER possibly slow HMGET requests.
+-      end=r.wall()
+-      if scan_diagnostics.watermark(end,volumes.watermark)>120:raise RTHVolumeStale('RTH_VOLUME_STALE')
+-      for s,v in scores.items():
+-       if not 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60:exclusions.add('SNAPSHOT_AGE_GT60',s)
+-      scores={s:v for s,v in scores.items() if 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60}
+-      exclusions.snapshot_check_complete=True
+-      with p._decision_lock:needs=r.a.bridge.needs(recovery_symbols=r.a.barrier.persisted_R)
+-      blocked=bool(r.c.desired_bar) and (bool(r.c.inflight) or r.recovery_running or bool(r.a.recovering) or not r.a.transport_trusted)
+-      previous=set(getattr(selection,'current',set()));selection_now=time.monotonic()
+-      last=getattr(selection,'last',None);due=last is None or selection_now-last>=120 or bool(getattr(selection,'pending',set()))
+-      target=selection.update(scores,needs.pins,selection_now,blocked=blocked,utc_minute=end.replace(second=0,microsecond=0).isoformat())
+-      exclusions.selection(previous,scores,needs.pins,target,blocked,due)
+-      r.planner.propose(needs,set(target))
+-      save(redis,'scan:'+bundle['session'],{'at':end.isoformat(),'selected':target,'root_symbols':len(bundle['eligible']),'scores':{s:scores[s] for s in target if s in scores},'rth_watermark':volumes.watermark.isoformat(),'linear_approximation':True})
+-      scan_gate.success(generation,allowed=not r.stop.is_set());state['scan_at']=r.wall()
+-      exclusions.report(end,'SUCCESS')
+-      print(json.dumps({'stage':'IPR_SCAN','at':end.isoformat(),'ranked':len(scores),'BAR_desired':len(target),'news_candidates':len(top),'api_requests':api.requests,'duration_seconds':time.monotonic()-start}),flush=True)
++      with timings.phase('freshness'):
++       end=r.wall()
++       if scan_diagnostics.watermark(end,volumes.watermark)>120:raise RTHVolumeStale('RTH_VOLUME_STALE')
++       for s,v in scores.items():
++        if not 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60:exclusions.add('SNAPSHOT_AGE_GT60',s)
++       scores={s:v for s,v in scores.items() if 0<=(end-dt(v['snapshot_ts'])).total_seconds()<=60}
++       exclusions.snapshot_check_complete=True
++      with timings.phase('needs'):
++       with p._decision_lock:needs=r.a.bridge.needs(recovery_symbols=r.a.barrier.persisted_R)
++      with timings.phase('selection'):
++       blocked=bool(r.c.desired_bar) and (bool(r.c.inflight) or r.recovery_running or bool(r.a.recovering) or not r.a.transport_trusted)
++       previous=set(getattr(selection,'current',set()));selection_now=time.monotonic()
++       last=getattr(selection,'last',None);due=last is None or selection_now-last>=120 or bool(getattr(selection,'pending',set()))
++       target=selection.update(scores,needs.pins,selection_now,blocked=blocked,utc_minute=end.replace(second=0,microsecond=0).isoformat())
++       exclusions.selection(previous,scores,needs.pins,target,blocked,due)
++       r.planner.propose(needs,set(target))
++      with timings.phase('persistence'):
++       save(redis,'scan:'+bundle['session'],{'at':end.isoformat(),'selected':target,'root_symbols':len(bundle['eligible']),'scores':{s:scores[s] for s in target if s in scores},'rth_watermark':volumes.watermark.isoformat(),'linear_approximation':True})
++      with timings.phase('reporting'):
++       scan_gate.success(generation,allowed=not r.stop.is_set());state['scan_at']=r.wall()
++       exclusions.report(end,'SUCCESS')
++       print(json.dumps({'stage':'IPR_SCAN','at':end.isoformat(),'ranked':len(scores),'BAR_desired':len(target),'news_candidates':len(top),'api_requests':api.requests,'duration_seconds':time.monotonic()-start,'scan_attempt':timings.started,'started_at':now.isoformat(),'scan_timing':timings.attempt_snapshot()}),flush=True)
+      def scan_work():
+       # Observe activity only: scan_rest is NOT a gated operation.
+-      with r.heavy_window.operation('scan_rest'):return work()
++      with timings.requests(api):
++       with r.heavy_window.operation('scan_rest'):return work()
+      await asyncio.to_thread(scan_work)
+      scan_diagnostics.finish(True,time.monotonic()-start)
+-    except ChainFailure:
++     timings.finish(True,time.monotonic()-start,None,r.wall())
++    except ChainFailure as e:
++     timings.finish(False,time.monotonic()-start,reason(e),r.wall())
+      r.revoke('EVIDENCE_RECORD_TOO_LARGE');raise
+     except Exception as e:
+      scan_diagnostics.finish(False,time.monotonic()-start)
++     timings.finish(False,time.monotonic()-start,reason(e),r.wall())
+      scan_gate.failure(e);exclusions.report(r.wall(),'FAILED')
+-     print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e),'scan_ok':state['scan_ok'],'previous_success_preserved':type(e) is RTHVolumeStale and state['scan_ok']}),flush=True)
++     print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e),'scan_ok':state['scan_ok'],'previous_success_preserved':type(e) is RTHVolumeStale and state['scan_ok'],'duration_seconds':time.monotonic()-start,'at':r.wall().isoformat(),'started_at':now.isoformat(),'scan_attempt':timings.started,'scan_timing':timings.attempt_snapshot()}),flush=True)
+    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
+  async def native():
+   while not r.stop.is_set():
+@@ -230,8 +256,9 @@
+    gate.expire() # SCAN_VALIDITY_SECONDS=150; per-scan freshness stays 60 seconds.
+    await pause(r.stop,1.)
+  async def metrics():
+-  while not r.stop.is_set():
+-   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics(),'heavy_window':r.heavy_window.metrics(),'scan':scan_diagnostics.snapshot(),'scan_gate':state['_scan_gate'].snapshot() if '_scan_gate' in state else None,'scan_gate_blocked':state['_blocked_trades'].snapshot() if '_blocked_trades' in state else None,'rest_lock':getattr(getattr(r,'api',None),'lock_metrics',lambda:{})(),'evidence_chain':getattr(getattr(r,'state',None),'metrics',lambda:None)(),'invalidation_repeats':dict(getattr(r.a,'invalidation_counts',{}))}),flush=True)
++  from ipr.telemetry_safe import call as observe
++  while not r.stop.is_set():
++   print(json.dumps({'stage':'IPR_METRICS','at':r.wall().isoformat(),'resource':measure.sample(),'ws_ingress':r.ingress.snapshot() if r.ingress else None,'trusted':r.a.transport_trusted,'prep_ready':state['ready'],'scan_ok':state['scan_ok'],'turnover':selection.metrics(),'heavy_window':r.heavy_window.metrics(),'scan':scan_diagnostics.snapshot(),'scan_gate':state['_scan_gate'].snapshot() if '_scan_gate' in state else None,'scan_gate_blocked':state['_blocked_trades'].snapshot() if '_blocked_trades' in state else None,'rest_lock':getattr(getattr(r,'api',None),'lock_metrics',lambda:{})(),'scan_timing':getattr(getattr(r,'scan_timings',None),'snapshot',lambda:None)(),'entry_price_shadow':observe(getattr(r,'price_shadow',None),'safe','snapshot'),'evidence_chain':getattr(getattr(r,'state',None),'metrics',lambda:None)(),'invalidation_repeats':dict(getattr(r.a,'invalidation_counts',{}))}),flush=True)
+    await pause(r.stop,60.)
+  import signal
+  loop=asyncio.get_running_loop()
+@@ -250,6 +277,10 @@
+   gate.invalidate('GUARD_STOP');r.revoke('DIRECT_STOPPING');r.stop.set()
+   for t in tasks:t.cancel()
+   try:await close_tasks(tasks,r.failure,60.)
+-  finally:observer.close();getattr(clock,'close',lambda:None)()
++  finally:
++   if shadow is not None:
++    try:shadow.close()
++    except BaseException:pass
++   observer.close();getattr(clock,'close',lambda:None)()
+ 
+  return r.exit_reason
+--- /dev/null
++++ R10.3/ipr/scan_timing.py
+@@ -0,0 +1,101 @@
++"""Bounded scan observations only. No scheduling, remote I/O or decision inputs.
++
++Phases use monotonic elapsed wall time, not CPU time. REST wait/hold are
++subsets of phase time and must not be added again to the phase totals.
++"""
++import contextlib,copy,threading,time
++
++PHASES = ('volume_fetch','snapshot_fetch','base_evaluation','ranking',
++          'news_fetch','news_evaluation','freshness','needs','selection',
++          'persistence','reporting')
++
++class ScanTimings:
++    def __init__(self,clock=time.monotonic,wall=lambda:None):
++        self.clock=clock;self.wall=wall;self.lock=threading.Lock()
++        self.started=0;self.completed=0;self.successes=0;self.failures=0
++        self.current=None;self.last=None;self.reasons={};self.phase_stats={}
++        self.observation_errors=0
++
++    def _observe(self,fn):
++        try:
++            with self.lock:return fn()
++        except Exception:
++            # Diagnostics cannot replace a scan outcome or original exception.
++            self.observation_errors+=1
++
++    def begin(self,start,at):
++        def record():
++            self.started+=1
++            self.current={'attempt':self.started,'started_at':at.isoformat(),
++                          'started_monotonic':start,'phases':{},'active_phase':None,
++                          'failure_phase':None,'rest':{'lock_acquisitions':0,
++                          'wait_seconds':0.,'hold_seconds':0.,'by_phase':{},'measurement_available':None}}
++        self._observe(record)
++
++    @contextlib.contextmanager
++    def phase(self,name):
++        started=self.clock()
++        def enter():
++            if name not in PHASES:raise ValueError('UNKNOWN_SCAN_PHASE')
++            if self.current:self.current['active_phase']=name
++        self._observe(enter)
++        try:yield
++        except BaseException:
++            self._observe(lambda:self.current.update(failure_phase=name) if self.current else None)
++            raise
++        finally:
++            elapsed=max(0.,self.clock()-started)
++            def finish():
++                if self.current is None:return
++                row=self.current['phases'].setdefault(name,{'count':0,'seconds':0.})
++                row['count']+=1;row['seconds']+=elapsed;self.current['active_phase']=None
++                row=self.phase_stats.setdefault(name,{'count':0,'total_seconds':0.,'max_seconds':0.})
++                row['count']+=1;row['total_seconds']+=elapsed;row['max_seconds']=max(row['max_seconds'],elapsed)
++            self._observe(finish)
++
++    def rest(self,operation,wait,hold):
++        # Called only in the scan worker's thread-local API observation scope.
++        def record():
++            if self.current is None:return
++            rest=self.current['rest'];phase=self.current['active_phase'] or 'outside_phase'
++            row=rest['by_phase'].setdefault(phase,{'lock_acquisitions':0,'wait_seconds':0.,'hold_seconds':0.})
++            for target in (rest,row):
++                target['lock_acquisitions']+=1;target['wait_seconds']+=wait;target['hold_seconds']+=hold
++        self._observe(record)
++
++    @contextlib.contextmanager
++    def requests(self,api):
++        # Fixtures without a real HTTP client have no REST timing; do not invent it.
++        observe=getattr(api,'observe_requests',None)
++        self._observe(lambda:self.current['rest'].update(measurement_available=observe is not None) if self.current else None)
++        with observe(self.rest) if observe is not None else contextlib.nullcontext():yield
++
++    def finish(self,success,seconds,reason,at):
++        def record():
++            if self.current is None:return
++            self.completed+=1;self.successes+=int(success);self.failures+=int(not success)
++            if not success:
++                key=reason if reason in self.reasons or len(self.reasons)<16 else 'OTHER_FAILURE'
++                self.reasons[key]=self.reasons.get(key,0)+1
++            self.current.update(result='SUCCESS' if success else 'FAILED',reason=reason,
++                                duration_seconds=seconds,finished_at=at.isoformat())
++            self.last=self.current;self.current=None
++        self._observe(record)
++
++    def snapshot(self):
++        def capture():
++            return copy.deepcopy({'attempts_started':self.started,'attempts_completed':self.completed,
++                'successes':self.successes,'failures':self.failures,'failure_reasons':self.reasons,
++                'phase_totals':self.phase_stats,'active':self.current,'last':self.last,
++                'observation_errors':self.observation_errors,
++                'scope':'child-local bounded observations; elapsed includes waits, GIL and CPU throttling; REST wait/hold overlap phases; acquisitions include denied rechecks; news time includes cache/read latency; not a cause attribution'})
++        return self._observe(capture)
++
++    def attempt_snapshot(self):
++        return self._observe(lambda:copy.deepcopy(self.current if self.current is not None else self.last))
++
++def safe_timings(**kwargs):
++    from ipr.telemetry_safe import SafeTimings
++    try:inner=ScanTimings(**kwargs)
++    except BaseException:inner=None
++    return SafeTimings(inner)
+--- /dev/null
++++ R10.3/ipr/telemetry_safe.py
+@@ -0,0 +1,42 @@
++"""Observation failures may never replace/suppress application exceptions."""
++import contextlib,json
++
++def call(obj,name,*args,**kwargs):
++    try:return getattr(obj,name)(*args,**kwargs)
++    except BaseException:return None
++
++@contextlib.contextmanager
++def observing(factory,*args,**kwargs):
++    cm=None;entered=False
++    try:
++        cm=factory(*args,**kwargs);cm.__enter__();entered=True
++    except BaseException:pass
++    try:yield entered
++    except BaseException as error:
++        if entered:
++            try:cm.__exit__(type(error),error,error.__traceback__)
++            except BaseException:pass
++        raise # Ignore even a True suppression request by a broken observer.
++    else:
++        if entered:
++            try:cm.__exit__(None,None,None)
++            except BaseException:pass
++
++def bounded(value,limit):
++    try:
++        if len(json.dumps(value,allow_nan=False).encode())<=limit:return value
++        return {'truncated':True,'reason':'OBSERVATION_SIZE_LIMIT','limit_bytes':limit}
++    except BaseException:return None
++
++class SafeTimings:
++    def __init__(self,inner):self.inner=inner
++    @property
++    def started(self):
++        try:return self.inner.started
++        except BaseException:return None
++    def begin(self,*a,**kw):return call(self.inner,'begin',*a,**kw)
++    def finish(self,*a,**kw):return call(self.inner,'finish',*a,**kw)
++    def phase(self,*a,**kw):return observing(lambda:self.inner.phase(*a,**kw))
++    def requests(self,*a,**kw):return observing(lambda:self.inner.requests(*a,**kw))
++    def snapshot(self):return bounded(call(self.inner,'snapshot'),8192)
++    def attempt_snapshot(self):return bounded(call(self.inner,'attempt_snapshot'),4096)
+--- /dev/null
++++ R10.3/tests/fixtures/alpaca_ws_trade_official.json
+@@ -0,0 +1 @@
++{"T":"t","i":96921,"S":"AAPL","x":"D","p":126.55,"s":1,"t":"2021-02-22T15:51:44.208Z","c":["@","I"],"z":"C"}
+--- /dev/null
++++ R10.3/tests/r103_support.py
+@@ -0,0 +1,50 @@
++"""Controlled offline harness for frozen production methods, not a market replay.
++
++Synthetic opportunities/signals/receipt times are explicit. Commit sinks are
++Python lists only, with no Redis client and no transport. Trading methods are
++the unmodified reference_app implementation, including risk and monitoring.
++"""
++import json,threading,contextlib
++from collections import Counter
++from datetime import timedelta
++from types import SimpleNamespace as NS
++from production_pipeline import ProductionDecisionPipeline
++from signal_admission import SignalAdmission
++from state_store import base_record
++from ipr.data import dt
++
++class Lock:
++    def __init__(self):self.lock=threading.RLock()
++    def operation(self,name):return contextlib.nullcontext()
++    def __enter__(self):self.lock.acquire();return self
++    def __exit__(self,*a):self.lock.release()
++
++class Sinks:
++    def __init__(self):self.entries=[];self.followups=[];self.terminals=[]
++    def atomic_entry(self,*a):self.entries.append(json.loads(a[5]))
++    def atomic_trade_event(self,*a):self.followups.append(json.loads(a[5]))
++    def atomic_opportunity_terminal(self,*a):self.terminals.append(json.loads(a[-1]))
++
++def pipeline(symbol,start,price,signals=True):
++    p=object.__new__(ProductionDecisionPipeline);p._decision_lock=Lock()
++    p.session=start.date().isoformat();p.worker_id='offline-fixture';p.lua=Sinks()
++    p.leadership=NS(require_current=lambda:NS(leader_generation=1,worker_instance_id='offline-fixture'))
++    p.signal_gate=SignalAdmission(p.session,{'open_utc':(start-timedelta(hours=1)).isoformat(),'close_utc':(start+timedelta(hours=1)).isoformat()})
++    p._fixture_now=start;p.utc_now=lambda:p._fixture_now
++    p._fixture_signals=signals
++    p._get=lambda key,kind:{'bar_end_ts':start.isoformat(),'decision_available_ts':start.isoformat()} if p._fixture_signals else None
++    opp=base_record('opportunity',p.session,symbol,'CONFLUENCE_VALID',start.isoformat())
++    opp.update(e_id='e',b_id='b',delta_seconds=0,first_event='E',entry_trigger_ts=start.isoformat(),expiry=(start+timedelta(minutes=15)).isoformat(),terminal_reason=None,leader_generation=1,worker_instance_id=p.worker_id)
++    p._entry_opportunities={symbol:opp};p._entry_uncertain=set();p._active_by_symbol={}
++    p._structure_watch_symbols={symbol};p.halted=set();p.trades={};p.entry_trade_buffer_seconds=15
++    p.bars={symbol:[((start-timedelta(minutes=1)).isoformat(),price*.98,start)]}
++    p.terminal_counts=Counter();p.entry_exit_counts=Counter();p.entry_exit_counts_by_symbol=Counter()
++    p.raw_trade_messages_received=0
++    return p
++
++def trade(symbol,when,price,conditions=('@',),tape='C',sequence=1):
++    return dict(T='t',S=symbol,p=price,t=when.isoformat(),s=1,c=list(conditions),z=tape,_seq=sequence)
++
++def feed(p,msg,allow):
++    p._fixture_now=dt(msg['t'])
++    return p.on_trade(msg['S'],msg,p._fixture_now,allow)
+--- /dev/null
++++ R10.3/tests/test_r102.py
+@@ -0,0 +1,118 @@
++"""Measured phases and observational equivalence. Offline synthetic I/O only."""
++import contextlib,copy,threading,unittest
++from unittest.mock import patch
++from types import SimpleNamespace as NS
++from ipr.scan_timing import ScanTimings,PHASES
++from ipr.api import Alpaca
++from test_r71 import Sim
++import test_r71 as prior
++import test_r91 as watermark_tests
++
++class R102Timings(unittest.TestCase):
++    def fixture(self):
++        t=Sim(0);d=ScanTimings(t.clock,t.wall);d.begin(t.clock(),t.wall());return t,d
++    def test_exact_elapsed_phase_including_wait(self):
++        t,d=self.fixture()
++        with d.phase('volume_fetch'):t.sleep(7)
++        with d.phase('ranking'):t.sleep(2)
++        d.finish(True,9,None,t.wall());m=d.snapshot()
++        self.assertEqual(m['last']['phases']['volume_fetch']['seconds'],7)
++        self.assertEqual(m['phase_totals']['ranking']['total_seconds'],2)
++        self.assertEqual((m['successes'],m['failures']),(1,0));self.assertIsNone(m['active'])
++    def test_failure_phase_and_original_exception_preserved(self):
++        t,d=self.fixture();exc=ValueError('fixture')
++        with self.assertRaises(ValueError) as cm:
++            with d.phase('snapshot_fetch'):t.sleep(3);raise exc
++        self.assertIs(cm.exception,exc);d.finish(False,3,'ValueError',t.wall())
++        m=d.snapshot();self.assertEqual(m['last']['failure_phase'],'snapshot_fetch')
++        self.assertEqual(m['failure_reasons'],{'ValueError':1});self.assertEqual(m['failures'],1)
++    def test_snapshots_detached_and_storage_bounded(self):
++        t,d=self.fixture()
++        for i in range(1000):
++            d.begin(t.clock(),t.wall())
++            with d.phase('base_evaluation'):t.sleep(.001)
++            d.finish(False,.001,'R'+str(i),t.wall())
++        m=d.snapshot();self.assertLessEqual(len(m['failure_reasons']),17)
++        self.assertEqual(sum(m['failure_reasons'].values()),1000)
++        self.assertEqual(len(m['phase_totals']),1);self.assertEqual(m['attempts_completed'],1000)
++        m['last']['phases'].clear();self.assertTrue(d.snapshot()['last']['phases'])
++    def test_no_api_observer_does_not_invent_lock_measurement(self):
++        t,d=self.fixture()
++        with d.requests(NS()):
++            with d.phase('volume_fetch'):t.sleep(5)
++        self.assertEqual(d.snapshot()['active']['rest']['lock_acquisitions'],0)
++        self.assertFalse(d.snapshot()['active']['rest']['measurement_available'])
++    def test_observer_storage_fault_does_not_replace_business_exception(self):
++        t,d=self.fixture();d.current={'phases':None}
++        with self.assertRaisesRegex(RuntimeError,'business'):
++            with d.phase('ranking'):raise RuntimeError('business')
++        self.assertGreater(d.observation_errors,0)
++
++class R102REST(unittest.TestCase):
++    def api(self,t):
++        a=Alpaca({'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'})
++        a.timing_clock=t.clock
++        class Lock:
++            def acquire(self):t.sleep(2)
++            def release(self):pass
++        a.lock=Lock();return a
++    def test_scan_scope_wait_hold_and_counts_by_phase(self):
++        t=Sim(0);a=self.api(t);d=ScanTimings(t.clock,t.wall);d.begin(0,t.wall())
++        with d.requests(a),d.phase('volume_fetch'),a.operation('scan_rest'):
++            with a.serialized_request():t.sleep(3)
++        with a.operation('native'):
++            with a.serialized_request():t.sleep(9)
++        rest=d.snapshot()['active']['rest']
++        self.assertEqual((rest['lock_acquisitions'],rest['wait_seconds'],rest['hold_seconds']),(1,2,3))
++        self.assertEqual(rest['by_phase']['volume_fetch']['wait_seconds'],2)
++        self.assertEqual(a.lock_metrics()['operations']['native']['count'],1)
++        self.assertEqual(d.snapshot()['active']['phases']['volume_fetch']['seconds'],5)
++    def test_thread_local_ignores_native_on_another_thread(self):
++        t=Sim(0);a=self.api(t);rows=[]
++        with a.observe_requests(lambda *v:rows.append(v)):
++            worker=threading.Thread(target=lambda:self.request(a));worker.start();worker.join()
++            self.request(a)
++        self.assertEqual(len(rows),1)
++    def request(self,a):
++        with a.serialized_request():pass
++    def test_observer_failure_keeps_original_exception_and_releases_lock(self):
++        a=Alpaca({'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'})
++        def fail(*a):raise OSError('diagnostic')
++        with self.assertRaisesRegex(ValueError,'original'):
++            with a.observe_requests(fail),a.serialized_request():raise ValueError('original')
++        self.assertTrue(a.lock.acquire(False));a.lock.release()
++        self.assertIsNone(getattr(a.local,'request_observer',None))
++    def test_denied_recheck_is_measured_without_skipping_request(self):
++        t=Sim(0);a=self.api(t);allowed=iter([False,True]);a.request_allowed=lambda:next(allowed);rows=[]
++        with a.observe_requests(lambda *v:rows.append(v)),a.serialized_request():t.sleep(3)
++        self.assertEqual(len(rows),2);self.assertEqual(sum(x[1] for x in rows),4)
++        self.assertEqual(sum(x[2] for x in rows),3)
++
++class R102ActualScan(unittest.TestCase):
++    def capture(self,fn):
++        observed=[]
++        class Captured(ScanTimings):
++            def __init__(self,*a,**kw):super().__init__(*a,**kw);observed.append(self)
++        with patch('ipr.scan_timing.ScanTimings',Captured):result=fn()
++        return result,observed[0].snapshot()
++    def test_actual_success_exact_phases_same_plan_and_gate(self):
++        r,m=self.capture(lambda:prior.R71Scan().scan_once())
++        self.assertTrue(r[3]['scan_ok']);self.assertEqual(r[4].propose.call_count,1)
++        self.assertEqual(r[6],[54.,55.,80.]);self.assertEqual(r[0].at,107.)
++        phases=m['last']['phases'];self.assertEqual(phases['volume_fetch']['seconds'],1)
++        self.assertEqual(phases['snapshot_fetch']['seconds'],52)
++        self.assertEqual(m['last']['duration_seconds'],53)
++        self.assertEqual(set(phases),set(PHASES));self.assertEqual(m['successes'],1)
++    def test_actual_failure_duration_printed_not_inferred(self):
++        r,m=self.capture(lambda:prior.R71Scan().scan_once(durations=(1.,60.,60.)))
++        self.assertFalse(r[3]['scan_ok']);self.assertEqual(r[4].propose.call_count,0)
++        line=r[5][-1];self.assertEqual(line['duration_seconds'],121)
++        self.assertEqual(line['reason'],'RTH_VOLUME_STALE');self.assertIn('started_at',line)
++        self.assertEqual(m['last']['failure_phase'],'freshness')
++        self.assertEqual(m['failure_reasons'],{'RTH_VOLUME_STALE':1})
++    def test_watermark_and_snapshot_boundaries_unchanged(self):
++        for age,price_age,success,selected in [(100,0,True,['X']),(120,60,True,['X']),
++                                               (120.000001,0,False,[]),(100,61,True,[])]:
++            r,m=self.capture(lambda:watermark_tests.R91Watermark().actual_scan(age,price_age))
++            self.assertEqual(r[0]['scan_ok'],success);self.assertEqual(r[2],selected)
++            self.assertEqual(len(r[3]),int(success));self.assertEqual(m['successes'],int(success))
+--- /dev/null
++++ R10.3/tests/test_r103.py
+@@ -0,0 +1,291 @@
++"""R10.3: shadow equivalence, lifecycle timing, bounded output, fault isolation."""
++import contextlib,copy,io,json,threading,time,unittest
++from datetime import timedelta
++from types import SimpleNamespace as NS
++from unittest.mock import patch
++from pathlib import Path
++from r103_support import pipeline,trade,feed
++from test_direct import OP
++from test_r8 import filter_actual
++from ipr.data import dt
++from ipr.classifier import Classifier
++from ipr.scan_health import ScanGate
++from ipr.entry_shadow import EntryShadow,install_shadow,notify,ObservedOpportunities,MAX_LINE_BYTES,MAX_BYTES_DAY,MAX_EVENTS_DAY,QUEUE_SIZE
++from ipr.telemetry_safe import SafeTimings,observing
++from ipr.scan_timing import safe_timings
++from ipr import price_policy
++
++class Sim:
++    def __init__(self):self.t=0.
++    def wall(self):return OP+timedelta(seconds=self.t)
++    def clock(self):return self.t
++
++def rows(o):
++    result=[]
++    while not o.q.empty():result.append(json.loads(o.q.get_nowait()))
++    return result
++
++def fixture(shadow=True):
++    t=Sim();p=pipeline('X',OP,10);p._confluence_retry=set()
++    p.rest=NS(bars_multi=lambda *a,**kw:{})
++    p.ec=NS(evaluate=lambda *a,**kw:None,evaluate_with_telemetry=lambda *a,**kw:({},None))
++    p.cw=NS(evaluate_and_persist=lambda *a,**kw:(None,None))
++    p.refresh_runtime_caches=lambda:None
++    state={'ready':True,'scan_ok':True};state['_scan_gate']=ScanGate(state,t.clock,t.wall,log=lambda x:None)
++    r=NS(a=NS(bridge=NS(p=p)),wall=t.wall,observe_stream=lambda *a:None,boot_number=2)
++    if shadow:
++        with patch.object(EntryShadow,'start',lambda self:None):o=install_shadow(r,state,NS(),'fixture')
++        o.clock=t.clock
++    else:o=None
++    return t,p,state,r,o
++
++class R103Policy(unittest.TestCase):
++    def test_owner_INSE_only_and_ACTIVTY_frozen(self):
++        a=lambda s:dict(name=s+' Common Stock',exchange='NASDAQ',status='active',tradable=True,id=s)
++        c=Classifier({s:a(s) for s in ('INSE','INSE2','X')})
++        self.assertFalse(c.eligible('INSE'));self.assertTrue(c.eligible('INSE2'));self.assertTrue(c.eligible('X'))
++        import hashlib
++        p=Path(__file__).resolve().parents[1]/'classifications/ACTIVITY.txt'
++        self.assertEqual(hashlib.sha256(p.read_bytes()).hexdigest(),'319e4857684396441a1666bc06ae4420c8b317c7de1a093b54a5be2aa42ff50e')
++    def test_shadow_flag_never_filters_oddlot_or_missing_metadata(self):
++        self.assertIs(price_policy.ENTRY_PRICE_POLICY_ENFORCED,False)
++        f=filter_actual(dict(prepared={'ready':True,'scan_ok':True},bundle={'eligible':['X']},cls=NS(eligible=lambda s:True),dt=dt))
++        for extra in ({},{'c':['@','I'],'z':'C'},{'c':['?'],'z':None}):self.assertTrue(f('X',dict(p=2,t=OP.isoformat(),**extra),OP))
++    def test_enforcement_is_one_isolated_flag_future_only(self):
++        with patch.object(price_policy,'ENTRY_PRICE_POLICY_ENFORCED',True):
++            self.assertFalse(price_policy.price_policy_allows_entry({'c':['@','I'],'z':'C'}))
++            self.assertTrue(price_policy.price_policy_allows_entry({'c':['@'],'z':'C'}))
++    def test_real_filter_excludes_INSE_even_in_cached_bundle(self):
++        assets={s:dict(name=s+' Common Stock',exchange='NASDAQ',status='active',tradable=True,id=s) for s in ('INSE','X')}
++        f=filter_actual(dict(prepared={'ready':True,'scan_ok':True},bundle={'eligible':['INSE','X']},cls=Classifier(assets),dt=dt))
++        self.assertFalse(f('INSE',dict(p=3.5,t=OP.isoformat()),OP));self.assertTrue(f('X',dict(p=3.5,t=OP.isoformat()),OP))
++    def test_official_alpaca_WS_example_is_observed_without_enforcement(self):
++        m=json.loads((Path(__file__).parent/'fixtures/alpaca_ws_trade_official.json').read_text())
++        _,p,s,r,o=fixture();row=o._message(m,dt(m['t']))
++        self.assertFalse(any(row['schema'].values()));self.assertFalse(row['price_eligible'])
++        self.assertEqual(row['z'],'C');self.assertEqual(row['c'],['@','I'])
++
++class R103Equivalence(unittest.TestCase):
++    def setUp(self):self.out=io.StringIO();self.capture=contextlib.redirect_stdout(self.out);self.capture.__enter__()
++    def tearDown(self):self.capture.__exit__(None,None,None)
++    def test_oddlot_commits_identically_but_hypothetical_reject_is_logged(self):
++        t,p,s,r,o=fixture();_,base,_,_,_=fixture(False)
++        m=trade('X',OP,10,('@','I'))
++        r.observe_stream(m,OP);feed(p,m,True);feed(base,m,True)
++        self.assertEqual(p.lua.entries,base.lua.entries);self.assertEqual(p._active_by_symbol,base._active_by_symbol)
++        entry=next(x for x in rows(o) if x['stage']=='R103_ENTRY_PRICE_SHADOW')
++        self.assertFalse(entry['selected_trade_policy_eligible']);self.assertFalse(entry['triggering_trade_policy_eligible']);self.assertEqual(entry['selected_trade']['c'],['@','I'])
++        self.assertEqual(entry['selected_match'],'EXACT_RECEIPT_SEQUENCE_MARKET_TIME_PRICE')
++    def test_followup_STOP_T1_T2_identical(self):
++        for event in ('STOP','T1_T2'):
++            t,p,s,r,o=fixture();_,base,_,_,_=fixture(False)
++            for target in (p,base):feed(target,trade('X',OP,10),True)
++            level=p._active_by_symbol['X']
++            prices=[level['structural_stop']-.01] if event=='STOP' else [level['t1'],level['t2']]
++            for i,price in enumerate(prices,1):
++                m=trade('X',OP+timedelta(seconds=i),price,('@','I'))
++                for target in (p,base):feed(target,m,True)
++            self.assertEqual(p.lua.followups,base.lua.followups);self.assertEqual(p._active_by_symbol,base._active_by_symbol)
++    def test_broken_observer_does_not_change_commit(self):
++        _,p,_,_,o=fixture();_,base,_,_,_=fixture(False)
++        def fail(*a,**kw):raise SystemExit('observer only')
++        o.safe=fail
++        for target in (p,base):feed(target,trade('X',OP,10),True)
++        self.assertEqual(p.lua.entries,base.lua.entries)
++    def test_original_exception_identity_survives_broken_observer(self):
++        _,p,_,_,o=fixture();error=RuntimeError('application')
++        p._monitor_trade=lambda *a:(_ for _ in ()).throw(error)
++        o.safe=lambda *a,**kw:(_ for _ in ()).throw(SystemExit('observer'))
++        with self.assertRaises(RuntimeError) as cm:feed(p,trade('X',OP,10),True)
++        self.assertIs(cm.exception,error)
++    def test_original_terminal_reason_and_sink_identical(self):
++        t,p,s,r,o=fixture();_,base,_,_,_=fixture(False)
++        for target in (p,base):target.trades.clear();target._fixture_now=OP+timedelta(seconds=11)
++        t.t=11
++        for target in (p,base):target.expire_entry_opportunities(target._fixture_now)
++        self.assertEqual(p.lua.terminals,base.lua.terminals)
++        final=next(x for x in rows(o) if x['stage']=='R103_OPPORTUNITY_FINAL')
++        self.assertEqual(final['reason'],'ENTRY_EXPIRED_STALE_MARKET_DATA');self.assertIsNone(final['eligible_received_in_wait'])
++    def test_original_reader_exception_not_suppressed(self):
++        t,p,s,r,o=fixture(False);error=ValueError('original reader')
++        r.observe_stream=lambda *a:(_ for _ in ()).throw(error)
++        with patch.object(EntryShadow,'start',lambda self:None):install_shadow(r,s,NS(),'fixture')
++        with self.assertRaises(ValueError) as cm:r.observe_stream(trade('X',OP,10),OP)
++        self.assertIs(cm.exception,error)
++    def test_refresh_reinstalls_observer_without_changing_values(self):
++        t,p,s,r,o=fixture();initial=dict(p._entry_opportunities)
++        self.assertIsInstance(p._entry_opportunities,ObservedOpportunities)
++        p.refresh_runtime_caches();self.assertEqual(p._entry_opportunities,initial)
++    def test_cache_replacement_cannot_race_an_original_engine_writer(self):
++        t,p,s,r,o=fixture(False);initial=dict(p._entry_opportunities)
++        def original_refresh():p._entry_opportunities=dict(initial);return 42
++        p.refresh_runtime_caches=original_refresh
++        with patch.object(EntryShadow,'start',lambda self:None):o=install_shadow(r,s,NS(),'fixture')
++        original_observe=o.ensure_map;seen=[]
++        def observed():
++            seen.append(p._decision_lock.lock._is_owned());original_observe()
++        o.ensure_map=observed
++        self.assertEqual(p.refresh_runtime_caches(),42);self.assertEqual(seen,[True])
++        self.assertEqual(p._entry_opportunities,initial);self.assertIsInstance(p._entry_opportunities,ObservedOpportunities)
++
++class R103Lifecycle(unittest.TestCase):
++    def setUp(self):self.out=io.StringIO();self.capture=contextlib.redirect_stdout(self.out);self.capture.__enter__()
++    def tearDown(self):self.capture.__exit__(None,None,None)
++    def test_every_received_trade_counted_even_when_detail_sample_is_full(self):
++        t,p,s,r,o=fixture();op=next(iter(o.ops.values()))
++        for i in range(100):r.observe_stream(trade('X',OP+timedelta(milliseconds=i),10,('@','I')),OP+timedelta(milliseconds=i))
++        r.observe_stream(trade('X',OP+timedelta(seconds=1),10),OP+timedelta(seconds=1))
++        self.assertEqual(op['received'],101);self.assertEqual(op['rejected'],100);self.assertEqual(op['pre_first_count'],100)
++        self.assertEqual(op['pre_first_rejected_pct'],100)
++        logged=rows(o);self.assertEqual(sum(x['stage']=='R103_PRICE_SHADOW_TRADE' for x in logged),4)
++        self.assertTrue(any(x['stage']=='R103_FIRST_ELIGIBLE_TRADE' for x in logged))
++    def test_missing_and_malformed_z_c_counters(self):
++        _,p,s,r,o=fixture()
++        messages=[dict(T='t',S='X',p=10,s=1,t=OP.isoformat()),dict(T='t',S='X',p=10,s=1,t=OP.isoformat(),z=7,c='@')]
++        for m in messages:r.observe_stream(m,OP)
++        c=o.safe('snapshot')['counts']
++        for k in ('z_missing','c_missing','z_unexpected','c_unexpected'):self.assertEqual(c[k],1)
++    def test_empty_and_overlong_conditions_are_visible_without_false_ratio(self):
++        _,p,s,r,o=fixture();op=next(iter(o.ops.values()))
++        m=trade('X',OP,10);m['c']=[];r.observe_stream(m,OP)
++        m['c']=['@']*17;r.observe_stream(m,OP)
++        self.assertEqual(o.counts['c_empty'],1);self.assertEqual(op['unknown'],1)
++        self.assertEqual(o.counts['price_unknown'],1)
++    def test_sanitization_and_size_do_not_leak_non_trade_credentials(self):
++        _,p,s,r,o=fixture();m=trade('X',OP,10);m.update(c=['very-secret-token'],z='https://secret.invalid',api_key='must-not-copy')
++        r.observe_stream(m,OP);logged=json.dumps(rows(o));self.assertNotIn('very-secret-token',logged);self.assertNotIn('secret.invalid',logged);self.assertNotIn('must-not-copy',logged)
++    def test_exact_deadline_and_five_second_source_age(self):
++        _,p,s,r,o=fixture();op=next(iter(o.ops.values()))
++        r.observe_stream(trade('X',OP+timedelta(seconds=5),10),OP+timedelta(seconds=10))
++        self.assertIsNotNone(op['first_eligible']);self.assertEqual(op['first_eligible']['received_at'],(OP+timedelta(seconds=10)).isoformat())
++    def test_over_deadline_is_not_first_eligible(self):
++        _,p,s,r,o=fixture();op=next(iter(o.ops.values()))
++        r.observe_stream(trade('X',OP+timedelta(seconds=10),10),OP+timedelta(seconds=10.000001))
++        self.assertIsNone(op['first_eligible'])
++    def test_publish_hook_precedes_slow_original_print_and_measures_native_context(self):
++        t,p,s,r,o=fixture(False);record=copy.deepcopy(p._entry_opportunities['X']);p._entry_opportunities={}
++        p._get=lambda key,kind=None:None if kind=='opportunity' else {'bar_end_ts':OP.isoformat(),'decision_available_ts':OP.isoformat(),'received_at':OP.isoformat()}
++        p.store=NS(read=lambda *a:record)
++        def canonical(*a):t.t+=3;return ('fixture','opportunity')
++        p.cw.evaluate_and_persist=canonical
++        def fetched(*a,**kw):t.t+=30;return {}
++        p.rest.bars_multi=fetched
++        def evaluated(*a):t.t+=2;return ({},None)
++        p.ec.evaluate_with_telemetry=evaluated
++        def native(now,allow):
++            p.rest.bars_multi(['X'],now,now,'5Min');p.ec.evaluate_with_telemetry('X',[],now);p._confluence('X',now)
++        p.poll_native5=native
++        with patch.object(EntryShadow,'start',lambda self:None):o=install_shadow(r,s,NS(),'fixture')
++        o.clock=t.clock
++        original_print=print
++        def slow_print(*a,**kw):
++            if a and isinstance(a[0],dict) and a[0].get('stage')=='SHADOW_CONFLUENCE':t.t+=7
++            return original_print(*a,**kw)
++        with patch('builtins.print',slow_print):p.poll_native5(OP,True)
++        op=next(iter(o.ops.values()));self.assertEqual((op['published']-OP).total_seconds(),35)
++        self.assertEqual(t.t,42);self.assertEqual(op['context']['native']['fetch_seconds'],30)
++        self.assertEqual(op['context']['native']['evaluation_seconds'],2)
++        self.assertEqual(op['context']['confluence']['canonical_seconds'],3)
++    def test_gate_history_at_trigger_and_at_terminal(self):
++        t,p,s,r,o=fixture();t.t=2;s['_scan_gate'].invalidate('fixture')
++        p._fixture_now=OP+timedelta(seconds=11);t.t=11;p.expire_entry_opportunities(p._fixture_now)
++        final=next(x for x in rows(o) if x['stage']=='R103_OPPORTUNITY_FINAL')
++        self.assertTrue(final['scan_ok_at_trigger']);self.assertFalse(final['scan_ok_at_terminal'])
++    def test_existing_canonical_opportunity_is_not_claimed_as_new_creation(self):
++        t,p,s,r,o=fixture(False);record=copy.deepcopy(p._entry_opportunities['X']);p._entry_opportunities={}
++        p._get=lambda *a,**kw:record
++        with patch.object(EntryShadow,'start',lambda self:None):o=install_shadow(r,s,NS(),'fixture')
++        o.clock=t.clock;p._confluence('X',OP)
++        op=next(iter(o.ops.values()));self.assertEqual(op['origin'],'canonical_restore_or_initial')
++    def test_old_trigger_outside_retained_history_is_unknown(self):
++        _,p,s,r,o=fixture();self.assertIsNone(o.gate_at(OP-timedelta(seconds=1)))
++    def test_gate_observation_precedes_original_log_callback(self):
++        t,p,s,r,o=fixture(False);seen=[];holder=[]
++        s['_scan_gate'].log=lambda row:seen.append(holder[0].gate_at(dt(row['at'])))
++        with patch.object(EntryShadow,'start',lambda self:None):o=install_shadow(r,s,NS(),'fixture')
++        holder.append(o);t.t=2;s['_scan_gate'].invalidate('fixture')
++        self.assertEqual(seen,[False])
++    def test_missed_gate_transition_makes_historical_value_unknown(self):
++        t,p,s,r,o=fixture();ready=threading.Event();release=threading.Event()
++        def hold():
++            with o.lock:ready.set();release.wait(2)
++        thread=threading.Thread(target=hold);thread.start();self.assertTrue(ready.wait(.5))
++        try:t.t=2;s['_scan_gate'].invalidate('fixture')
++        finally:release.set();thread.join()
++        self.assertIsNone(o.gate_at(t.wall()));self.assertFalse(s['scan_ok'])
++
++class R103BoundsAndFailures(unittest.TestCase):
++    def test_line_queue_global_day_and_per_symbol_limits(self):
++        t,p,s,r,o=fixture();rows(o)
++        for i in range(400):
++            t.t=i*60;o.safe('_emit','R103_TEST','X',{'blob':'x'*100},True)
++        self.assertLessEqual(o.q.qsize(),QUEUE_SIZE);self.assertGreater(o.counts['log_queue_dropped'],0)
++        for data in list(o.q.queue):self.assertLessEqual(len(data),MAX_LINE_BYTES)
++        o.day_events=MAX_EVENTS_DAY;t.t+=60;o.safe('_emit','R103_TEST','X',{})
++        self.assertGreater(o.counts['log_day_dropped'],0)
++        self.assertLessEqual(o.day_bytes,MAX_BYTES_DAY)
++    def test_opportunity_capacity_and_snapshot_bytes_bounded(self):
++        _,p,s,r,o=fixture();template=copy.deepcopy(p._entry_opportunities['X'])
++        for i in range(200):
++            record={**template,'symbol':'X'+str(i)};o.safe('publish',record['symbol'],record)
++        self.assertEqual(len(o.ops),64);self.assertGreater(o.counts['opportunity_capacity_dropped'],0)
++        self.assertLessEqual(len(json.dumps(o.safe('snapshot'),separators=(',',':')).encode()),1024)
++    def test_blocked_log_sink_does_not_block_application(self):
++        t,p,s,r,o=fixture();release=threading.Event();entered=threading.Event()
++        def blocked(data):entered.set();release.wait(2)
++        o.sink=blocked;o.start();self.assertTrue(entered.wait(.5));started=time.monotonic()
++        try:
++            with contextlib.redirect_stdout(io.StringIO()):feed(p,trade('X',OP,10),True)
++            self.assertEqual(len(p.lua.entries),1);self.assertLess(time.monotonic()-started,.5)
++        finally:release.set();o.close()
++    def test_observer_lock_busy_is_visible_and_does_not_block(self):
++        _,p,s,r,o=fixture();ready=threading.Event();release=threading.Event()
++        def hold():
++            with o.lock:ready.set();release.wait(2)
++        thread=threading.Thread(target=hold);thread.start();self.assertTrue(ready.wait(.5))
++        try:
++            with contextlib.redirect_stdout(io.StringIO()):feed(p,trade('X',OP,10),True)
++            self.assertEqual(len(p.lua.entries),1);self.assertGreater(o.busy,0)
++        finally:release.set();thread.join()
++    def test_broken_context_cannot_suppress_or_replace_application_exception(self):
++        class Broken:
++            def __enter__(self):return self
++            def __exit__(self,*a):raise SystemExit('observer')
++        error=ValueError('application')
++        with self.assertRaises(ValueError) as cm:
++            with observing(lambda:Broken()):raise error
++        self.assertIs(cm.exception,error)
++    def test_suppression_request_from_observer_ignored(self):
++        class Bad:
++            def __enter__(self):pass
++            def __exit__(self,*a):return True
++        with self.assertRaisesRegex(RuntimeError,'application'):
++            with observing(lambda:Bad()):raise RuntimeError('application')
++    def test_broken_scan_timer_constructor_and_clock_keep_body_running(self):
++        with patch('ipr.scan_timing.ScanTimings',side_effect=RuntimeError('observer')):timer=safe_timings()
++        seen=[]
++        with timer.phase('volume_fetch'):seen.append(1)
++        self.assertEqual(seen,[1]);self.assertIsNone(timer.snapshot())
++        timer=safe_timings(clock=lambda:(_ for _ in ()).throw(SystemExit('timer')))
++        error=ValueError('body')
++        with self.assertRaises(ValueError) as cm:
++            with timer.phase('volume_fetch'):raise error
++        self.assertIs(cm.exception,error)
++    def test_TLS_contexts_do_not_leak_when_end_observation_fails(self):
++        t,p,s,r,o=fixture(False);p.poll_native5=lambda *a,**kw:42
++        with patch.object(EntryShadow,'start',lambda self:None):o=install_shadow(r,s,NS(),'fixture')
++        original=o.safe
++        def sometimes(name,*a,**kw):
++            if name=='context_end':raise SystemExit('observer end')
++            return original(name,*a,**kw)
++        o.safe=sometimes
++        for i in range(100):self.assertEqual(p.poll_native5(OP,True),42)
++        self.assertEqual(o._contexts(),[])
++    def test_TLS_current_trade_cleared_when_cleanup_observation_fails(self):
++        _,p,s,r,o=fixture();original=o.safe
++        def sometimes(name,*a,**kw):
++            if name=='process_end':raise SystemExit('observer end')
++            return original(name,*a,**kw)
++        o.safe=sometimes
++        with contextlib.redirect_stdout(io.StringIO()):feed(p,trade('X',OP,10),True)
++        self.assertEqual(len(p.lua.entries),1);self.assertIsNone(getattr(o.local,'current_trade',None))

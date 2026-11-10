@@ -1,0 +1,131 @@
+{
+  "base_commit": "37128172762b55b947d5f127eb340521ba220e18",
+  "source_changes": [
+    "classifications/OWNER_EXCLUSIONS.json",
+    "ipr/api.py",
+    "ipr/classifier.py",
+    "ipr/entry_shadow.py",
+    "ipr/price_policy.py",
+    "ipr/runtime.py",
+    "ipr/scan_timing.py",
+    "ipr/telemetry_safe.py",
+    "tests/fixtures/alpaca_ws_trade_official.json",
+    "tests/r103_support.py",
+    "tests/test_r102.py",
+    "tests/test_r103.py"
+  ],
+  "all_changed_files": [
+    {
+      "path": "CHANGED_FILES_FROM_R93.json",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "DAY_FULL_SNAPSHOT_RESULT_R103.json",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "DIFF_FROM_R93.patch",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "REPORT_R103_AR.md",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "REVIEW_R103_AR.md",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "SHA256SUMS.txt",
+      "status": "modified",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "SIZE_AND_MEMORY_ESTIMATE.json",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "STATIC_EQUIVALENCE_R103.json",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "TESTS_R103_RAW.txt",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "VALIDATION_R103.json",
+      "status": "added",
+      "category": "documentation_evidence_or_generated"
+    },
+    {
+      "path": "classifications/OWNER_EXCLUSIONS.json",
+      "status": "added",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "ipr/api.py",
+      "status": "modified",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "ipr/classifier.py",
+      "status": "modified",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "ipr/entry_shadow.py",
+      "status": "added",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "ipr/price_policy.py",
+      "status": "added",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "ipr/runtime.py",
+      "status": "modified",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "ipr/scan_timing.py",
+      "status": "added",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "ipr/telemetry_safe.py",
+      "status": "added",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "tests/fixtures/alpaca_ws_trade_official.json",
+      "status": "added",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "tests/r103_support.py",
+      "status": "added",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "tests/test_r102.py",
+      "status": "added",
+      "category": "source_config_tests"
+    },
+    {
+      "path": "tests/test_r103.py",
+      "status": "added",
+      "category": "source_config_tests"
+    }
+  ],
+  "deleted_files": [],
+  "diff_scope": "all source/config/tests changes; generated docs/results/manifest listed here"
+}

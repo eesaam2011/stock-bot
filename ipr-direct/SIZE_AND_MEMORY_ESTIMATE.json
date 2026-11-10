@@ -1,0 +1,44 @@
+{
+  "measured_fixture_sizes": {
+    "scan_metrics_bytes_default_JSON": 2249,
+    "scan_attempt_bytes_default_JSON": 1076,
+    "shadow_metrics_bytes_default_JSON": 440,
+    "one_opportunity_log_rows": 4,
+    "one_opportunity_bytes": 2968,
+    "max_observer_line_bytes_measured": 1088
+  },
+  "estimated_RTH_additional_output": {
+    "10": {
+      "metric_samples": 390,
+      "full_scan_rounds": 195,
+      "opportunities": 10,
+      "estimated_bytes": 1288210
+    },
+    "50": {
+      "metric_samples": 390,
+      "full_scan_rounds": 195,
+      "opportunities": 50,
+      "estimated_bytes": 1406930
+    }
+  },
+  "local_observer_heap_at_caps": {
+    "current_python_bytes": 1084697,
+    "peak_python_bytes": 1086826,
+    "not_Render_RSS_or_cgroup": true
+  },
+  "hard_extra_output_bound_24h": {
+    "entry_shadow_bytes_per_UTC_day": 10485760,
+    "scan_metrics_per_sample_max": 8192,
+    "scan_attempt_per_round_max": 4096,
+    "shadow_metrics_per_sample_max": 1024,
+    "samples_or_rounds_per_day_bound": 1441,
+    "value_payload_bound_bytes": 29668352,
+    "conservative_bytes_with_field_overhead_margin": 33554432
+  },
+  "notes": [
+    "Deterministic fixture estimate, not live data rate measurement",
+    "Original logs and Render envelope excluded",
+    "Practical1.5-3MiB/day estimate includes headroom beyond fixture assumption",
+    "Non-trading-hours payloads and high opportunity counts may differ; hard caps apply"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "source": "PROJECT_OWNER_EXPLICIT_DECISION",
+  "records": [
+    {"symbol": "INSE", "reason": "OWNER_EXCLUDED_GAMBLING_ACTIVITY"}
+  ]
+}

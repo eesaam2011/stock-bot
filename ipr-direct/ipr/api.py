@@ -23,6 +23,11 @@ class Alpaca:
   name=getattr(self.local,'name',None)
   if name is None:name=getattr(self,'request_operation',lambda:None)()
   return name if name in {'scan_rest','incremental','native'} else 'other'
+ @contextmanager
+ def observe_requests(self,observer):
+  old=getattr(self.local,'request_observer',None);self.local.request_observer=observer
+  try:yield
+  finally:self.local.request_observer=old
  def _timing(self,name,wait,hold):
   with self.timing_lock:
    row=self.timing.setdefault(name,{'count':0,'wait_total_seconds':0.,'wait_max_seconds':0.,'hold_total_seconds':0.,'hold_max_seconds':0.})
@@ -47,6 +52,11 @@ class Alpaca:
    finally:
     released=self.timing_clock();self.lock.release()
     self._timing(operation,max(0.,acquired-waiting),max(0.,released-acquired))
+    # Measurement after release; observer is local to this requesting thread.
+    observer=getattr(self.local,'request_observer',None)
+    if observer is not None:
+     try:observer(operation,max(0.,acquired-waiting),max(0.,released-acquired))
+     except BaseException:pass # Observer failures never mask an application exception.
  def call(self,host,path,params):
   if (host,path) not in {('paper-api.alpaca.markets','/v2/assets'),('paper-api.alpaca.markets','/v2/calendar'),('api.alpaca.markets','/v2/assets'),('api.alpaca.markets','/v2/calendar'),('data.alpaca.markets','/v2/stocks/bars'),('data.alpaca.markets','/v2/stocks/trades'),('data.alpaca.markets','/v2/stocks/snapshots')}:raise APIError('ENDPOINT_FORBIDDEN')
   req=urllib.request.Request('https://'+host+path+'?'+urllib.parse.urlencode(params),headers={'APCA-API-KEY-ID':self.key,'APCA-API-SECRET-KEY':self.secret},method='GET')

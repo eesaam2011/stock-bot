@@ -30,6 +30,11 @@ class Classifier:
   root=Path(__file__).resolve().parents[1]/"classifications"
   rules=json.loads((root/"NAME_RULES.json").read_bytes());manual=json.loads((root/"TYPE_MANUAL.json").read_bytes())
   activity=frozenset((root/"ACTIVITY.txt").read_text().splitlines());assert len(activity)==656
+  owner=json.loads((root/"OWNER_EXCLUSIONS.json").read_bytes())
+  if owner.get('schema')!=1 or not isinstance(owner.get('records'),list):raise ValueError('OWNER_EXCLUSIONS_INVALID')
+  symbols=[r['symbol'] for r in owner['records']]
+  if any(not isinstance(s,str) or not s or s!=s.strip() or s!=s.upper() for s in symbols) or len(symbols)!=len(set(symbols)):raise ValueError('OWNER_EXCLUSIONS_INVALID')
+  self.owner_exclusions=frozenset(symbols)
   self.frozen=SimpleNamespace(activity=activity,manual=frozenset((root/"ADR_MANUAL.txt").read_text().splitlines()),type_manual={r["symbol"]:r for r in manual["records"]},day={"assets":assets},patterns=[(r["rule_id"],r["type"],re.compile(r["regex"],re.I)) for r in rules["rules"]])
   self._static={s:self._classify_asset(a) for s,a in assets.items()}
  def _classify_asset(self,a):return classify_name(a.get("name"),self.frozen.patterns)
@@ -37,6 +42,7 @@ class Classifier:
          f=self.frozen;asset=f.day['assets'].get(symbol) if asset is None else asset;reasons=set()
          if asset is None:return {'ASSET_STATUS_UNKNOWN'},'TYPE_UNKNOWN',(),()
          if symbol in f.activity:reasons.add('ACTIVITY_DENYLIST_EXACT_MATCH')
+         if symbol in self.owner_exclusions:reasons.add('OWNER_ACTIVITY_EXCLUSION_EXACT_MATCH')
          if symbol in f.manual:reasons.add('TYPE_ADR_MANUAL')
          exception=f.type_manual.get(symbol)
          if exception:
