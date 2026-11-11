@@ -37,6 +37,8 @@ import traceback
 import queue
 import re as _re
 
+from elite_float_updater import DailyFloatUpdater, SYMBOL_BLACKLIST as FLOAT_SYMBOL_BLACKLIST, BAD_NAME_KEYWORDS as FLOAT_BAD_NAME_KEYWORDS
+
 try:
     import websocket  # pip install websocket-client
 except Exception:
@@ -582,6 +584,29 @@ def load_float_cache():
     if FLOAT_CACHE:
         redis_set_json(KEY_FLOAT, FLOAT_CACHE)
     log(f"Float records loaded: {len(FLOAT_CACHE)}")
+
+
+def publish_updated_float_cache(raw_cache):
+    global FLOAT_CACHE
+    # Preserve the existing consumer normalization; the Gist keeps all records.
+    FLOAT_CACHE = normalize_float_cache(raw_cache)
+    runtime_stats["float_records"] = len(FLOAT_CACHE)
+
+
+def float_update_loop():
+    updater = DailyFloatUpdater(
+        gist_id=GIST_ID,
+        token=GITHUB_TOKEN,
+        finnhub_key=FINNHUB_API_KEY,
+        filename=FLOAT_CACHE_FILENAME,
+        list_assets=lambda: api.list_assets(status="active"),
+        wait_slot=finnhub_wait_slot,
+        blacklist=FLOAT_SYMBOL_BLACKLIST,
+        bad_names=FLOAT_BAD_NAME_KEYWORDS,
+        log=log,
+        publish_cache=publish_updated_float_cache,
+    )
+    updater.loop()
 
 
 def get_float(symbol):
@@ -5075,6 +5100,7 @@ def main_loop():
         name="deferred-catalyst-entry",
     ).start()
     threading.Thread(target=trade_monitor_loop, daemon=True, name="trade-monitor").start()
+    threading.Thread(target=float_update_loop, daemon=True, name="float-update").start()
 
     while True:
         try:
