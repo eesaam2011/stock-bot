@@ -1,0 +1,248 @@
+{
+  "source_archive": "IPR_R103_OPEN_1715_1800_20261110.zip",
+  "source_SHA256": "30866044f7a296524e9b2a3867d7fc6ecdd166e31c62e923702387379d35dfe4",
+  "window_UTC": [
+    "2026-11-10T14:15:00Z",
+    "2026-11-10T15:00:00Z"
+  ],
+  "method": "Gate from initial metric true_seconds=0 and ordered SCAN_GATE_TRANSITION.at; native from SHADOW_MEMORY_PROBE.memory_stage native5_cycle_before/after, using Render log times. No new live or outside-window read. Wait is whole-scan REST wait, not volume phase only. Correlation is not lock-owner attribution.",
+  "rows": [
+    {
+      "attempt": 1,
+      "start": "2026-11-10T14:30:55.680541+00:00",
+      "gate_before": false,
+      "native_start_during": 0,
+      "native_already_active_proven": false,
+      "native_first_during": "NONE",
+      "wait_seconds": 0.00011194497346878052,
+      "outcome": "FAILED",
+      "source_round": "aedb19a5-89f2-45e9-a5b3-eceb3cdf8185",
+      "native_evidence_ids": []
+    },
+    {
+      "attempt": 2,
+      "start": "2026-11-10T14:33:08.413866+00:00",
+      "gate_before": false,
+      "native_start_during": 0,
+      "native_already_active_proven": false,
+      "native_first_during": "NONE",
+      "wait_seconds": 0.00010446086525917053,
+      "outcome": "SUCCESS",
+      "source_round": "b5b4f631-df3a-4357-86ba-3f53ab03c1f0",
+      "native_evidence_ids": []
+    },
+    {
+      "attempt": 3,
+      "start": "2026-11-10T14:34:39.215687+00:00",
+      "gate_before": false,
+      "native_start_during": 0,
+      "native_already_active_proven": false,
+      "native_first_during": "NONE",
+      "wait_seconds": 101.42164211906493,
+      "outcome": "FAILED",
+      "source_round": "69ed3af4-de8f-4662-a6e8-34ab6055d7e8",
+      "native_evidence_ids": []
+    },
+    {
+      "attempt": 4,
+      "start": "2026-11-10T14:37:21.866992+00:00",
+      "gate_before": false,
+      "native_start_during": 0,
+      "native_already_active_proven": false,
+      "native_first_during": "NONE",
+      "wait_seconds": 4.756573362275958,
+      "outcome": "SUCCESS",
+      "source_round": "9f97d32c-cefc-48e5-9883-3c94aecae80b",
+      "native_evidence_ids": []
+    },
+    {
+      "attempt": 5,
+      "start": "2026-11-10T14:38:31.895157+00:00",
+      "gate_before": true,
+      "native_start_during": 8,
+      "native_already_active_proven": false,
+      "native_first_during": "2026-11-10T14:38:32.51756416Z",
+      "wait_seconds": 78.57469018548727,
+      "outcome": "FAILED",
+      "source_round": "0362ead3-b39a-43be-80c0-7f4711abcaae",
+      "native_evidence_ids": [
+        "39e69d95-a6a1-4e4f-a02e-d70baa307347",
+        "bc43f0f1-79ce-4640-b73a-4aadd56e524a",
+        "e83bfebd-e375-4da0-a4cd-f9eec556bcfe",
+        "e773ea16-145c-402f-8256-e518c19904e1",
+        "ef649ebd-99d5-4cb8-882a-c373774c1fa2",
+        "128a7b6d-aa90-48d1-94dd-fa37f8d34c8b",
+        "ca0f89d7-5ee4-4ded-8446-c8d2595276bc",
+        "7b0e7d6e-a1ff-4da7-82c2-5fda8e8e9535"
+      ]
+    },
+    {
+      "attempt": 6,
+      "start": "2026-11-10T14:40:46.560117+00:00",
+      "gate_before": true,
+      "native_start_during": 0,
+      "native_already_active_proven": true,
+      "native_first_during": "NONE",
+      "wait_seconds": 11.831587575376034,
+      "outcome": "SUCCESS",
+      "source_round": "e9809906-2045-4c5a-a3b6-d6012fa29d11",
+      "native_evidence_ids": [
+        "7b0e7d6e-a1ff-4da7-82c2-5fda8e8e9535",
+        "720895ba-de1b-4b05-9525-d3b7e55876ba"
+      ]
+    },
+    {
+      "attempt": 7,
+      "start": "2026-11-10T14:42:00.683849+00:00",
+      "gate_before": true,
+      "native_start_during": 8,
+      "native_already_active_proven": false,
+      "native_first_during": "2026-11-10T14:42:01.236386821Z",
+      "wait_seconds": 62.871539048850536,
+      "outcome": "SUCCESS",
+      "source_round": "cdfb438f-831e-4569-8f56-7c87c2479869",
+      "native_evidence_ids": [
+        "24ef8e4c-4473-4746-9e82-2cfb1621b4ce",
+        "5367f60c-36cd-47c2-a074-7e4cf2034d18",
+        "343e46a4-9e1f-4973-8929-d52e60e134d8",
+        "7cc1f32f-d13a-4893-8bea-e9d1d5f2a4ea",
+        "59e408bb-afc7-4d6a-a159-6edece3e98bc",
+        "80bbcada-c75f-42af-aeea-b137c579171d",
+        "4f776260-48b5-49b7-9902-aa58a97a910e",
+        "819aa98a-3fdf-4f73-8a03-5df84275c0ce"
+      ]
+    },
+    {
+      "attempt": 8,
+      "start": "2026-11-10T14:43:58.363283+00:00",
+      "gate_before": true,
+      "native_start_during": 5,
+      "native_already_active_proven": true,
+      "native_first_during": "2026-11-10T14:44:10.168450567Z",
+      "wait_seconds": 105.46994710713625,
+      "outcome": "FAILED",
+      "source_round": "fea193ec-75d0-435f-aab6-52dc83881586",
+      "native_evidence_ids": [
+        "05f01500-dfa4-49cd-ada0-db17e3ce97d3",
+        "f5b6778c-fe59-4f91-97e8-6b10b64c274b",
+        "60df2549-48b0-423e-ba98-f772577a9f21",
+        "d084980a-1bb9-491a-9944-fe9c07db55a6",
+        "ba52293e-1dbd-4aea-8d23-e71aaae99d92",
+        "819aa98a-3fdf-4f73-8a03-5df84275c0ce",
+        "3bdf6605-543f-4b22-a889-5cd7afcb457b"
+      ]
+    },
+    {
+      "attempt": 9,
+      "start": "2026-11-10T14:46:42.219179+00:00",
+      "gate_before": false,
+      "native_start_during": 0,
+      "native_already_active_proven": false,
+      "native_first_during": "NONE",
+      "wait_seconds": 0.427975719794631,
+      "outcome": "SUCCESS",
+      "source_round": "fee2264b-fe4c-4b49-9a58-6453346e2934",
+      "native_evidence_ids": []
+    },
+    {
+      "attempt": 10,
+      "start": "2026-11-10T14:47:46.362022+00:00",
+      "gate_before": true,
+      "native_start_during": 7,
+      "native_already_active_proven": false,
+      "native_first_during": "2026-11-10T14:47:48.51441522Z",
+      "wait_seconds": 100.63657587207854,
+      "outcome": "FAILED",
+      "source_round": "c5444218-a3dc-41fa-9ad0-51cec2334bec",
+      "native_evidence_ids": [
+        "501d2890-c7e7-4aa4-8693-43dbdd4a6443",
+        "a2ed08f9-5abb-4d8c-9637-a5b9fcc054e4",
+        "7856a80f-c977-4472-801f-e0fb9d5120b0",
+        "57633686-8938-4c94-9a2a-5d8b4496a8c4",
+        "6e830a1b-a90f-4d95-acf2-361f2707693b",
+        "c8fb9db0-d9b8-4af2-88f9-0bd9c5759767",
+        "fbf6524d-483e-415a-b1db-af46c8d74d8a"
+      ]
+    },
+    {
+      "attempt": 11,
+      "start": "2026-11-10T14:50:24.422769+00:00",
+      "gate_before": false,
+      "native_start_during": 0,
+      "native_already_active_proven": false,
+      "native_first_during": "NONE",
+      "wait_seconds": 0.0001531783491373062,
+      "outcome": "SUCCESS",
+      "source_round": "d163076a-cfcf-486f-8bf0-9be2b2a564dc",
+      "native_evidence_ids": []
+    },
+    {
+      "attempt": 12,
+      "start": "2026-11-10T14:51:31.383729+00:00",
+      "gate_before": true,
+      "native_start_during": 7,
+      "native_already_active_proven": false,
+      "native_first_during": "2026-11-10T14:51:33.973661949Z",
+      "wait_seconds": 104.51705435849726,
+      "outcome": "FAILED",
+      "source_round": "0ed9cb9e-eea8-42e3-b266-1e50f102b351",
+      "native_evidence_ids": [
+        "1811959d-b1e6-428a-9d01-d6e44a20a82e",
+        "48f7b087-4acc-4003-bc19-4afad31c3dd9",
+        "bf96d3e3-fa0f-4873-81ec-6e6b73f62fa7",
+        "54d0a63d-b2cd-43ec-a2af-f6873d2732f0",
+        "612c2131-70f4-4118-9589-f1c697ef9468",
+        "82e63658-f72f-4808-88e7-a2c4ffc6a54a",
+        "3974bdcb-b1f9-496a-b7f4-292d123955f7"
+      ]
+    },
+    {
+      "attempt": 13,
+      "start": "2026-11-10T14:54:13.548540+00:00",
+      "gate_before": false,
+      "native_start_during": 0,
+      "native_already_active_proven": false,
+      "native_first_during": "NONE",
+      "wait_seconds": 0.6162357926368713,
+      "outcome": "SUCCESS",
+      "source_round": "373e9a9e-e34e-40c1-8503-5ba3c5f21fb6",
+      "native_evidence_ids": []
+    },
+    {
+      "attempt": 14,
+      "start": "2026-11-10T14:55:13.548753+00:00",
+      "gate_before": true,
+      "native_start_during": 7,
+      "native_already_active_proven": false,
+      "native_first_during": "2026-11-10T14:55:13.872993188Z",
+      "wait_seconds": 102.09493345580995,
+      "outcome": "FAILED",
+      "source_round": "3f3d37c9-30a8-4378-aedf-c97c38a20a03",
+      "native_evidence_ids": [
+        "adabf4d3-ba31-4f0b-aa81-f9765abadf32",
+        "70d963ee-628f-4503-9a8a-a0c1a0f3cff9",
+        "8e3f2faa-3301-4548-947b-cb9b115d796e",
+        "cc29493d-48ec-4ec3-805a-77949289c11f",
+        "a2e599c1-26a3-4f48-98f2-c7be7f795e2c",
+        "7f6814b2-a082-44c1-ace8-76bc083f0c07",
+        "67977b68-0ee5-4e57-bc4c-0eb4a449fd42"
+      ]
+    },
+    {
+      "attempt": 15,
+      "start": "2026-11-10T14:57:52.816908+00:00",
+      "gate_before": false,
+      "native_start_during": 0,
+      "native_already_active_proven": false,
+      "native_first_during": "NONE",
+      "wait_seconds": 0.4276699125766754,
+      "outcome": "SUCCESS",
+      "source_round": "e3b3110f-484d-488a-b429-f13ebf426008",
+      "native_evidence_ids": []
+    }
+  ],
+  "failures_with_native_overlap": 5,
+  "failures_total": 7,
+  "successes_with_native_overlap": 2,
+  "source_initial_metric_log_id": "2441f269-31d0-4097-8e4f-6d633e2b0d86"
+}

@@ -1,0 +1,186 @@
+{
+  "baseline": {
+    "HTTP_calls": 170,
+    "active_HTTP_at_end": 0,
+    "competing_progress": {
+      "incremental": 24,
+      "native": 24,
+      "other": 24
+    },
+    "metrics": {
+      "active_request_sections": 0,
+      "http_429_by_operation": {
+        "incremental": 0,
+        "native": 0,
+        "other": 0,
+        "scan_rest": 0
+      },
+      "http_429_total": 0,
+      "lanes": {
+        "scan": {
+          "active_request_sections": 0,
+          "count": 0,
+          "hold_max_seconds": 0.0,
+          "hold_total_seconds": 0.0,
+          "http_429_count": 0,
+          "wait_max_seconds": 0.0,
+          "wait_total_seconds": 0.0
+        },
+        "shared": {
+          "active_request_sections": 0,
+          "count": 170,
+          "hold_max_seconds": 0.2002266649997182,
+          "hold_total_seconds": 0.39187126199976774,
+          "http_429_count": 0,
+          "wait_max_seconds": 0.2084046509999098,
+          "wait_total_seconds": 0.9348963230004301
+        }
+      },
+      "operations": {
+        "incremental": {
+          "count": 24,
+          "hold_max_seconds": 0.0011864520001836354,
+          "hold_mean_seconds": 0.00113202441661997,
+          "hold_total_seconds": 0.02716858599887928,
+          "wait_max_seconds": 0.1999568619994534,
+          "wait_mean_seconds": 0.012113489916752465,
+          "wait_total_seconds": 0.2907237580020592
+        },
+        "native": {
+          "count": 24,
+          "hold_max_seconds": 0.2002266649997182,
+          "hold_mean_seconds": 0.009436697041678599,
+          "hold_total_seconds": 0.22648072900028637,
+          "wait_max_seconds": 0.008292554999570712,
+          "wait_mean_seconds": 0.0030448257916380803,
+          "wait_total_seconds": 0.07307581899931392
+        },
+        "other": {
+          "count": 24,
+          "hold_max_seconds": 0.0012411229999997886,
+          "hold_mean_seconds": 0.0011410639583573357,
+          "hold_total_seconds": 0.027385535000576056,
+          "wait_max_seconds": 0.20107909699981974,
+          "wait_mean_seconds": 0.011680569624976064,
+          "wait_total_seconds": 0.2803336709994255
+        },
+        "scan_rest": {
+          "count": 98,
+          "hold_max_seconds": 0.0016879550003068289,
+          "hold_mean_seconds": 0.001130983795918633,
+          "hold_total_seconds": 0.11083641200002603,
+          "wait_max_seconds": 0.2084046509999098,
+          "wait_mean_seconds": 0.0029669701530574645,
+          "wait_total_seconds": 0.2907630749996315
+        }
+      },
+      "peak_request_sections": 1,
+      "request_section_limit": 1,
+      "scan_lane_enabled": false,
+      "scope": "acquisitions including denied window rechecks; wait excludes heavy-window sleep; hold includes HTTP/read/JSON; R10.4 lane/FIFO admission changes transport scheduling only"
+    },
+    "peak_HTTP": 1,
+    "phase_seconds": {
+      "snapshot_fetch_seconds": 0.06185693200040987,
+      "volume_fetch_seconds": 0.35291221199986467
+    },
+    "scan_duration_seconds": 0.41497241199977,
+    "scan_hold_seconds": 0.11083641200002603,
+    "scan_lane_enabled": false,
+    "scan_requests": 98,
+    "scan_wait_seconds": 0.2907630749996315,
+    "scope": "ASSUMPTION model: 4845 symbols, actual SessionVolumes/MarketREST, 49 volume+49 snapshot HTTP requests; empty synthetic payloads; 3 competing paths x24 requests; first holder sleeps 0.20s, others 0.001s; not live timing or full ranking/model CPU"
+  },
+  "candidate": {
+    "HTTP_calls": 170,
+    "active_HTTP_at_end": 0,
+    "competing_progress": {
+      "incremental": 24,
+      "native": 24,
+      "other": 24
+    },
+    "metrics": {
+      "active_request_sections": 0,
+      "http_429_by_operation": {
+        "incremental": 0,
+        "native": 0,
+        "other": 0,
+        "scan_rest": 0
+      },
+      "http_429_total": 0,
+      "lanes": {
+        "scan": {
+          "active_request_sections": 0,
+          "count": 98,
+          "hold_max_seconds": 0.0012629240000023856,
+          "hold_total_seconds": 0.11059064099663374,
+          "http_429_count": 0,
+          "wait_max_seconds": 5.80100004299311e-06,
+          "wait_total_seconds": 0.00033852099750220077
+        },
+        "shared": {
+          "active_request_sections": 0,
+          "count": 72,
+          "hold_max_seconds": 0.20021568699939962,
+          "hold_total_seconds": 0.28179362600076274,
+          "http_429_count": 0,
+          "wait_max_seconds": 0.20145751099971676,
+          "wait_total_seconds": 0.5959966589971373
+        }
+      },
+      "operations": {
+        "incremental": {
+          "count": 24,
+          "hold_max_seconds": 0.0013533020000977558,
+          "hold_mean_seconds": 0.0011462506250078757,
+          "hold_total_seconds": 0.027510015000189014,
+          "wait_max_seconds": 0.20026462799978617,
+          "wait_mean_seconds": 0.011048271958353931,
+          "wait_total_seconds": 0.26515852700049436
+        },
+        "native": {
+          "count": 24,
+          "hold_max_seconds": 0.20021568699939962,
+          "hold_mean_seconds": 0.00945224712503053,
+          "hold_total_seconds": 0.2268539310007327,
+          "wait_max_seconds": 0.004280798999388935,
+          "wait_mean_seconds": 0.002681391458205932,
+          "wait_total_seconds": 0.06435339499694237
+        },
+        "other": {
+          "count": 24,
+          "hold_max_seconds": 0.00123063400042156,
+          "hold_mean_seconds": 0.0011429033333267096,
+          "hold_total_seconds": 0.027429679999841028,
+          "wait_max_seconds": 0.20145751099971676,
+          "wait_mean_seconds": 0.011103530708320855,
+          "wait_total_seconds": 0.26648473699970054
+        },
+        "scan_rest": {
+          "count": 98,
+          "hold_max_seconds": 0.0012629240000023856,
+          "hold_mean_seconds": 0.001128475928537079,
+          "hold_total_seconds": 0.11059064099663374,
+          "wait_max_seconds": 5.80100004299311e-06,
+          "wait_mean_seconds": 3.4542958928795997e-06,
+          "wait_total_seconds": 0.00033852099750220077
+        }
+      },
+      "peak_request_sections": 2,
+      "request_section_limit": 2,
+      "scan_lane_enabled": true,
+      "scope": "acquisitions including denied window rechecks; wait excludes heavy-window sleep; hold includes HTTP/read/JSON; R10.4 lane/FIFO admission changes transport scheduling only"
+    },
+    "peak_HTTP": 2,
+    "phase_seconds": {
+      "snapshot_fetch_seconds": 0.06238746300005005,
+      "volume_fetch_seconds": 0.06052715000078024
+    },
+    "scan_duration_seconds": 0.12304527600008441,
+    "scan_hold_seconds": 0.11059064099663374,
+    "scan_lane_enabled": true,
+    "scan_requests": 98,
+    "scan_wait_seconds": 0.00033852099750220077,
+    "scope": "ASSUMPTION model: 4845 symbols, actual SessionVolumes/MarketREST, 49 volume+49 snapshot HTTP requests; empty synthetic payloads; 3 competing paths x24 requests; first holder sleeps 0.20s, others 0.001s; not live timing or full ranking/model CPU"
+  }
+}

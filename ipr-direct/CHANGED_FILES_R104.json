@@ -1,0 +1,38 @@
+{
+  "compared_to_R103_commit": "56fcabc73edd4b273cc50e95ae436236d68eb4a8",
+  "operational_modified": [
+    "ipr/api.py"
+  ],
+  "test_fixture_modified": [
+    "tests/test_r8.py",
+    "tests/test_r102.py"
+  ],
+  "tests_added": [
+    "tests/test_r104.py",
+    "tests/r104_load.py"
+  ],
+  "modified": [
+    "SHA256SUMS.txt",
+    "ipr/api.py",
+    "tests/test_r102.py",
+    "tests/test_r8.py"
+  ],
+  "added": [
+    "CHANGED_FILES_R104.json",
+    "DIFF_R104_VS_R103.patch",
+    "DIFF_R104_VS_R93.patch",
+    "HYPOTHESIS_EVENT_EVIDENCE_R104.jsonl",
+    "HYPOTHESIS_R104.json",
+    "HYPOTHESIS_R104_AR.txt",
+    "LOAD_SIMULATION_R104.json",
+    "REFERENCE_R104_BYTE_CHECK.json",
+    "REPORT_R104_AR.txt",
+    "TESTS_R104_COMPLETE_RAW.txt",
+    "VALIDATION_R104.json",
+    "tests/r104_load.py",
+    "tests/test_r104.py"
+  ],
+  "removed": [],
+  "diff_scope": "Python sources/tests; generated documentation listed separately to avoid recursive diffs",
+  "no_files_outside_package_touched": true
+}

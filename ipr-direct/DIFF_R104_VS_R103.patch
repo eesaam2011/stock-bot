@@ -1,0 +1,578 @@
+# Operational Python sources and tests only. Complete artifact file changes: CHANGED_FILES_R104.json. Generated reports/transcripts/manifests excluded to avoid recursive patches.
+--- R10.3/ipr/api.py
++++ R10.4/ipr/api.py
+@@ -1,7 +1,31 @@
+ """Fixed read-only Alpaca endpoints. No order/account mutation interface."""
+ import json,urllib.request,urllib.parse,urllib.error,threading,time
+ from datetime import datetime,timezone
+-from contextlib import contextmanager
++from contextlib import contextmanager,nullcontext
++from collections import deque
++
++# R10.4: transport scheduling only. False restores the R10.3 single-lock path.
++SCAN_LANE_ENABLED = True
++
++class _RequestTurn:
++ """FIFO admission to one existing serialization lock; no extra request permits."""
++ def __init__(self):self.condition=threading.Condition();self.queue=deque();self.busy=False
++ @contextmanager
++ def turn(self):
++  token=object();entered=False
++  try:
++   with self.condition:
++    self.queue.append(token)
++    try:
++     while self.busy or self.queue[0] is not token:self.condition.wait()
++    except BaseException:
++     self.queue.remove(token);self.condition.notify_all();raise
++    self.queue.popleft();self.busy=True;entered=True
++   yield
++  finally:
++   if entered:
++    with self.condition:self.busy=False;self.condition.notify_all()
++
+ class APIError(RuntimeError):pass
+ class NoRedirect(urllib.request.HTTPRedirectHandler):
+  def redirect_request(self,*a,**k):return None
+@@ -12,8 +36,10 @@
+   self.key=env.get('APCA_API_KEY_ID','');self.secret=env.get('APCA_API_SECRET_KEY','')
+   if not self.key or not self.secret:raise APIError('ALPACA_CREDENTIALS_MISSING')
+   self.opener=opener or urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect()).open
+-  self.lock=threading.Lock();self.requests=0
++  self.lock=threading.Lock();self.scan_lock=threading.Lock();self.requests=0
++  self.turns={'shared':_RequestTurn(),'scan':_RequestTurn()}
+   self.local=threading.local();self.timing_lock=threading.Lock();self.timing={};self.timing_clock=time.monotonic
++  self.lane_timing={};self.http_429={};self.last_429_log={};self.active_sections={'shared':0,'scan':0};self.peak_sections=0
+  @contextmanager
+  def operation(self,name):
+   old=getattr(self.local,'name',None);self.local.name=name
+@@ -28,49 +54,98 @@
+   old=getattr(self.local,'request_observer',None);self.local.request_observer=observer
+   try:yield
+   finally:self.local.request_observer=old
+- def _timing(self,name,wait,hold):
++ def _lane(self,operation,enabled):return 'scan' if enabled and operation=='scan_rest' else 'shared'
++ def _timing(self,name,wait,hold,lane):
+   with self.timing_lock:
+-   row=self.timing.setdefault(name,{'count':0,'wait_total_seconds':0.,'wait_max_seconds':0.,'hold_total_seconds':0.,'hold_max_seconds':0.})
+-   row['count']+=1
+-   for kind,value in [('wait',wait),('hold',hold)]:
+-    row[kind+'_total_seconds']+=value;row[kind+'_max_seconds']=max(row[kind+'_max_seconds'],value)
++   for rows,key in ((self.timing,name),(self.lane_timing,lane)):
++    row=rows.setdefault(key,{'count':0,'wait_total_seconds':0.,'wait_max_seconds':0.,'hold_total_seconds':0.,'hold_max_seconds':0.})
++    row['count']+=1
++    for kind,value in [('wait',wait),('hold',hold)]:
++     row[kind+'_total_seconds']+=value;row[kind+'_max_seconds']=max(row[kind+'_max_seconds'],value)
++ def _activity(self,lane,delta):
++  with self.timing_lock:
++   self.active_sections[lane]+=delta;self.peak_sections=max(self.peak_sections,sum(self.active_sections.values()))
++ def _record_429(self,operation,lane):
++  # Never replace the original API error with a telemetry error.
++  try:
++   row=None;minute=int(time.time()//60)
++   with self.timing_lock:
++    self.http_429[(lane,operation)]=self.http_429.get((lane,operation),0)+1
++    # At most one immediate line per lane per UTC minute, even if its caller exits.
++    if minute>self.last_429_log.get(lane,-1):
++     self.last_429_log[lane]=minute
++     row={'stage':'R104_HTTP_429','at':datetime.now(timezone.utc).isoformat(),'lane':lane,'operation':operation,
++          'http_429_total':sum(self.http_429.values()),'lane_http_429_count':sum(n for (l,o),n in self.http_429.items() if l==lane),'retry_added':False}
++   if row is not None:print(json.dumps(row),flush=True)
++  except BaseException:pass
+  def lock_metrics(self):
+   with self.timing_lock:
+    return {'operations':{name:{**v,'wait_mean_seconds':v['wait_total_seconds']/v['count'],'hold_mean_seconds':v['hold_total_seconds']/v['count']} for name,v in self.timing.items()},
+-           'scope':'acquisitions including denied window rechecks; wait excludes heavy-window sleep; hold includes HTTP/read/JSON; no scheduling change'}
++           'scope':'acquisitions including denied window rechecks; wait excludes heavy-window sleep; hold includes HTTP/read/JSON; R10.4 lane/FIFO admission changes transport scheduling only',
++           'scan_lane_enabled':SCAN_LANE_ENABLED,'request_section_limit':2 if SCAN_LANE_ENABLED else 1,
++           'lanes':{lane:{**self.lane_timing.get(lane,{'count':0,'wait_total_seconds':0.,'wait_max_seconds':0.,'hold_total_seconds':0.,'hold_max_seconds':0.}),
++                    'active_request_sections':self.active_sections[lane],
++                    'http_429_count':sum(n for (l,o),n in self.http_429.items() if l==lane)} for lane in ('scan','shared')},
++           'active_request_sections':sum(self.active_sections.values()),'peak_request_sections':self.peak_sections,
++           'http_429_total':sum(self.http_429.values()),
++           'http_429_by_operation':{name:sum(n for (l,o),n in self.http_429.items() if o==name) for name in ('scan_rest','native','incremental','other')}}
+  @contextmanager
+  def serialized_request(self):
++  enabled=SCAN_LANE_ENABLED # Fixed routing for this request, including a denied-window recheck.
+   while True:
+    hook=getattr(self,'before_request',None)
+    if hook is not None:hook() # wait OUTSIDE the shared API serialization lock
+-   operation=self._operation();waiting=self.timing_clock();self.lock.acquire();acquired=self.timing_clock()
++   operation=self._operation();lane=self._lane(operation,enabled);lock=self.scan_lock if lane=='scan' else self.lock
++   waiting=self.timing_clock()
++   locked=False;active=False;acquired=None;released=None
+    try:
+-    allowed=getattr(self,'request_allowed',None)
+-    if allowed is not None and not allowed():continue # window crossed while waiting for lock
+-    yield
+-    return
++    with self.turns[lane].turn() if enabled else nullcontext():
++     try:
++      lock.acquire();locked=True;acquired=self.timing_clock()
++      allowed=getattr(self,'request_allowed',None)
++      if allowed is not None and not allowed():continue # window crossed while waiting for lock
++      try:self._activity(lane,1);active=True
++      except BaseException:pass # Counter failure must not prevent a request.
++      yield
++      return
++     finally:
++      try:
++       if active:
++        try:self._activity(lane,-1)
++        except BaseException:pass
++      finally:
++       if locked:
++        try:released=self.timing_clock()
++        finally:lock.release()
+    finally:
+-    released=self.timing_clock();self.lock.release()
+-    self._timing(operation,max(0.,acquired-waiting),max(0.,released-acquired))
+-    # Measurement after release; observer is local to this requesting thread.
+-    observer=getattr(self.local,'request_observer',None)
+-    if observer is not None:
+-     try:observer(operation,max(0.,acquired-waiting),max(0.,released-acquired))
+-     except BaseException:pass # Observer failures never mask an application exception.
++    # Neither a lane turn nor its physical lock is held during observers.
++    if acquired is not None and released is not None:
++     wait=max(0.,acquired-waiting);hold=max(0.,released-acquired)
++     try:self._timing(operation,wait,hold,lane)
++     except BaseException:pass
++     observer=getattr(self.local,'request_observer',None)
++     if observer is not None:
++      try:observer(operation,wait,hold)
++      except BaseException:pass # Observer failures never mask an application exception.
+  def call(self,host,path,params):
+   if (host,path) not in {('paper-api.alpaca.markets','/v2/assets'),('paper-api.alpaca.markets','/v2/calendar'),('api.alpaca.markets','/v2/assets'),('api.alpaca.markets','/v2/calendar'),('data.alpaca.markets','/v2/stocks/bars'),('data.alpaca.markets','/v2/stocks/trades'),('data.alpaca.markets','/v2/stocks/snapshots')}:raise APIError('ENDPOINT_FORBIDDEN')
+   req=urllib.request.Request('https://'+host+path+'?'+urllib.parse.urlencode(params),headers={'APCA-API-KEY-ID':self.key,'APCA-API-SECRET-KEY':self.secret},method='GET')
++  operation=self._operation();lane=self._lane(operation,SCAN_LANE_ENABLED)
+   try:
+    with self.serialized_request():
+-    self.requests+=1
++    with self.timing_lock:self.requests+=1
+     with self.opener(req,timeout=20) as r:
+-     if r.status!=200:raise APIError('HTTP_NOT_200')
++     if r.status!=200:
++      if r.status==429:self._record_429(operation,lane)
++      raise APIError('HTTP_NOT_200')
+      raw=r.read(32*1024*1024+1)
+      if len(raw)>32*1024*1024:raise APIError('RESPONSE_TOO_LARGE')
+      from .observability import observed_phase
+      with observed_phase('rest.JSON'):return json.loads(raw)
+   except APIError:raise
+-  except urllib.error.HTTPError as exc:raise APIError('ALPACA_HTTP_'+str(exc.code)) from None
++  except urllib.error.HTTPError as exc:
++   if exc.code==429:self._record_429(operation,lane)
++   raise APIError('ALPACA_HTTP_'+str(exc.code)) from None
+   except Exception:raise APIError('ALPACA_READ_FAILED') from None
+  def get(self,path,params):return self.call('data.alpaca.markets',path,params)
+  def calendar(self,start,end):
+--- /dev/null
++++ R10.4/tests/r104_load.py
+@@ -0,0 +1,69 @@
++"""Offline transport contention model, not market replay or a live time forecast."""
++import json,threading,time,tempfile
++from pathlib import Path
++from datetime import datetime,timezone,timedelta
++from unittest.mock import patch
++from ipr import api as module
++from ipr.api import Alpaca
++from ipr.data import SessionVolumes
++from dintegration.rest import MarketREST
++from types import SimpleNamespace
++
++def load_case(enabled):
++ lock=threading.Lock();first=threading.Event();scan_done=threading.Event();failures=[]
++ activity={'active':0,'peak':0,'calls':0};progress={'native':0,'incremental':0,'other':0}
++ local=threading.local();rows={};scan_api=None
++ class Response:
++  status=200
++  def __init__(self,kind,slow):self.kind=kind;self.slow=slow
++  def __enter__(self):
++   with lock:
++    activity['active']+=1;activity['peak']=max(activity['peak'],activity['active'])
++   if self.slow:first.set()
++   return self
++  def read(self,n):
++   time.sleep(.20 if self.slow else .001)
++   return b'{"bars":{}}' if self.kind=='bars' else b'{}'
++  def __exit__(self,*a):
++   with lock:activity['active']-=1
++ def opener(req,timeout):
++  with lock:
++   activity['calls']+=1;slow=activity['calls']==1
++  return Response('bars' if '/bars?' in req.full_url else 'snapshots',slow)
++ def worker(name):
++  try:
++   with scan_api.operation(name):
++    for _ in range(24):
++     scan_api.get('/v2/stocks/bars',{})
++     with lock:progress[name]+=1
++  except BaseException as exc:failures.append(repr(exc))
++ symbols=['X'+str(i) for i in range(4845)]
++ now=datetime(2026,11,10,14,35,tzinfo=timezone.utc)
++ with patch.object(module,'SCAN_LANE_ENABLED',enabled):
++  scan_api=Alpaca({'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'},opener=opener)
++  workers=[threading.Thread(target=worker,args=(n,),daemon=True) for n in progress]
++  workers[0].start()
++  if not first.wait(3):raise AssertionError('synthetic holder did not start')
++  for w in workers[1:]:w.start()
++  rest=MarketREST(scan_api.get,SimpleNamespace(symbols=frozenset(symbols)),None)
++  with tempfile.TemporaryDirectory(prefix='ipr-r104-sim-') as temp:
++   calendar=[{'session':'2026-11-10','open':'2026-11-10T14:30:00Z','close':'2026-11-10T21:00:00Z'}]
++   volumes=SessionVolumes(str(Path(temp)/'volume.sqlite'),calendar,'2026-11-10')
++   at=time.monotonic();phase={}
++   try:
++    with scan_api.operation('scan_rest'):
++     start=time.monotonic();volumes.update(scan_api,symbols,now);phase['volume_fetch_seconds']=time.monotonic()-start
++     start=time.monotonic();rest.snapshot_envelopes(symbols,lambda:now);phase['snapshot_fetch_seconds']=time.monotonic()-start
++   finally:volumes.db.close()
++   elapsed=time.monotonic()-at;scan_done.set()
++  for w in workers:w.join(5)
++  if any(w.is_alive() for w in workers):raise AssertionError('synthetic worker starved')
++  if failures:raise AssertionError(failures)
++  metrics=scan_api.lock_metrics()
++  return {'scan_lane_enabled':enabled,'scope':'ASSUMPTION model: 4845 symbols, actual SessionVolumes/MarketREST, 49 volume+49 snapshot HTTP requests; empty synthetic payloads; 3 competing paths x24 requests; first holder sleeps 0.20s, others 0.001s; not live timing or full ranking/model CPU',
++          'scan_duration_seconds':elapsed,'scan_wait_seconds':metrics['operations']['scan_rest']['wait_total_seconds'],
++          'scan_hold_seconds':metrics['operations']['scan_rest']['hold_total_seconds'],
++          'scan_requests':metrics['operations']['scan_rest']['count'],'competing_progress':progress,
++          'peak_HTTP':activity['peak'],'active_HTTP_at_end':activity['active'],'HTTP_calls':activity['calls'],
++          'phase_seconds':phase,'metrics':metrics}
++
+--- R10.3/tests/test_r102.py
++++ R10.4/tests/test_r102.py
+@@ -55,7 +55,7 @@
+         class Lock:
+             def acquire(self):t.sleep(2)
+             def release(self):pass
+-        a.lock=Lock();return a
++        a.lock=Lock();a.scan_lock=Lock();return a
+     def test_scan_scope_wait_hold_and_counts_by_phase(self):
+         t=Sim(0);a=self.api(t);d=ScanTimings(t.clock,t.wall);d.begin(0,t.wall())
+         with d.requests(a),d.phase('volume_fetch'),a.operation('scan_rest'):
+--- /dev/null
++++ R10.4/tests/test_r104.py
+@@ -0,0 +1,313 @@
++"""R10.4 transport lanes. All openers are local fakes; no service/Redis I/O."""
++import asyncio,contextlib,io,json,threading,time,unittest,urllib.error,urllib.parse
++from unittest.mock import patch
++from datetime import datetime,timezone,timedelta
++from types import SimpleNamespace as NS
++from ipr import api as module
++from ipr.api import Alpaca,APIError,_RequestTurn
++from ipr.wave import HeavyWindow
++from dintegration.rest import MarketREST
++from test_r71 import Sim,nested
++from r104_load import load_case
++
++ENV={'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'}
++class Cancelled(BaseException):pass
++class Response:
++ status=200
++ def __init__(self,body=b'{}'):self.body=body
++ def __enter__(self):return self
++ def __exit__(self,*a):pass
++ def read(self,n):return self.body
++
++class Lanes(unittest.TestCase):
++ def setUp(self):self.flag=patch.object(module,'SCAN_LANE_ENABLED',True);self.flag.start();self.addCleanup(self.flag.stop)
++ def api(self,opener=None):return Alpaca(ENV,opener=opener or (lambda *a,**kw:Response()))
++ def wait(self,predicate):
++  until=time.monotonic()+3
++  while time.monotonic()<until:
++   if predicate():return
++   time.sleep(.001)
++  self.fail('local fixture did not reach expected state')
++ def join(self,*threads):
++  for t in threads:t.join(3);self.assertFalse(t.is_alive(),'local fixture thread did not finish')
++ def free(self,a):
++  for lock in (a.lock,a.scan_lock):self.assertTrue(lock.acquire(False));lock.release()
++  for turn in a.turns.values():
++   with turn.condition:self.assertFalse(turn.busy);self.assertEqual(len(turn.queue),0)
++  self.assertEqual(a.lock_metrics()['active_request_sections'],0)
++ def test_flag_and_two_distinct_locks(self):
++  a=self.api();self.assertIs(module.SCAN_LANE_ENABLED,True);self.assertIsNot(a.lock,a.scan_lock)
++ def test_scan_passes_while_original_lock_is_held(self):
++  a=self.api();done=threading.Event()
++  def scan():
++   with a.operation('scan_rest'),a.serialized_request():done.set()
++  with a.lock:
++   t=threading.Thread(target=scan,daemon=True);t.start();self.assertTrue(done.wait(2))
++  self.join(t);self.free(a)
++ def test_all_other_paths_stay_on_original_lock(self):
++  for operation in ('native','incremental','other','unknown'):
++   a=self.api();entered=threading.Event()
++   def work():
++    with a.operation(operation),a.serialized_request():entered.set()
++   with a.lock:
++    t=threading.Thread(target=work,daemon=True);t.start();self.wait(lambda:len(a.turns['shared'].queue)==0 and a.turns['shared'].busy)
++    self.assertFalse(entered.is_set())
++   self.join(t);self.assertTrue(entered.is_set());self.free(a)
++ def test_scan_rest_threadlocal_fallback_is_routed(self):
++  a=self.api();a.request_operation=lambda:'scan_rest'
++  with a.lock,a.serialized_request():pass
++  self.assertEqual(a.lock_metrics()['lanes']['scan']['count'],1)
++ def test_operation_override_and_restore(self):
++  a=self.api();a.request_operation=lambda:'scan_rest'
++  with a.operation('native'):a.get('/v2/stocks/bars',{})
++  a.get('/v2/stocks/bars',{})
++  self.assertEqual(a.lock_metrics()['lanes']['shared']['count'],1);self.assertEqual(a.lock_metrics()['lanes']['scan']['count'],1)
++ def test_disabled_restores_single_lock_and_never_enters_fifo(self):
++  a=self.api();entered=threading.Event()
++  def work():
++   with a.operation('scan_rest'),a.serialized_request():entered.set()
++  with patch.object(module,'SCAN_LANE_ENABLED',False),a.lock:
++   t=threading.Thread(target=work,daemon=True);t.start();self.assertFalse(entered.wait(.03));self.assertFalse(a.turns['scan'].busy)
++  self.join(t);self.assertTrue(entered.is_set());self.free(a)
++ def test_total_HTTP_concurrency_at_most_two_and_one_per_lane(self):
++  a=None;guard=threading.Lock();state={'active':0,'peak':0,'by':{'scan':0,'shared':0},'per_peak':{'scan':0,'shared':0}};errors=[]
++  class R(Response):
++   def __enter__(self):
++    self.lane='scan' if a._operation()=='scan_rest' else 'shared'
++    with guard:
++     state['active']+=1;state['peak']=max(state['peak'],state['active']);state['by'][self.lane]+=1;state['per_peak'][self.lane]=max(state['per_peak'][self.lane],state['by'][self.lane])
++    return self
++   def read(self,n):time.sleep(.002);return b'{}'
++   def __exit__(self,*args):
++    with guard:state['active']-=1;state['by'][self.lane]-=1
++  a=self.api(lambda *a,**kw:R())
++  def work(op):
++   try:
++    with a.operation(op):
++     for _ in range(8):a.get('/v2/stocks/bars',{})
++   except BaseException as e:errors.append(e)
++  threads=[threading.Thread(target=work,args=(op,),daemon=True) for op in ['scan_rest']*4+['native','incremental','other']*3]
++  for t in threads:t.start()
++  self.join(*threads);self.assertEqual(errors,[]);self.assertEqual(state['peak'],2);self.assertEqual(state['per_peak'],{'scan':1,'shared':1});self.assertEqual(a.requests,104);self.free(a)
++ def test_FIFO_no_shared_path_starved_by_scan_or_new_waiters(self):
++  a=self.api();order=[];stop=threading.Event()
++  def scan():
++   while not stop.is_set():
++    with a.operation('scan_rest'),a.serialized_request():time.sleep(.0002)
++  def work(op,n):
++   with a.operation(op),a.serialized_request():order.append((op,n))
++  scanner=threading.Thread(target=scan,daemon=True);scanner.start();threads=[]
++  try:
++   with a.operation('other'),a.serialized_request():
++    for n in range(12):
++     op=('native','incremental','other')[n%3];t=threading.Thread(target=work,args=(op,n),daemon=True);t.start();threads.append(t);self.wait(lambda:len(a.turns['shared'].queue)==len(threads))
++   self.join(*threads);self.assertEqual(order,[(('native','incremental','other')[n%3],n) for n in range(12)])
++  finally:stop.set();self.join(scanner)
++  self.free(a)
++ def test_FIFO_interrupted_waiter_does_not_leave_ticket(self):
++  turn=_RequestTurn()
++  with turn.turn():
++   with patch.object(turn.condition,'wait',side_effect=Cancelled('cancelled')):
++    with self.assertRaises(Cancelled):
++     with turn.turn():pass
++   self.assertEqual(len(turn.queue),0)
++  with turn.turn():pass
++  self.assertFalse(turn.busy)
++ def test_exceptions_and_BaseException_release_both_lanes(self):
++  for op in ('scan_rest','native'):
++   for exc in (ValueError('application'),Cancelled('cancelled'),KeyboardInterrupt()):
++    a=self.api()
++    with self.assertRaises(type(exc)) as cm:
++     with a.operation(op),a.serialized_request():raise exc
++    self.assertIs(cm.exception,exc);self.free(a)
++ def test_acquire_error_releases_FIFO_turn(self):
++  a=self.api()
++  class Lock:
++   def acquire(self):raise Cancelled('before acquisition')
++  a.scan_lock=Lock()
++  with self.assertRaises(Cancelled):
++   with a.operation('scan_rest'),a.serialized_request():pass
++  self.assertFalse(a.turns['scan'].busy);self.assertEqual(len(a.turns['scan'].queue),0)
++ def test_clock_error_after_acquisition_still_releases(self):
++  a=self.api();times=iter([0.,Cancelled('clock'),2.])
++  def clock():
++   v=next(times)
++   if isinstance(v,BaseException):raise v
++   return v
++  a.timing_clock=clock
++  with self.assertRaises(Cancelled):
++   with a.operation('scan_rest'),a.serialized_request():pass
++  a.timing_clock=time.monotonic;self.free(a)
++ def test_observer_and_counter_faults_do_not_hold_turn_or_mask_error(self):
++  a=self.api();original=ValueError('application')
++  with patch.object(a,'_timing',side_effect=RuntimeError('telemetry')):
++   with a.observe_requests(lambda *a:(_ for _ in ()).throw(RuntimeError('observer'))):
++    with self.assertRaises(ValueError) as cm:
++     with a.operation('scan_rest'),a.serialized_request():raise original
++  self.assertIs(cm.exception,original);self.free(a)
++ def test_observer_runs_after_both_turn_and_lock_are_released(self):
++  a=self.api();seen=[]
++  def observe(*v):
++   seen.append((a.turns['scan'].busy,a.scan_lock.locked()))
++  with a.observe_requests(observe),a.operation('scan_rest'),a.serialized_request():pass
++  self.assertEqual(seen,[(False,False)])
++ def test_async_cancel_keeps_worker_slot_until_HTTP_body_ends(self):
++  a=self.api();entered=threading.Event();release=threading.Event();finished=threading.Event()
++  def work():
++   try:
++    with a.operation('scan_rest'),a.serialized_request():entered.set();release.wait(2)
++   finally:finished.set()
++  async def go():
++   task=asyncio.create_task(asyncio.to_thread(work))
++   while not entered.is_set():await asyncio.sleep(.001)
++   task.cancel()
++   with self.assertRaises(asyncio.CancelledError):await task
++   self.assertFalse(a.scan_lock.acquire(False),'cannot release slot while worker still owns HTTP')
++   with a.operation('native'),a.serialized_request():pass
++   release.set()
++   while not finished.is_set():await asyncio.sleep(.001)
++  asyncio.run(go());self.free(a)
++ def test_read_timeout_errors_release_without_retry(self):
++  for op in ('scan_rest','native'):
++   calls=[]
++   def opener(*args,**kw):calls.append(kw);raise TimeoutError('synthetic')
++   a=self.api(opener)
++   with a.operation(op),self.assertRaisesRegex(APIError,'ALPACA_READ_FAILED'):a.get('/v2/stocks/bars',{})
++   self.assertEqual(len(calls),1);self.assertEqual(calls[0]['timeout'],20);self.free(a)
++ def test_read_and_JSON_errors_release(self):
++  class Bad(Response):
++   def read(self,n):raise TimeoutError('read')
++  for response in [Bad(),Response(b'{bad')]:
++   a=self.api(lambda *a,**kw:response)
++   with a.operation('scan_rest'),self.assertRaisesRegex(APIError,'ALPACA_READ_FAILED'):a.get('/v2/stocks/bars',{})
++   self.free(a)
++ def test_HTTP429_has_one_attempt_and_explicit_lane_operation_count(self):
++  for op,lane in [('scan_rest','scan'),('native','shared'),('incremental','shared'),('other','shared')]:
++   calls=[]
++   def opener(*a,**kw):calls.append(1);raise urllib.error.HTTPError('https://synthetic.invalid',429,'synthetic',{'Retry-After':'99'},None)
++   a=self.api(opener)
++   with a.operation(op),self.assertRaisesRegex(APIError,'^ALPACA_HTTP_429$'):a.get('/v2/stocks/bars',{})
++   m=a.lock_metrics();self.assertEqual(len(calls),1);self.assertEqual(m['http_429_total'],1);self.assertEqual(m['lanes'][lane]['http_429_count'],1);self.assertEqual(m['http_429_by_operation'][op],1);self.free(a)
++ def test_429_counter_failure_preserves_original_API_error(self):
++  def opener(*a,**kw):raise urllib.error.HTTPError('https://synthetic.invalid',429,'synthetic',{},None)
++  a=self.api(opener)
++  class Broken(dict):
++   def get(self,*a):raise RuntimeError('telemetry')
++  a.http_429=Broken()
++  with a.operation('scan_rest'),self.assertRaisesRegex(APIError,'^ALPACA_HTTP_429$'):a.get('/v2/stocks/bars',{})
++  a.http_429={};self.free(a)
++ def test_returned_429_status_keeps_HTTP_NOT_200_behavior(self):
++  class RateLimited(Response):status=429
++  a=self.api(lambda *a,**kw:RateLimited())
++  with self.assertRaisesRegex(APIError,'^HTTP_NOT_200$'):a.get('/v2/stocks/bars',{})
++  self.assertEqual(a.lock_metrics()['http_429_total'],1);self.free(a)
++ def test_HTTP500_not_counted_as_429_and_no_retry(self):
++  calls=[]
++  def opener(*a,**kw):calls.append(1);raise urllib.error.HTTPError('https://synthetic.invalid',500,'synthetic',{},None)
++  a=self.api(opener)
++  with self.assertRaisesRegex(APIError,'^ALPACA_HTTP_500$'):a.get('/v2/stocks/bars',{})
++  self.assertEqual(len(calls),1);self.assertEqual(a.lock_metrics()['http_429_total'],0);self.free(a)
++ def test_429_immediate_log_bounded_per_lane_minute_but_all_errors_counted(self):
++  def opener(*a,**kw):raise urllib.error.HTTPError('https://synthetic.invalid',429,'synthetic',{},None)
++  a=self.api(opener);out=io.StringIO()
++  with patch.object(module.time,'time',return_value=120),contextlib.redirect_stdout(out):
++   for op in ['scan_rest']*8+['native']*8:
++    with a.operation(op),self.assertRaises(APIError):a.get('/v2/stocks/bars',{})
++  lines=[json.loads(s) for s in out.getvalue().splitlines()];self.assertEqual(len(lines),2);self.assertEqual({r['lane'] for r in lines},{'scan','shared'});self.assertEqual(a.lock_metrics()['http_429_total'],16)
++  with patch.object(module.time,'time',return_value=180),contextlib.redirect_stdout(out):
++   with self.assertRaises(APIError):a.get('/v2/stocks/bars',{})
++  self.assertEqual(len(out.getvalue().splitlines()),3);self.free(a)
++ def test_429_print_failure_never_masks_original_error_or_leaks_lock(self):
++  def opener(*a,**kw):raise urllib.error.HTTPError('https://synthetic.invalid',429,'synthetic',{},None)
++  a=self.api(opener)
++  with patch('builtins.print',side_effect=OSError('log sink')):
++   with a.operation('scan_rest'),self.assertRaisesRegex(APIError,'^ALPACA_HTTP_429$'):a.get('/v2/stocks/bars',{})
++  self.assertEqual(a.lock_metrics()['http_429_total'],1);self.free(a)
++ def test_429_clock_backwards_does_not_reopen_log_budget(self):
++  a=self.api();out=io.StringIO()
++  with contextlib.redirect_stdout(out):
++   for epoch in (180,120,180,181,240):
++    with patch.object(module.time,'time',return_value=epoch):a._record_429('scan_rest','scan')
++  self.assertEqual(len(out.getvalue().splitlines()),2);self.assertEqual(a.lock_metrics()['http_429_total'],5)
++ def test_429_after_failure_is_not_sticky_for_next_request(self):
++  calls=[]
++  def opener(*a,**kw):
++   calls.append(1)
++   if len(calls)==1:raise urllib.error.HTTPError('https://synthetic.invalid',429,'synthetic',{},None)
++   return Response()
++  a=self.api(opener)
++  with self.assertRaises(APIError):a.get('/v2/stocks/bars',{})
++  self.assertEqual(a.get('/v2/stocks/bars',{}),{});self.assertEqual(len(calls),2);self.assertEqual(a.lock_metrics()['http_429_total'],1);self.free(a)
++ def test_metrics_additive_and_both_lane_wait_hold_exact(self):
++  a=self.api();t=Sim(0);a.timing_clock=t.clock
++  class Lock:
++   def acquire(self):t.at+=2
++   def release(self):pass
++  a.lock=Lock();a.scan_lock=Lock()
++  for op in ['scan_rest','native','incremental','other']:
++   with a.operation(op),a.serialized_request():t.at+=3
++  m=a.lock_metrics();self.assertEqual(set(m['operations']),{'scan_rest','native','incremental','other'})
++  for lane,n in [('scan',1),('shared',3)]:
++   self.assertEqual(m['lanes'][lane]['count'],n);self.assertEqual(m['lanes'][lane]['wait_total_seconds'],2*n);self.assertEqual(m['lanes'][lane]['hold_total_seconds'],3*n);self.assertEqual(m['lanes'][lane]['wait_max_seconds'],2);self.assertEqual(m['lanes'][lane]['hold_max_seconds'],3)
++ def test_HeavyWindow_sleep_stays_outside_both_lanes_and_measurement(self):
++  a=self.api();t=Sim(55);g=HeavyWindow(t.wall,sleep=t.sleep,clock=t.clock);a.timing_clock=t.clock;a.before_request=g.before_request;a.request_allowed=g.request_allowed;a.request_operation=lambda:getattr(g.local,'name',None)
++  with g.operation('incremental'):
++   with a.serialized_request():t.at+=1
++  self.assertAlmostEqual(g.metrics()['wait_seconds_by_operation']['incremental'],15)
++  self.assertEqual(a.lock_metrics()['operations']['incremental']['wait_total_seconds'],0)
++  with g.operation('scan_rest'),a.serialized_request():pass
++  self.assertEqual(a.lock_metrics()['lanes']['scan']['count'],1)
++ def test_HeavyWindow_sleep_does_not_block_scan_while_incremental_waits(self):
++  a=self.api();asleep=threading.Event();wake=threading.Event();blocked=threading.Event();finished=threading.Event()
++  def hook():
++   if a._operation()=='incremental':asleep.set();wake.wait(2)
++  a.before_request=hook
++  def inc():
++   with a.operation('incremental'),a.serialized_request():finished.set()
++  t=threading.Thread(target=inc,daemon=True);t.start();self.assertTrue(asleep.wait(2))
++  try:
++   with a.operation('scan_rest'),a.serialized_request():self.assertFalse(finished.is_set())
++  finally:wake.set();self.join(t)
++  self.free(a)
++ def test_window_recheck_releases_then_reacquires_same_lane(self):
++  a=self.api();checks=iter([False,True]);a.request_allowed=lambda:next(checks)
++  with a.operation('incremental'),a.serialized_request():pass
++  self.assertEqual(a.requests,0);self.assertEqual(a.lock_metrics()['lanes']['shared']['count'],2);self.free(a)
++ def test_pagination_literal_params_and_pages_unchanged_both_modes(self):
++  outputs=[]
++  for enabled in (False,True):
++   queries=[]
++   def opener(req,**kw):
++    q=urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query);queries.append(q)
++    return Response(json.dumps({'bars':{'X':[]},'next_page_token':'literal' if len(queries)==1 else None}).encode())
++   a=self.api(opener)
++   with patch.object(module,'SCAN_LANE_ENABLED',enabled),a.operation('scan_rest'):data=list(a.bar_pages(['X'],'2026-11-10T14:30:00.123456Z','2026-11-10T14:31:00.654321Z'))
++   outputs.append((queries,data));self.free(a)
++  self.assertEqual(outputs[0],outputs[1]);self.assertEqual(outputs[1][0][1]['page_token'],['literal']);self.assertEqual(outputs[1][0][0]['feed'],['sip'])
++ def test_pagination_cycle_still_fails_closed_without_retry(self):
++  a=self.api(lambda *a,**kw:Response(b'{"bars":{},"next_page_token":"same"}'))
++  with a.operation('scan_rest'),self.assertRaisesRegex(APIError,'PAGINATION_CYCLE'):list(a.bar_pages(['X'],'a','b'))
++  self.assertEqual(a.requests,2);self.free(a)
++ def test_snapshot_receipt_timestamps_and_native_rows_unchanged(self):
++  results=[]
++  for enabled in (False,True):
++   a=self.api(lambda *a,**kw:Response(b'{"X":{"latestTrade":{"p":2}}}'));rest=MarketREST(a.get,NS(symbols={'X'}),None);at=datetime(2026,11,10,14,31,2,123456,tzinfo=timezone.utc)
++   with patch.object(module,'SCAN_LANE_ENABLED',enabled),a.operation('scan_rest'):results.append(rest.snapshot_envelopes(['X'],lambda:at))
++  self.assertEqual(results[0],results[1]);self.assertEqual(results[0]['X']['captured_at'],'2026-11-10T14:31:02.123456+00:00')
++ def test_actual_runtime_metrics_exports_lanes_without_runtime_changes(self):
++  from test_r8 import RestTimingTests
++  # Existing actual nested-metrics regression remains authoritative; additionally inspect new fields.
++  a=self.api();stop=NS(value=False);stop.is_set=lambda:stop.value
++  async def pause(*a):stop.value=True
++  r=NS(stop=stop,wall=lambda:datetime.now(timezone.utc),api=a,ingress=None,a=NS(transport_trusted=False),heavy_window=NS(metrics=lambda:{}));out=io.StringIO()
++  env={'r':r,'measure':NS(sample=lambda:{}),'state':{'ready':True,'scan_ok':False},'selection':NS(metrics=lambda:{}),'scan_diagnostics':NS(snapshot=lambda:{}),'json':json,'pause':pause}
++  with contextlib.redirect_stdout(out):asyncio.run(nested('metrics',env)())
++  m=json.loads(out.getvalue())['rest_lock'];self.assertIn('operations',m);self.assertEqual(set(m['lanes']),{'scan','shared'});self.assertTrue(m['scan_lane_enabled'])
++ def test_synthetic_load_measures_contention_without_live_promises(self):
++  baseline=load_case(False);candidate=load_case(True)
++  for result in (baseline,candidate):
++   self.assertEqual(result['scan_requests'],98);self.assertEqual(result['HTTP_calls'],170);self.assertEqual(result['competing_progress'],{'native':24,'incremental':24,'other':24});self.assertEqual(result['active_HTTP_at_end'],0)
++  self.assertEqual(baseline['peak_HTTP'],1);self.assertEqual(candidate['peak_HTTP'],2);self.assertGreater(baseline['scan_wait_seconds'],.10)
++  self.assertLess(candidate['scan_wait_seconds'],baseline['scan_wait_seconds'])
++  print('\nR104_LOAD_SIMULATION_JSON='+json.dumps({'baseline':baseline,'candidate':candidate},sort_keys=True),flush=True)
++
+--- R10.3/tests/test_r8.py
++++ R10.4/tests/test_r8.py
+@@ -138,7 +138,7 @@
+   class Lock:
+    def acquire(self):t.at+=2
+    def release(self):pass
+-  a.lock=Lock()
++  a.lock=Lock();a.scan_lock=Lock()
+   for operation in ('scan_rest','incremental','native','arbitrary'):
+    with a.operation(operation):
+     with a.serialized_request():t.at+=3

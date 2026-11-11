@@ -55,7 +55,7 @@ class R102REST(unittest.TestCase):
         class Lock:
             def acquire(self):t.sleep(2)
             def release(self):pass
-        a.lock=Lock();return a
+        a.lock=Lock();a.scan_lock=Lock();return a
     def test_scan_scope_wait_hold_and_counts_by_phase(self):
         t=Sim(0);a=self.api(t);d=ScanTimings(t.clock,t.wall);d.begin(0,t.wall())
         with d.requests(a),d.phase('volume_fetch'),a.operation('scan_rest'):

@@ -1,0 +1,52 @@
+{
+  "release": "R10.4",
+  "status": "REVIEW_ONLY_NOT_DEPLOYED",
+  "base_R103_commit": "56fcabc73edd4b273cc50e95ae436236d68eb4a8",
+  "base_R103_ZIP_SHA256": "0c453da972842832900aa096a65f297afa6d0925ae04aad16f2252e1de3494b2",
+  "tests": {
+    "command": "python3 -I run_tests.py",
+    "total": 369,
+    "baseline_existing": 335,
+    "added": 34,
+    "passed": 369,
+    "failed": 0,
+    "exit_code": 0,
+    "elapsed_seconds": 153.422,
+    "network": "runner blocks socket connect/connect_ex/create_connection/getaddrinfo; injected local fake openers; no live Redis/Render/GitHub requests"
+  },
+  "SCAN_LANE_ENABLED": true,
+  "ENTRY_PRICE_POLICY_ENFORCED": false,
+  "reference_app_files_unchanged": 72,
+  "reference_app_R93_byte_identical": true,
+  "only_changed_operational_file_vs_R103": "ipr/api.py",
+  "source_diff_vs_R103": [
+    "ipr/api.py",
+    "tests/r104_load.py",
+    "tests/test_r102.py",
+    "tests/test_r104.py",
+    "tests/test_r8.py"
+  ],
+  "source_diff_vs_R93": [
+    "ipr/api.py",
+    "ipr/classifier.py",
+    "ipr/entry_shadow.py",
+    "ipr/price_policy.py",
+    "ipr/runtime.py",
+    "ipr/scan_timing.py",
+    "ipr/telemetry_safe.py",
+    "tests/r103_support.py",
+    "tests/r104_load.py",
+    "tests/test_r102.py",
+    "tests/test_r103.py",
+    "tests/test_r104.py",
+    "tests/test_r8.py"
+  ],
+  "existing_test_fixture_changes": "Only injected fake scan_lock added alongside fake original lock in test_r8/test_r102; no existing assertions removed or relaxed",
+  "global_request_limit_scope": "One API object in live child; one request section per physical lane, total <=2. Disabled <=1. No semaphore tokens. Waiting FIFO tickets are not permits. Parent and child are separate processes; no new worker or API object created.",
+  "FIFO_guarantee": "Waiting request cannot be overtaken by later arrivals in its lane; ASSUMPTION holder eventually completes/raises. HTTP timeout20 is preserved and not a hard total deadline.",
+  "new_429_retries": 0,
+  "429_immediate_log_bound": "At most one per lane per increasing UTC minute; counters include every observed429, even if printing fails or wallclock moves backwards.",
+  "no_environment_redis_budget_service_task_or_GitHub_mutations": true,
+  "live_latency_under120": "UNKNOWN_NOT_CLAIMED",
+  "clean_source_test_match": true
+}

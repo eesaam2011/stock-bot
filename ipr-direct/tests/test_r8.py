@@ -138,7 +138,7 @@ class RestTimingTests(unittest.TestCase):
   class Lock:
    def acquire(self):t.at+=2
    def release(self):pass
-  a.lock=Lock()
+  a.lock=Lock();a.scan_lock=Lock()
   for operation in ('scan_rest','incremental','native','arbitrary'):
    with a.operation(operation):
     with a.serialized_request():t.at+=3
