@@ -1,0 +1,963 @@
+--- /dev/null
++++ b/analyze_r108.py
+@@ -0,0 +1,45 @@
++"""Offline review examples; no Redis/API/environment access."""
++import sys,json,socket,contextlib,io,copy,hashlib
++from pathlib import Path
++root=Path(__file__).resolve().parent;sys.path[:0]=[str(root),str(root/'reference_app'),str(root/'tests')];sys.dont_write_bytecode=True
++socket.socket.connect=lambda *a:(_ for _ in ()).throw(AssertionError('NETWORK_FORBIDDEN'))
++from unittest.mock import patch
++from ipr import review_flags
++from ipr.outbox_mget import outbox_store
++from dintegration.native_timing import NativeTiming
++from r108_support import native_fixture,AT,POLICY,box,packed
++matrix=[];last=None
++for timing in (False,True):
++ for grouped in (False,True):
++  with patch.object(review_flags,'NATIVE_TIMING_ENABLED',timing),patch.object(review_flags,'OUTBOX_MGET_ENABLED',grouped):
++   syms,http,api,rest,p,store,bridge=native_fixture();lines=[];m=None
++   if timing:m=NativeTiming(p,rest,POLICY,wall=lambda:AT,emit=lines.append);m.install(bridge)
++   with api.operation('native'),contextlib.redirect_stdout(io.StringIO()):bridge.native_cycle(syms,AT,True)
++   if m:m.q.join();last=m.snapshot();m.close()
++   b=box(27);out=outbox_store(b).pending()
++   matrix.append({'NATIVE_TIMING_ENABLED':timing,'OUTBOX_MGET_ENABLED':grouped,'HTTP_count':len(http.calls),'HTTP_peak':http.peak,'outbox_GET':sum(c[0]=='GET' for c in b.calls),'outbox_MGET':sum(c[0]=='MGET' for c in b.calls),'outbox_SCAN':sum(c[0]=='SCAN' for c in b.calls),'decision_sha256':hashlib.sha256(packed(store)).hexdigest(),'pending_output_sha256':hashlib.sha256(packed(out)).hexdigest(),'observer_lines':len(lines)})
++assert len({v['decision_sha256'] for v in matrix})==len({v['pending_output_sha256'] for v in matrix})==1
++(root/'FLAGS_MATRIX_R108.json').write_text(json.dumps(matrix,indent=2)+'\n')
++(root/'MEASUREMENTS_EXAMPLE_R108.json').write_text(json.dumps({'scope':'synthetic offline fixture, not production timing','native_fast_timing':last},indent=2)+'\n')
++def size(x,seen=None):
++ seen=seen if seen is not None else set()
++ if id(x) in seen:return 0
++ seen.add(id(x));n=sys.getsizeof(x)
++ if isinstance(x,dict):n+=sum(size(k,seen)+size(v,seen) for k,v in x.items())
++ elif isinstance(x,(list,tuple,set,frozenset)):n+=sum(size(v,seen) for v in x)
++ return n
++syms,http,api,rest,p,store,bridge=native_fixture(1);m=NativeTiming(p,rest,POLICY,wall=lambda:AT)
++row=copy.deepcopy(last['last']);row['request_samples']=[{'operation':'native','wait_seconds':.1,'hold_seconds':2.2} for _ in range(8)]
++resident=size([json.loads(json.dumps(row)) for _ in range(32)]+[m.boundaries,last]);m.close()
++(root/'MEMORY_ESTIMATE_R108.json').write_text(json.dumps({'bounded_data_example_bytes':resident,'MiB':resident/1048576,'queue_rows':32,'request_samples_per_cycle':8,'max_boundaries':96,'actual_fixture_boundaries':78,'scope':'recursive sys.getsizeof for buffered structured telemetry; shared pipeline/HTTP rows excluded; allocator, thread stack, live RSS/cgroup NOT measured','ASSUMPTION_expected_extra_resident_data_MiB_range':[.2,1.0],'live_extra_memory':'UNKNOWN'},indent=2)+'\n')
++from test_r9_core import ChainTests
++from r9core.chain import ChainState
++r,l,s=ChainTests().fixture();s.append_epoch({'kind':'NOTE','value':'unchanged'});reader=ChainState(r,s.session,s.root_hash,'readonly',0);reader.restore();segment=s.key(s.head['segment']);field=str(s.seq)
++r.state['hashes'][segment][field]=r.state['hashes'][segment][field].replace('unchanged','tampered!')
++try:reader.restore();fast='ACCEPTED_UNCHANGED_HEAD_FAST_PATH'
++except Exception as e:fast=type(e).__name__
++try:ChainState(r,s.session,s.root_hash,'readonly',0).restore();fresh='ACCEPTED'
++except Exception as e:fresh=type(e).__name__
++assert fast=='ACCEPTED_UNCHANGED_HEAD_FAST_PATH' and fresh!='ACCEPTED'
++(root/'PARENT_REUSE_COUNTEREXAMPLE_R108.json').write_text(json.dumps({'scope':'local in-memory fixture/liblua; no Redis service or connection; unchanged R10.4 chain code','head_unchanged':True,'tail_payload_changed_without_head_change':True,'reused_reader':fast,'fresh_reader':fresh,'conclusion':'reusing readonly ChainState alone does not preserve fresh-reader active-tail checks; not implemented'},indent=2)+'\n')
++print(json.dumps({'matrix':matrix,'observer_buffer_example_bytes':resident,'parent_reuse_counterexample':{'reused':fast,'fresh':fresh}}))
+--- a/dintegration/bridge.py
++++ b/dintegration/bridge.py
+@@ -14,6 +14,8 @@
+   self.r=r;self.leadership=leadership;self.rest=rest;self.needs_revision=0;self._preload_local=threading.local()
+   self.p=ProductionDecisionPipeline(r,lua,leadership,session,sorted(root_symbols),OperationalEarlyCore(rest),OperationalBaseReady(),rest,worker,shadow=False)
+   self.p.signal_gate=SignalAdmission(session,session_policy)
++  from .native_timing import attach_native_timing
++  attach_native_timing(self,rest,session_policy)
+  def records(self,pattern,typ):return self.p._scan_records(pattern,typ)
+  def recover_caches(self):
+   self.p.refresh_runtime_caches()
+--- a/dintegration/measure.py
++++ b/dintegration/measure.py
+@@ -28,7 +28,8 @@
+   cores=(cpu-self.last_cpu)/(now-self.last_wall) if self.last_wall is not None and now>self.last_wall else None;self.last_cpu=cpu;self.last_wall=now
+   with self.guard:span_copy={k:{'count':v['count'],'mean':v['total']/v['count'],'max':v['max']} for k,v in self.spans.items()}
+   from ipr.observability import OBS
+-  return {'R7_diagnostics':OBS.snapshot(),'memory_stat':memory_stat,'anon_bytes':memory_stat.get('anon'),'file_bytes':memory_stat.get('file'),'shmem_bytes':memory_stat.get('shmem'),'sqlite_files':sqlite_files,'sqlite_total_bytes':sum(x['bytes'] for x in sqlite_files) if sqlite_files is not None else None,'sqlite_stat_error':sqlite_stat_error,'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
++  from ipr.telemetry_safe import call
++  return {'native_fast_timing':call(getattr(self,'native_timing',None),'snapshot'),'R7_diagnostics':OBS.snapshot(),'memory_stat':memory_stat,'anon_bytes':memory_stat.get('anon'),'file_bytes':memory_stat.get('file'),'shmem_bytes':memory_stat.get('shmem'),'sqlite_files':sqlite_files,'sqlite_total_bytes':sum(x['bytes'] for x in sqlite_files) if sqlite_files is not None else None,'sqlite_stat_error':sqlite_stat_error,'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
+  async def loop_lag(self,stop,period=.1):
+   while not stop.is_set():
+    from ipr.observability import OBS
+--- /dev/null
++++ b/dintegration/native_timing.py
+@@ -0,0 +1,320 @@
++"""R10.8 observations only; original clock, HTTP calls, rows and exceptions stay intact.
++
++R106_FIRST_E_TIMING remains a post-print upper bound. No R10.6 fast transport,
++request pool, cache or R10.5 clock dispatcher is present.
++"""
++import asyncio,functools,json,queue,threading,time
++from contextlib import contextmanager
++from datetime import datetime,timedelta,timezone
++from ipr import review_flags
++from ipr.telemetry_safe import observing
++
++UTC=timezone.utc
++
++def instant(s):return datetime.fromisoformat(s.replace('Z','+00:00')) if isinstance(s,str) else s
++
++def native_phase(runtime,phase):
++ try:
++  if review_flags.NATIVE_TIMING_ENABLED:
++   m=getattr(runtime.a.bridge,'native_timing',None)
++   if m is not None:m.safe(m.phase,phase)
++ except BaseException:pass
++
++def native_guard(runtime,name,value,at):
++ try:
++  if review_flags.NATIVE_TIMING_ENABLED:
++   m=getattr(runtime.a.bridge,'native_timing',None)
++   if m is not None:m.safe(m.guard,name,value,at)
++ except BaseException:pass
++ return value # The original value and short-circuit order are retained.
++
++async def observe_boundaries(monitor,r,pause):
++ # A failed observation task must not become an application task failure.
++ while not r.stop.is_set():
++  try:await monitor.boundary_loop(r,pause)
++  except asyncio.CancelledError:raise
++  except BaseException:
++   try:monitor.errors+=1
++   except BaseException:pass
++  if not r.stop.is_set():await pause(r.stop,1.)
++
++class _Response:
++ def __init__(self,response,monitor):self.response=response;self.entered=response;self.monitor=monitor
++ def __enter__(self):self.entered=self.response.__enter__();return self
++ def __exit__(self,*a):return self.response.__exit__(*a)
++ def __getattr__(self,name):return getattr(self.entered,name)
++ def read(self,*a,**kw):
++  result=self.entered.read(*a,**kw)
++  self.monitor.safe(self.monitor.body_bytes,len(result))
++  return result
++
++class NativeTiming:
++ MAX_LINES=4096
++ MAX_LINE_BYTES=4096
++ MAX_DAY_BYTES=8*1024*1024
++ MAX_BOUNDARIES=96
++ def __init__(self,p,rest,session_policy=None,wall=lambda:datetime.now(UTC),clock=time.monotonic,emit=None):
++  self.p=p;self.rest=rest;self.api=getattr(rest.get,'__self__',None);self.wall=wall;self.clock=clock;self.emit=emit or (lambda line:print(line,flush=True))
++  self.local=threading.local();self.lock=threading.Lock();self.q=queue.Queue(32);self.writer=None;self.stop=threading.Event()
++  self.errors=0;self.busy=0;self.dropped=0;self.writer_errors=0;self.cycles=0;self.last=None
++  self.day=None;self.lines=0;self.bytes=0;self.phase_name='UNKNOWN';self.phase_at=None;self.active_start=None
++  self.observation_start=self.wall();self.last_tick=None;self.boundaries=[];self.reason_counts={};self.boundary_counts={'started_within_15s':0,'not_started_observed':0,'UNKNOWN':0}
++  if session_policy:
++   self.market_open=instant(session_policy['open_utc']);self.market_close=instant(session_policy['close_utc'])
++   end=self.market_open+timedelta(minutes=5)
++   while end<=self.market_close and len(self.boundaries)<self.MAX_BOUNDARIES:
++    self.boundaries.append({'end':end,'started':None,'reasons':set(),'samples':0,'gaps':0,'done':False});end+=timedelta(minutes=5)
++  else:self.market_open=None;self.market_close=None
++  # Do not flood a late attachment with historic UNKNOWN lines. Their exact
++  # schedule and count stay explicit in metrics; no past absence is invented.
++  self.pre_observation_boundaries=0
++  for b in self.boundaries:
++   if b['end']+timedelta(seconds=15)<self.observation_start:
++    b['done']=True;self.pre_observation_boundaries+=1;self.boundary_counts['UNKNOWN']+=1
++ def safe(self,fn,*a):
++  try:return fn(*a)
++  except BaseException:self.errors+=1
++ def current(self):return getattr(self.local,'cycle',None)
++ def phase(self,name):
++  self.phase_name=name;self.phase_at=self.clock()
++  if name=='NO_PROVEN_SYMBOLS':self._note(self.wall(),name)
++ def _note(self,at,reason):
++  for b in self.boundaries:
++   if not b['done'] and b['end']<=at<=b['end']+timedelta(seconds=15):b['reasons'].add(reason)
++ def guard(self,name,value,at):
++  if not value:self._note(self.wall(),{'ready':'READY_FALSE','scan_ok':'SCAN_OK_FALSE','rth':'OUTSIDE_RTH','trusted':'TRUSTED_FALSE'}.get(name,'UNKNOWN'))
++ def boundary_tick(self,at):
++  # All reasons denote actual guard checks or observed execution phases. They
++  # are NOT an inferred exclusive explanation for an unsampled interval.
++  gap_start=self.last_tick;self.last_tick=at
++  for b in self.boundaries:
++   if b['done'] or at<b['end']:continue
++   deadline=b['end']+timedelta(seconds=15)
++   if gap_start is not None and (at-gap_start).total_seconds()>2.5 and gap_start<deadline and at>b['end']:b['gaps']+=1
++   if at<=deadline:
++    b['samples']+=1
++    if self.active_start is not None and self.active_start<b['end']:b['reasons'].add('PREVIOUS_CYCLE_RUNNING')
++    elif self.phase_name=='PAUSE' and self.phase_at is not None:
++     b['reasons'].add('PAUSE_5S' if self.clock()-self.phase_at<=5. else 'UNKNOWN_SCHEDULER_DELAY')
++    elif self.phase_name=='QUEUED':b['reasons'].add('UNKNOWN_WORKER_QUEUE')
++    continue
++   b['done']=True
++   prior_covers=b.get('prior_cycle_covered_window',False) or (self.active_start is not None and self.active_start<=b['end'] and at>deadline)
++   if prior_covers:b['reasons'].add('PREVIOUS_CYCLE_RUNNING')
++   complete=self.errors==0 and (prior_covers or (self.observation_start<=b['end'] and b['samples']>0 and not b['gaps']))
++   outcome='STARTED_WITHIN_15S' if b['started'] is not None else 'NO_START_OBSERVED' if complete else 'UNKNOWN'
++   key={'STARTED_WITHIN_15S':'started_within_15s','NO_START_OBSERVED':'not_started_observed','UNKNOWN':'UNKNOWN'}[outcome];self.boundary_counts[key]+=1
++   if outcome=='NO_START_OBSERVED':
++    if not b['reasons']:b['reasons'].add('UNKNOWN')
++    for reason in b['reasons']:self.reason_counts[reason]=self.reason_counts.get(reason,0)+1
++   self.enqueue({'stage':'R108_NATIVE_BOUNDARY','session':self.p.session,'bar_end':b['end'].isoformat(),'first_cycle_start_utc':b['started'].isoformat() if b['started'] else None,
++                 'outcome':outcome,'observed_blockers':sorted(b['reasons']),'observation_samples':b['samples'],'sampling_gaps':b['gaps'],
++                 'coverage':'continuous sampler presence' if complete else 'partial/late/gapped; absence UNKNOWN',
++                 'reason_scope':'observed guards/phases; multiple reasons may coexist; unsampled causes UNKNOWN'})
++ async def boundary_loop(self,r,pause):
++  while not r.stop.is_set():
++   self.safe(lambda:self.boundary_tick(r.wall()))
++   await pause(r.stop,1.) # Observer only; original native pause remains 5 seconds.
++ def http_start(self):
++  c=self.current()
++  if c is not None:c['request_count']+=1
++ def body_bytes(self,n):
++  c=self.current()
++  if c is not None:c['response_bytes']+=n
++ def request(self,operation,wait,hold):
++  c=self.current()
++  if c is None:return
++  c['rest_acquisitions']+=1;c['rest_wait_seconds']+=wait;c['rest_hold_seconds']+=hold
++  if len(c['request_samples'])<8:c['request_samples'].append({'operation':operation,'wait_seconds':wait,'hold_seconds':hold})
++ def sip_response(self,data,params,at):
++  c=self.current()
++  if c is None or params.get('timeframe')!='5Min' or not isinstance(data,dict):return
++  bars=data.get('bars')
++  if not isinstance(bars,dict):return
++  target=instant(c['latest_closed_bar_end']);target_start=target-timedelta(minutes=5)
++  for symbol,rows in bars.items():
++   if not isinstance(rows,list):continue
++   # Native history is 305 minutes; the observer inspects <=128 rows/symbol
++   # and does not sort, modify, retain or fetch any row.
++   if len(rows)>128:c['sip_inspection_clipped']+=1
++   for row in rows[:128]:
++    if isinstance(row,dict) and instant(row.get('t'))==target_start:
++     lag=(at-target).total_seconds();c['sip_target_matches']+=1
++     if c['sip_first_seen_utc'] is None:c['sip_first_seen_utc']=at.isoformat();c['sip_first_receipt_lag_seconds']=lag
++     c['sip_last_receipt_lag_seconds']=lag
++     break
++ def probe(self,stage,fields):
++  c=self.current()
++  if c is None:return
++  now=self.clock()
++  if stage=='native5_cycle_before':c['pending_symbols']=fields.get('eligible_symbols');c['before_fetch_work_seconds']=now-c['started_mono']
++  elif stage=='native5_before_bars_multi':c['fetch_start']=now
++  elif stage=='native5_after_bars_multi':c['fetch_seconds']+=now-c.pop('fetch_start',now)
++ def evaluated(self,seconds):
++  c=self.current()
++  if c is not None:c['evaluation_seconds']+=seconds
++ def elapsed(self,name,seconds):
++  c=self.current()
++  if c is not None:c[name]=c.get(name,0.)+seconds
++ def poll_result(self,result):
++  c=self.current()
++  if c is not None and isinstance(result,dict):
++   c['pending_symbols']=result.get('eligible_symbols',c['pending_symbols']);c['required_history_minutes']=result.get('required_history_minutes')
++   for name in ('early_core_persisted','early_core_persist_errors','confluence_errors'):c[name]=result.get(name)
++   failure=result.get('early_core_first_persist_error')
++   c['persistence_error_type']=failure.get('type') if isinstance(failure,dict) else None
++ def persisted(self,result,seconds):
++  c=self.current()
++  if c is not None:
++   c['persistence_seconds']+=seconds
++   if isinstance(result,tuple) and len(result)>1 and isinstance(result[1],dict):c['pending_E']=result[1]
++ def post_print(self,symbol):
++  c=self.current()
++  if c is None:return
++  record=c.pop('pending_E',None)
++  if not record or record.get('symbol')!=symbol:return
++  now=self.wall();bar=record.get('bar_end_ts');end=instant(bar)
++  self.enqueue({'stage':'R106_FIRST_E_TIMING','symbol':symbol,'session':self.p.session,'bar_end':bar,'cycle_start_utc':c['cycle_start_utc'],'post_FIRST_E_utc':now.isoformat(),
++   'bar_close_to_post_FIRST_E_seconds':(now-end).total_seconds(),'cycle_start_from_bar_close_seconds':(instant(c['cycle_start_utc'])-end).total_seconds(),
++   'cycle_elapsed_to_post_FIRST_E_seconds':self.clock()-c['started_mono'],**{k:c[k] for k in ('pending_symbols','fetch_seconds','rest_wait_seconds','rest_hold_seconds','evaluation_seconds','persistence_seconds','request_count','response_bytes')},
++   'scope':'captured after original FIRST_E print, before confluence; sums overlap fetch; no decision/clock change'})
++ def enqueue(self,row):
++  # No stdout/file/network I/O or wait-for-capacity in the decision thread.
++  try:self.q.put_nowait(row)
++  except queue.Full:self.dropped+=1;return
++  if self.writer is None and self.lock.acquire(False):
++   try:
++    if self.writer is None:self.writer=threading.Thread(target=self._write,name='ipr-native-timing',daemon=True);self.writer.start()
++   finally:self.lock.release()
++ def _write(self):
++  while not self.stop.is_set() or not self.q.empty():
++   try:row=self.q.get(timeout=.1)
++   except queue.Empty:continue
++   try:
++    line=json.dumps(row,separators=(',',':'),ensure_ascii=True);size=len(line.encode())+1;day=self.wall().date().isoformat()
++    if day!=self.day:self.day=day;self.lines=0;self.bytes=0
++    if size>self.MAX_LINE_BYTES or self.lines>=self.MAX_LINES or self.bytes+size>self.MAX_DAY_BYTES:self.dropped+=1;continue
++    self.lines+=1;self.bytes+=size;self.emit(line)
++   except BaseException:self.writer_errors+=1
++   finally:self.q.task_done()
++ def close(self):
++  self.stop.set()
++  if self.writer:self.writer.join(timeout=1.)
++ @contextmanager
++ def cycle(self,now,symbols):
++  prior=self.current();at=self.wall();mono=self.clock();latest=at.replace(minute=at.minute//5*5,second=0,microsecond=0)
++  c={'stage':'R108_NATIVE_CYCLE','session':self.p.session,'cycle_start_utc':at.isoformat(),'poll_cutoff_utc':now.isoformat(),'latest_closed_bar_end':latest.isoformat(),
++   'poll_enter_utc':None,'queue_wait_seconds':max(0.,mono-self.phase_at) if self.phase_name=='QUEUED' and self.phase_at is not None else None,
++   'start_after_latest_close_seconds':(at-latest).total_seconds(),'input_symbols':len(symbols),'pending_symbols':None,'before_fetch_work_seconds':0.,'fetch_seconds':0.,
++   'rest_acquisitions':0,'rest_wait_seconds':0.,'rest_hold_seconds':0.,'rest_measurement_available':None,'evaluation_seconds':0.,'persistence_seconds':0.,'request_count':0,'response_bytes':0,
++   'sip_first_seen_utc':None,'sip_first_receipt_lag_seconds':None,'sip_last_receipt_lag_seconds':None,'sip_target_matches':0,'sip_inspection_clipped':0,'request_samples':[],
++   'started_mono':mono,'completion':'UNKNOWN','failure_type':None,'sip_target_eligible_for_poll':latest<=now}
++  self.local.cycle=c;self.active_start=at;self.phase_name='RUNNING';self.phase_at=mono
++  for b in self.boundaries:
++   if b['end']<=at<=b['end']+timedelta(seconds=15) and b['started'] is None:b['started']=at
++  try:yield c
++  except BaseException as exc:
++   c['completion']='FAILED';c['failure_type']=type(exc).__name__[:80];raise
++  else:c['completion']='COMPLETED'
++  finally:
++   try:
++    ended=self.wall()
++    for b in self.boundaries:
++     if not b['done'] and at<=b['end'] and ended>=b['end']+timedelta(seconds=15):b['prior_cycle_covered_window']=True;b['reasons'].add('PREVIOUS_CYCLE_RUNNING')
++    c['cycle_seconds']=self.clock()-mono;c.pop('started_mono',None);c.pop('pending_E',None);c.pop('fetch_start',None)
++    self.cycles+=1;self.last=dict(c);self.enqueue(dict(c))
++   except BaseException:self.errors+=1
++   finally:self.local.cycle=prior;self.active_start=None;self.phase_name='IDLE'
++ def install(self,bridge):
++  old_native=bridge.native_cycle
++  @functools.wraps(old_native)
++  def native(symbols,now,allowed):
++   if not review_flags.NATIVE_TIMING_ENABLED:return old_native(symbols,now,allowed)
++   with observing(lambda:self.cycle(now,symbols)) as available:
++    if not available:
++     try:self.errors+=1
++     except BaseException:pass
++    result=old_native(symbols,now,allowed);self.safe(self.poll_result,result);return result
++  bridge.native_cycle=native
++  old_poll=self.p.poll_native5
++  @functools.wraps(old_poll)
++  def poll(*a,**kw):
++   def note():
++    c=self.current()
++    if c is not None:c['poll_enter_utc']=self.wall().isoformat()
++   self.safe(note);return old_poll(*a,**kw)
++  self.p.poll_native5=poll
++  old_probe=self.p._memory_probe
++  @functools.wraps(old_probe)
++  def probe(stage,**fields):self.safe(self.probe,stage,fields);return old_probe(stage,**fields)
++  self.p._memory_probe=probe
++  old_eval=self.p.ec.evaluate_with_telemetry
++  @functools.wraps(old_eval)
++  def evaluate(*a,**kw):
++   t=self.safe(self.clock)
++   try:return old_eval(*a,**kw)
++   finally:self.safe(lambda:self.evaluated(self.clock()-t))
++  self.p.ec.evaluate_with_telemetry=evaluate
++  old_persist=self.p.ew.persist_first_e
++  @functools.wraps(old_persist)
++  def persist(*a,**kw):
++   t=self.safe(self.clock);result=old_persist(*a,**kw);self.safe(lambda:self.persisted(result,self.clock()-t));return result
++  self.p.ew.persist_first_e=persist
++  cw=getattr(self.p,'cw',None);old_canonical=getattr(cw,'evaluate_and_persist',None)
++  if old_canonical is not None:
++   @functools.wraps(old_canonical)
++   def canonical(*a,**kw):
++    t=self.safe(self.clock)
++    try:return old_canonical(*a,**kw)
++    finally:self.safe(lambda:self.elapsed('persistence_seconds',self.clock()-t))
++   cw.evaluate_and_persist=canonical
++  old_confluence=self.p._confluence
++  @functools.wraps(old_confluence)
++  def confluence(symbol,*a,**kw):
++   self.safe(self.post_print,symbol);t=self.safe(self.clock)
++   try:return old_confluence(symbol,*a,**kw)
++   finally:self.safe(lambda:self.elapsed('confluence_seconds',self.clock()-t))
++  self.p._confluence=confluence
++  old_get=self.rest.get;api=self.api
++  @functools.wraps(old_get)
++  def get(path,params):
++   if self.current() is None:return old_get(path,params)
++   previous=getattr(api.local,'request_observer',None) if api else None
++   def observer(*v):
++    self.safe(self.request,*v)
++    if previous is not None:
++     try:previous(*v)
++     except BaseException:pass
++   with observing(lambda:api.observe_requests(observer)) as available:
++    c=self.current()
++    if c is not None:
++     c['rest_measurement_available']=available and c['rest_measurement_available'] is not False
++     if not available:self.errors+=1
++    data=old_get(path,params)
++   self.safe(lambda:self.sip_response(data,params,self.wall()));return data
++  self.rest.get=get
++  if api is not None and hasattr(api,'opener'):
++   original=api.opener
++   @functools.wraps(original)
++   def opener(*a,**kw):
++    active=self.current() is not None
++    if active:self.safe(self.http_start)
++    response=original(*a,**kw)
++    if active:
++     try:return _Response(response,self)
++     except BaseException:self.errors+=1
++    return response
++   api.opener=opener
++ def snapshot(self):
++  return {'mode':'MEASUREMENT_ONLY','cycles':self.cycles,'last':self.last,'observer_errors':self.errors,'observations_skipped_busy':self.busy,'log_dropped':self.dropped,'writer_errors':self.writer_errors,
++   'log_queue':self.q.qsize(),'day_lines_written_or_attempted':self.lines,'day_bytes_written_or_attempted':self.bytes,'line_limit_per_process_UTC_day':self.MAX_LINES,'byte_limit_per_process_UTC_day':self.MAX_DAY_BYTES,
++   'observation_start_utc':self.observation_start.isoformat(),'pre_observation_boundaries_UNKNOWN':self.pre_observation_boundaries,
++   'boundary_day_utc':self.p.session,'boundary_counts':dict(self.boundary_counts),'missed_boundary_observed_reason_counts':dict(self.reason_counts),
++   'reason_scope':'counts of missed observed boundaries with each measured reason; not exclusive causes; sampling gaps UNKNOWN'}
++
++def attach_native_timing(bridge,rest,session_policy):
++ bridge.native_timing=None
++ if not review_flags.NATIVE_TIMING_ENABLED:return
++ try:
++  monitor=NativeTiming(bridge.p,rest,session_policy);monitor.install(bridge);bridge.native_timing=monitor;rest.measure.native_timing=monitor
++ except BaseException:pass # Observation cannot prevent original construction.
+--- /dev/null
++++ b/ipr/outbox_mget.py
+@@ -0,0 +1,29 @@
++"""Same pending outbox interface, original SCAN plus bounded MGET reads.
++
++No cache, key skipping, state writes or delivery policy. mark_attempt is inherited
++literally from the immutable original. Concurrent GET/MGET snapshots can differ;
++the equivalence contract is the same returned values, not arbitrary interleavings.
++"""
++import json
++from redis_outbox_store import RedisOutboxStore
++from . import review_flags
++
++MGET_BATCH_KEYS = 100
++
++class MGETOutboxStore(RedisOutboxStore):
++ def pending(self,count=100):
++  cursor=0;out=[]
++  pattern=f"{self.prefix}:outbox:*"
++  while True:
++   cursor,keys=self.r.scan(cursor=cursor,match=pattern,count=count)
++   for offset in range(0,len(keys),MGET_BATCH_KEYS):
++    values=self.r.mget(keys[offset:offset+MGET_BATCH_KEYS])
++    for raw in values:
++     if raw:
++      x=json.loads(raw)
++      if x.get('state')=='PENDING':out.append(x)
++   if int(cursor)==0:break
++  return sorted(out,key=lambda x:(x.get('updated_at',''),x.get('event_id','')))
++
++def outbox_store(redis):
++ return MGETOutboxStore(redis) if review_flags.OUTBOX_MGET_ENABLED else RedisOutboxStore(redis)
+--- /dev/null
++++ b/ipr/review_flags.py
+@@ -0,0 +1,3 @@
++"""R10.8 independent review switches; no environment or Redis configuration."""
++NATIVE_TIMING_ENABLED = True
++OUTBOX_MGET_ENABLED = True
+--- a/ipr/runtime.py
++++ b/ipr/runtime.py
+@@ -241,14 +241,19 @@
+      print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e),'scan_ok':state['scan_ok'],'previous_success_preserved':type(e) is RTHVolumeStale and state['scan_ok'],'duration_seconds':time.monotonic()-start,'at':r.wall().isoformat(),'started_at':now.isoformat(),'scan_attempt':timings.started,'scan_timing':timings.attempt_snapshot()}),flush=True)
+    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
+  async def native():
++  from dintegration.native_timing import native_guard,native_phase
+   while not r.stop.is_set():
+    market=bundle['market'];now=r.wall()
+-   if state['ready'] and state['scan_ok'] and market and dt(market['open'])<=now<dt(market['close']) and r.a.transport_trusted:
++   native_phase(r,'CHECK')
++   if native_guard(r,'ready',state['ready'],now) and native_guard(r,'scan_ok',state['scan_ok'],now) and market and native_guard(r,'rth',dt(market['open'])<=now<dt(market['close']),now) and native_guard(r,'trusted',r.a.transport_trusted,now):
+     with r.a.control_lock:syms=[s for s in r.c.bar if s not in r.a.recovering and all(r.c.proofs.get(s,{}).get(k) for k in ('history','continuity','reconciled'))]
+     if syms:
+      def native_work():
+       with api.operation('native'):return r.a.bridge.native_cycle(syms,now,True)
++     native_phase(r,'QUEUED')
+      await asyncio.to_thread(native_work)
++    else:native_phase(r,'NO_PROVEN_SYMBOLS')
++   native_phase(r,'PAUSE')
+    await pause(r.stop,5.)
+  async def upkeep():
+   while not r.stop.is_set():
+@@ -270,6 +275,10 @@
+   if gate is not None:await gate.wait()
+   return await fn()
+  tasks=[asyncio.create_task(r.run()),asyncio.create_task(metrics()),asyncio.create_task(measure.loop_lag(r.stop))]
++ native_observer=getattr(r.a.bridge,'native_timing',None)
++ if native_observer is not None:
++  from dintegration.native_timing import observe_boundaries
++  tasks.append(asyncio.create_task(observe_boundaries(native_observer,r,pause)))
+  tasks.extend(asyncio.create_task(after_init(f)) for f in (prepare,scan,native,upkeep,sender.run))
+  try:
+   await wait_first(tasks,r.failure)
+@@ -282,5 +291,8 @@
+     try:shadow.close()
+     except BaseException:pass
+    observer.close();getattr(clock,'close',lambda:None)()
++   if native_observer is not None:
++    try:native_observer.close()
++    except BaseException:pass
+ 
+  return r.exit_reason
+--- a/ipr/sender.py
++++ b/ipr/sender.py
+@@ -36,7 +36,7 @@
+  return '\n'.join(['IPR — '+labels[event['event_type']],f"السهم: {event['symbol']}",f"سعر الدخول: {trade['entry_alert_price']:.6g}",f"الوقف البنيوي: {trade['structural_stop']:.6g}",f"T1: {trade['t1']:.6g} | T2: {trade['t2']:.6g}",f"وقت الحدث — الرياض: {when}",f"الحالة: {payload.get('event',event['event_type'])}",'تنبيه ومتابعة فقط؛ التنفيذ بيد المستخدم.'])
+ class Sender:
+  def __init__(self,runtime,redis,env,transport=None):
+-  self.r=runtime;self.store=RedisOutboxStore(runtime.a.bridge.r);self.ledger=Ledger(redis,runtime.leader)
++  self.r=runtime;self.store=__import__('ipr.outbox_mget',fromlist=['outbox_store']).outbox_store(runtime.a.bridge.r);self.ledger=Ledger(redis,runtime.leader)
+   token=env.get('TELEGRAM_BOT_TOKEN','');chat=env.get('TELEGRAM_CHAT_ID','')
+   if not token or not chat:raise ValueError('TELEGRAM_CREDENTIALS_MISSING')
+   self.transport=transport or TelegramHTTP(MessageConfig(True,0,token,chat));self.seen=set()
+--- /dev/null
++++ b/tests/fixtures/r104_native_function.py
+@@ -0,0 +1,14 @@
++async def native():
++    while not r.stop.is_set():
++        market = bundle['market']
++        now = r.wall()
++        if state['ready'] and state['scan_ok'] and market and (dt(market['open']) <= now < dt(market['close'])) and r.a.transport_trusted:
++            with r.a.control_lock:
++                syms = [s for s in r.c.bar if s not in r.a.recovering and all((r.c.proofs.get(s, {}).get(k) for k in ('history', 'continuity', 'reconciled')))]
++            if syms:
++
++                def native_work():
++                    with api.operation('native'):
++                        return r.a.bridge.native_cycle(syms, now, True)
++                await asyncio.to_thread(native_work)
++        await pause(r.stop, 5.0)
+--- /dev/null
++++ b/tests/fixtures/r104_reference_sha256.json
+@@ -0,0 +1,74 @@
++{
++  "reference_app/state_store.py": "8f56566285df0e2100e010f275eb455af4a06288755a73897b031fa58bdc93f7",
++  "reference_app/ingress_delay_stats.py": "d155716a6fa0af8dfa73039a14fd5b93c79982745731a320a0adf2d2a54ab43d",
++  "reference_app/early_core_features.py": "ee8a109eb04d3c1d8503d496fa83bf5fb34b956b60afbdf3d5715bd82c56171c",
++  "reference_app/production_pipeline.py": "cec567de5f469f97de9efd99513215e99b8195b4d81b62075302f64924521f39",
++  "reference_app/signal_admission.py": "cde030746cce9c3b13f64cb477b2e548824161f5bb12830b436983ece094830c",
++  "reference_app/messages_only_runtime.py": "2dbcfeac9fc1dbf07d1885835b7995422a5c11bc32e025f4ca1f5018f4b53b37",
++  "reference_app/production_composition.py": "8d584703473dcbbc9d99644f7adb49f53832fbf737a80257b1474b82aabbe91f",
++  "reference_app/production_adapters.py": "358015fb73c0dee0d03d35b2918144b56f9fb02531e1a0b48be55a04c26e50ff",
++  "reference_app/fresh_liquidity_review.py": "71e5bc671f2dbb875e97389bddf66222f52836ca718e25feb37105009bb701dd",
++  "reference_app/runtime_wiring.py": "af89b4f8c5f65d29eb28383d011072f870cdb8ae95f9b93d857ff92c843a67b4",
++  "reference_app/shadow_worker_main.py": "270c3637c79a26f6d06f3086749a8e741e83eaea3813f7189731197a5e9ad311",
++  "reference_app/early_core_state.py": "e4181d717fd83c8eb6ecbe3bd870a52e3bd08923905a3b682edbeb458b005279",
++  "reference_app/restart_recovery.py": "d26b1e4d8d9ceda60427be9ba6e4a98fc8cb2c2888f64fdb7a75ed2134bca8e1",
++  "reference_app/early_core_engine.py": "2978c25b361f74e843b9fc52514884fc7c0371c0f5f12ef4933184f5b4c77dcf",
++  "reference_app/alpaca_production_market.py": "7810c848101440a73776f7298fdd9141ccf2848cf0cbe82c433ea3c1d2240389",
++  "reference_app/base_ready.py": "d7836a1b9afff6c5f3b7a6bf3a3e9b3fbb7fb810ff281d6ff292fd9ecf58dcfd",
++  "reference_app/halt_reconciliation.py": "c121f3b8cfe389bcd4cb6540dacf59ff1f16476dec869b4cb57b7bed080758a8",
++  "reference_app/shutdown.py": "82eac79860fa517114b8be627cb847a67e7ddb675283ba06a07aea399a5dd71a",
++  "reference_app/risk_engine.py": "150968f4f97a8a717f7eb42269801202a7585a659c0cc0c412de99dbcaa974f4",
++  "reference_app/entry_atomic_commit.py": "f1d86ee391c34c8ed60317e2331b9fb787fff23f2b375b0d2032f03df3f24260",
++  "reference_app/historical_base_ready_reference.py": "c97d4dfe840ea6d8fb525e8218844bd873e04e1f23618f2992479531d5a00c55",
++  "reference_app/constants.py": "958ed8e49b5c0303db5839f94e68b4e791751c6a957f35171e28112a6258dc4d",
++  "reference_app/early_core_score.py": "a36eafe3ee67fd747d9530699a690dd89abf2a41cbe92d0c6d6621b7608db7f6",
++  "reference_app/trade_transition_commit.py": "c8b3201d47fe2a54314ffdc6f84380059c501e933c806e18e4e9a08739aa0995",
++  "reference_app/render_worker.py": "42d229ad6eace5e5e2e8e80b5546f9e883066b4283a965dddb9a897d57dcc001",
++  "reference_app/entry_engine.py": "0c439558b6ac90a982ef99f3d1accd1e04a189b2f2a21ca3d931f483336d37a5",
++  "reference_app/guarded_runtime.py": "1d1656ba51f29f35646c3832bd815de0d8359c6dc54c34428cf5c0b24af6c914",
++  "reference_app/session_policy_tool.py": "f202380a23920be71b6c962e1bb7e7f23464c69f14b152c71c3a18001b945c5f",
++  "reference_app/ipr_filters.py": "d59bb4976ee9ab59dd18e828ba64123a108d7533bb507139f358dce3389e42fb",
++  "reference_app/frozen_early_core_artifact.json": "865ec418844c01cd6b3abe9ea77c723a0c6184cfc8d8f5a86d24f12a78f337c3",
++  "reference_app/models.py": "317d364028e28febcdbb3573aaedc15cfa7eca7d30b1ce8a9925bd00bd69f1e0",
++  "reference_app/runtime_provenance.py": "cca852cf4b77da5e5b9110a63611d0af84676f51080fcc8ce0375e9b56d19137",
++  "reference_app/confluence_state.py": "94fe9218377058b67ba34aff82348a4218d43e3d37c53fbfcf9a0d41558bcb4e",
++  "reference_app/production_recovery.py": "9495b4f02cc236473d56e9996fcd94bc3177f5b59d211684b58cd3200697b5ca",
++  "reference_app/operational_confluence.py": "2dc1080fe64b624d7cb034c1f767c5c6c134df55fbde7fe99111d03bbc942269",
++  "reference_app/shadow_guard_main.py": "8ef85f7b7413efe8d7ffdb08b1b512812a17389c5fe6bc6a45ddfaef66383a5b",
++  "reference_app/trade_monitor.py": "60e6eec652cede2ce44ad7f19381ad4fab671ab470f99a72ca108224ad2bfed3",
++  "reference_app/bounded_telemetry.py": "c477d1dc689c829a3289331e70f1e0b3e348b71f9d420de1f4ba13499a0c332b",
++  "reference_app/liquidity_telemetry.py": "421da037e87cea69e12f3ced1d03c626e01f8b4018f3ea93f88a7df739ac5fa8",
++  "reference_app/messages_only.py": "845beef2e62387bcbb433dd242d44a22027fa12c68e9cafdb55898e651a573c3",
++  "reference_app/metrics_stdout.py": "10dc9188eb43a3c64ead4f6c6624992d6b5632abf7c8ab1d548be3a1b09e633d",
++  "reference_app/production_halt_status.py": "a70f826a855baa49a94d370f6092f92900eb1aa5e1144f6a6902030f2804b522",
++  "reference_app/passive_metrics.py": "2eb74d969c756b208763002611e2e677b570a03289479d5d2e3718618792f460",
++  "reference_app/shadow_metrics.py": "8a9cdcf3981a157ef45c1de6647c32455558b1867157f74ce489d4a68644ca0d",
++  "reference_app/liquidity_proposal.py": "7e186db777b67dd67bdc254a4358953a41bb010f227a29f7a9dd1857becfef11",
++  "reference_app/confluence_diagnostics.py": "ed04795149ea63493e1107a64fd628c76c7250a331457365a2e7666f314812cb",
++  "reference_app/websocket_runtime.py": "1150bfb74dc9ac0d6790b8b428148fd8390043c62c2048fa80d8e1d03719068d",
++  "reference_app/redis_outbox_store.py": "5fefbef04c4f301bc50a1eadf26aba70aed65e6ab95ce4c0b8a9f3d060370d80",
++  "reference_app/resource_guard.py": "346cf8d8655847aa840adb2d0163ff39f34d2bdfb965420369582d258463522f",
++  "reference_app/operational_priority_radar.py": "9b850b45027cefdf1ce37f497319c873ddaf58a257aed44b30a2f63e8ee3d49a",
++  "reference_app/atomic_commit.py": "d37ffcfefabe2d718e1bb1cde34784b24d4e346c68be94e79004464e6b3de7af",
++  "reference_app/gap_recovery.py": "05c54e895007d998804ca5f00306c2b9f0757c6b165457e73ae796cbf0c00cb5",
++  "reference_app/restart_budget.py": "66d0ed5fbc03083db5f24230f84ca3185ad6859c6309258bb76ff8426ddb0187",
++  "reference_app/epoch_subscription_policy.py": "d21e33b5286da9301c1e8016b43de216310894b97d8f551b99fda225f5651716",
++  "reference_app/entry_commit.py": "7dd96ccf778dd1ec8f64d0b853beeb4af58678beff1477f8972a27d98a605914",
++  "reference_app/transitions.py": "f10d90830b095328d3e584cc213a2fa4c7c0c710018d8324813154f5299bb5ac",
++  "reference_app/ws_ingress.py": "95f222017ee488a9554a2c4a507e0e9d7cc3affac88e2261b8f6ef4533adc17e",
++  "reference_app/leadership.py": "662a560efe7223dd76651ff4d85301e8f1d925d8d45bf76edf9d0005e238f02f",
++  "reference_app/message_template.py": "5ee8eab302f7453cc6a6fc2cf65d932337a8c277f5be3a576c4741425ff3dc8f",
++  "reference_app/redis_lua_production.py": "68a8219f7c33e9cd29f99720e937e9ea403d792f40e95c64dc4f9066dca90683",
++  "reference_app/event_ids.py": "064f29ab960de4f9c3b2ffe992a3c2192d2e71b0207c46facacbb35644dd4a81",
++  "reference_app/production_runtime_state.py": "15001a98fc24b06211dd947fd252bb95958bd8781698859b6d35a36141c966e8",
++  "reference_app/alpaca_native5m.py": "692c5418d287b72e0606114ca39d5bc26f7af57d3e1a5545562b5d2939a7a252",
++  "reference_app/durable_outbox_sender.py": "b7b656eeeccb38cb8c4f315150aff6cedb5fdf0f2f03f9a7411f26e77abfc4e2",
++  "reference_app/market_trust.py": "6c41686d95d8eb5af1927869731509428e5628535e7c8031cc6c91d2abb8546b",
++  "reference_app/frozen_static_scope.py": "5f5f4db4566efa70a5565416271d59160571d0be21c1f2ccc8c412273726cd51",
++  "reference_app/contention_probe.py": "e393fa79fdf31907c1d7ebf236c4fdf04ec9d47614294bcb9be727ed3dc43a9f",
++  "reference_app/production_universe.py": "85eee2eb3970b5c1c7de801df8961ba4bd5788715dfa8e886cb0e259dfdc844d",
++  "reference_app/base_ready_state.py": "3e122a8b19a61870d1d8795b6e97e9a7909ad37851810af48345d5c6bdf32d62",
++  "reference_app/active_trade_recovery.py": "03a2b9d07a6163792eab4c9d6bc149421ed7323079d5c48262626dd13f467c29",
++  "reference_app/frozen_pins.py": "57104a9dd589833ff45ef6d6e3b4485d9a9b1e363f2262cb286614fc00be1c22",
++  "reference_app/lock_output.py": "12d7adc735af11cddbb85a814662d3773db477368077d095b9666c89af7afb15"
++}
+--- /dev/null
++++ b/tests/fixtures/r104_unchanged_sha256.json
+@@ -0,0 +1,7 @@
++{
++  "ipr/api.py": "960eb8f43f8a01c22919b49c58f033c04af16332cfc841b8e1d39b7c0492912d",
++  "dintegration/rest.py": "728bb09121abfb5d8809bfa89428b7964bddb80d74daecadd13ee3bf1fabeb36",
++  "ipr/main.py": "777e58672756338b30020fbd142c2891cc5d520d49b38fa63846b5f7e0e9c296",
++  "r9core/chain.py": "f4737886506bab6027246a980659813b5a2d6b059cbf70e7a648edb6e4f0b350",
++  "ipr/price_policy.py": "5f375051c2649f4988f3fe50628553c9c245e0aad0dfdf32c62afdbdf589edc3"
++}
+--- /dev/null
++++ b/tests/r108_support.py
+@@ -0,0 +1,73 @@
++"""Local contract fixtures only; no Redis/network clients, no R10.5/6 code."""
++import json,fnmatch,threading,time,urllib.parse
++from datetime import datetime,timezone,timedelta
++from types import SimpleNamespace as NS
++from production_pipeline import ProductionDecisionPipeline
++from early_core_engine import EarlyCoreCrossing
++from r103_support import Lock
++from ipr.api import Alpaca
++from dintegration.rest import MarketREST
++
++AT=datetime(2026,11,10,16,35,1,tzinfo=timezone.utc)
++POLICY={'open_utc':'2026-11-10T14:30:00+00:00','close_utc':'2026-11-10T21:00:00+00:00'}
++def packed(x):return json.dumps(x,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
++def item(i,state='PENDING'):
++ return {'state':state,'event_id':'E%03d'%i,'updated_at':'%03d'%(i%7),'payload':{'n':i}}
++class Box:
++ def __init__(self,rows=None,pages=None):self.rows=dict(rows or {});self.pages=pages;self.calls=[];self.before_read=None;self.after_scan=None;self.error=None
++ def scan(self,cursor=0,match='*',count=100):
++  self.calls.append(('SCAN',cursor,match,count));keys=sorted(k for k in self.rows if fnmatch.fnmatch(k,match))
++  pages=self.pages if self.pages is not None else [keys];n=int(cursor);out=list(pages[n]);next_cursor=n+1 if n+1<len(pages) else 0
++  if self.after_scan:self.after_scan(self,n)
++  return next_cursor,out
++ def _read(self,key):
++  if self.before_read:self.before_read(self,key)
++  if self.error:raise self.error
++  return self.rows.get(key)
++ def get(self,key):self.calls.append(('GET',key));return self._read(key)
++ def mget(self,keys):
++  self.calls.append(('MGET',list(keys)))
++  if self.before_read:self.before_read(self,None)
++  if self.error:raise self.error
++  return [self.rows.get(k) for k in keys]
++ def set(self,key,value,**kw):self.calls.append(('SET',key,kw));self.rows[key]=value;return True
++
++def box(n,mixed=False):return Box({'operational_priority_radar:v1:outbox:%03d'%i:json.dumps(item(i,'SENT' if mixed and i%2 else 'PENDING')) for i in range(n)})
++
++class Response:
++ status=200
++ def __init__(self,data,delay=0):self.data=data;self.delay=delay;self.read_calls=[]
++ def __enter__(self):return self
++ def __exit__(self,*a):return False
++ def read(self,n):self.read_calls.append(n);time.sleep(self.delay);return self.data
++
++class HTTP:
++ def __init__(self):self.calls=[];self.error=None;self.delay=0;self.guard=threading.Lock();self.active=0;self.peak=0;self.responses=[];self.gap=False
++ def open(self,req,timeout):
++  q={k:v[0] for k,v in urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query).items()};self.calls.append((q,timeout))
++  if self.error:raise self.error
++  bars={s:[dict(t=(AT.replace(second=0)-timedelta(minutes=5)).isoformat(),o=10.,h=10.1,l=9.9,c=10.,v=1000,n=20,vw=10.)] for s in q.get('symbols','').split(',')}
++  if self.gap:bars={s:[] for s in bars}
++  parent=self
++  class R(Response):
++   def __enter__(self):
++    with parent.guard:parent.active+=1;parent.peak=max(parent.peak,parent.active)
++    return self
++   def __exit__(self,*a):
++    with parent.guard:parent.active-=1
++    return False
++  r=R(packed({'bars':bars,'next_page_token':None}),self.delay);self.responses.append(r);return r
++
++def native_fixture(n=201):
++ syms=['S%03d'%i for i in range(n)];http=HTTP();api=Alpaca({'APCA_API_KEY_ID':'fixture','APCA_API_SECRET_KEY':'fixture'},opener=http.open);rest=MarketREST(api.get,NS(symbols=set(syms)),NS())
++ p=object.__new__(ProductionDecisionPipeline);p.contention_probe=NS(record=lambda *v:None);p.symbols=syms;p.session=AT.date().isoformat();p._decision_lock=Lock();p._confluence_retry=set();p._structure_watch_symbols=set();p.rest=rest
++ p.utc_now=lambda:AT;p.signal_gate=NS(window_reason=lambda at:None,reason=lambda *v:None);p._memory_probe=lambda *v,**kw:None;store={};p.r=NS(mget=lambda keys:[store.get(k.rsplit(':',1)[-1]) for k in keys]);p.liquidity_telemetry=NS(first=lambda *v:{})
++ def evaluate(s,rows,at):
++  if s!=syms[0]:return {},None
++  end=AT.replace(second=0);return {},EarlyCoreCrossing(s,p.session,end-timedelta(minutes=5),end,at,at,3.,1.)
++ p.ec=NS(required_history_minutes=lambda:305,evaluate_with_telemetry=evaluate)
++ def persist(c):
++  row={'symbol':c.symbol,'score':c.score,'bar_end_ts':c.bar_end_ts.isoformat(),'received_at':c.received_at.isoformat(),'decision_available_ts':c.decision_available_ts.isoformat()};store[c.symbol]=row;return c.symbol,row
++ p.ew=NS(persist_first_e=persist);p._confluence=lambda *v:None
++ bridge=NS(p=p,native_cycle=lambda s,now,allow:p.poll_native5(now,allow))
++ return syms,http,api,rest,p,store,bridge
+--- /dev/null
++++ b/tests/test_r108.py
+@@ -0,0 +1,294 @@
++"""R10.8 independent flags, literal outbox contract, timing fault isolation."""
++import ast,asyncio,contextlib,io,json,threading,time,unittest,urllib.error
++from pathlib import Path
++from datetime import timedelta
++from types import SimpleNamespace as NS
++from unittest.mock import patch
++from redis_outbox_store import RedisOutboxStore
++from ipr.outbox_mget import MGETOutboxStore,outbox_store
++from ipr import review_flags
++from dintegration.native_timing import NativeTiming,native_guard,native_phase,observe_boundaries
++from ipr.api import APIError
++from r108_support import Box,box,item,packed,AT,POLICY,native_fixture
++
++class Outbox(unittest.TestCase):
++ def parity(self,b):
++  import copy
++  a=copy.deepcopy(b);c=copy.deepcopy(b);old=RedisOutboxStore(a).pending();new=MGETOutboxStore(c).pending();self.assertEqual(packed(old),packed(new));return a,c,new
++ def test_empty(self):a,b,x=self.parity(box(0));self.assertEqual(x,[]);self.assertEqual(b.calls,[('SCAN',0,'operational_priority_radar:v1:outbox:*',100)])
++ def test_one(self):self.parity(box(1))
++ def test_27_GET_become_one_MGET(self):
++  a,b,x=self.parity(box(27));self.assertEqual(sum(v[0]=='GET' for v in a.calls),27);self.assertEqual(sum(v[0]=='MGET' for v in b.calls),1);self.assertFalse(any(v[0]=='GET' for v in b.calls))
++ def test_150_in_two_chunks(self):
++  a,b,x=self.parity(box(150));self.assertEqual([len(v[1]) for v in b.calls if v[0]=='MGET'],[100,50])
++ def test_mixed_SENT_PENDING(self):a,b,x=self.parity(box(27,True));self.assertEqual(len(x),14)
++ def test_missing_empty_and_false_JSON_handling(self):
++  b=box(2);ks=sorted(b.rows);b.rows[ks[0]]='';b.pages=[ks+['operational_priority_radar:v1:outbox:missing']];self.parity(b)
++ def test_corrupt_JSON_same_exception_text_and_position(self):
++  for raw in ['{bad','null','[1]','3']:
++   errors=[]
++   for cls in (RedisOutboxStore,MGETOutboxStore):
++    b=box(3);b.rows[sorted(b.rows)[1]]=raw
++    try:cls(b).pending()
++    except Exception as e:errors.append((type(e),str(e)))
++   self.assertEqual(len(errors),2);self.assertEqual(errors[0],errors[1])
++ def test_deleted_after_SCAN_before_read(self):
++  for cls in (RedisOutboxStore,MGETOutboxStore):
++   b=box(27);deleted=sorted(b.rows)[7]
++   b.after_scan=lambda b,n:b.rows.pop(deleted,None)
++   result=cls(b).pending();self.assertEqual(len(result),26);self.assertNotIn('E007',[r['event_id'] for r in result])
++ def test_pagination_cursor_pattern_and_custom_count_preserved(self):
++  b=box(150);ks=sorted(b.rows);b.pages=[ks[:40],[],ks[40:]]
++  import copy
++  a=copy.deepcopy(b);c=copy.deepcopy(b);self.assertEqual(packed(RedisOutboxStore(a).pending(7)),packed(MGETOutboxStore(c).pending(7)));self.assertEqual([x for x in a.calls if x[0]=='SCAN'],[x for x in c.calls if x[0]=='SCAN'])
++ def test_scan_duplicates_not_deduplicated(self):
++  b=box(2);ks=sorted(b.rows);b.pages=[[ks[0]],[ks[0],ks[1]]];a,c,x=self.parity(b);self.assertEqual(len(x),3)
++ def test_exact_sort_and_ties_stable(self):
++  a,b,x=self.parity(box(27));self.assertEqual(x,sorted(x,key=lambda v:(v.get('updated_at',''),v.get('event_id',''))))
++ def test_original_mark_attempt_method_literal_inheritance(self):
++  self.assertIs(MGETOutboxStore.mark_attempt,RedisOutboxStore.mark_attempt)
++  import copy
++  b=box(2);a=copy.deepcopy(b);c=copy.deepcopy(b)
++  for cls,db in ((RedisOutboxStore,a),(MGETOutboxStore,c)):
++   k='operational_priority_radar:v1:outbox:E000';db.rows[k]=json.dumps(item(0));self.assertTrue(cls(db).mark_attempt('E000',True));self.assertFalse(cls(db).mark_attempt('missing',True))
++  self.assertEqual(a.rows,c.rows);self.assertEqual(a.calls,c.calls)
++ def test_transport_error_identity_propagates(self):
++  for cls in (RedisOutboxStore,MGETOutboxStore):
++   b=box(3);error=ConnectionError('fixture');b.error=error
++   with self.assertRaises(ConnectionError) as cm:cls(b).pending()
++   self.assertIs(cm.exception,error)
++ def test_SCAN_error_not_swallowed(self):
++  for cls in (RedisOutboxStore,MGETOutboxStore):
++   b=box(3);err=RuntimeError('scan fixture');b.scan=lambda **kw:(_ for _ in ()).throw(err)
++   with self.assertRaises(RuntimeError) as cm:cls(b).pending()
++   self.assertIs(cm.exception,err)
++ def test_large_reply_no_truncation(self):
++  b=box(3)
++  for k in b.rows:b.rows[k]=json.dumps({**item(1),'large':'x'*400000})
++  self.parity(b)
++ def test_new_record_written_before_next_scan_page_seen_both(self):
++  for cls in (RedisOutboxStore,MGETOutboxStore):
++   b=box(2);ks=sorted(b.rows);new='operational_priority_radar:v1:outbox:new';b.pages=[[ks[0]],[ks[1],new]]
++   def write(b,n):
++    if n==0:
++     t=threading.Thread(target=lambda:b.rows.__setitem__(new,json.dumps(item(3))));t.start();t.join()
++   b.after_scan=write;self.assertEqual(len(cls(b).pending()),3)
++ def test_new_key_after_final_SCAN_is_seen_next_poll(self):
++  for cls in (RedisOutboxStore,MGETOutboxStore):
++   b=box(1);new='operational_priority_radar:v1:outbox:new';b.after_scan=lambda b,n:b.rows.__setitem__(new,json.dumps(item(9)))
++   self.assertEqual(len(cls(b).pending()),1);self.assertEqual(len(cls(b).pending()),2)
++ def test_no_TTL_or_cache_or_record_skipping(self):
++  b=box(27);s=MGETOutboxStore(b);s.pending();s.pending();self.assertEqual(sum(x[0]=='MGET' for x in b.calls),2);self.assertFalse(any(x[0] in ('SET','EXPIRE','DEL') for x in b.calls))
++ def test_arbitrary_mid_GET_deletion_is_NOT_atomic_snapshot_equivalence(self):
++  sequential=box(2);keys=sorted(sequential.rows)
++  def deletion(b,key):
++   if key==keys[1]:b.rows.pop(key,None)
++  sequential.before_read=deletion;left=RedisOutboxStore(sequential).pending();right=MGETOutboxStore(box(2)).pending();self.assertEqual(len(left),1);self.assertEqual(len(right),2)
++
++class NativeMeasurement(unittest.TestCase):
++ def setup_monitor(self,n=201,wall=lambda:AT,clock=time.monotonic):
++  s,h,a,r,p,store,b=native_fixture(n);lines=[];m=NativeTiming(p,r,POLICY,wall=wall,clock=clock,emit=lines.append);m.install(b);self.addCleanup(m.close);return s,h,a,r,p,store,b,m,lines
++ def test_same_inputs_requests_and_decisions_all_four_flag_combinations(self):
++  result=[]
++  for timing in (False,True):
++   for outbox in (False,True):
++    with patch.object(review_flags,'NATIVE_TIMING_ENABLED',timing),patch.object(review_flags,'OUTBOX_MGET_ENABLED',outbox):
++     s,h,a,r,p,store,b=native_fixture();lines=[];m=None
++     if timing:m=NativeTiming(p,r,POLICY,wall=lambda:AT,emit=lines.append);m.install(b)
++     clock=p.utc_now
++     with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True)
++     if m:m.q.join();m.close();self.assertEqual(m.last['request_count'],3)
++     self.assertIs(p.utc_now,clock);self.assertEqual(h.peak,1);self.assertEqual(len(h.calls),3)
++     result.append((packed(store),h.calls,packed(outbox_store(box(27)).pending())))
++  self.assertTrue(all(x==result[0] for x in result))
++ def test_cycle_line_and_FIRST_E_and_body_bytes_exact(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor()
++  with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True)
++  m.q.join();rows=[json.loads(x) for x in lines];cycle=next(x for x in rows if x['stage']=='R108_NATIVE_CYCLE');first=next(x for x in rows if x['stage']=='R106_FIRST_E_TIMING')
++  self.assertEqual(cycle['completion'],'COMPLETED');self.assertEqual(cycle['pending_symbols'],201);self.assertEqual(cycle['request_count'],3);self.assertEqual(cycle['response_bytes'],sum(len(r.data) for r in h.responses));self.assertEqual(cycle['rest_acquisitions'],3);self.assertEqual(first['bar_close_to_post_FIRST_E_seconds'],1.)
++  self.assertEqual(cycle['sip_first_receipt_lag_seconds'],1.);self.assertEqual(cycle['sip_target_matches'],201)
++ def test_no_FIRST_E_still_cycle_line(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();p.ec.evaluate_with_telemetry=lambda *v:({},None)
++  with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True)
++  m.q.join();self.assertEqual([json.loads(x)['stage'] for x in lines],['R108_NATIVE_CYCLE'])
++ def test_HTTP_error_same_identity_and_cycle_failure_type(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();error=APIError('fixture');h.error=error
++  with a.operation('native'):
++   with self.assertRaises(APIError) as cm:b.native_cycle(s,AT,True)
++  m.q.join();self.assertIs(cm.exception,error);self.assertEqual(m.last['completion'],'FAILED');self.assertEqual(m.last['failure_type'],'APIError')
++ def test_429_no_retry_added(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();h.error=urllib.error.HTTPError('fixture',429,'fixture',{},None)
++  with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):
++   with self.assertRaises(APIError):b.native_cycle(s,AT,True)
++  self.assertEqual(len(h.calls),1);self.assertEqual(a.lock_metrics()['http_429_total'],1)
++ def test_no_redis_command_from_observer(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();calls=[]
++  p.r.mget=lambda keys:(calls.append(list(keys)) or [None for _ in keys])
++  with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True)
++  self.assertEqual(len(calls),1)
++ def test_R103_request_observer_composed_once(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();seen=[]
++  with a.operation('native'),a.observe_requests(lambda *x:seen.append(x)),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True)
++  self.assertEqual(len(seen),3)
++ def test_observer_failures_preserve_original_application_error(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();err=ValueError('original');p.ec.evaluate_with_telemetry=lambda *v:(_ for _ in ()).throw(err);m.clock=lambda:(_ for _ in ()).throw(SystemExit('observer'))
++  with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):
++   with self.assertRaises(ValueError) as cm:b.native_cycle(s,AT,True)
++  self.assertIs(cm.exception,err)
++ def test_absent_latest_SIP_bar_not_invented(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();h.gap=True;p.ec.evaluate_with_telemetry=lambda *v:({},None)
++  with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True)
++  self.assertIsNone(m.last['sip_first_seen_utc']);self.assertEqual(m.last['sip_target_matches'],0)
++ def test_same_original_read_size_and_timeout(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor()
++  with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True)
++  self.assertTrue(all(t==20 for q,t in h.calls));self.assertTrue(all(resp.read_calls==[32*1024*1024+1] for resp in h.responses))
++ def test_disabled_uses_original_native_without_observation(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor()
++  with patch.object(review_flags,'NATIVE_TIMING_ENABLED',False),a.operation('native'),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True)
++  self.assertEqual(m.cycles,0);self.assertEqual(len(h.calls),3)
++ def test_non_native_recovery_fetch_untouched(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();r.bars_multi(s,AT-timedelta(minutes=305),AT,'5Min')
++  self.assertEqual(m.cycles,0);self.assertEqual(m.q.qsize(),0);self.assertEqual(h.peak,1)
++ def test_no_duplicate_E_from_observation(self):
++  s,h,a,r,p,store,b,m,lines=self.setup_monitor();out=io.StringIO()
++  with a.operation('native'),contextlib.redirect_stdout(out):b.native_cycle(s,AT,True);b.native_cycle(s,AT,True)
++  self.assertEqual(len(store),1);self.assertEqual(out.getvalue().count("'stage': 'SHADOW_FIRST_E'"),1)
++
++class Boundaries(unittest.TestCase):
++ def monitor(self,at):
++  s,h,a,r,p,store,b=native_fixture(1);t=NS(at=at,mono=0.);lines=[];m=NativeTiming(p,r,POLICY,wall=lambda:t.at,clock=lambda:t.mono,emit=lines.append);self.addCleanup(m.close);return m,t,lines
++ def advance(self,m,t,at):
++  while t.at<at:t.at+=timedelta(seconds=1);t.mono+=1;m.boundary_tick(t.at)
++ def boundary(self):return AT.replace(second=0)
++ def result(self,m,lines):m.q.join();return next(json.loads(s) for s in lines if json.loads(s).get('bar_end')==self.boundary().isoformat())
++ def test_cycle_start_exact_15_seconds_included(self):
++  end=self.boundary();m,t,lines=self.monitor(end-timedelta(seconds=1));self.advance(m,t,end+timedelta(seconds=15))
++  with m.cycle(t.at,['X']):pass
++  self.advance(m,t,end+timedelta(seconds=16));self.assertEqual(self.result(m,lines)['outcome'],'STARTED_WITHIN_15S')
++ def test_previous_cycle_spans_window_even_with_sampler_gap(self):
++  end=self.boundary();m,t,lines=self.monitor(end-timedelta(seconds=2))
++  with m.cycle(t.at,['X']):t.at=end+timedelta(seconds=16);t.mono=18;m.boundary_tick(t.at)
++  row=self.result(m,lines);self.assertEqual(row['outcome'],'NO_START_OBSERVED');self.assertIn('PREVIOUS_CYCLE_RUNNING',row['observed_blockers'])
++ def test_actual_ready_scan_trusted_guard_failures_counted(self):
++  end=self.boundary();m,t,lines=self.monitor(end-timedelta(seconds=1));self.advance(m,t,end)
++  for name in ['ready','scan_ok','trusted']:m.guard(name,False,t.at)
++  self.advance(m,t,end+timedelta(seconds=16));row=self.result(m,lines);self.assertEqual(row['outcome'],'NO_START_OBSERVED');self.assertTrue({'READY_FALSE','SCAN_OK_FALSE','TRUSTED_FALSE'}<=set(row['observed_blockers']));self.assertEqual(m.reason_counts['SCAN_OK_FALSE'],1)
++ def test_pause_only_first_five_seconds(self):
++  end=self.boundary();m,t,lines=self.monitor(end-timedelta(seconds=1));m.phase('PAUSE');self.advance(m,t,end+timedelta(seconds=16));row=self.result(m,lines);self.assertIn('PAUSE_5S',row['observed_blockers']);self.assertIn('UNKNOWN_SCHEDULER_DELAY',row['observed_blockers'])
++ def test_unmeasured_reason_stays_UNKNOWN(self):
++  end=self.boundary();m,t,lines=self.monitor(end-timedelta(seconds=1));t.at=end+timedelta(seconds=16);m.boundary_tick(t.at);row=self.result(m,lines);self.assertEqual(row['outcome'],'UNKNOWN');self.assertEqual(row['observed_blockers'],[])
++ def test_late_attachment_cannot_claim_prior_absence(self):
++  end=self.boundary();m,t,lines=self.monitor(end+timedelta(seconds=8));self.advance(m,t,end+timedelta(seconds=16));self.assertEqual(self.result(m,lines)['outcome'],'UNKNOWN')
++ def test_78_RTH_boundaries_no_expansion(self):
++  m,t,lines=self.monitor(AT);self.assertEqual(len(m.boundaries),78);self.assertEqual(m.boundaries[0]['end'].isoformat(),'2026-11-10T14:35:00+00:00');self.assertEqual(m.boundaries[-1]['end'].isoformat(),'2026-11-10T21:00:00+00:00')
++ def test_outside_RTH_at_final_close(self):
++  close=AT.replace(hour=21,minute=0,second=0);m,t,lines=self.monitor(close-timedelta(seconds=1));self.advance(m,t,close);m.guard('rth',False,t.at);self.advance(m,t,close+timedelta(seconds=16));m.q.join();row=next(json.loads(x) for x in lines if json.loads(x)['bar_end']==close.isoformat());self.assertIn('OUTSIDE_RTH',row['observed_blockers'])
++ def test_daemon_failure_cannot_stop_application(self):
++  stop=NS(value=False);stop.is_set=lambda:stop.value
++  async def fail(*v):raise ValueError('observation')
++  async def pause(*v):stop.value=True
++  m=NS(boundary_loop=fail,errors=0);asyncio.run(observe_boundaries(m,NS(stop=stop),pause));self.assertEqual(m.errors,1)
++ def test_guard_fault_keeps_original_value(self):
++  m=NS(safe=lambda *v:(_ for _ in ()).throw(SystemExit()));r=NS(a=NS(bridge=NS(native_timing=m)))
++  self.assertIs(native_guard(r,'ready',False,AT),False);self.assertIs(native_guard(r,'ready',True,AT),True);native_phase(r,'CHECK')
++
++class BoundedObservation(unittest.TestCase):
++ def test_daily_line_and_byte_caps(self):
++  s,h,a,r,p,store,b=native_fixture(1);lines=[];m=NativeTiming(p,r,POLICY,emit=lines.append);m.MAX_LINES=2;self.addCleanup(m.close)
++  for n in range(10):m.enqueue({'stage':'R108_NATIVE_CYCLE','n':n})
++  m.q.join();self.assertEqual(len(lines),2);self.assertGreaterEqual(m.dropped,8);self.assertLessEqual(m.bytes,m.MAX_DAY_BYTES)
++ def test_slow_writer_does_not_block_producer(self):
++  s,h,a,r,p,store,b=native_fixture(1);entered=threading.Event();release=threading.Event()
++  def slow(line):entered.set();release.wait(2)
++  m=NativeTiming(p,r,POLICY,emit=slow);m.enqueue({'n':0});self.assertTrue(entered.wait(1));done=threading.Event()
++  def produce():
++   for n in range(100):m.enqueue({'n':n})
++   done.set()
++  t=threading.Thread(target=produce);t.start()
++  try:self.assertTrue(done.wait(1));self.assertLessEqual(m.q.qsize(),32);self.assertGreater(m.dropped,0)
++  finally:release.set();t.join();m.q.join();m.close()
++ def test_oversized_log_dropped(self):
++  s,h,a,r,p,store,b=native_fixture(1);lines=[];m=NativeTiming(p,r,POLICY,emit=lines.append);m.enqueue({'x':'x'*5000});m.q.join();m.close();self.assertEqual(lines,[]);self.assertEqual(m.dropped,1)
++
++class SenderEquivalence(unittest.TestCase):
++ def run_sender(self,timing,grouped,malformed=False):
++  from ipr.sender import Sender
++  from r103_support import pipeline,trade,feed
++  from test_direct import OP
++  from state_store import base_record,key_trade,key_outbox
++  p=pipeline('X',OP,10)
++  with contextlib.redirect_stdout(io.StringIO()):feed(p,trade('X',OP,10),True)
++  record=p._active_by_symbol['X'];tid=record['trade_id'];eid='ENTRY:'+tid.removeprefix('TRADE:')
++  event=base_record('outbox',record['session'],'X','PENDING',OP.isoformat());event.update(event_id=eid,event_type='ENTRY',payload={'trade_id':tid},attempt_count=0,leader_generation=1)
++  db=Box({key_trade(tid):json.dumps(record),key_outbox(eid):'{bad' if malformed else json.dumps(event)});actions=[];messages=[];token=NS(worker_instance_id='fixture',leader_generation=1)
++  leader=NS(require_current=lambda:(actions.append('leader') or token))
++  runtime=NS(check_session=lambda:actions.append('session'),leader=leader,c=NS(proofs={'X':{'history':True,'continuity':True,'reconciled':True}},bar={'X'}),a=NS(bridge=NS(r=db),checks=lambda:actions.append('checks'),transport_trusted=True,recovering=set(),trusted_since=OP-timedelta(seconds=1)))
++  ledger=NS(start=lambda *v:(actions.append(('start',v[0],v[1])) or ('identity','ALLOW')),finish=lambda *v:actions.append(('finish',v[0],v[-1])))
++  out=io.StringIO();error=None
++  with patch.object(review_flags,'NATIVE_TIMING_ENABLED',timing),patch.object(review_flags,'OUTBOX_MGET_ENABLED',grouped),patch('ipr.sender.Ledger',return_value=ledger),contextlib.redirect_stdout(out):
++   sender=Sender(runtime,db,{'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture'},transport=NS(post=lambda text:(messages.append(text) or 'SENT')))
++   for _ in range(2):
++    try:sender.step()
++    except Exception as e:error=(type(e),str(e));break
++  return actions,messages,sender.seen,out.getvalue(),error,type(sender.store),db.calls
++ def test_Sender_four_combinations_same_delivery_seen_ledger(self):
++  cases=[self.run_sender(t,o) for t in (False,True) for o in (False,True)];self.assertTrue(all(c[:5]==cases[0][:5] for c in cases));self.assertEqual(len(cases[0][1]),1);self.assertEqual(cases[0][5],RedisOutboxStore);self.assertEqual(cases[1][5],MGETOutboxStore)
++ def test_Sender_corrupt_JSON_same_failure(self):
++  a=self.run_sender(False,False,True);b=self.run_sender(True,True,True);self.assertEqual(a[:5],b[:5]);self.assertEqual(a[1],[]);self.assertIs(a[4][0],json.JSONDecodeError)
++ def test_Sender_only_store_construction_changed(self):
++  import hashlib
++  p=Path(__file__).resolve().parents[1]/'ipr/sender.py';s=p.read_text().replace("self.store=__import__('ipr.outbox_mget',fromlist=['outbox_store']).outbox_store(runtime.a.bridge.r)",'self.store=RedisOutboxStore(runtime.a.bridge.r)')
++  self.assertEqual(hashlib.sha256(s.encode()).hexdigest(),'3019a89bbf5cf44ade1b7d0ab6cc10b06f11fa3b2481a28cdd8bb51026d8b88b')
++
++class FrozenContracts(unittest.TestCase):
++ def test_reference_72_and_API_REST_parent_chain_unchanged(self):
++  import hashlib
++  root=Path(__file__).resolve().parents[1]
++  for name in ['r104_reference_sha256.json','r104_unchanged_sha256.json']:
++   for rel,h in json.loads((root/'tests/fixtures'/name).read_text()).items():self.assertEqual(hashlib.sha256((root/rel).read_bytes()).hexdigest(),h,rel)
++  self.assertFalse((root/'ipr/native_fast.py').exists());self.assertFalse((root/'dintegration/native_clock.py').exists())
++ def test_actual_native_schedule_short_circuit_and_pause_unchanged(self):
++  from test_r71 import nested
++  import itertools
++  root=Path(__file__).resolve().parents[1]
++  async def run(mode,ready,scan,trusted,market,enabled):
++   seen=[];stop=NS(value=False);stop.is_set=lambda:stop.value
++   async def to_thread(fn):return fn()
++   async def pause(stop,seconds):seen.append(('pause',seconds));stop.value=True
++   bridge=NS(native_cycle=lambda s,now,allow:seen.append(('native',s,now.isoformat(),allow)))
++   r=NS(stop=stop,wall=lambda:AT,a=NS(control_lock=threading.Lock(),recovering={'Y'},transport_trusted=trusted,bridge=bridge),c=NS(bar=['X','Y'],proofs={'X':{'history':True,'continuity':True,'reconciled':True},'Y':{'history':True,'continuity':True,'reconciled':True}}))
++   env={'r':r,'state':{'ready':ready,'scan_ok':scan},'bundle':{'market':market},'dt':lambda x:x,'api':NS(operation=lambda n:contextlib.nullcontext()),'asyncio':NS(to_thread=to_thread),'pause':pause}
++   if mode=='R104':exec((root/'tests/fixtures/r104_native_function.py').read_text(),env);fn=env['native']
++   else:fn=nested('native',env)
++   with patch.object(review_flags,'NATIVE_TIMING_ENABLED',enabled):await fn()
++   return seen
++  for ready,scan,trusted in itertools.product((False,True),repeat=3):
++   for market in (None,{'open':AT-timedelta(hours=1),'close':AT+timedelta(hours=1)},{'open':AT+timedelta(hours=1),'close':AT+timedelta(hours=2)}):
++    original=asyncio.run(run('R104',ready,scan,trusted,market,False))
++    for flag in (False,True):self.assertEqual(asyncio.run(run('R108',ready,scan,trusted,market,flag)),original)
++ def test_empty_pending_count_zero_not_UNKNOWN(self):
++  s,h,a,r,p,store,b=native_fixture(1);lines=[];m=NativeTiming(p,r,POLICY,wall=lambda:AT,emit=lines.append);m.install(b)
++  try:
++   with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):b.native_cycle(s,AT,True);b.native_cycle(s,AT,True)
++   self.assertEqual(m.last['pending_symbols'],0);self.assertEqual(m.last['request_count'],0)
++  finally:m.close()
++ def test_failed_MGET_in_original_poll_preserved(self):
++  s,h,a,r,p,store,b=native_fixture();lines=[];m=NativeTiming(p,r,POLICY,wall=lambda:AT,emit=lines.append);m.install(b);err=RuntimeError('fixture read')
++  p.r.mget=lambda *v:(_ for _ in ()).throw(err)
++  try:
++   with self.assertRaises(RuntimeError) as cm:b.native_cycle(s,AT,True)
++   self.assertIs(cm.exception,err);self.assertEqual(m.last['completion'],'FAILED');self.assertEqual(m.last['request_count'],0)
++  finally:m.close()
++ def test_original_handled_persistence_error_remains_handled(self):
++  s,h,a,r,p,store,b=native_fixture(1);p.ew.persist_first_e=lambda *v:(_ for _ in ()).throw(ValueError('fixture persist'));lines=[];m=NativeTiming(p,r,POLICY,wall=lambda:AT,emit=lines.append);m.install(b)
++  try:
++   with a.operation('native'),contextlib.redirect_stdout(io.StringIO()):result=b.native_cycle(s,AT,True)
++   self.assertEqual(result['early_core_persist_errors'],1);self.assertEqual(m.last['completion'],'COMPLETED');self.assertEqual(m.last['persistence_error_type'],'ValueError')
++  finally:m.close()
++ def test_previous_cycle_completed_before_late_sampler_retains_proof(self):
++  s,h,a,r,p,store,b=native_fixture(1);end=AT.replace(second=0);t=NS(at=end-timedelta(seconds=2),mono=0);lines=[];m=NativeTiming(p,r,POLICY,wall=lambda:t.at,clock=lambda:t.mono,emit=lines.append)
++  try:
++   with m.cycle(t.at,['X']):t.at=end+timedelta(seconds=16);t.mono=18
++   t.at+=timedelta(seconds=1);m.boundary_tick(t.at);m.q.join();row=next(json.loads(x) for x in lines if json.loads(x)['stage']=='R108_NATIVE_BOUNDARY' and json.loads(x)['bar_end']==end.isoformat());self.assertEqual(row['outcome'],'NO_START_OBSERVED');self.assertIn('PREVIOUS_CYCLE_RUNNING',row['observed_blockers'])
++  finally:m.close()

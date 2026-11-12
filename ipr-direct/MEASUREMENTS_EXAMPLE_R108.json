@@ -1,0 +1,80 @@
+{
+  "scope": "synthetic offline fixture, not production timing",
+  "native_fast_timing": {
+    "mode": "MEASUREMENT_ONLY",
+    "cycles": 1,
+    "last": {
+      "stage": "R108_NATIVE_CYCLE",
+      "session": "2026-11-10",
+      "cycle_start_utc": "2026-11-10T16:35:01+00:00",
+      "poll_cutoff_utc": "2026-11-10T16:35:01+00:00",
+      "latest_closed_bar_end": "2026-11-10T16:35:00+00:00",
+      "poll_enter_utc": "2026-11-10T16:35:01+00:00",
+      "queue_wait_seconds": null,
+      "start_after_latest_close_seconds": 1.0,
+      "input_symbols": 201,
+      "pending_symbols": 201,
+      "before_fetch_work_seconds": 0.00015863499720580876,
+      "fetch_seconds": 0.003773140000703279,
+      "rest_acquisitions": 3,
+      "rest_wait_seconds": 1.6601999959675595e-05,
+      "rest_hold_seconds": 0.002680462996067945,
+      "rest_measurement_available": true,
+      "evaluation_seconds": 7.528000423917547e-05,
+      "persistence_seconds": 6.952999683562666e-06,
+      "request_count": 3,
+      "response_bytes": 21003,
+      "sip_first_seen_utc": "2026-11-10T16:35:01+00:00",
+      "sip_first_receipt_lag_seconds": 1.0,
+      "sip_last_receipt_lag_seconds": 1.0,
+      "sip_target_matches": 201,
+      "sip_inspection_clipped": 0,
+      "request_samples": [
+        {
+          "operation": "native",
+          "wait_seconds": 6.4639971242286265e-06,
+          "hold_seconds": 0.001239447999978438
+        },
+        {
+          "operation": "native",
+          "wait_seconds": 5.580001015914604e-06,
+          "hold_seconds": 0.001265147999220062
+        },
+        {
+          "operation": "native",
+          "wait_seconds": 4.558001819532365e-06,
+          "hold_seconds": 0.00017586699686944485
+        }
+      ],
+      "completion": "COMPLETED",
+      "failure_type": null,
+      "sip_target_eligible_for_poll": true,
+      "confluence_seconds": 3.044002369279042e-06,
+      "required_history_minutes": null,
+      "early_core_persisted": 1,
+      "early_core_persist_errors": 0,
+      "confluence_errors": 0,
+      "persistence_error_type": null,
+      "cycle_seconds": 0.014002829000673955
+    },
+    "observer_errors": 0,
+    "observations_skipped_busy": 0,
+    "log_dropped": 0,
+    "writer_errors": 0,
+    "log_queue": 0,
+    "day_lines_written_or_attempted": 2,
+    "day_bytes_written_or_attempted": 2217,
+    "line_limit_per_process_UTC_day": 4096,
+    "byte_limit_per_process_UTC_day": 8388608,
+    "observation_start_utc": "2026-11-10T16:35:01+00:00",
+    "pre_observation_boundaries_UNKNOWN": 24,
+    "boundary_day_utc": "2026-11-10",
+    "boundary_counts": {
+      "started_within_15s": 0,
+      "not_started_observed": 0,
+      "UNKNOWN": 24
+    },
+    "missed_boundary_observed_reason_counts": {},
+    "reason_scope": "counts of missed observed boundaries with each measured reason; not exclusive causes; sampling gaps UNKNOWN"
+  }
+}

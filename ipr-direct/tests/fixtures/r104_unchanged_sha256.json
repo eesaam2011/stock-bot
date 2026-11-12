@@ -1,0 +1,7 @@
+{
+  "ipr/api.py": "960eb8f43f8a01c22919b49c58f033c04af16332cfc841b8e1d39b7c0492912d",
+  "dintegration/rest.py": "728bb09121abfb5d8809bfa89428b7964bddb80d74daecadd13ee3bf1fabeb36",
+  "ipr/main.py": "777e58672756338b30020fbd142c2891cc5d520d49b38fa63846b5f7e0e9c296",
+  "r9core/chain.py": "f4737886506bab6027246a980659813b5a2d6b059cbf70e7a648edb6e4f0b350",
+  "ipr/price_policy.py": "5f375051c2649f4988f3fe50628553c9c245e0aad0dfdf32c62afdbdf589edc3"
+}

@@ -1,0 +1,8 @@
+{
+  "scope": "local in-memory fixture/liblua; no Redis service or connection; unchanged R10.4 chain code",
+  "head_unchanged": true,
+  "tail_payload_changed_without_head_change": true,
+  "reused_reader": "ACCEPTED_UNCHANGED_HEAD_FAST_PATH",
+  "fresh_reader": "ChainFailure",
+  "conclusion": "reusing readonly ChainState alone does not preserve fresh-reader active-tail checks; not implemented"
+}

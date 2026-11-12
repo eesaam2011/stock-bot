@@ -1,0 +1,14 @@
+{
+  "bounded_data_example_bytes": 250491,
+  "MiB": 0.23888683319091797,
+  "queue_rows": 32,
+  "request_samples_per_cycle": 8,
+  "max_boundaries": 96,
+  "actual_fixture_boundaries": 78,
+  "scope": "recursive sys.getsizeof for buffered structured telemetry; shared pipeline/HTTP rows excluded; allocator, thread stack, live RSS/cgroup NOT measured",
+  "ASSUMPTION_expected_extra_resident_data_MiB_range": [
+    0.2,
+    1.0
+  ],
+  "live_extra_memory": "UNKNOWN"
+}

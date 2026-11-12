@@ -1,0 +1,38 @@
+{
+  "existing_production_modified": [
+    "dintegration/bridge.py",
+    "dintegration/measure.py",
+    "ipr/runtime.py",
+    "ipr/sender.py"
+  ],
+  "existing_review_manifest_modified": [
+    "SHA256SUMS.txt"
+  ],
+  "added": [
+    "ANALYSIS_R108_RAW.txt",
+    "CHANGED_FILES_R108.json",
+    "DIFF_R108_VS_R104.patch",
+    "FLAGS_MATRIX_R108.json",
+    "HISTORICAL_TIMING_CONTEXT_R108.json",
+    "MEASUREMENTS_EXAMPLE_R108.json",
+    "MEMORY_ESTIMATE_R108.json",
+    "OUTBOX_27_AND_TTL_EVIDENCE_R108.json",
+    "PARENT_REUSE_COUNTEREXAMPLE_R108.json",
+    "README_R108.txt",
+    "REPORT_R108_AR.txt",
+    "SENDER_LITERAL_DIFF_R108.patch",
+    "TESTS_R108_COMPLETE_RAW.txt",
+    "VALIDATION_R108.json",
+    "analyze_r108.py",
+    "dintegration/native_timing.py",
+    "ipr/outbox_mget.py",
+    "ipr/review_flags.py",
+    "tests/fixtures/r104_native_function.py",
+    "tests/fixtures/r104_reference_sha256.json",
+    "tests/fixtures/r104_unchanged_sha256.json",
+    "tests/r108_support.py",
+    "tests/test_r108.py"
+  ],
+  "removed": [],
+  "unchanged_reference_count": 72
+}

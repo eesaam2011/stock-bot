@@ -28,7 +28,8 @@ class Measurements:
   cores=(cpu-self.last_cpu)/(now-self.last_wall) if self.last_wall is not None and now>self.last_wall else None;self.last_cpu=cpu;self.last_wall=now
   with self.guard:span_copy={k:{'count':v['count'],'mean':v['total']/v['count'],'max':v['max']} for k,v in self.spans.items()}
   from ipr.observability import OBS
-  return {'R7_diagnostics':OBS.snapshot(),'memory_stat':memory_stat,'anon_bytes':memory_stat.get('anon'),'file_bytes':memory_stat.get('file'),'shmem_bytes':memory_stat.get('shmem'),'sqlite_files':sqlite_files,'sqlite_total_bytes':sum(x['bytes'] for x in sqlite_files) if sqlite_files is not None else None,'sqlite_stat_error':sqlite_stat_error,'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
+  from ipr.telemetry_safe import call
+  return {'native_fast_timing':call(getattr(self,'native_timing',None),'snapshot'),'R7_diagnostics':OBS.snapshot(),'memory_stat':memory_stat,'anon_bytes':memory_stat.get('anon'),'file_bytes':memory_stat.get('file'),'shmem_bytes':memory_stat.get('shmem'),'sqlite_files':sqlite_files,'sqlite_total_bytes':sum(x['bytes'] for x in sqlite_files) if sqlite_files is not None else None,'sqlite_stat_error':sqlite_stat_error,'sample_monotonic':now,'rss_bytes':rss,'cgroup_memory_bytes':cg,'rss_peak_bytes':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,'cpu_cores_interval':cores,'cpu_stat':throttling,'spans':span_copy,'scope':'local observed process; not Render or wire latency','latency193':'ASSUMPTION_NOT_MEASURED'}
  async def loop_lag(self,stop,period=.1):
   while not stop.is_set():
    from ipr.observability import OBS

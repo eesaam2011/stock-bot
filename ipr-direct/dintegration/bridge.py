@@ -14,6 +14,8 @@ class OriginalBridge:
   self.r=r;self.leadership=leadership;self.rest=rest;self.needs_revision=0;self._preload_local=threading.local()
   self.p=ProductionDecisionPipeline(r,lua,leadership,session,sorted(root_symbols),OperationalEarlyCore(rest),OperationalBaseReady(),rest,worker,shadow=False)
   self.p.signal_gate=SignalAdmission(session,session_policy)
+  from .native_timing import attach_native_timing
+  attach_native_timing(self,rest,session_policy)
  def records(self,pattern,typ):return self.p._scan_records(pattern,typ)
  def recover_caches(self):
   self.p.refresh_runtime_caches()

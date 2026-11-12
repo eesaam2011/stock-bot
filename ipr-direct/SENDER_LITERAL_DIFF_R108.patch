@@ -1,0 +1,11 @@
+--- a/ipr/sender.py
++++ b/ipr/sender.py
+@@ -36,7 +36,7 @@
+  return '\n'.join(['IPR — '+labels[event['event_type']],f"السهم: {event['symbol']}",f"سعر الدخول: {trade['entry_alert_price']:.6g}",f"الوقف البنيوي: {trade['structural_stop']:.6g}",f"T1: {trade['t1']:.6g} | T2: {trade['t2']:.6g}",f"وقت الحدث — الرياض: {when}",f"الحالة: {payload.get('event',event['event_type'])}",'تنبيه ومتابعة فقط؛ التنفيذ بيد المستخدم.'])
+ class Sender:
+  def __init__(self,runtime,redis,env,transport=None):
+-  self.r=runtime;self.store=RedisOutboxStore(runtime.a.bridge.r);self.ledger=Ledger(redis,runtime.leader)
++  self.r=runtime;self.store=__import__('ipr.outbox_mget',fromlist=['outbox_store']).outbox_store(runtime.a.bridge.r);self.ledger=Ledger(redis,runtime.leader)
+   token=env.get('TELEGRAM_BOT_TOKEN','');chat=env.get('TELEGRAM_CHAT_ID','')
+   if not token or not chat:raise ValueError('TELEGRAM_CREDENTIALS_MISSING')
+   self.transport=transport or TelegramHTTP(MessageConfig(True,0,token,chat));self.seen=set()

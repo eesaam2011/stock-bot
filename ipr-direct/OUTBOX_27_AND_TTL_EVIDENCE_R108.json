@@ -1,0 +1,355 @@
+{
+  "scope": "saved logs only; no Redis/Render access in this task",
+  "evidence_source_sha256": "bf46ae2b6c4e112d2a1997f73ac10fa243b3b411a518d801888d99e9f8f991f5",
+  "delivered_rows": [
+    {
+      "utc": "2026-11-04T18:23:04.431133574Z",
+      "log_id": "7d93b5c9-742f-41f0-8c73-0128a7c829ef",
+      "symbol": "BTU",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_ENTRY_AUDIT_BTU_CYH_20261104.zip/render_relevant_redacted.jsonl",
+        "IPR_EOD_EVALUATION_20261104.zip/render_exact_symbol_events.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-04T18:37:33.683270775Z",
+      "log_id": "e9567d6f-51b4-4341-9a18-6dc277ae8477",
+      "symbol": "CYH",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_ENTRY_AUDIT_BTU_CYH_20261104.zip/render_relevant_redacted.jsonl",
+        "IPR_EOD_EVALUATION_20261104.zip/render_exact_symbol_events.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-04T19:04:01.379898938Z",
+      "log_id": "dce3cea2-5797-455e-9b15-3aa73af4c23f",
+      "symbol": "BTU",
+      "event_type": "T1",
+      "result": "SENT",
+      "sources": [
+        "IPR_EOD_EVALUATION_20261104.zip/render_exact_symbol_events.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-04T19:15:26.504482133Z",
+      "log_id": "f480742d-7733-4dc4-87c1-c2b7c5dd76cc",
+      "symbol": "CYH",
+      "event_type": "STOP",
+      "result": "SENT",
+      "sources": [
+        "IPR_EOD_EVALUATION_20261104.zip/render_exact_symbol_events.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-04T19:36:57.412434807Z",
+      "log_id": "922ca50e-aeea-4356-b496-834bd518ad18",
+      "symbol": "BTU",
+      "event_type": "T2",
+      "result": "SENT",
+      "sources": [
+        "IPR_EOD_EVALUATION_20261104.zip/render_exact_symbol_events.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T16:45:07.492399409Z",
+      "log_id": "95dd561b-d647-4b9c-b93e-16d459ae61cc",
+      "symbol": "KURA",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_R92_READ_2000_20261106.zip/entry_events.json",
+        "IPR_R92_READ_2000_20261106.zip/important_events.json",
+        "IPR_R92_READ_2215_20261106.zip/ENTRY_and_all_DELIVERY_full_day_context.json",
+        "IPR_R92_READ_2215_20261106.zip/entry_events.json",
+        "IPR_R92_READ_2215_20261106.zip/important_events.json",
+        "IPR_R92_READ_2215_20261106.zip/older_context_and_main_raw.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T17:22:25.590697982Z",
+      "log_id": "7a5acf2a-2a2a-43d1-ba41-7f4a4d5404d0",
+      "symbol": "KURA",
+      "event_type": "T1",
+      "result": "SENT",
+      "sources": [
+        "IPR_R92_READ_2215_20261106.zip/ENTRY_and_all_DELIVERY_full_day_context.json",
+        "IPR_R92_READ_2215_20261106.zip/entry_events.json",
+        "IPR_R92_READ_2215_20261106.zip/important_events.json",
+        "IPR_R92_READ_2215_20261106.zip/older_context_and_main_raw.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T17:30:02.685441618Z",
+      "log_id": "1c24f093-1c9b-4892-b3fa-93374a3b07f6",
+      "symbol": "KURA",
+      "event_type": "POST_T1_EXIT",
+      "result": "SENT",
+      "sources": [
+        "IPR_R92_READ_2215_20261106.zip/ENTRY_and_all_DELIVERY_full_day_context.json",
+        "IPR_R92_READ_2215_20261106.zip/entry_events.json",
+        "IPR_R92_READ_2215_20261106.zip/important_events.json",
+        "IPR_R92_READ_2215_20261106.zip/older_context_and_main_raw.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T17:37:04.39471069Z",
+      "log_id": "534b1ac2-4e94-4375-8157-3d25e1adf42d",
+      "symbol": "CCOI",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_R92_READ_2215_20261106.zip/ENTRY_and_all_DELIVERY_full_day_context.json",
+        "IPR_R92_READ_2215_20261106.zip/entry_events.json",
+        "IPR_R92_READ_2215_20261106.zip/important_events.json",
+        "IPR_R92_READ_2215_20261106.zip/older_context_and_main_raw.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T17:42:41.358834773Z",
+      "log_id": "d1cd92c7-24a1-4dee-90b3-b46cf711e8f0",
+      "symbol": "CCOI",
+      "event_type": "STOP",
+      "result": "SENT",
+      "sources": [
+        "IPR_R92_READ_2215_20261106.zip/ENTRY_and_all_DELIVERY_full_day_context.json",
+        "IPR_R92_READ_2215_20261106.zip/entry_events.json",
+        "IPR_R92_READ_2215_20261106.zip/important_events.json",
+        "IPR_R92_READ_2215_20261106.zip/older_context_and_main_raw.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T18:53:09.972380902Z",
+      "log_id": "5a81cd2a-39a2-42e8-ae47-2da6f5e7a9d6",
+      "symbol": "INSE",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_R92_READ_2215_20261106.zip/ENTRY_and_all_DELIVERY_full_day_context.json",
+        "IPR_R92_READ_2215_20261106.zip/entry_events.json",
+        "IPR_R92_READ_2215_20261106.zip/important_events.json",
+        "IPR_R92_READ_2215_20261106.zip/older_context_and_main_raw.jsonl",
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T19:45:58.549729139Z",
+      "log_id": "90d11b2d-fba7-497a-8582-a6cdd7df9531",
+      "symbol": "EROK",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T19:48:39.245322322Z",
+      "log_id": "dfc53795-33c2-4d97-8859-feae56e52d2c",
+      "symbol": "EROK",
+      "event_type": "T1",
+      "result": "SENT",
+      "sources": [
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T19:51:22.1160273Z",
+      "log_id": "e6a00430-22fe-48e2-86a7-cb92fd74558c",
+      "symbol": "EROK",
+      "event_type": "T2",
+      "result": "SENT",
+      "sources": [
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-06T20:03:56.519782385Z",
+      "log_id": "1fef24ac-ca9d-4349-9fab-30e5b88629fa",
+      "symbol": "INSE",
+      "event_type": "STOP",
+      "result": "SENT",
+      "sources": [
+        "SCORECARD_15COL_BACKFILL_20261109/evidence/selected_saved_events.json (saved selected raw-event evidence)"
+      ]
+    },
+    {
+      "utc": "2026-11-09T14:37:02.740026812Z",
+      "log_id": "299392e7-7c6d-4843-8e5a-9e2e156620f2",
+      "symbol": "STAK",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T14:37:05.91932613Z",
+      "log_id": "6a2105b2-1d71-4b87-83cd-06a0da9eb0ef",
+      "symbol": "STAK",
+      "event_type": "T1",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T14:37:52.841558385Z",
+      "log_id": "27a7abfe-c28d-4fc1-b794-7d350d079d99",
+      "symbol": "STAK",
+      "event_type": "STOP",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T14:40:24.683129895Z",
+      "log_id": "44552aab-a89a-4834-81a5-45168ea96cdf",
+      "symbol": "ASTS",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T14:50:04.243621867Z",
+      "log_id": "487a6e1b-e5ac-4412-b887-fb134565a31f",
+      "symbol": "ASTS",
+      "event_type": "T1",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T15:07:54.311540357Z",
+      "log_id": "0f73ee21-254e-4569-9f62-32f7353bf1b0",
+      "symbol": "ASTS",
+      "event_type": "T2",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T19:14:04.259052009Z",
+      "log_id": "16f64279-d0dc-4bd2-87f5-5d48d1396848",
+      "symbol": "QDEL",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T19:16:45.793549902Z",
+      "log_id": "5db0c8ac-a11b-401c-b163-fe45aa829215",
+      "symbol": "QDEL",
+      "event_type": "T1",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T19:41:31.142332585Z",
+      "log_id": "841a8932-7ef5-482e-9f34-3b503ae50798",
+      "symbol": "QDEL",
+      "event_type": "T2",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T20:59:07.2354766Z",
+      "log_id": "3f151ef0-20e5-429d-9808-9c1bc24ea8db",
+      "symbol": "ZIP",
+      "event_type": "ENTRY",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T21:05:01.836588624Z",
+      "log_id": "fcc9f682-2cb1-4794-bf1c-0c39d2652f6d",
+      "symbol": "ZIP",
+      "event_type": "T1",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    },
+    {
+      "utc": "2026-11-09T21:05:02.508568886Z",
+      "log_id": "df287fcc-b2be-49b4-9d56-7fd3b38c01ae",
+      "symbol": "ZIP",
+      "event_type": "T2",
+      "result": "SENT",
+      "sources": [
+        "IPR_DAILY_CLOSE_20261110_0005.zip/events_decoded.json"
+      ]
+    }
+  ],
+  "saved_delivery_count": 27,
+  "logical_delivery_count_is_not_a_Redis_key_inventory": true,
+  "actual_outbox_key_count": "UNKNOWN",
+  "reason": "no saved authoritative outbox key enumeration/TTL snapshot; 27 delivered log records and 27 GET/SCAN do not prove no other keys",
+  "last_metrics_utc": "2026-11-10T21:04:59.525906067Z",
+  "last_metrics_sha256": "1367eee9542badd2b670edfd35296217f858893b853297a7aeea125c2965f31e",
+  "elapsed_seconds": 71588.7568014171,
+  "redis_counters": [
+    {
+      "command": "GET",
+      "operation": "unlabelled",
+      "count": 1583671,
+      "mean_seconds": 0.0012472560856687908,
+      "p95_upper_seconds": 0.002,
+      "max_seconds": 0.4344841279089451
+    },
+    {
+      "command": "MGET",
+      "operation": "unlabelled",
+      "count": 192876,
+      "mean_seconds": 0.0017502177439084746,
+      "p95_upper_seconds": 0.002,
+      "max_seconds": 1.4955400805920362
+    },
+    {
+      "command": "SCAN",
+      "operation": "unlabelled",
+      "count": 58655,
+      "mean_seconds": 0.18020194223789382,
+      "p95_upper_seconds": 0.5,
+      "max_seconds": 2.8840539772063494
+    }
+  ],
+  "TTL_code_contract": "outbox SET has no EX/PX; original mark_attempt SET has no expiry; actual Redis TTL UNKNOWN",
+  "same_sweep_cost_model": {
+    "assumed_scan_pages_per_poll": 1,
+    "assumed_keys_per_page": 27,
+    "old_GET": 27,
+    "new_MGET": 1,
+    "saved_commands_per_poll": 26,
+    "observed_SCAN_counter": 58655,
+    "ASSUMPTION_same_number_of_polls_saved_commands": 1525030,
+    "ASSUMPTION_USD_per_million_commands": 2,
+    "modeled_saved_USD": 3.05006,
+    "not_live_bill_measurement": true
+  }
+}

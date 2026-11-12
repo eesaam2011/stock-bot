@@ -241,14 +241,19 @@ async def run(bundle,api,redis,env,boot,started_monotonic=None):
      print(json.dumps({'stage':'SCAN_FAILED_NEW_ENTRIES_DISABLED','reason':reason(e),'scan_ok':state['scan_ok'],'previous_success_preserved':type(e) is RTHVolumeStale and state['scan_ok'],'duration_seconds':time.monotonic()-start,'at':r.wall().isoformat(),'started_at':now.isoformat(),'scan_attempt':timings.started,'scan_timing':timings.attempt_snapshot()}),flush=True)
    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
  async def native():
+  from dintegration.native_timing import native_guard,native_phase
   while not r.stop.is_set():
    market=bundle['market'];now=r.wall()
-   if state['ready'] and state['scan_ok'] and market and dt(market['open'])<=now<dt(market['close']) and r.a.transport_trusted:
+   native_phase(r,'CHECK')
+   if native_guard(r,'ready',state['ready'],now) and native_guard(r,'scan_ok',state['scan_ok'],now) and market and native_guard(r,'rth',dt(market['open'])<=now<dt(market['close']),now) and native_guard(r,'trusted',r.a.transport_trusted,now):
     with r.a.control_lock:syms=[s for s in r.c.bar if s not in r.a.recovering and all(r.c.proofs.get(s,{}).get(k) for k in ('history','continuity','reconciled'))]
     if syms:
      def native_work():
       with api.operation('native'):return r.a.bridge.native_cycle(syms,now,True)
+     native_phase(r,'QUEUED')
      await asyncio.to_thread(native_work)
+    else:native_phase(r,'NO_PROVEN_SYMBOLS')
+   native_phase(r,'PAUSE')
    await pause(r.stop,5.)
  async def upkeep():
   while not r.stop.is_set():
@@ -270,6 +275,10 @@ async def run(bundle,api,redis,env,boot,started_monotonic=None):
   if gate is not None:await gate.wait()
   return await fn()
  tasks=[asyncio.create_task(r.run()),asyncio.create_task(metrics()),asyncio.create_task(measure.loop_lag(r.stop))]
+ native_observer=getattr(r.a.bridge,'native_timing',None)
+ if native_observer is not None:
+  from dintegration.native_timing import observe_boundaries
+  tasks.append(asyncio.create_task(observe_boundaries(native_observer,r,pause)))
  tasks.extend(asyncio.create_task(after_init(f)) for f in (prepare,scan,native,upkeep,sender.run))
  try:
   await wait_first(tasks,r.failure)
@@ -282,5 +291,8 @@ async def run(bundle,api,redis,env,boot,started_monotonic=None):
     try:shadow.close()
     except BaseException:pass
    observer.close();getattr(clock,'close',lambda:None)()
+   if native_observer is not None:
+    try:native_observer.close()
+    except BaseException:pass
 
  return r.exit_reason
