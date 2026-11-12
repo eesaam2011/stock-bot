@@ -7,7 +7,11 @@ def build_operational_universe(rest):
   if not isinstance(a,dict):continue
   s=str(a.get("symbol") or "").strip().upper()
   # Transferable operational eligibility only; no research/ranking/tuning filters.
-  if (a.get("status")=="active" and a.get("class")=="us_equity"
+  # Alpaca assets use "class"; some adapters expose "asset_class".
+  # An explicit non-US asset_class must not be overridden by "class".
+  us_equity=(a.get("asset_class")=="us_equity" or
+             (a.get("asset_class") is None and a.get("class")=="us_equity"))
+  if (a.get("status")=="active" and us_equity
       and bool(a.get("tradable")) and s):
    out.append(s)
  out=sorted(set(out))

@@ -84,11 +84,17 @@ class OperationalBaseReady:
   bar_end=datetime.fromisoformat(str(bar["t"]).replace("Z","+00:00"))+timedelta(minutes=1)
   received_at=received_at or datetime.now(UTC)
   ts=max(bar_end,received_at)
+  # phase2_features requires at least 24 completed bars. Avoid creating
+  # temporary dicts for short-lived discovery symbols; retain compact tuples.
+  # No persistent dict cache: that would reintroduce the previous RSS problem.
+  if len(h)<24:return {"accepted":False,"base_ready":False}
   x=phase2_features(self._materialize_history(h),bar_end)
   if x is None:return {"accepted":False,"base_ready":False}
   features,diag=x
   return {"accepted":True,"base_ready":diag["base_ready"],"features":features,"diagnostics":diag,"decision_available_ts":ts}
  def release_symbol(self,symbol):
   self.history.pop(symbol,None)
+ def audit_history(self,symbol):
+  return self._materialize_history(self.history.get(symbol,()))
  def buffered_bars(self):
   return sum(len(v) for v in self.history.values())

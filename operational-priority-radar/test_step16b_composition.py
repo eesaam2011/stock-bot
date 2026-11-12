@@ -21,6 +21,8 @@ class TestStep16B(unittest.TestCase):
   c=WorkerConfig(True,"redis://x","k","s")
   x=compose_shadow_runtime(c,redis_client=R(),websocket_connector=Conn(),recovery=Recovery(),early_core=E(),base_ready=B(),symbols=["A"])
   self.assertEqual(x.symbols,["A"]);self.assertTrue(x.outbox_sender.shadow_mode)
+  self.assertIs(x.sip_drain_coordinator.capture,x.websocket_runtime.epoch_capture)
+  self.assertIsNotNone(x.sip_transport_journal)
  def test_default_recovery_bridge_fails_closed(self):
   self.assertEqual(ProductionRecoveryBridge().run(),{"gap_recovered":False,"reconciled":False})
  def test_base_ready_keeps_bounded_60_rows(self):

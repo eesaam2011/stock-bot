@@ -1,0 +1,194 @@
+"""Read-only OPR v1.2 REST maturity measurement runner.
+
+This tool writes audit evidence only.  It never writes canonical E/B state,
+never opens a websocket, and never sends an alert.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import time
+from datetime import datetime, timedelta, timezone
+
+from alpaca_production_market import AlpacaCredentials, AlpacaREST
+from production_universe import build_operational_universe
+from rest_bar_maturity import MaturedREST1MinCoordinator
+from rest_bar_shadow_audit import RESTBarShadowAudit
+from rest_maturity_coverage import RESTMaturityCoverage, CoverageREST
+
+UTC = timezone.utc
+CHECKPOINTS = (30, 60, 90, 120, 180)
+
+
+def _env(name, *aliases):
+    value = next((os.getenv(candidate) for candidate in (name,) + aliases
+                  if os.getenv(candidate)), None)
+    if not value:
+        raise RuntimeError(f"MISSING_{name}")
+    return value
+
+
+def _write(path, body):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(body, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+    os.replace(tmp, path)
+
+
+def _sample(symbols, session, limit):
+    return tuple(sorted(symbols,
+        key=lambda x: hashlib.sha256(f"{session}|{x}".encode()).digest())[:limit])
+
+
+def _redis_from_url(url):
+    import redis
+    return redis.Redis.from_url(url, decode_responses=True, socket_timeout=5)
+
+
+def observe(args, now_fn=lambda: datetime.now(UTC), sleep_fn=time.sleep):
+    creds = AlpacaCredentials(_env("ALPACA_API_KEY", "APCA_API_KEY_ID"),
+                              _env("ALPACA_SECRET_KEY", "APCA_API_SECRET_KEY"))
+    rest = AlpacaREST(creds)
+    r = _redis_from_url(_env("REDIS_URL"))
+    if r.ping() is not True:
+        raise RuntimeError("REDIS_PING_FAILED")
+    symbols = _sample(build_operational_universe(rest), args.session, args.symbols)
+    audit = RESTBarShadowAudit(r, rest, args.session, due_hours=args.due_hours)
+    keys = set(); skipped_slots = 0
+    coverage = RESTMaturityCoverage(symbols, CHECKPOINTS, args.sample_every_minutes)
+    coverage_rest = CoverageREST(rest, coverage)
+
+    def record(symbol, rows, eval_ts, checkpoint, observed_at):
+        nonlocal skipped_slots
+        epoch_minute = int(eval_ts.timestamp() // 60)
+        if epoch_minute % args.sample_every_minutes:
+            skipped_slots += 1
+            return
+        if len(keys) >= args.max_observations:
+            raise RuntimeError("REST_MATURITY_OBSERVATION_LIMIT")
+        keys.add(audit.record_checkpoint("BASE_1MIN", symbol, rows, eval_ts,
+                                         observed_at, checkpoint))
+        coverage.recorded(symbol, rows, eval_ts, checkpoint)
+
+    coordinator = MaturedREST1MinCoordinator(
+        coverage_rest, symbols, lambda *_: None, grace_seconds=90,
+        study_observer=record, study_symbols=symbols,
+        study_checkpoints=CHECKPOINTS)
+    body = {"schema":"OPR_STEP3BI_REST_MATURITY_V1", "mode":"observe",
+            "commit":args.commit,
+            "session":args.session, "symbols":list(symbols),
+            "checkpoints":list(CHECKPOINTS), "started_at":now_fn().isoformat(),
+            "audit_keys":[], "polls":0, "errors":[],
+            "coverage":coverage.report(),
+            "sample_every_minutes":args.sample_every_minutes,
+            "max_observations":args.max_observations,
+            "canonical_writes":0, "alerts_sent":0,
+            "actionable_alerts_authorized":False, "finality_proven":False}
+    _write(args.output, body)
+    while now_fn() < args.end:
+        now = now_fn()
+        try:
+            coverage_rest.poll_at = now
+            coordinator.poll(now, True)
+            body["coverage"] = coverage.report()
+            body["polls"] += 1
+            body["audit_keys"] = sorted(keys)
+            body["observations"] = len(keys)
+            body["skipped_slots"] = skipped_slots
+            body["last_poll_at"] = now.isoformat()
+            _write(args.output, body)
+        except Exception as exc:
+            body["coverage"] = coverage.report()
+            body["audit_keys"] = sorted(keys)
+            body["observations"] = len(keys)
+            body["errors"].append({"at":now.isoformat(),
+                                   "type":type(exc).__name__,"message":str(exc)[:300]})
+            _write(args.output, body)
+            raise
+        sleep_fn(args.interval)
+    body["completed_at"] = now_fn().isoformat()
+    _write(args.output, body)
+    return body
+
+
+def compare(args, now_fn=lambda: datetime.now(UTC)):
+    creds = AlpacaCredentials(_env("ALPACA_API_KEY", "APCA_API_KEY_ID"),
+                              _env("ALPACA_SECRET_KEY", "APCA_API_SECRET_KEY"))
+    rest = AlpacaREST(creds)
+    r = _redis_from_url(_env("REDIS_URL"))
+    if r.ping() is not True:
+        raise RuntimeError("REDIS_PING_FAILED")
+    audit = RESTBarShadowAudit(r, rest, args.session, due_hours=args.due_hours)
+    if not args.observations:
+        raise RuntimeError("OBSERVATION_FILE_REQUIRED")
+    with open(args.observations, encoding="utf-8") as handle:
+        observed = json.load(handle)
+    if observed.get("commit") != args.commit:
+        raise RuntimeError("OBSERVATION_COMMIT_MISMATCH")
+    keys = observed.get("audit_keys")
+    if (not isinstance(keys,list) or not keys
+            or len(keys) > args.max_observations
+            or len(keys) != len(set(keys))):
+        raise RuntimeError("OBSERVATION_KEYS_INVALID")
+    aggregate = {"checked":0,"compared":0,"bars_changed":0,
+                 "decision_flipped":0,"by_checkpoint":{}}
+    now = now_fn()
+    for key in keys:
+        result = audit.compare(key, now)
+        aggregate["checked"] += 1
+        if not result or result.get("status") != "COMPARED":
+            continue
+        aggregate["compared"] += 1
+        aggregate["bars_changed"] += int(bool(result.get("bars_changed")))
+        aggregate["decision_flipped"] += int(bool(result.get("decision_flipped")))
+        label = str(result.get("checkpoint_seconds"))
+        bucket=aggregate["by_checkpoint"].setdefault(
+            label,{"compared":0,"bars_changed":0,"decision_flipped":0})
+        bucket["compared"] += 1
+        bucket["bars_changed"] += int(bool(result.get("bars_changed")))
+        bucket["decision_flipped"] += int(bool(result.get("decision_flipped")))
+    body = {"schema":"OPR_STEP3BI_REST_MATURITY_V1", "mode":"compare",
+            "commit":args.commit,
+            "session":args.session, "compared_at":now_fn().isoformat(), **aggregate,
+            "recommended_grace_seconds":None, "finality_proven":False,
+            "actionable_alerts_authorized":False}
+    _write(args.output, body)
+    return body
+
+
+def parser():
+    p=argparse.ArgumentParser()
+    p.add_argument("mode", choices=("observe","compare"))
+    p.add_argument("--session", required=True)
+    p.add_argument("--commit", required=True,
+                   type=lambda x: x if len(x) == 40 and all(c in "0123456789abcdef" for c in x)
+                   else (_ for _ in ()).throw(argparse.ArgumentTypeError("40-char lowercase SHA required")))
+    p.add_argument("--output", required=True)
+    p.add_argument("--symbols", type=int, default=16, choices=range(1,65))
+    p.add_argument("--due-hours", type=int, default=18, choices=range(12,49))
+    p.add_argument("--interval", type=int, default=15, choices=range(5,61))
+    p.add_argument("--sample-every-minutes", type=int, default=30,
+                   choices=range(5,61,5))
+    p.add_argument("--max-observations", type=int, default=1500,
+                   choices=range(1,5001))
+    p.add_argument("--observations")
+    p.add_argument("--end", type=lambda x:datetime.fromisoformat(x.replace("Z","+00:00")))
+    return p
+
+
+def main():
+    args=parser().parse_args()
+    if args.mode == "observe":
+        if args.end is None or args.end.tzinfo is None:
+            raise SystemExit("--end with timezone is required for observe")
+        result=observe(args)
+    else:
+        result=compare(args)
+    print(json.dumps(result,sort_keys=True,separators=(",",":")),flush=True)
+
+
+if __name__ == "__main__":
+    main()

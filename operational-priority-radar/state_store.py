@@ -74,7 +74,14 @@ class CanonicalStateStore:
     def create(self, record):
         validate_record(record)
         key = record_key(record); raw = canonical_json(record)
-        if not self.backend.set_if_absent(key, raw):
+        # Production Redis must atomically check owner + generation with SET NX.
+        # Contract-test backends retain their in-memory implementation.
+        if hasattr(self.backend, "set_if_absent_fenced"):
+            inserted = self.backend.set_if_absent_fenced(
+                key, raw, record["worker_instance_id"], record["leader_generation"])
+        else:
+            inserted = self.backend.set_if_absent(key, raw)
+        if not inserted:
             if self.backend.get(key) == raw: return key
             raise CanonicalConflict("canonical record already exists")
         return key

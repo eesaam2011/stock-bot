@@ -1,0 +1,95 @@
+{
+  "schema": "OPR_STEP3BD_LIVE_FAILURE_SUMMARY_V1",
+  "stage": "Step 3BD",
+  "session_date": "2026-09-28",
+  "runner_commit": "e42b7afb8dc8175737fde37f9469b46c5ec87557",
+  "runner_mode": "live_sip_soak.py --reconnect-probe",
+  "source_evidence": {
+    "render_path": "/tmp/OPR_STEP3BD_RECONNECT_SESSION_20260928.json",
+    "sha256": "3a01317b1b492df57f80a5ea2182202477946d3a426dfd00eaeb0fbb3bb76464",
+    "internal_evidence_sha256": "71feb1dc1fde23fb06f8f72afadcd9634232908acd7b716512d4ce27d0a77cd8"
+  },
+  "source_runtime_log": {
+    "render_path": "/tmp/OPR_STEP3BD_RECONNECT_RUNTIME_20260928.log",
+    "sha256": "5af7cc62beca07e93bb416104443af26f9914dd73de1de575b5ab03790b46c9b"
+  },
+  "requested": {
+    "duration_sec": 14100,
+    "symbols_count": 12000
+  },
+  "observed": {
+    "started_at": "2026-09-28T16:17:41.544140+00:00",
+    "ended_at": "2026-09-28T16:19:42.247638+00:00",
+    "duration_sec": 120.703498,
+    "epochs": 1,
+    "subscription_ack_epochs": 1,
+    "reconnect_ack_observed": false,
+    "stopped_for_safety": true,
+    "worker_error": null
+  },
+  "epoch_1": {
+    "subscription_ack_verified": true,
+    "failure_class": "TRADE_REVISION_UNRECONCILED",
+    "received": 441451,
+    "handled": 441440,
+    "metrics_acked": 441440,
+    "market_data_received": 441450,
+    "known_control_received": 0,
+    "unknown_nonmarket_received": 1,
+    "unknown_nonmarket_types": {"x": 1},
+    "received_not_confirmed_handled": 11,
+    "dispatch_queue": {
+      "limit": 1024,
+      "depth": 0,
+      "high_water": 256,
+      "overflows": 0
+    },
+    "capture": {
+      "phase": "INVALID",
+      "invalid_reason": "SIP_TRADE_REVISION_UNRECONCILED",
+      "last_sequence": 441450,
+      "acked_upto_after_invalidation": 0,
+      "acked_upto_before_revision": 441440,
+      "buffered": 0,
+      "bytes": 0
+    },
+    "revision": {
+      "frame_type": "x",
+      "symbol": "IWM",
+      "exchange": "M",
+      "tape": "B",
+      "event_time": "2026-09-28T16:19:32.189553648Z",
+      "trade_id": 52983525099076,
+      "price": 278.98,
+      "size": 1000,
+      "action": "1",
+      "received_at_utc": "2026-09-28T16:19:32.240038+00:00",
+      "revision_reconciled": false,
+      "diagnostic_sha256": "db10b8d6ddb0a1888d39e1c5ca39799a7647bb306c79b173cb26129a76e4b803"
+    },
+    "original_trade_window": {
+      "retained": 4096,
+      "evicted": 428752,
+      "bytes": 557030,
+      "original_trade_lookup_performed": true,
+      "matched_within_retained_window": false,
+      "reason": "ORIGINAL_NOT_RETAINED",
+      "upstream_completeness_proven": false,
+      "native_bars_reconciled": false
+    }
+  },
+  "safety_verdict": {
+    "alpaca_error_frame_407_observed": false,
+    "407_classification_basis": "No received SIP T:error frame with code 407; the terminal frame was T:x.",
+    "each_recorded_epoch_exact": false,
+    "continuity_proven": false,
+    "full_session_coverage_proven": false,
+    "production_leadership_proven": false,
+    "capture_ack_authorized": false,
+    "eb_persistence_authorized": false,
+    "direct_handoff_authorized": false,
+    "retroactive_entries_allowed": false,
+    "direct_or_shadow_activation_authorized": false
+  },
+  "conclusion": "The session did not reach the close. It failed closed after about 120.7 seconds because a SIP trade revision referenced an original trade already evicted from the 4096-message original-trade window. Reconnect was intentionally not attempted after semantic safety invalidation. This is not evidence of full-session coverage, continuity, E/B recovery, DIRECT, or Shadow readiness."
+}
