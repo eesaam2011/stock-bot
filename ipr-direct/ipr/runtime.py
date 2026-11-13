@@ -242,14 +242,17 @@ async def run(bundle,api,redis,env,boot,started_monotonic=None):
    await pause(r.stop,max(1.,60-(time.monotonic()-start)))
  async def native():
   from dintegration.native_timing import native_guard,native_phase
+  from ipr.native_resilience import resilience_for
+  resilience=resilience_for(r,api,bundle)
   while not r.stop.is_set():
    market=bundle['market'];now=r.wall()
+   if resilience is not None:resilience.tick(bool(market and dt(market['open'])<=now<dt(market['close'])))
    native_phase(r,'CHECK')
    if native_guard(r,'ready',state['ready'],now) and native_guard(r,'scan_ok',state['scan_ok'],now) and market and native_guard(r,'rth',dt(market['open'])<=now<dt(market['close']),now) and native_guard(r,'trusted',r.a.transport_trusted,now):
     with r.a.control_lock:syms=[s for s in r.c.bar if s not in r.a.recovering and all(r.c.proofs.get(s,{}).get(k) for k in ('history','continuity','reconciled'))]
     if syms:
      def native_work():
-      with api.operation('native'):return r.a.bridge.native_cycle(syms,now,True)
+      with api.operation('native'):return resilience.work(syms,now,True) if resilience is not None else r.a.bridge.native_cycle(syms,now,True)
      native_phase(r,'QUEUED')
      await asyncio.to_thread(native_work)
     else:native_phase(r,'NO_PROVEN_SYMBOLS')
@@ -280,6 +283,10 @@ async def run(bundle,api,redis,env,boot,started_monotonic=None):
   from dintegration.native_timing import observe_boundaries
   tasks.append(asyncio.create_task(observe_boundaries(native_observer,r,pause)))
  tasks.extend(asyncio.create_task(after_init(f)) for f in (prepare,scan,native,upkeep,sender.run))
+ from .review_flags import NATIVE_FAILURE_NONFATAL_ENABLED
+ if NATIVE_FAILURE_NONFATAL_ENABLED:
+  from .native_resilience import watch_native_health
+  tasks.append(asyncio.create_task(after_init(lambda:watch_native_health(r,api,bundle,pause)),name='native_health'))
  try:
   await wait_first(tasks,r.failure)
  finally:
