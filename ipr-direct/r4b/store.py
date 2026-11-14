@@ -7,6 +7,7 @@ class JournalState:
   self.raw=state.raw if isinstance(state,JournalState) else state
   if not hasattr(self.raw,'_r4b_lock'):self.raw._r4b_lock=threading.Lock()
   self.lock=self.raw._r4b_lock
+  self._guarded_local=threading.local()
  def __getattr__(self,key):return getattr(self.raw,key)
  def append_epoch(self,event):
   # Snapshot canonical references BEFORE taking the journal/state locks. Ingress
@@ -14,10 +15,23 @@ class JournalState:
   provider=getattr(self.raw,'case_refs',None)
   if provider is not None and 'case_refs' not in event:event={**event,'case_refs':provider()}
   from ipr.observability import observed_phase
-  with observed_phase('journal.lock_wait'):self.lock.acquire()
+  preheld=getattr(self._guarded_local,'held',False)
+  if not preheld:
+   with observed_phase('journal.lock_wait'):self.lock.acquire()
   try:
    with observed_phase('journal.persist'):return self.raw.append_epoch(event)
-  finally:self.lock.release()
+  finally:
+   if not preheld:self.lock.release()
+ def append_guarded(self,event,guard):
+  # A new correction must be ordered AFTER this resolution if it arrives
+  # while Redis is pending. The guard is LOCAL ONLY; never reads Redis.
+  if getattr(self._guarded_local,'held',False):raise RuntimeError('NESTED_GUARDED_JOURNAL')
+  provider=getattr(self.raw,'case_refs',None)
+  if provider is not None and 'case_refs' not in event:event={**event,'case_refs':provider()}
+  with self.lock:
+   guard();self._guarded_local.held=True
+   try:return self.append_epoch(event)
+   finally:self._guarded_local.held=False
  def restore(self):
   with self.lock:return self.raw.restore()
 class ProofStore:

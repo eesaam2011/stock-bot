@@ -75,6 +75,10 @@ class EvidenceAdapter(LiveAdapter):
   if any(b.get('_timeframe')!='native_5Min' or instant(b['t'])+timedelta(minutes=5)>now for b in five[s]):return {'proven':False,'reason':'INCOMPLETE_OR_NON_NATIVE_5MIN'}
   return self.proof.evidence(s,one[s],now)
  def recover(self,now):
+  from ipr.review_flags import RECOVERY_IO_OUTSIDE_LOCK_ENABLED
+  if RECOVERY_IO_OUTSIDE_LOCK_ENABLED:
+   from .recovery_io import recover
+   return recover(self,now)
   self.close_eligibility('RECOVERY_PENDING');start=time.monotonic()
   try:
    with self.control_lock:

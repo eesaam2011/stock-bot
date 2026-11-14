@@ -107,6 +107,8 @@ def _build(bundle,api,redis,env,boot,clock,measure):
  from r4a.ingress_observed import ObservedIngress
  from r4a.decision_metrics import MeasuredDecisionLock
  a.bridge.p._decision_lock=MeasuredDecisionLock(a.bridge.p._decision_lock)
+ from r4b.recovery_io import install
+ install(a)
  r.heavy_window=HeavyWindow(r.wall,lambda:r.stop.is_set())
  r.wave=WaveDiagnostics(a,measure,r.heavy_window)
  r.ingress_factory=partial(ObservedIngress,diagnostics=r.wave)

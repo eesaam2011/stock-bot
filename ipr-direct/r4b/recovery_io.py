@@ -1,0 +1,604 @@
+"""R10.10 caller-side recovery isolation. No signal/transition implementation.
+
+The unchanged CaseBarrier and reference pipeline operate on private hot caches.
+Canonical CAS and its unknown-commit semantics remain authoritative. A cancelled
+attempt never publishes private caches/proofs/trust. Already committed canonical
+transitions cannot be undone and are re-read by the next attempt.
+"""
+import copy
+import json
+import threading
+import time
+from collections import Counter, deque
+from contextlib import contextmanager, nullcontext
+from datetime import datetime, timezone
+
+from dreview.core import _LIVE_ADAPTER_AUTHORITY
+from dintegration.clock import ClockUnavailable
+from r9core.chain import ChainFailure
+from state_store import key_opportunity, key_trade, record_key, validate_record
+from production_pipeline import ProductionDecisionPipeline
+from redis_lua_production import ProductionRedisLua
+from leadership import LeadershipError
+from .cases import CaseBarrier
+
+
+class RecoveryCancelled(ValueError):
+    pass
+
+
+class RecoveryReadFailed(ValueError):
+    pass
+
+
+def enabled():
+    from ipr.review_flags import RECOVERY_IO_OUTSIDE_LOCK_ENABLED
+    return RECOVERY_IO_OUTSIDE_LOCK_ENABLED
+
+
+class RecoveryMetrics:
+    """Bounded observational state; no Redis and no decision/control lock."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.count = self.successes = self.failures = self.observer_errors = 0
+        self.consecutive_failures = self.max_consecutive_failures = 0
+        self.untrusted_since = None
+        self.last_untrusted_seconds = 0.
+        self.clock = time.monotonic
+        self.failure_streak_warnings = 0
+        self.cancellations = Counter()
+        self.io = {}
+        self.lock_max = 0.0
+        self.last = deque(maxlen=32)
+        self.day = None
+        self.lines = self.bytes = self.log_dropped = 0
+
+    def safe(self, fn, *args):
+        try:
+            return getattr(self, fn)(*args)
+        except BaseException:
+            self.observer_errors += 1
+
+    def finish(self, row):
+        with self.lock:
+            self.count += 1
+            self.successes += int(row['success'])
+            self.failures += int(not row['success'])
+            start = row.get('started_monotonic', self.clock() - row['seconds'])
+            if self.untrusted_since is None:
+                self.untrusted_since = start
+            observed_untrusted = max(0., self.clock() - self.untrusted_since)
+            self.last_untrusted_seconds = observed_untrusted
+            if row['success']:
+                self.consecutive_failures = 0
+                self.untrusted_since = None
+            else:
+                self.consecutive_failures += 1
+                self.max_consecutive_failures = max(self.max_consecutive_failures, self.consecutive_failures)
+            row = {**row, 'consecutive_failures': self.consecutive_failures,
+                   'observed_untrusted_seconds': observed_untrusted}
+            if row['cancel_reason']:
+                self.cancellations[row['cancel_reason']] += 1
+            self.lock_max = max(self.lock_max, row['max_lock_hold_seconds'])
+            for name, value in row['io'].items():
+                d = self.io.setdefault(name, {'count': 0, 'total_seconds': 0., 'max_seconds': 0.})
+                d['count'] += value['count']
+                d['total_seconds'] += value['total_seconds']
+                d['max_seconds'] = max(d['max_seconds'], value['max_seconds'])
+            self.last.append(copy.deepcopy(row))
+            lines = [json.dumps({'stage': 'R1010_RECOVERY', **row}, allow_nan=False)]
+            if self.consecutive_failures and self.consecutive_failures % 10 == 0:
+                self.failure_streak_warnings += 1
+                lines.append(json.dumps({'stage': 'R1010B_RECOVERY_FAILURE_STREAK',
+                    'session': row['session'], 'utc': row['utc'],
+                    'consecutive_failures': self.consecutive_failures,
+                    'observed_untrusted_seconds': observed_untrusted,
+                    'failure_reason': row.get('failure_reason'),
+                    'retry_policy': 'UNCHANGED_WAKE_DRIVEN_START_SPACING_1S',
+                    'policy_action': 'NONE_OBSERVATION_ONLY'}, allow_nan=False))
+            day = row['utc'][:10]
+            if self.day != day:
+                self.day = day
+                self.lines = self.bytes = 0
+            output = []
+            for text in lines:
+                n = len(text.encode('utf-8')) + 1
+                if self.lines >= 4096 or self.bytes + n > 4 * 1024 * 1024:
+                    self.log_dropped += 1
+                    continue
+                self.lines += 1
+                self.bytes += n
+                output.append(text)
+        for text in output:
+            print(text, flush=True)
+
+    def snapshot(self):
+        with self.lock:
+            return {'enabled': True, 'recoveries': self.count, 'successes': self.successes,
+                    'failures': self.failures, 'cancellations': dict(self.cancellations),
+                    'consecutive_failures': self.consecutive_failures,
+                    'max_consecutive_failures': self.max_consecutive_failures,
+                    'failure_streak_warnings': self.failure_streak_warnings,
+                    'observed_untrusted_seconds': (max(0., self.clock() - self.untrusted_since)
+                        if self.untrusted_since is not None else 0.),
+                    'last_observed_untrusted_seconds': self.last_untrusted_seconds,
+                    'untrusted_scope': 'since first observed recovery start; earlier TRUST_LOST gap UNKNOWN',
+                    'io_phases': copy.deepcopy(self.io), 'max_lock_hold_seconds': self.lock_max,
+                    'last_recoveries': list(self.last), 'observer_errors': self.observer_errors,
+                    'log_dropped': self.log_dropped, 'day_UTC': self.day,
+                    'day_lines': self.lines, 'day_bytes': self.bytes,
+                    'line_limit': 4096, 'byte_limit': 4 * 1024 * 1024,
+                    'scope': 'per process; last 32 full durations; phases include nested calls'}
+
+
+class PrivateLock:
+    """Private pipeline has one owner; frozen timer's context manager is retained."""
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def operation(self, name):
+        return nullcontext()
+
+
+HOT_FIELDS = ('_active_by_symbol', '_entry_opportunities', '_entry_uncertain',
+              '_structure_watch_symbols', 'trades', 'halted', 'terminal_counts',
+              'entry_exit_counts', 'entry_exit_counts_by_symbol')
+PUBLISH_FIELDS = HOT_FIELDS
+
+
+def needs_shape(needs):
+    return tuple(frozenset(getattr(needs, k, ())) for k in ('O', 'A', 'U', 'R', 'trades', 'pins'))
+
+
+class Coordinator:
+    def __init__(self, adapter):
+        self.a = adapter
+        self.mutex = threading.Lock()
+        self.timer_gate = threading.Lock()
+        self.active = False
+        self.refresh_required = False
+        self.timers = []
+        self.metrics = RecoveryMetrics()
+        self.original_timer = adapter.bridge.p.expire_entry_opportunities
+        adapter.measure.recovery_io = self.metrics
+        adapter.bridge.p.expire_entry_opportunities = self.expire
+
+    def expire(self, now):
+        if not enabled():
+            return self.original_timer(now)
+        with self.timer_gate:
+            with self.mutex:
+                if self.active or self.refresh_required:
+                    # Keep exact timer instants; never infer empty canonical state.
+                    if len(self.timers) >= 4096:
+                        raise RecoveryReadFailed('RECOVERY_TIMER_QUEUE_LIMIT')
+                    self.timers.append(now)
+                    return None
+            return self.original_timer(now)
+
+    def begin(self):
+        with self.timer_gate, self.mutex:
+            if self.active:
+                raise RecoveryCancelled('RECOVERY_ALREADY_RUNNING')
+            self.active = True
+            self.refresh_required = True
+
+    def drain(self):
+        with self.mutex:
+            rows, self.timers = self.timers, []
+            return rows
+
+    def finish(self, success, pending):
+        with self.mutex:
+            self.active = False
+            self.refresh_required = not success
+            if not success:
+                self.timers = pending + self.timers
+
+
+def install(adapter):
+    if not enabled():
+        return None
+    current = getattr(adapter, '_recovery_io', None)
+    if current is None:
+        current = adapter._recovery_io = Coordinator(adapter)
+    return current
+
+
+class IOProxy:
+    def __init__(self, raw, run, prefix):
+        self.raw, self.run, self.prefix = raw, run, prefix
+
+    def __getattr__(self, name):
+        original = getattr(self.raw, name)
+        if not callable(original):
+            return original
+
+        def call(*args, **kwargs):
+            self.run.guard()
+            with self.run.phase(self.prefix + '.' + name):
+                result = original(*args, **kwargs)
+            self.run.guard()
+            return result
+        return call
+
+
+class RecoveryRun:
+    def __init__(self, adapter, coordinator, now):
+        self.a, self.coord, self.now = adapter, coordinator, now
+        self.start = time.monotonic()
+        self.io = {}
+        self.lock_max = 0.
+        self.success = False
+        self.cancel_reason = None
+        self.pending = []
+        self.private = None
+        self.resolved_R = []
+        self.resolved_U = []
+        self.guard_calls = self.checks_calls = 0
+
+    @contextmanager
+    def phase(self, name):
+        # Independent assertion, not an observer: forbidden I/O fails closed.
+        for lock in (self.a.bridge.p._decision_lock, self.a.control_lock):
+            if getattr(lock, '_is_owned', lambda: False)():
+                raise RecoveryCancelled('RECOVERY_IO_UNDER_LIVE_LOCK')
+        start = time.monotonic()
+        try:
+            yield
+        finally:
+            elapsed = time.monotonic() - start
+            d = self.io.setdefault(name, {'count': 0, 'total_seconds': 0., 'max_seconds': 0.})
+            d['count'] += 1
+            d['total_seconds'] += elapsed
+            d['max_seconds'] = max(d['max_seconds'], elapsed)
+
+    @contextmanager
+    def locks(self):
+        p = self.a.bridge.p
+        with p._decision_lock:
+            t = time.monotonic()
+            try:
+                with self.a.control_lock:
+                    yield
+            finally:
+                self.lock_max = max(self.lock_max, time.monotonic() - t)
+
+    def local_current(self):
+        a, c = self.a, self.a.c
+        if self.token is not a.cancel_event or self.token.is_set():
+            raise RecoveryCancelled('RECOVERY_CANCELLED')
+        if self.connection != c.connection:
+            raise RecoveryCancelled('RECOVERY_CONNECTION_CHANGED')
+        if (self.revision != c.revision or self.generation != a.proof.generation
+                or self.symbols != c.bar or self.symbols != c.desired_bar
+                or self.trade != c.trade or self.trade != c.desired_trade
+                or self.needs != needs_shape(c.needs) or c.inflight or c.failed
+                or not a.authenticated or self.invalid != a.proof.invalid):
+            raise RecoveryCancelled('RECOVERY_EPOCH_CHANGED')
+        if a.bridge.leadership.token != self.leader:
+            raise RecoveryCancelled('RECOVERY_LEADERSHIP_CHANGED')
+
+    def guard(self):
+        self.guard_calls += 1
+        self.local_current()
+        with self.phase('leadership_root_clock'):
+            try:
+                self.checks_calls += 1
+                self.a.checks()
+            except LeadershipError:
+                self.cancel_reason = 'RECOVERY_LEADERSHIP_CHANGED'
+                raise
+            except Exception:
+                if self.a.bridge.leadership.token != self.leader:
+                    self.cancel_reason = 'RECOVERY_LEADERSHIP_CHANGED'
+                raise
+        self.local_current()
+
+    def capture(self):
+        a = self.a
+        # The authoritative leadership read is OUTSIDE both live locks.
+        with self.phase('leadership_root_clock'):
+            self.checks_calls += 1
+            a.checks()
+            leader = a.bridge.leadership.require_current()
+        with self.locks():
+            if not a.authenticated or a.c.failed or a.c.inflight or a.c.bar != a.c.desired_bar or a.c.trade != a.c.desired_trade:
+                raise RecoveryCancelled('ACK_AUTH_INCOMPLETE')
+            a.cancel_event = threading.Event()
+            self.token, self.leader = a.cancel_event, leader
+            self.connection, self.revision = a.c.connection, a.c.revision
+            self.generation = a.proof.generation
+            self.symbols, self.trade = set(a.c.bar), set(a.c.trade)
+            self.needs = needs_shape(a.c.needs)
+            self.invalid = dict(a.proof.invalid)
+            p = a.bridge.p
+            self.baseline = {k: dict(getattr(p, k)) if isinstance(getattr(p, k), dict)
+                             else copy.copy(getattr(p, k)) for k in HOT_FIELDS}
+            self.old_R = set(a.barrier.persisted_R)
+            self.old_recovery = set(getattr(a.bridge, 'recovery_symbols', ()))
+            self.required_pins = set(getattr(a.c.needs, 'trades', ()))
+            self.needs_R = set(getattr(a.c.needs, 'R', ()))
+            self.needs_U = set(getattr(a.c.needs, 'U', ()))
+        self.make_private()
+
+    def make_private(self):
+        a = self.a
+        # Do not copy closure-based instance observers: those close over LIVE p.
+        p = object.__new__(ProductionDecisionPipeline)
+        p.__dict__.update(a.bridge.p.__dict__)
+        for name, value in list(p.__dict__.items()):
+            if callable(value) and callable(getattr(ProductionDecisionPipeline, name, None)):
+                del p.__dict__[name]
+        for name, value in self.baseline.items():
+            setattr(p, name, copy.deepcopy(dict(value) if isinstance(value, dict) else value))
+        p.terminal_counts = Counter(p.terminal_counts)
+        p.entry_exit_counts = Counter(p.entry_exit_counts)
+        p.entry_exit_counts_by_symbol = Counter(p.entry_exit_counts_by_symbol)
+        p._decision_lock = PrivateLock()
+        p._entry_uncertain.update(self.needs_U)
+        redis = IOProxy(a.bridge.r, self, 'redis')
+        p.r = redis
+        p.lua = ProductionRedisLua(redis, a.bridge.p.lua.prefix)
+        bridge = copy.copy(a.bridge)
+        bridge.p, bridge.r = p, redis
+        bridge.rest = IOProxy(a.bridge.rest, self, 'rest')
+        bridge.recovery_control_lock = None
+        bridge.recovery_symbols = set(self.old_recovery)
+        bridge.records = self.records
+        barrier = copy.copy(a.barrier)
+        barrier.bridge = bridge
+        from dintegration.stream_proof import StreamProof
+        from collections import deque
+        snapshot = a.proof.snapshot()
+        self.proof_baseline = copy.deepcopy(snapshot)
+        proof = StreamProof(a.proof.capacity)
+        proof.generation, proof.started, proof.valid = a.proof.generation, a.proof.started, a.proof.valid
+        proof.scope, proof.invalid = set(snapshot['scope']), dict(snapshot['invalid'])
+        proof.rows = {s: deque(copy.deepcopy(rows), maxlen=proof.capacity) for s, rows in snapshot['rows'].items()}
+        barrier.proof = proof
+        barrier.persisted_R = self.old_R | self.needs_R
+        barrier.epoch_guard = self.guard
+        barrier.status_source = copy.deepcopy(a.barrier.status_source)
+        self.private, self.bridge, self.barrier = p, bridge, barrier
+
+    def validate_hot(self):
+        a = self.a
+        self.local_current()
+        if any(getattr(a.bridge.p, k) != v for k, v in self.baseline.items()):
+            raise RecoveryCancelled('RECOVERY_HOT_STATE_CHANGED')
+        if a.barrier.persisted_R != self.old_R or set(getattr(a.bridge, 'recovery_symbols', ())) != self.old_recovery:
+            raise RecoveryCancelled('RECOVERY_PINS_CHANGED')
+        if self.coord.timers:
+            raise RecoveryCancelled('RECOVERY_TIMER_CHANGED')
+        # Never erase a new BAR witness received while resolved R was replayed.
+        snapshot = a.proof.snapshot()
+        if any(snapshot['rows'].get(s, []) != self.proof_baseline['rows'].get(s, []) for s in self.resolved_R):
+            raise RecoveryCancelled('RECOVERY_WITNESS_CHANGED')
+
+    def publish_cases(self):
+        a = self.a
+        for name in PUBLISH_FIELDS:
+            setattr(a.bridge.p, name, getattr(self.private, name))
+        a.barrier.persisted_R = self.barrier.persisted_R
+        a.barrier.last, a.barrier.results = self.barrier.last, self.barrier.results
+        a.barrier.last_resolved_R = self.barrier.last_resolved_R
+        if hasattr(a.bridge, 'recovery_symbols'):
+            a.bridge.recovery_symbols = self.bridge.recovery_symbols
+        for s in self.resolved_R:
+            a.proof.rearm_symbol(s)
+        if a.store is not None:
+            a.store.pending_R.difference_update(self.resolved_R)
+            a.store.pending_U.difference_update(self.resolved_U)
+
+    def publish_negative_cases(self):
+        # Retain original unresolved cases/pins without certifying transport.
+        self.guard()
+        with self.locks(), self.coord.mutex:
+            self.validate_hot()
+            self.publish_cases()
+
+    def records(self, pattern, typ):
+        # Unlike the legacy tolerant reader, corruption/deletion is never hidden.
+        cursor, keys, seen = 0, [], set()
+        while True:
+            cursor, chunk = self.bridge.r.scan(cursor=cursor, match=pattern, count=500)
+            for key in chunk:
+                key = key.decode() if isinstance(key, bytes) else key
+                if key not in seen:
+                    seen.add(key)
+                    keys.append(key)  # SCAN may legally repeat keys.
+            if int(cursor) == 0:
+                break
+        result = []
+        for offset in range(0, len(keys), 500):
+            chunk = keys[offset:offset + 500]
+            values = self.bridge.r.mget(chunk)
+            if len(values) != len(chunk):
+                raise RecoveryReadFailed('RECOVERY_MGET_LENGTH')
+            for key, raw in zip(chunk, values):
+                if raw is None:
+                    raise RecoveryReadFailed('RECOVERY_CANONICAL_DISAPPEARED')
+                try:
+                    row = json.loads(raw)
+                    validate_record(row, typ)
+                    if record_key(row) != key:
+                        raise ValueError()
+                except Exception:
+                    raise RecoveryReadFailed('RECOVERY_CANONICAL_INVALID') from None
+                result.append(row)
+        return result
+
+    def timers(self):
+        times = self.coord.drain()
+        self.pending.extend(times)
+        for now in times:
+            self.guard()
+            # Same frozen expiration function, private caches, original timestamp.
+            self.private.expire_entry_opportunities(now)
+
+    def case_refs(self):
+        p = self.private
+        return {'O': [key_opportunity(v['session'], s) for s, v in p._entry_opportunities.items()],
+                'A': [key_trade(v['trade_id']) for v in p._active_by_symbol.values()]}
+
+    def journal_proof(self):
+        # Preserve concurrent live witnesses in the audit snapshot. Only the
+        # original rearm operation's resolved R rows/negative latch are removed.
+        snapshot = copy.deepcopy(self.a.proof.snapshot())
+        for symbol in self.resolved_R:
+            if snapshot['rows'].get(symbol, []) != self.proof_baseline['rows'].get(symbol, []):
+                raise RecoveryCancelled('RECOVERY_WITNESS_CHANGED')
+            snapshot['invalid'].pop(symbol, None)
+            snapshot['rows'].pop(symbol, None)
+        return snapshot
+
+    def append(self, state, event):
+        # Preserve the journal contract in fixtures as well as production.
+        if getattr(state, 'case_refs', None) is not None:
+            event = {**event, 'case_refs': self.case_refs()}
+        self.guard()
+        result = state.append_guarded(event, self.local_current)
+        self.guard()
+        return result
+
+    def run(self):
+        a = self.a
+        self.capture()
+        warm = (self.symbols & a.proof.witnessed(self.now)) | (self.symbols & self.required_pins)
+        t = time.monotonic()
+        try:
+            with self.phase('warmup'):
+                one, five = a.rest.warmup(warm, self.now, a.bridge.p.ec.required_history_minutes())
+        finally:
+            try:
+                print(json.dumps({'stage': 'RECOVERY_WARMUP', 'symbols': len(warm), 'bar_scope': len(self.symbols),
+                                  'native1_minutes': 60, 'native5_minutes': a.bridge.p.ec.required_history_minutes(),
+                                  'seconds': time.monotonic() - t}), flush=True)
+            except BaseException:
+                self.coord.metrics.observer_errors += 1
+        self.guard()
+        with self.coord.mutex:
+            pending = bool(self.coord.timers)
+        if pending:
+            self.barrier.restore_pins()
+            self.timers()
+        cases = self.barrier.run(self.now, a.gap_start or a.proof.started)
+        self.guard()
+        if not cases['reconciled']:
+            a.report = {'reason': 'OPEN_CASE_CONTINUITY_UNPROVEN', 'cases': cases}
+            conflicts = {'AtomicConflict', 'TimeoutError', 'ConnectionError'}
+            if not any(x.get('reason') in conflicts for x in cases['issues']):
+                self.publish_negative_cases()
+            return False
+        self.timers()
+        # Canonical expiry may change O/pins; refresh privately before evidence.
+        if self.pending:
+            self.barrier.restore_pins()
+            cases['inventory'] = {k: sorted(v) for k, v in self.barrier.inventory().items()}
+        self.resolved_R, self.resolved_U = cases.get('resolved_R', []), cases.get('resolved_U', [])
+        for symbol in self.resolved_R:
+            self.barrier.proof.rearm_symbol(symbol)
+        if a.store is not None and (self.resolved_R or self.resolved_U):
+            with self.phase('journal.resolve'):
+                self.append(a.store.state, {'kind': 'B_CASE_RESOLUTION', 'case_schema': 2,
+                                            'resolved_R': sorted(self.resolved_R), 'resolved_U': sorted(self.resolved_U),
+                                            'proof': self.journal_proof()})
+        pins = set().union(*(set(cases['inventory'][k]) for k in ('O', 'A', 'U', 'R')))
+        good, bad = {}, {}
+        for i, symbol in enumerate(sorted(self.symbols)):
+            if i % 16 == 0:
+                time.sleep(0)
+            if symbol not in warm:
+                bad[symbol] = 'NO_COMPLETED_LIVE_BAR_WITNESS'
+                continue
+            helper = copy.copy(a)
+            helper.proof = self.barrier.proof
+            evidence = helper._bar_evidence(symbol, one, five, self.now)
+            (good if evidence['proven'] else bad)[symbol] = evidence if evidence['proven'] else evidence['reason']
+        if pins - set(good):
+            a.report = {'reason': 'PINNED_SYMBOL_UNPROVEN', 'symbols': sorted(pins - set(good))}
+            self.publish_negative_cases()
+            return False
+        if not good:
+            a.report = {'reason': 'NO_SYMBOL_CONTINUITY_PROVEN', 'quarantine': bad}
+            self.publish_negative_cases()
+            return False
+        self.guard()
+        report = {'reason': 'BAR_TRANSPORT_EVIDENCE_READY', 'good': good, 'quarantine': bad,
+                  'cases': cases, 'TRADE_completeness': False}
+        with self.phase('journal.evidence'):
+            self.append(a.checkpoint, {'kind': 'B_EVIDENCE_READY', 'connection': self.connection,
+                                      'revision': self.revision, 'proof': self.journal_proof(),
+                                      'report': report, 'transport_trusted': False})
+        self.guard()
+        with self.phase('preload'), a.bridge.staged_preload() as history:
+            a.bridge.preload({s: one[s] for s in good})
+        with self.phase('attest'), a.c.stage_evidence() as proofs:
+            for symbol in sorted(self.symbols):
+                a.c.attest(symbol, history=symbol in good, continuity=symbol in good,
+                           reconciled=symbol in good, first_trade=False)
+        self.guard()
+        with self.locks():
+            with self.coord.mutex:
+                self.validate_hot()
+                if not a.clock_check():
+                    raise ClockUnavailable('ROOT_OR_CLOCK_UNPROVEN')
+                a.bridge.publish_preload(history)  # validates its baseline before mutation
+                self.publish_cases()
+                a.c.proofs.update(proofs)
+                a.c._log('evidence_batch', symbols=len(proofs))
+                a.quarantine, a.report = bad, report
+                a.missed_opportunities.update(tuple(x['opportunity_identity']) for x in cases.get('results', [])
+                                             if x.get('result') == 'OPPORTUNITY_MISSED_DURING_DATA_GAP')
+                a.entry_floor = a.entry_floor or a.wall()
+                a.trusted_since, a.gap_start = a.entry_floor, None
+                a.recovering, a._invalidation_open, a.last = set(bad), False, self.now
+                self.coord.active = self.coord.refresh_required = False
+                a._LiveAdapter__trusted = True
+                a.c._set_transport_from_adapter(True, _LIVE_ADAPTER_AUTHORITY)
+                self.success = True
+        return True
+
+
+def recover(adapter, now):
+    coord = install(adapter)
+    coord.begin()
+    run = RecoveryRun(adapter, coord, now)
+    adapter.close_eligibility('RECOVERY_PENDING')
+    try:
+        return run.run()
+    except ChainFailure:
+        adapter.close_eligibility('CHAIN2_FAILURE')
+        raise
+    except Exception as exc:
+        if isinstance(exc, RecoveryCancelled):
+            run.cancel_reason = str(exc)
+        elif isinstance(exc, LeadershipError):
+            run.cancel_reason = 'RECOVERY_LEADERSHIP_CHANGED'
+        adapter.report = {'reason': str(exc) if isinstance(exc, (RecoveryCancelled, RecoveryReadFailed)) else type(exc).__name__}
+        return False
+    finally:
+        adapter.bridge.discard_preload_stage()
+        try:
+            if not run.success:
+                adapter.close_eligibility('RECOVERY_EVIDENCE_INCOMPLETE')
+                import sys
+                if not isinstance(sys.exc_info()[1], ChainFailure):
+                    with run.phase('journal.failed'):
+                        adapter.checkpoint.append_epoch({'kind': 'B_RECOVERY_FAILED',
+                                                        'proof': adapter.proof.snapshot(), 'report': adapter.report})
+        finally:
+            coord.finish(run.success, run.pending)
+            duration = time.monotonic() - run.start
+            adapter.measure.observe('recovery', duration)
+            coord.metrics.safe('finish', {'session': adapter.bridge.p.session,
+                                        'utc': datetime.now(timezone.utc).isoformat(), 'seconds': duration,
+                                        'started_monotonic': run.start,
+                                        'success': run.success, 'cancel_reason': run.cancel_reason,
+                                        'failure_reason': None if run.success else adapter.report.get('reason'),
+                                        'guard_calls': run.guard_calls, 'checks_calls': run.checks_calls,
+                                        'io': run.io, 'max_lock_hold_seconds': run.lock_max})
