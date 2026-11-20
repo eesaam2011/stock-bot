@@ -1,0 +1,119 @@
+{
+  "source": "IPR_RECOVERY_CAUSE_20261119; independent R1010_RECOVERY log IDs",
+  "scope": "recorded failure/success schedule only, not full SIP/control replay",
+  "attempts": [
+    {
+      "day": "2026-11-18",
+      "attempt": 1,
+      "log_id": "34cfc5d2-4ba0-4afa-93f0-c67b93a28de2",
+      "duration_seconds": 2.6078700507059693,
+      "cancel_reason": "RECOVERY_CANCELLED",
+      "success": false
+    },
+    {
+      "day": "2026-11-18",
+      "attempt": 2,
+      "log_id": "62f3a7f4-e84a-427c-9c96-7b138198eb02",
+      "duration_seconds": 27.31569019332528,
+      "cancel_reason": "RECOVERY_TIMER_CHANGED",
+      "success": false
+    },
+    {
+      "day": "2026-11-18",
+      "attempt": 3,
+      "log_id": "d28ffffd-6300-415e-b984-24a23a7e883c",
+      "duration_seconds": 30.094081754796207,
+      "cancel_reason": "RECOVERY_HOT_STATE_CHANGED",
+      "success": false
+    },
+    {
+      "day": "2026-11-18",
+      "attempt": 4,
+      "log_id": "daaf0c32-4ddf-410a-ba3c-4444afbd3910",
+      "duration_seconds": 4.985603857785463,
+      "cancel_reason": "RECOVERY_CANCELLED",
+      "success": false
+    },
+    {
+      "day": "2026-11-18",
+      "attempt": 5,
+      "log_id": "16772a54-6449-4e13-ab74-d36a7298b4c3",
+      "duration_seconds": 0.9205826437100768,
+      "cancel_reason": null,
+      "success": true
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 1,
+      "log_id": "4a6d7646-543d-4cae-9f0d-3726bead45ed",
+      "duration_seconds": 26.61416524462402,
+      "cancel_reason": "RECOVERY_TIMER_CHANGED",
+      "success": false
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 2,
+      "log_id": "690861c9-0314-45a9-a299-eeccf553aeb4",
+      "duration_seconds": 4.99970908369869,
+      "cancel_reason": "RECOVERY_TIMER_CHANGED",
+      "success": false
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 3,
+      "log_id": "0e43ff4f-fc86-4ccd-9f71-abcbba247d86",
+      "duration_seconds": 4.82198425475508,
+      "cancel_reason": "RECOVERY_TIMER_CHANGED",
+      "success": false
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 4,
+      "log_id": "88c3cbfc-d89d-4f9e-b0cd-6c97e937f14a",
+      "duration_seconds": 4.243844302371144,
+      "cancel_reason": "RECOVERY_CANCELLED",
+      "success": false
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 5,
+      "log_id": "9228ddad-ca9e-4726-a3ee-6360f1694d58",
+      "duration_seconds": 30.011726909317076,
+      "cancel_reason": "RECOVERY_TIMER_CHANGED",
+      "success": false
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 6,
+      "log_id": "691d0e64-cf45-4ad9-888a-f97663900a83",
+      "duration_seconds": 27.80641062837094,
+      "cancel_reason": "RECOVERY_CANCELLED",
+      "success": false
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 7,
+      "log_id": "ef93746a-7da3-425c-ae75-da2a05d71663",
+      "duration_seconds": 3.026407537050545,
+      "cancel_reason": "RECOVERY_TIMER_CHANGED",
+      "success": false
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 8,
+      "log_id": "e24e6fca-2d51-4e4a-b9b4-92ba3a0e0764",
+      "duration_seconds": 5.808177914470434,
+      "cancel_reason": "RECOVERY_TIMER_CHANGED",
+      "success": false
+    },
+    {
+      "day": "2026-11-19",
+      "attempt": 9,
+      "log_id": "c6bc168b-6cef-4cd3-81ff-c67bc5bc5de5",
+      "duration_seconds": 4.4084153939038515,
+      "cancel_reason": null,
+      "success": true
+    }
+  ]
+}
+

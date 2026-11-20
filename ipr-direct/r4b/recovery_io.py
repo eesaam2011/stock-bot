@@ -570,6 +570,13 @@ def recover(adapter, now):
     run = RecoveryRun(adapter, coord, now)
     adapter.close_eligibility('RECOVERY_PENDING')
     try:
+        try:
+            from ipr import review_flags
+            if getattr(review_flags, 'IPR_RECOVERY_DIAG_ENABLED', False):
+                from ipr.recovery_diag import safe_begin
+                safe_begin(run)
+        except Exception:
+            pass
         return run.run()
     except ChainFailure:
         adapter.close_eligibility('CHAIN2_FAILURE')
@@ -580,6 +587,10 @@ def recover(adapter, now):
         elif isinstance(exc, LeadershipError):
             run.cancel_reason = 'RECOVERY_LEADERSHIP_CHANGED'
         adapter.report = {'reason': str(exc) if isinstance(exc, (RecoveryCancelled, RecoveryReadFailed)) else type(exc).__name__}
+        try:
+            diag=getattr(adapter,'_ipr_recovery_diag',None)
+            if diag is not None:diag.safe('failure',run)
+        except Exception:pass
         return False
     finally:
         adapter.bridge.discard_preload_stage()
@@ -602,3 +613,10 @@ def recover(adapter, now):
                                         'failure_reason': None if run.success else adapter.report.get('reason'),
                                         'guard_calls': run.guard_calls, 'checks_calls': run.checks_calls,
                                         'io': run.io, 'max_lock_hold_seconds': run.lock_max})
+            try:
+                from ipr import review_flags
+                if getattr(review_flags, 'IPR_RECOVERY_DIAG_ENABLED', False):
+                    from ipr.recovery_diag import safe_end
+                    safe_end(run)
+            except Exception:
+                pass

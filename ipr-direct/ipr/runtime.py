@@ -138,6 +138,13 @@ async def run(bundle,api,redis,env,boot,started_monotonic=None):
  r,state,clock,measure=await asyncio.to_thread(build,bundle,api,redis,env,boot);p=r.a.bridge.p
  gate=gate_for(state,time.monotonic,r.wall,started);r.a.scan_gate=gate
  state['_runtime']=r;state['_blocked_trades']=BlockedTrades(bundle['eligible'])
+ diag=None
+ try:
+  from .review_flags import IPR_RECOVERY_DIAG_ENABLED
+  if IPR_RECOVERY_DIAG_ENABLED:
+   from .recovery_diag import install as install_recovery_diag
+   diag=install_recovery_diag(r,api)
+ except Exception:pass
  shadow=None
  try:
   from .entry_shadow import install_shadow
@@ -300,6 +307,9 @@ async def run(bundle,api,redis,env,boot,started_monotonic=None):
     try:shadow.close()
     except BaseException:pass
    observer.close();getattr(clock,'close',lambda:None)()
+   if diag is not None:
+    try:diag.close()
+    except Exception:pass
    if native_observer is not None:
     try:native_observer.close()
     except BaseException:pass

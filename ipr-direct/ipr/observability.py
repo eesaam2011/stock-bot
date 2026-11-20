@@ -21,6 +21,12 @@ class Diagnostics:
     d=self.phase_stats.setdefault(key,{'count':0,'total_seconds':0.,'max_seconds':0.})
     elapsed=time.monotonic()-start;d['count']+=1;d['total_seconds']+=elapsed;d['max_seconds']=max(d['max_seconds'],elapsed);d['last_seconds']=elapsed
    self.local.operation=old
+   try:
+    from . import review_flags
+    if getattr(review_flags,'IPR_RECOVERY_DIAG_ENABLED',False):
+     from .recovery_diag import safe_global
+     safe_global('phase',name,elapsed)
+   except Exception:pass
  def record_redis(self,command,seconds):
   name=getattr(self.local,'operation',None)
   if name is None:
@@ -60,11 +66,41 @@ class RedisTelemetry:
  def __getattr__(self,name):
   original=getattr(self.raw,name)
   if name not in self.COMMANDS:return original
+  from .review_flags import IPR_RECOVERY_DIAG_ENABLED
+  if not IPR_RECOVERY_DIAG_ENABLED:
+   def measured(*a,**kw):
+    start=time.monotonic()
+    try:return original(*a,**kw)
+    finally:self.diagnostics.record_redis(name.upper(),time.monotonic()-start)
+   return measured
+  from . import recovery_diag as diag
   def measured(*a,**kw):
+   recorder=diag._ACTIVE
+   token=None
+   try:
+    if recorder is not None and recorder.in_window():
+     token=recorder.safe('command_begin',name)
+   except Exception:pass
    start=time.monotonic()
-   try:return original(*a,**kw)
-   finally:self.diagnostics.record_redis(name.upper(),time.monotonic()-start)
+   completed=False
+   try:
+    result=original(*a,**kw)
+    completed=True
+    return result
+   finally:
+    seconds=time.monotonic()-start
+    self.diagnostics.record_redis(name.upper(),seconds)
+    try:
+     if token is not None:
+      if completed and recorder.in_window() and not recorder.held():
+       recorder.safe('command',name,seconds,a,kw,result,token)
+      else:
+       token['lane']['active_command']=token['previous']
+     elif recorder is not None and name=='scan' and not recorder.in_window():
+      recorder.scan_aggregate(seconds)
+    except Exception:pass
   return measured
+
 
 class PauseObserver:
  """Observer can itself be delayed by GIL/throttling; correlation is not attribution."""
