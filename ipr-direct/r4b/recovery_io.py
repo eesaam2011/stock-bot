@@ -239,6 +239,11 @@ class RecoveryRun:
         self.resolved_R = []
         self.resolved_U = []
         self.guard_calls = self.checks_calls = 0
+        from ipr import review_flags
+        self.boundary_enumeration = bool(getattr(
+            review_flags, 'RECOVERY_BOUNDARY_ENUMERATION_ENABLED', False))
+        self.boundary_keys = {}
+        self.membership_changes = None
 
     @contextmanager
     def phase(self, name):
@@ -402,6 +407,8 @@ class RecoveryRun:
             self.publish_cases()
 
     def records(self, pattern, typ):
+        if self.boundary_enumeration:
+            return self.boundary_records(pattern, typ)
         # Unlike the legacy tolerant reader, corruption/deletion is never hidden.
         cursor, keys, seen = 0, [], set()
         while True:
@@ -431,6 +438,65 @@ class RecoveryRun:
                     raise RecoveryReadFailed('RECOVERY_CANONICAL_INVALID') from None
                 result.append(row)
         return result
+
+    # Review option 3b: endpoint membership check, NOT a transactional snapshot.
+    # ABA, same-key value mutations and the post-enumeration publish gap remain.
+    # Recovery's original writers update canonical records in place. They do not
+    # get a membership exemption: any different final key set fails closed.
+    BOUNDARY_PATTERNS = (
+        ('trade', 'operational_priority_radar:v1:trade:*'),
+        ('opportunity', 'operational_priority_radar:v1:opportunity:*'),
+    )
+
+    def enumerate_boundary_keys(self, pattern):
+        cursor, keys, seen = 0, [], set()
+        while True:
+            cursor, chunk = self.bridge.r.scan(cursor=cursor, match=pattern, count=500)
+            for key in chunk:
+                key = key.decode() if isinstance(key, bytes) else key
+                if key not in seen:
+                    seen.add(key)
+                    keys.append(key)
+            if int(cursor) == 0:
+                return keys
+
+    def capture_boundary_membership(self):
+        for typ, pattern in self.BOUNDARY_PATTERNS:
+            self.boundary_keys[(pattern, typ)] = self.enumerate_boundary_keys(pattern)
+
+    def boundary_records(self, pattern, typ):
+        identity = (pattern, typ)
+        if identity not in self.boundary_keys:
+            raise RecoveryReadFailed('RECOVERY_MEMBERSHIP_SCOPE_UNCAPTURED')
+        result, keys = [], self.boundary_keys[identity]
+        for offset in range(0, len(keys), 500):
+            chunk = keys[offset:offset + 500]
+            values = self.bridge.r.mget(chunk)
+            if len(values) != len(chunk):
+                raise RecoveryReadFailed('RECOVERY_MGET_LENGTH')
+            for key, raw in zip(chunk, values):
+                if raw is None:
+                    raise RecoveryReadFailed('RECOVERY_CANONICAL_DISAPPEARED')
+                try:
+                    row = json.loads(raw)
+                    validate_record(row, typ)
+                    if record_key(row) != key:
+                        raise ValueError()
+                except Exception:
+                    raise RecoveryReadFailed('RECOVERY_CANONICAL_INVALID') from None
+                result.append(row)  # Fresh decoded objects at every checkpoint.
+        return result
+
+    def validate_boundary_membership(self):
+        changes = {}
+        for typ, pattern in self.BOUNDARY_PATTERNS:
+            before = set(self.boundary_keys[(pattern, typ)])
+            after = set(self.enumerate_boundary_keys(pattern))
+            changes[typ] = {'added': len(after - before),
+                            'removed': len(before - after)}
+        if any(row['added'] or row['removed'] for row in changes.values()):
+            self.membership_changes = changes  # Counts only; never log names.
+            raise RecoveryCancelled('RECOVERY_MEMBERSHIP_CHANGED')
 
     def timers(self):
         times = self.coord.drain()
@@ -481,6 +547,10 @@ class RecoveryRun:
             except BaseException:
                 self.coord.metrics.observer_errors += 1
         self.guard()
+        # No enumeration for warmup failure/cancellation. Capture membership
+        # immediately before the first canonical checkpoint, outside live locks.
+        if self.boundary_enumeration:
+            self.capture_boundary_membership()
         with self.coord.mutex:
             pending = bool(self.coord.timers)
         if pending:
@@ -542,6 +612,9 @@ class RecoveryRun:
                 a.c.attest(symbol, history=symbol in good, continuity=symbol in good,
                            reconciled=symbol in good, first_trade=False)
         self.guard()
+        if self.boundary_enumeration:
+            self.validate_boundary_membership()
+            self.guard()
         with self.locks():
             with self.coord.mutex:
                 self.validate_hot()

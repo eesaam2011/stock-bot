@@ -67,6 +67,7 @@ class FlowTests(unittest.TestCase):
 
 
 class CostTests(unittest.TestCase):
+    @patch.object(review_flags,'RECOVERY_BOUNDARY_ENUMERATION_ENABLED',False)
     def test_observer_additions_do_not_add_Redis_commands_relative_to_R1010(self):
         import types
         from pathlib import Path
@@ -80,6 +81,7 @@ class CostTests(unittest.TestCase):
             self.assertEqual(old['leader_identity_MGET'],new['leader_identity_MGET'])
             self.assertEqual(old['success'],new['success'])
 
+    @patch.object(review_flags,'RECOVERY_BOUNDARY_ENUMERATION_ENABLED',False)
     def test_count_commands_for_10_enumerations_and_multiple_SCAN_pages(self):
         results=[]
         for total,trades,opps in ((29,27,0),(4100,27,100),(4100,1001,1001)):
@@ -104,6 +106,16 @@ class CostTests(unittest.TestCase):
             results.append({'R109_false_original':old,'R1010b_true':new,
                             'additional_leader_MGET':added,'latency_scenarios':rows})
         print(json.dumps({'test':'R1010B_GUARD_COMMAND_COST','profiles':results}))
+
+    @patch.object(review_flags,'RECOVERY_BOUNDARY_ENUMERATION_ENABLED',True)
+    def test_boundary_active_cost_counts_in_same_fixed_keyspace_scenarios(self):
+        for args,expected in (((29,27,0),{'MGET':34,'SCAN':4}),
+                              ((4100,27,100),{'MGET':113,'SCAN':36}),
+                              ((4100,1001,1001),{'MGET':173,'SCAN':36})):
+            with self.subTest(args=args):
+                actual=cost_profile(*args)
+                self.assertTrue(actual['success'])
+                self.assertEqual(actual['commands'],expected)
 
     def test_real_50ms_delay_matches_counted_command_model(self):
         pair=[cost_profile(29,27,0,latency=.05,real=True,flag=flag) for flag in (False,True)]

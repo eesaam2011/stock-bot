@@ -298,7 +298,7 @@ class Recorder:
                           "RECOVERY_CANCELLED", "RECOVERY_PINS_CHANGED",
                           "RECOVERY_IO_UNDER_LIVE_LOCK", "RECOVERY_EPOCH_CHANGED",
                           "RECOVERY_CONNECTION_CHANGED", "RECOVERY_LEADERSHIP_CHANGED",
-                          "RECOVERY_WITNESS_CHANGED") else ("NONE" if run.success else "OTHER"),
+                          "RECOVERY_WITNESS_CHANGED", "RECOVERY_MEMBERSHIP_CHANGED") else ("NONE" if run.success else "OTHER"),
                       phase_observed=scope.get('failure_phase', scope["last_phase"]),
                       elapsed_seconds=self.clock() - scope["start"],
                       hot_fields_observed_after_failure=fields,
@@ -312,7 +312,9 @@ class Recorder:
                       last_timer_drain=self.last_timer_drain,
                       since_last_drain_observation_seconds=since,
                       cancel_invalidator_observation=self.cancel_observed,
-                      missing_observation_reason="live-lock producers are skipped; not exact mutation trace")
+                      missing_observation_reason="live-lock producers are skipped; not exact mutation trace",
+                      **({'membership_changes': run.membership_changes}
+                         if reason == 'RECOVERY_MEMBERSHIP_CHANGED' else {}))
             self.emit("ATTEMPT_SUMMARY", attempt_id=scope["id"], success=bool(run.success),
                       elapsed_seconds=self.clock() - scope["start"],
                       client_command_counts_and_seconds=scope["commands"],

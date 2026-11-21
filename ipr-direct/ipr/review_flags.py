@@ -4,3 +4,4 @@ OUTBOX_MGET_ENABLED = True
 NATIVE_FAILURE_NONFATAL_ENABLED = True
 RECOVERY_IO_OUTSIDE_LOCK_ENABLED = True
 IPR_RECOVERY_DIAG_ENABLED = True  # Review-only sidecar; no Environment/Redis setting.
+RECOVERY_BOUNDARY_ENUMERATION_ENABLED = True  # Review candidate; no Environment/Redis setting.

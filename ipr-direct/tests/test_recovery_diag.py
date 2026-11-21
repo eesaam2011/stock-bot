@@ -455,6 +455,7 @@ class DiagnosticContracts(unittest.TestCase):
 
 
 class DifferentialRecovery(unittest.TestCase):
+    @patch.object(review_flags,'RECOVERY_BOUNDARY_ENUMERATION_ENABLED',False)
     def test_off_matches_saved_R1010b_recover_business_stdout_and_state_byte_for_byte(self):
         for reason in (None,'RECOVERY_TIMER_CHANGED','RECOVERY_HOT_STATE_CHANGED','RECOVERY_CANCELLED'):
             with self.subTest(reason=reason):
@@ -516,3 +517,16 @@ class DifferentialRecovery(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class BoundaryActivationContracts(unittest.TestCase):
+    @patch.object(review_flags,'RECOVERY_BOUNDARY_ENUMERATION_ENABLED',True)
+    def test_active_recovery_counts_and_business_state_match_legacy(self):
+        for reason in (None,'RECOVERY_TIMER_CHANGED','RECOVERY_HOT_STATE_CHANGED'):
+            with self.subTest(reason=reason):
+                old,_,_=run_case(False,reason,baseline=True)
+                new,_,_=run_case(False,reason)
+                self.assertEqual(old['commands'],{'MGET':30,'SCAN':10})
+                self.assertEqual(new['commands'],{'MGET':19,'SCAN':4})
+                for field in ('canonical','pins','epochs','result','reason','messages','sequence'):
+                    self.assertEqual(new[field],old[field],field)
